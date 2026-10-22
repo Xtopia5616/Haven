@@ -219,6 +219,7 @@ impl AgentLayer {
             memory_service.clone(),
         ));
         let tool_catalog = tools.catalog_port();
+        let lifecycle_hooks = tools.lifecycle_hooks_port();
         let memory_inference = Arc::new(RouterMemoryInferencePort::new(router.clone()));
         let memory_worker = Arc::new(MemoryWorker::new_with_inference(
             memory_service.clone(),
@@ -244,6 +245,7 @@ impl AgentLayer {
                 max_steps_per_run,
                 context_limits.clone(),
             )
+            .with_lifecycle_hooks(lifecycle_hooks)
             .with_turn_preparation(crate::react::default_turn_preparation_with_patch(
                 memory_patch,
             ))

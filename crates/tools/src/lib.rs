@@ -15,6 +15,7 @@ mod document;
 mod execution;
 mod execution_workspace;
 mod facade;
+mod lifecycle_hooks;
 mod live_output;
 mod lsp_server_config;
 #[cfg(test)]

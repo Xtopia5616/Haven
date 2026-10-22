@@ -1341,3 +1341,4 @@
 - [1351：在 Shell 授权前显示当前执行边界](1351-show-active-shell-boundary-before-approval.md)
 - [1353：阻止已取消的排队数据库操作迟到写入](1353-cancel-queued-database-operations.md)
 - [1355：统一内置 operation 名称与输入 schema](1355-unify-builtin-operation-names-and-input-schemas.md)
+- [1356：支持用户可配置的生命周期 Hooks](1356-user-configurable-lifecycle-hooks.md)

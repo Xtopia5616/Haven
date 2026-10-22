@@ -36,7 +36,7 @@ mod working_document;
 
 pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};
 
-pub use agent_tool_ports::AgentToolPorts;
+pub use agent_tool_ports::{AgentToolPorts, LifecycleHooksPort};
 pub use event::{
     AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher,
     ToolRunCompletionStatus, ToolRunNotificationSource,

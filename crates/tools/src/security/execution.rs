@@ -24,6 +24,86 @@ pub(crate) struct ExecutionPolicyAuthorization {
     pub(super) session_trust_cancellation: Arc<CancellationToken>,
 }
 
+/// Short-lived process capability for commands explicitly configured as
+/// lifecycle hooks. Unlike a model operation, the command is user-configured;
+/// this capability still requires FullAccess, open network, and a fresh live
+/// policy snapshot at the OS spawn boundary.
+#[derive(Clone)]
+pub(crate) struct LifecycleHookProcessStartAuthorization {
+    authorization: Arc<AuthorizationEngine>,
+    policy_revision: u64,
+    process_boundary_revision: u64,
+    execution_workspace_generation: u64,
+    process_revocation_signal: Arc<()>,
+    process_boundary_signal: Arc<()>,
+}
+
+impl LifecycleHookProcessStartAuthorization {
+    pub(super) fn new(
+        authorization: Arc<AuthorizationEngine>,
+        policy_revision: u64,
+        process_boundary_revision: u64,
+        execution_workspace_generation: u64,
+        process_revocation_signal: Arc<()>,
+        process_boundary_signal: Arc<()>,
+    ) -> Self {
+        Self {
+            authorization,
+            policy_revision,
+            process_boundary_revision,
+            execution_workspace_generation,
+            process_revocation_signal,
+            process_boundary_signal,
+        }
+    }
+
+    pub(crate) fn execution_workspace_generation(&self) -> u64 {
+        self.execution_workspace_generation
+    }
+
+    pub(crate) async fn acquire(&self) -> Result<ExecutionPolicyPermit, String> {
+        let config = Arc::clone(&self.authorization.config).read_owned().await;
+        if config.policy_revision != self.policy_revision
+            || config.process_boundary_revision != self.process_boundary_revision
+            || config.execution_workspace.generation() != self.execution_workspace_generation
+        {
+            return Err("execution policy changed before lifecycle hook process start".into());
+        }
+        if config.sandbox_mode != SandboxMode::FullAccess {
+            return Err("lifecycle hook commands require the Full Access sandbox".into());
+        }
+        if config.network_policy != NetworkPolicy::Open {
+            return Err("lifecycle hook commands require Open network policy".into());
+        }
+        Ok(ExecutionPolicyPermit { _config: config })
+    }
+
+    /// Wait for any policy or process-boundary change so the caller can stop
+    /// the hook process tree immediately instead of letting an old command
+    /// outlive the boundary under which it started.
+    pub(crate) async fn wait_for_revocation(&self) {
+        let mut policy_changes = self.authorization.process_revocations.subscribe();
+        let mut boundary_changes = self.authorization.process_boundary_changes.subscribe();
+        loop {
+            let policy_changed = !Arc::ptr_eq(
+                &policy_changes.borrow_and_update(),
+                &self.process_revocation_signal,
+            );
+            let boundary_changed = !Arc::ptr_eq(
+                &boundary_changes.borrow_and_update(),
+                &self.process_boundary_signal,
+            );
+            if policy_changed || boundary_changed {
+                return;
+            }
+            tokio::select! {
+                result = policy_changes.changed() => if result.is_err() { return; },
+                result = boundary_changes.changed() => if result.is_err() { return; },
+            }
+        }
+    }
+}
+
 /// Current process-boundary snapshot for a manager-owned MCP stdio client
 /// generation. Unlike a tool proof it is not permission to call a tool; it
 /// only permits a child process to start while sandbox mode is FullAccess
@@ -264,7 +344,60 @@ impl haven_skills::ProcessStartAuthorization for ExecutionPolicyAuthorization {
 #[cfg(test)]
 mod tests {
     use super::ExecutionPolicyAuthorization;
+    use crate::security::AuthorizationEngine;
     use haven_common::types::{NetworkPolicy, SandboxMode};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn lifecycle_hook_start_requires_full_access_open_network_and_live_policy() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        assert!(
+            engine
+                .capture_lifecycle_hook_process_start_authorization()
+                .await
+                .err()
+                .expect("default workspace-write boundary is denied")
+                .contains("Full Access")
+        );
+
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .await;
+        assert!(
+            engine
+                .capture_lifecycle_hook_process_start_authorization()
+                .await
+                .err()
+                .expect("Ask network boundary is denied")
+                .contains("Open network policy")
+        );
+
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let authorization = engine
+            .capture_lifecycle_hook_process_start_authorization()
+            .await
+            .unwrap();
+        assert!(authorization.acquire().await.is_ok());
+
+        engine
+            .set_boundaries(
+                SandboxMode::FullAccess,
+                vec![PathBuf::from("C:/workspace")],
+                NetworkPolicy::Open,
+            )
+            .await;
+        assert!(
+            authorization
+                .acquire()
+                .await
+                .err()
+                .expect("stale authorization is denied")
+                .contains("policy changed")
+        );
+    }
 
     #[tokio::test]
     async fn lsp_start_permit_requires_full_access_and_permitted_network_policy() {

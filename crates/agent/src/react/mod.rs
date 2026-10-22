@@ -400,6 +400,8 @@ pub(crate) struct ReActEngine {
     turn_preparation: TurnPreparationHandle,
     /// Required safety gate for every foreground tool call.
     tool_admission: ToolAdmissionHandle,
+    /// User/project lifecycle hook capability supplied by the composition root.
+    lifecycle_hooks: Arc<dyn crate::LifecycleHooksPort>,
     /// Optional fact engine for compaction-summary extraction (M3).
     memory_worker: Option<Arc<crate::MemoryWorker>>,
     /// Fixed-size, in-process ReAct baseline metrics. Updates are atomic and
@@ -471,6 +473,7 @@ impl ReActEngine {
             tool_definitions: ToolDefCache::new(),
             turn_preparation: default_turn_preparation(),
             tool_admission: default_tool_admission(),
+            lifecycle_hooks: Arc::new(crate::agent_tool_ports::NoopLifecycleHooksPort),
             memory_worker: None,
             metrics,
             committed_ui: Arc::new(committed_ui::CommittedUiPublisher::new()),
@@ -509,6 +512,14 @@ impl ReActEngine {
     /// shared MEMORY patcher; tests can use an inert preparation).
     pub(crate) fn with_turn_preparation(mut self, preparation: TurnPreparationHandle) -> Self {
         self.turn_preparation = preparation;
+        self
+    }
+
+    pub(crate) fn with_lifecycle_hooks(
+        mut self,
+        lifecycle_hooks: Arc<dyn crate::LifecycleHooksPort>,
+    ) -> Self {
+        self.lifecycle_hooks = lifecycle_hooks;
         self
     }
 
@@ -1255,6 +1266,14 @@ impl ReActEngine {
         if request_tokens <= compactor.threshold_tokens() {
             return Ok(false);
         }
+        let mut pre_compact = haven_common::hooks::LifecycleHookPayload::new(
+            haven_common::hooks::LifecycleHookEvent::PreCompact,
+        );
+        pre_compact.session_id = Some(ctx.session_id.clone());
+        pre_compact.run_id = Some(ctx.run_id);
+        pre_compact.start_step = Some(ctx.step_number);
+        pre_compact.tokens_before = Some(u64::from(request_tokens));
+        let _ = self.lifecycle_hooks.run(pre_compact, cancel.clone()).await;
         match compactor
             .compact_with_tool_token_estimate(
                 &state.canonical,

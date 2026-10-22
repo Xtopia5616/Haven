@@ -1,10 +1,11 @@
 //! ToolsFacade adapters owned by the application composition boundary.
 
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use async_trait::async_trait;
 use haven_agent::{
-    AgentSchedulePort, AgentToolPorts, AgentToolRunPort, ManagedAssetLeasePort,
+    AgentSchedulePort, AgentToolPorts, AgentToolRunPort, LifecycleHooksPort, ManagedAssetLeasePort,
     PromptCatalogContent, PromptCatalogVersions, PromptRuntimeContext, PromptToolPort,
     ScheduleFiredReceiverPort, SessionToolOverlayPort, SessionToolPorts, ToolAuthorizationPort,
     ToolCatalogPort, ToolExecutionContext, ToolExecutionPort, ToolObservationPort,
@@ -72,10 +73,10 @@ pub(crate) fn agent_tool_ports_from_capabilities(
         adapter.clone(),
         adapter.clone(),
         adapter.clone(),
-        adapter,
+        adapter.clone(),
     );
 
-    AgentToolPorts::new(prompt, catalog, session)
+    AgentToolPorts::new(prompt, catalog, session).with_lifecycle_hooks(adapter)
 }
 
 #[cfg(test)]
@@ -159,6 +160,17 @@ impl PromptToolPort for ToolsFacadeAgentAdapter {
 impl ToolCatalogPort for ToolsFacadeAgentAdapter {
     async fn catalog_snapshot(&self, session_id: &str) -> Arc<ToolCatalogSnapshot> {
         Arc::new(self.tools.tool_catalog_snapshot(session_id).await)
+    }
+}
+
+#[async_trait]
+impl LifecycleHooksPort for ToolsFacadeAgentAdapter {
+    async fn run(
+        &self,
+        payload: haven_common::hooks::LifecycleHookPayload,
+        cancel: CancellationToken,
+    ) -> haven_common::hooks::LifecycleHookDecision {
+        self.tools.run_lifecycle_hooks(payload, cancel).await
     }
 }
 

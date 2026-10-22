@@ -12,14 +12,17 @@ pub(crate) struct ToolRuntimeCoordinator {
     pub(crate) core: tool_core::ToolCore,
     pub(crate) runtime: tool_runtime::ToolRuntime,
     pub(crate) builtins: tool_builtins::ToolBuiltins,
+    pub(crate) lifecycle_hooks: crate::lifecycle_hooks::LifecycleHookService,
 }
 
 impl ToolRuntimeCoordinator {
     pub(crate) fn new(exec_config: SkillsExecConfig) -> Self {
+        let core = tool_core::ToolCore::new();
         Self {
-            core: tool_core::ToolCore::new(),
+            core,
             runtime: tool_runtime::ToolRuntime::new(),
             builtins: tool_builtins::ToolBuiltins::new(exec_config),
+            lifecycle_hooks: crate::lifecycle_hooks::LifecycleHookService::default(),
         }
     }
 
@@ -49,6 +52,8 @@ impl ToolRuntimeCoordinator {
     }
 
     pub(crate) async fn wire_startup(&self, wiring: StartupWiring) -> anyhow::Result<()> {
+        self.lifecycle_hooks
+            .bind_config_service(wiring.admin_context.config_service.clone())?;
         let StartupWiring {
             tool_run_store,
             schedule_store,

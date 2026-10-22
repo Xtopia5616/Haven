@@ -5,6 +5,31 @@ use std::sync::Arc;
 use crate::prompt_context::PromptToolPort;
 use crate::react::ToolCatalogPort;
 use crate::session::SessionToolPorts;
+use haven_common::hooks::{LifecycleHookDecision, LifecycleHookPayload};
+use tokio_util::sync::CancellationToken;
+
+/// Narrow Agent capability for invoking configured lifecycle hooks.
+#[async_trait::async_trait]
+pub trait LifecycleHooksPort: Send + Sync {
+    async fn run(
+        &self,
+        payload: LifecycleHookPayload,
+        cancel: CancellationToken,
+    ) -> LifecycleHookDecision;
+}
+
+pub(crate) struct NoopLifecycleHooksPort;
+
+#[async_trait::async_trait]
+impl LifecycleHooksPort for NoopLifecycleHooksPort {
+    async fn run(
+        &self,
+        _payload: LifecycleHookPayload,
+        _cancel: CancellationToken,
+    ) -> LifecycleHookDecision {
+        LifecycleHookDecision::Allow
+    }
+}
 
 /// Explicit tool capabilities injected into Agent and SessionSupervisor.
 ///
@@ -15,6 +40,7 @@ pub struct AgentToolPorts {
     prompt: Arc<dyn PromptToolPort>,
     catalog: Arc<dyn ToolCatalogPort>,
     session: SessionToolPorts,
+    lifecycle_hooks: Arc<dyn LifecycleHooksPort>,
 }
 
 impl AgentToolPorts {
@@ -27,7 +53,13 @@ impl AgentToolPorts {
             prompt,
             catalog,
             session,
+            lifecycle_hooks: Arc::new(NoopLifecycleHooksPort),
         }
+    }
+
+    pub fn with_lifecycle_hooks(mut self, lifecycle_hooks: Arc<dyn LifecycleHooksPort>) -> Self {
+        self.lifecycle_hooks = lifecycle_hooks;
+        self
     }
 
     pub fn session_ports(&self) -> SessionToolPorts {
@@ -40,6 +72,10 @@ impl AgentToolPorts {
 
     pub(crate) fn catalog_port(&self) -> Arc<dyn ToolCatalogPort> {
         self.catalog.clone()
+    }
+
+    pub(crate) fn lifecycle_hooks_port(&self) -> Arc<dyn LifecycleHooksPort> {
+        self.lifecycle_hooks.clone()
     }
 }
 

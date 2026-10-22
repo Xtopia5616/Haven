@@ -31,6 +31,7 @@ use crate::types::{
 
 mod credentials;
 mod endpoint;
+mod hooks;
 mod loader;
 mod media;
 mod misc;
@@ -39,8 +40,17 @@ mod validation;
 
 pub use credentials::*;
 pub use endpoint::*;
+pub use hooks::*;
 pub use loader::*;
 pub use media::*;
 pub use misc::*;
 pub use service::*;
 pub use validation::*;
+
+/// Hard limits for user-configured lifecycle commands.
+pub const MAX_HOOKS_PER_EVENT: usize = 8;
+pub const MAX_HOOK_COMMAND_BYTES: usize = 2048;
+pub const MAX_HOOK_ARGS: usize = 32;
+pub const MAX_HOOK_ARG_BYTES: usize = 4096;
+pub const MAX_HOOK_MATCHER_BYTES: usize = 128;
+pub const MAX_TRUSTED_HOOK_WORKSPACES: usize = 64;

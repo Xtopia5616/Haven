@@ -68,6 +68,13 @@ config_snapshot_pair! {
     log: LogConfig,
     tool_settings: HashMap<String, ToolConfig>,
     ; config_only {
+        /// User-level lifecycle commands. This executable configuration is
+        /// never exposed through Settings IPC.
+        hooks: LifecycleHooksConfig,
+        /// Execution workspace roots whose project `.haven/hooks.toml` files
+        /// may contribute lifecycle commands. Trust is configured locally in
+        /// config.toml and is never exposed through Settings IPC.
+        trusted_hook_workspaces: Vec<PathBuf>,
         /// Local language servers available to code intelligence operations.
         /// This executable configuration is managed in config.toml and is never
         /// exposed through Settings IPC.
@@ -1272,6 +1279,43 @@ mod tests {
         loader.apply_settings(&SettingsPatch::from(&settings));
         assert_eq!(loader.config().lsp_servers.len(), 1);
         assert_eq!(loader.config().lsp_servers[0].command, "rust-analyzer");
+    }
+
+    #[test]
+    fn lifecycle_hooks_and_project_trust_round_trip_outside_settings_ipc() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.hooks.pre_tool_use.push(HookCommand {
+            command: "pwsh.exe".into(),
+            args: vec!["-NoProfile".into(), "-File".into(), "hook.ps1".into()],
+            matcher: Some("shell".into()),
+        });
+        config
+            .trusted_hook_workspaces
+            .push(directory.path().to_path_buf());
+
+        let encoded = toml::to_string(&config).unwrap();
+        let round_trip: AppConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(round_trip.hooks, config.hooks);
+        assert_eq!(
+            round_trip.trusted_hook_workspaces,
+            config.trusted_hook_workspaces
+        );
+
+        let settings_json = serde_json::to_value(SettingsSnapshot::from(&config)).unwrap();
+        assert!(settings_json.get("hooks").is_none());
+        assert!(settings_json.get("trusted_hook_workspaces").is_none());
+
+        let mut loader = ConfigLoader {
+            path: PathBuf::from("unused"),
+            config,
+            source_fingerprint: None,
+            recovery_required: false,
+        };
+        let settings = SettingsSnapshot::from(loader.config());
+        loader.apply_settings(&SettingsPatch::from(&settings));
+        assert_eq!(loader.config().hooks.pre_tool_use.len(), 1);
+        assert_eq!(loader.config().trusted_hook_workspaces.len(), 1);
     }
 
     #[test]

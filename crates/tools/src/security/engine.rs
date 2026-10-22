@@ -7,7 +7,10 @@ use super::contract::{
 };
 #[cfg(test)]
 use super::execution::execution_policy_denied;
-use super::execution::{ExecutionPolicyAuthorization, McpStdioProcessStartAuthorization};
+use super::execution::{
+    ExecutionPolicyAuthorization, LifecycleHookProcessStartAuthorization,
+    McpStdioProcessStartAuthorization,
+};
 use super::filesystem::{
     FileReadPolicy, FileWritePolicy, is_unc_or_device_path, open_directory_roots, path_is_allowed,
 };
@@ -220,6 +223,29 @@ impl AuthorizationEngine {
             execution_workspace_generation: config.execution_workspace.generation(),
             process_boundary_signal: self.process_boundary_changes.borrow().clone(),
         }))
+    }
+
+    /// Capture the current process and network boundary for user-configured
+    /// lifecycle commands. Their explicit configuration is the user consent;
+    /// the runner still revalidates this snapshot immediately before spawn.
+    pub(crate) async fn capture_lifecycle_hook_process_start_authorization(
+        self: &Arc<Self>,
+    ) -> Result<LifecycleHookProcessStartAuthorization, String> {
+        let config = self.config.read().await;
+        if config.sandbox_mode != SandboxMode::FullAccess {
+            return Err("lifecycle hook commands require the Full Access sandbox".into());
+        }
+        if config.network_policy != NetworkPolicy::Open {
+            return Err("lifecycle hook commands require Open network policy".into());
+        }
+        Ok(LifecycleHookProcessStartAuthorization::new(
+            Arc::clone(self),
+            config.policy_revision,
+            config.process_boundary_revision,
+            config.execution_workspace.generation(),
+            self.process_revocations.borrow().clone(),
+            self.process_boundary_changes.borrow().clone(),
+        ))
     }
 
     pub(crate) async fn execution_workspace(&self) -> ExecutionWorkspace {

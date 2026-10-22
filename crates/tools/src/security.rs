@@ -9,7 +9,8 @@ pub use contract::{
 };
 pub use engine::AuthorizationEngine;
 pub(crate) use execution::{
-    ExecutionPolicyAuthorization, ExecutionPolicyPermit, execution_policy_denied,
+    ExecutionPolicyAuthorization, ExecutionPolicyPermit, LifecycleHookProcessStartAuthorization,
+    execution_policy_denied,
 };
 pub use filesystem::is_safe_local_path;
 pub(crate) use filesystem::{FileReadPolicy, FileWritePolicy, open_directory_roots};

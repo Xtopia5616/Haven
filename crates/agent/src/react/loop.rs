@@ -159,6 +159,20 @@ impl ReActEngine {
             "ReAct run started"
         );
 
+        let mut session_start = haven_common::hooks::LifecycleHookPayload::new(
+            haven_common::hooks::LifecycleHookEvent::SessionStart,
+        );
+        session_start.session_id = Some(session_id.to_owned());
+        session_start.run_id = Some(run_id);
+        session_start.start_step = Some(start_step);
+        let _ = self
+            .lifecycle_hooks
+            .run(
+                session_start,
+                self.executor.cancellation_token(session_id).await,
+            )
+            .await;
+
         // The dispatcher promotes Pending before entering the run. A debug
         // assertion catches accidental direct invocation that skips the
         // lifecycle boundary without adding a second promotion path here.

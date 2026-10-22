@@ -434,6 +434,7 @@ impl CompletedTool {
 /// cannot drift between the two paths.
 pub(super) struct ToolExecutionRequest {
     pub executor: Arc<SessionSupervisor>,
+    pub lifecycle_hooks: Arc<dyn crate::LifecycleHooksPort>,
     pub catalog: Arc<haven_tools::ToolCatalogSnapshot>,
     pub session_id: String,
     pub agent_tool_call: AgentToolCall,
@@ -448,6 +449,7 @@ pub(super) struct ToolExecutionRequest {
 pub(super) async fn execute_tool_call(request: ToolExecutionRequest) -> CompletedTool {
     let ToolExecutionRequest {
         executor,
+        lifecycle_hooks,
         catalog,
         session_id,
         agent_tool_call,
@@ -485,12 +487,24 @@ pub(super) async fn execute_tool_call(request: ToolExecutionRequest) -> Complete
     // tool error so one bad tool cannot tear down the whole ReAct task and
     // strand sibling calls without ordered results.
     let result = std::panic::AssertUnwindSafe(async {
+        let mut pre_tool = haven_common::hooks::LifecycleHookPayload::new(
+            haven_common::hooks::LifecycleHookEvent::PreToolUse,
+        );
+        pre_tool.session_id = Some(session_id.clone());
+        pre_tool.tool_name = Some(tool_name.clone());
+        pre_tool.tool_input = Some(tool_input.clone());
+        if let haven_common::hooks::LifecycleHookDecision::Deny { reason } =
+            lifecycle_hooks.run(pre_tool, cancel.clone()).await
+        {
+            anyhow::bail!("Denied by PreToolUse hook: {reason}");
+        }
+
         if receipt.is_some() || nested_confirmation.is_some() {
             executor
                 .execute_step_preconfirmed_with_identity_and_metadata_and_cancel_and_nested(
                     &session_id,
                     &tool_name,
-                    tool_input,
+                    tool_input.clone(),
                     step_number,
                     tool_index,
                     agent_tool_call.tool_call_id.as_deref(),
@@ -498,7 +512,7 @@ pub(super) async fn execute_tool_call(request: ToolExecutionRequest) -> Complete
                     receipt,
                     nested_confirmation,
                     tool_step_metadata,
-                    cancel,
+                    cancel.clone(),
                 )
                 .await
         } else {
@@ -506,13 +520,13 @@ pub(super) async fn execute_tool_call(request: ToolExecutionRequest) -> Complete
                 .execute_step_with_identity_and_metadata_and_cancel(
                     &session_id,
                     &tool_name,
-                    tool_input,
+                    tool_input.clone(),
                     step_number,
                     tool_index,
                     agent_tool_call.tool_call_id.as_deref(),
                     &step_id,
                     tool_step_metadata,
-                    cancel,
+                    cancel.clone(),
                 )
                 .await
         }
@@ -528,6 +542,21 @@ pub(super) async fn execute_tool_call(request: ToolExecutionRequest) -> Complete
             ToolErrorMetadata::unknown_outcome(),
         )))
     });
+
+    let mut post_tool = haven_common::hooks::LifecycleHookPayload::new(
+        haven_common::hooks::LifecycleHookEvent::PostToolUse,
+    );
+    post_tool.session_id = Some(session_id.clone());
+    post_tool.tool_name = Some(tool_name.clone());
+    post_tool.tool_input = Some(tool_input.clone());
+    match &result {
+        Ok(result) => {
+            post_tool.success = Some(result.success);
+            post_tool.tool_output = Some(result.output.clone());
+        }
+        Err(_) => post_tool.success = Some(false),
+    }
+    let _ = lifecycle_hooks.run(post_tool, cancel.clone()).await;
 
     let mut nested_confirmation = None;
     let (

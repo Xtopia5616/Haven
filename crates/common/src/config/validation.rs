@@ -111,6 +111,19 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     super::validate_mcp_server_exposure(&config.mcp_servers)?;
     super::validate_mcp_server_execution(&config.mcp_servers)?;
     super::validate_lsp_servers(&config.lsp_servers)?;
+    super::validate_lifecycle_hooks(&config.hooks)?;
+    anyhow::ensure!(
+        config.trusted_hook_workspaces.len() <= super::MAX_TRUSTED_HOOK_WORKSPACES,
+        "trusted_hook_workspaces must not contain more than {} paths",
+        super::MAX_TRUSTED_HOOK_WORKSPACES
+    );
+    if config
+        .trusted_hook_workspaces
+        .iter()
+        .any(|root| !crate::path::is_absolute_local_path(root))
+    {
+        anyhow::bail!("trusted_hook_workspaces entries must be absolute local paths");
+    }
     validate_mcp_discovery(&config.mcp_discovery)?;
     if config.context_limits.input_ring_buffer_secs > MAX_INPUT_RING_BUFFER_SECS {
         anyhow::bail!(

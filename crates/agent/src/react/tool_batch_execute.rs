@@ -357,6 +357,7 @@ impl ReActEngine {
         );
         let cancel = cancel_res.clone();
         let committed_ui = Arc::clone(&self.committed_ui);
+        let lifecycle_hooks = Arc::clone(&self.lifecycle_hooks);
         let emitter = ctx.emitter.clone();
         let mut tool_futures = futures_util::stream::iter(runnable)
             .map(|admitted| {
@@ -376,6 +377,7 @@ impl ReActEngine {
                 let run_id = ctx.run_id;
                 let cancel = cancel.clone();
                 let committed_ui = Arc::clone(&committed_ui);
+                let lifecycle_hooks = Arc::clone(&lifecycle_hooks);
                 let emitter = emitter.clone();
                 async move {
                     let _permit = gate.acquire(&admitted.concurrency).await;
@@ -391,6 +393,7 @@ impl ReActEngine {
                     );
                     let result = execute_tool_call(ToolExecutionRequest {
                         executor,
+                        lifecycle_hooks,
                         catalog,
                         session_id,
                         agent_tool_call: tool_call,

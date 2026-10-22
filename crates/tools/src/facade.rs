@@ -1023,6 +1023,19 @@ impl ToolsFacade {
         self.coordinator.wire_startup(wiring).await
     }
 
+    /// Run user/project lifecycle hooks for an Agent event. PreToolUse returns
+    /// an allow/deny decision; notification events remain best-effort.
+    pub async fn run_lifecycle_hooks(
+        &self,
+        payload: haven_common::hooks::LifecycleHookPayload,
+        cancel: CancellationToken,
+    ) -> haven_common::hooks::LifecycleHookDecision {
+        self.coordinator
+            .lifecycle_hooks
+            .run(&self.coordinator.core.authorization, payload, cancel)
+            .await
+    }
+
     /// Apply the security configuration to every runtime boundary that needs
     /// the same snapshot. The authorization engine protects tool execution;
     /// the MCP manager additionally protects startup, refresh, reconnect, and
