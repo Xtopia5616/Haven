@@ -1270,3 +1270,4 @@
 - [1364：有界两跳事实图召回](1364-bounded-two-hop-fact-recall.md)
 - [1365：为事实记录现实有效时间](1365-fact-valid-time.md)
 - [1366：自动关闭已完成的当前会话](1366-auto-close-completed-current-session.md)
+- [1367：会话级执行上下文与权限分层提案](1367-session-scoped-execution-policy-design.md)
