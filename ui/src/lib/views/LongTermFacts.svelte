@@ -42,6 +42,14 @@
 		return fact.source === 'inferred' ? 'secondary' : 'primary';
 	}
 
+	function factKindLabel(fact: Fact) {
+		return {
+			profile: '画像',
+			semantic: '语义',
+			procedural: '流程',
+		}[fact.memory_kind];
+	}
+
 	function factSubjectLabel(fact: Fact) {
 		return fact.subject && fact.subject !== 'user' ? `关于 ${fact.subject}` : '关于你';
 	}
@@ -77,6 +85,11 @@
 
 	function tagsLabel(fact: Fact) {
 		return Array.isArray(fact.tags) && fact.tags.length > 0 ? fact.tags.join('、') : '无';
+	}
+
+	function validityLabel(fact: Fact) {
+		if (!fact.valid_from && !fact.valid_to) return '时间范围未指定';
+		return `${fact.valid_from ? formatDate(fact.valid_from) : '起始未知'} 至 ${fact.valid_to ? formatDate(fact.valid_to) : '仍有效'}`;
 	}
 
 	function selectFact(fact: Fact) {
@@ -125,6 +138,7 @@
 									text={factSourceLabel(fact)}
 									variant={factSourceTone(fact)}
 								/>
+								<MaterialBadge text={factKindLabel(fact)} />
 							</span>
 							<strong class="fact-card-title">{factTitle(fact)}</strong>
 							<span class="fact-card-summary">{fact.object || '暂无内容'}</span>
@@ -204,6 +218,7 @@
 							text={factSourceLabel(selectedFact)}
 							variant={factSourceTone(selectedFact)}
 						/>
+						<MaterialBadge text={factKindLabel(selectedFact)} />
 					</div>
 					<p class="fact-dialog-summary">{factSentence(selectedFact)}</p>
 				</div>
@@ -228,6 +243,10 @@
 					<div>
 						<dt>创建时间</dt>
 						<dd>{formatDate(selectedFact.created_at)}</dd>
+					</div>
+					<div>
+						<dt>现实有效时间</dt>
+						<dd>{validityLabel(selectedFact)}</dd>
 					</div>
 					<div>
 						<dt>最近复核</dt>

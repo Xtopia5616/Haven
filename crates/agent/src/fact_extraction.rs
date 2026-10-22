@@ -22,6 +22,12 @@ pub(crate) struct LlmFact {
     /// back to 0.6 (moderately durable) so an omitted field does not make a
     /// fact immortal by defaulting to 1.0.
     pub(crate) durability: Option<f64>,
+    /// Explicit real-world start of this fact, never inferred from message time.
+    #[serde(default)]
+    pub(crate) valid_from: Option<String>,
+    /// Exclusive real-world end of this fact, if stated.
+    #[serde(default)]
+    pub(crate) valid_to: Option<String>,
     /// Index into the numbered conversation transcript of the message that
     /// supports this fact (the model is asked to fill this in).
     pub(crate) message_index: Option<usize>,

@@ -1,16 +1,18 @@
 use crate::db::Database;
 use crate::recall::normalize_memory_query;
+#[cfg(any(test, feature = "test-support"))]
 use crate::repositories::fact_graph::FactGraph;
-use crate::repositories::facts::{Fact, FactSourceRef};
-use chrono::Utc;
+use crate::repositories::facts::{Fact, FactSourceRef, FactValidity, MemoryFactKind};
+use chrono::{DateTime, SecondsFormat, Utc};
 use haven_common::types::is_canonical_id;
-use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
 
 /// Default number of facts returned by the paged long-term fact listing.
 pub const DEFAULT_FACT_PAGE_SIZE: usize = 50;
 /// Hard bound for one long-term fact listing response.
 pub const MAX_FACT_PAGE_SIZE: usize = 100;
+/// Hard bound for an explicit system-time fact snapshot.
+pub const MAX_FACT_HISTORY_RESULTS: usize = 50;
 
 /// Stable keyset position for a fact page. Ordering is `created_at DESC, id
 /// DESC`; both fields come from the last returned row.
@@ -27,6 +29,22 @@ pub struct FactPage {
     pub next_cursor: Option<FactPageCursor>,
 }
 
+/// Bounded set of facts known at a requested system-recorded instant.
+#[derive(Debug, Clone)]
+pub struct FactHistorySnapshot {
+    pub at: String,
+    pub facts: Vec<Fact>,
+    pub truncated: bool,
+}
+
+/// Bounded set of facts explicitly valid at a requested real-world instant.
+#[derive(Debug, Clone)]
+pub struct FactValiditySnapshot {
+    pub at: String,
+    pub facts: Vec<Fact>,
+    pub truncated: bool,
+}
+
 /// A fact already parsed, normalized, and sanitized by its owning caller,
 /// ready for inferred-fact persistence.
 #[derive(Debug, Clone)]
@@ -38,6 +56,8 @@ pub struct MemoryFactWrite {
     pub tags: Vec<String>,
     pub source_ref: Option<FactSourceRef>,
     pub durability: f64,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
 }
 
 /// Async application-facing boundary for durable memory-fact operations.
@@ -76,104 +96,6 @@ impl MemoryFactStore {
             .run_blocking(move |db| {
                 db.with_fact_write(|| {
                     FactGraph::new(db).upsert_inferred_batch(&writes, new_fact_confidence_floor)
-                })
-            })
-            .await
-    }
-
-    /// Commit inferred facts and the ordinary extraction cursor atomically.
-    /// A failed cursor write rolls the fact mutations back with it, so a retry
-    /// cannot reinforce the same observation twice.
-    pub async fn commit_ordinary_extraction(
-        &self,
-        writes: Vec<MemoryFactWrite>,
-        new_fact_confidence_floor: f64,
-        session_id: &str,
-        last_message_id: &str,
-    ) -> anyhow::Result<bool> {
-        anyhow::ensure!(
-            is_canonical_id(session_id, "ses"),
-            "invalid session id for ordinary extraction"
-        );
-        anyhow::ensure!(
-            is_canonical_id(last_message_id, "msg"),
-            "invalid message id for ordinary extraction"
-        );
-        let session_id = session_id.to_owned();
-        let last_message_id = last_message_id.to_owned();
-        self.db
-            .run_blocking(move |db| {
-                let cursor_key = format!("fact_extraction.{session_id}");
-                db.with_fact_write(|| {
-                    FactGraph::new(db).upsert_inferred_batch_with_transaction_hook(
-                        &writes,
-                        new_fact_confidence_floor,
-                        |_| Ok(true),
-                        |conn| set_kv_on_connection(conn, &cursor_key, &last_message_id),
-                    )
-                })
-            })
-            .await
-    }
-
-    /// Read the per-episode completion ledger used to avoid repeating summary
-    /// inference when durable outbox acknowledgement fails.
-    pub async fn summary_extraction_completed(
-        &self,
-        session_id: &str,
-        episode_id: &str,
-    ) -> anyhow::Result<bool> {
-        let key = summary_extraction_done_key(session_id, episode_id)?;
-        let session_id = session_id.to_owned();
-        let episode_id = episode_id.to_owned();
-        self.db
-            .run_blocking(move |db| {
-                let conn = db.try_conn()?;
-                ensure_episode_summary_owner(&conn, &session_id, &episode_id)?;
-                Ok(conn
-                    .query_row(
-                        "SELECT 1 FROM kv_store WHERE key = ?1",
-                        rusqlite::params![key],
-                        |row| row.get::<_, i32>(0),
-                    )
-                    .optional()?
-                    .is_some())
-            })
-            .await
-    }
-
-    /// Commit one summary's facts and its durable completion marker together.
-    /// The marker is keyed by session and episode, so out-of-order retries of
-    /// older episodes remain independently idempotent.
-    pub async fn commit_summary_extraction(
-        &self,
-        writes: Vec<MemoryFactWrite>,
-        new_fact_confidence_floor: f64,
-        session_id: &str,
-        episode_id: &str,
-    ) -> anyhow::Result<bool> {
-        let marker_key = summary_extraction_done_key(session_id, episode_id)?;
-        let session_id = session_id.to_owned();
-        let episode_id = episode_id.to_owned();
-        self.db
-            .run_blocking(move |db| {
-                db.with_fact_write(|| {
-                    FactGraph::new(db).upsert_inferred_batch_with_transaction_hook(
-                        &writes,
-                        new_fact_confidence_floor,
-                        |conn| {
-                            ensure_episode_summary_owner(conn, &session_id, &episode_id)?;
-                            Ok(conn
-                                .query_row(
-                                    "SELECT 1 FROM kv_store WHERE key = ?1",
-                                    rusqlite::params![marker_key],
-                                    |row| row.get::<_, i32>(0),
-                                )
-                                .optional()?
-                                .is_none())
-                        },
-                        |conn| set_kv_on_connection(conn, &marker_key, &session_id),
-                    )
                 })
             })
             .await
@@ -233,6 +155,83 @@ impl MemoryFactStore {
             .await
     }
 
+    /// Read facts that were present at a system-recorded RFC3339 instant.
+    /// This is an explicit history path; ordinary search, list and recall keep
+    /// reading only the current facts table.
+    pub async fn list_visible_facts_as_of(
+        &self,
+        at: String,
+        subject: Option<String>,
+        limit: usize,
+    ) -> anyhow::Result<FactHistorySnapshot> {
+        anyhow::ensure!(at.len() <= 64, "history timestamp is too long");
+        let at = DateTime::parse_from_rfc3339(&at)
+            .map_err(|_| anyhow::anyhow!("history timestamp must be RFC3339"))?
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        let limit = limit.min(MAX_FACT_HISTORY_RESULTS);
+        if limit == 0 {
+            return Ok(FactHistorySnapshot {
+                at,
+                facts: Vec::new(),
+                truncated: false,
+            });
+        }
+        let subject = subject
+            .map(|subject| subject.trim().to_string())
+            .filter(|subject| !subject.is_empty());
+        self.db
+            .run_blocking(move |db| {
+                let rows = db.list_facts_as_of(&at, subject.as_deref(), limit + 1)?;
+                let mut facts = crate::repositories::facts::filter_visible_facts(rows);
+                let truncated = facts.len() > limit;
+                facts.truncate(limit);
+                Ok(FactHistorySnapshot {
+                    at,
+                    facts,
+                    truncated,
+                })
+            })
+            .await
+    }
+
+    /// Read a bounded snapshot by real-world validity time. Unknown intervals
+    /// are omitted rather than inferred from when Haven first recorded them.
+    pub async fn list_visible_facts_valid_at(
+        &self,
+        at: String,
+        subject: Option<String>,
+        limit: usize,
+    ) -> anyhow::Result<FactValiditySnapshot> {
+        let at = crate::repositories::facts::normalize_fact_validity(Some(&at), None)?
+            .0
+            .ok_or_else(|| anyhow::anyhow!("valid_at is required"))?;
+        let limit = limit.min(MAX_FACT_HISTORY_RESULTS);
+        if limit == 0 {
+            return Ok(FactValiditySnapshot {
+                at,
+                facts: Vec::new(),
+                truncated: false,
+            });
+        }
+        let subject = subject
+            .map(|subject| subject.trim().to_string())
+            .filter(|subject| !subject.is_empty());
+        self.db
+            .run_blocking(move |db| {
+                let rows = db.list_facts_valid_at(&at, subject.as_deref(), limit + 1)?;
+                let mut facts = crate::repositories::facts::filter_visible_facts(rows);
+                let truncated = facts.len() > limit;
+                facts.truncate(limit);
+                Ok(FactValiditySnapshot {
+                    at,
+                    facts,
+                    truncated,
+                })
+            })
+            .await
+    }
+
     /// Persist a user-stated fact. Input normalization and validation belong
     /// to the IPC adapter; this method owns only the SQLite scheduling and
     /// repository call.
@@ -243,10 +242,56 @@ impl MemoryFactStore {
         object: String,
         tags: Vec<String>,
     ) -> anyhow::Result<Fact> {
+        self.set_user_fact_with_kind(subject, predicate, object, tags, MemoryFactKind::Profile)
+            .await
+    }
+
+    /// Persist a user-maintained profile or procedural memory.
+    pub async fn set_user_fact_with_kind(
+        &self,
+        subject: String,
+        predicate: String,
+        object: String,
+        tags: Vec<String>,
+        memory_kind: MemoryFactKind,
+    ) -> anyhow::Result<Fact> {
+        self.set_user_fact_with_kind_and_validity(
+            subject,
+            predicate,
+            object,
+            tags,
+            memory_kind,
+            FactValidity::default(),
+        )
+        .await
+    }
+
+    /// Persist an explicitly stated fact with optional real-world validity
+    /// bounds. Missing bounds remain unknown and are never inferred.
+    pub async fn set_user_fact_with_kind_and_validity(
+        &self,
+        subject: String,
+        predicate: String,
+        object: String,
+        tags: Vec<String>,
+        memory_kind: MemoryFactKind,
+        validity: FactValidity,
+    ) -> anyhow::Result<Fact> {
+        anyhow::ensure!(
+            memory_kind != MemoryFactKind::Semantic,
+            "user-maintained memory kind must be profile or procedural"
+        );
         self.db
             .run_blocking(move |db| {
                 let tags: Vec<&str> = tags.iter().map(String::as_str).collect();
-                db.set_user_fact(&subject, &predicate, &object, &tags)
+                db.set_user_fact_with_kind_and_validity(
+                    &subject,
+                    &predicate,
+                    &object,
+                    &tags,
+                    memory_kind,
+                    &validity,
+                )
             })
             .await
     }
@@ -348,57 +393,11 @@ impl MemoryFactStore {
     }
 }
 
-fn ensure_episode_summary_owner(
-    conn: &Connection,
-    session_id: &str,
-    episode_id: &str,
-) -> anyhow::Result<()> {
-    let owner: Option<String> = conn
-        .query_row(
-            "SELECT session_id FROM memory_items
-             WHERE id = ?1 AND kind = 'episode_summary'",
-            rusqlite::params![episode_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    anyhow::ensure!(
-        owner.as_deref() == Some(session_id),
-        "episode_id does not identify an episode_summary owned by session_id"
-    );
-    Ok(())
-}
-
-fn summary_extraction_done_key(session_id: &str, episode_id: &str) -> anyhow::Result<String> {
-    anyhow::ensure!(
-        is_canonical_id(session_id, "ses"),
-        "invalid session id for summary extraction"
-    );
-    anyhow::ensure!(
-        is_canonical_id(episode_id, "msg"),
-        "invalid episode id for summary extraction"
-    );
-    Ok(format!(
-        "fact_extraction_episode_done.{session_id}.{episode_id}"
-    ))
-}
-
-fn set_kv_on_connection(conn: &Connection, key: &str, value: &str) -> anyhow::Result<()> {
-    let now = Utc::now().to_rfc3339();
-    conn.execute(
-        "INSERT INTO kv_store (key, value, updated_at)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
-        rusqlite::params![key, value, now],
-    )?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{MAX_FACT_PAGE_SIZE, MemoryFactStore, MemoryFactWrite};
+    use super::{MAX_FACT_HISTORY_RESULTS, MAX_FACT_PAGE_SIZE, MemoryFactStore, MemoryFactWrite};
     use crate::Database;
     use crate::repositories::facts::FactSourceRef;
-    use haven_common::types::new_id;
     use std::sync::Arc;
 
     fn store() -> (Arc<Database>, MemoryFactStore) {
@@ -416,6 +415,8 @@ mod tests {
             tags: Vec::new(),
             source_ref: None,
             durability: 0.6,
+            valid_from: None,
+            valid_to: None,
         }
     }
 
@@ -514,180 +515,6 @@ mod tests {
                 .list_facts_page(None, Some(invalid_timestamp), 10)
                 .await
                 .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn ordinary_extraction_rejects_noncanonical_ids_without_writes() {
-        let (db, store) = store();
-        let session = db.create_session("ordinary extraction identity").unwrap();
-        let valid_message_id = new_id("msg");
-        let invalid_session_id = new_id("msg");
-        let invalid_message_id = new_id("ses");
-
-        assert!(
-            store
-                .commit_ordinary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &invalid_session_id,
-                    &valid_message_id,
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .commit_ordinary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &session.session_id,
-                    &invalid_message_id,
-                )
-                .await
-                .is_err()
-        );
-
-        assert!(db.list_facts().unwrap().is_empty());
-        assert!(
-            db.get_kv(&format!("fact_extraction.{invalid_session_id}"))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            db.get_kv(&format!("fact_extraction.{}", session.session_id))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn summary_extraction_rejects_noncanonical_ids_without_writes() {
-        let (db, store) = store();
-        let session = db.create_session("summary extraction identity").unwrap();
-        let valid_episode_id = new_id("msg");
-        let invalid_session_id = new_id("msg");
-        let invalid_episode_id = new_id("ses");
-
-        assert!(
-            store
-                .commit_summary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &invalid_session_id,
-                    &valid_episode_id,
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .commit_summary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &session.session_id,
-                    &invalid_episode_id,
-                )
-                .await
-                .is_err()
-        );
-        assert!(
-            store
-                .summary_extraction_completed(&session.session_id, &invalid_episode_id)
-                .await
-                .is_err()
-        );
-
-        assert!(db.list_facts().unwrap().is_empty());
-        assert!(
-            db.get_kv(&format!(
-                "fact_extraction_episode_done.{invalid_session_id}.{valid_episode_id}"
-            ))
-            .unwrap()
-            .is_none()
-        );
-        assert!(
-            db.get_kv(&format!(
-                "fact_extraction_episode_done.{}.{invalid_episode_id}",
-                session.session_id
-            ))
-            .unwrap()
-            .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn summary_extraction_requires_episode_owner_to_match_session() {
-        let (db, store) = store();
-        let owner_session = db.create_session("summary owner").unwrap();
-        let other_session = db.create_session("different summary owner").unwrap();
-        let episode_id = new_id("msg");
-        db.add_episode_with_pending_extraction(
-            &owner_session.session_id,
-            "A persisted compaction summary with enough context.",
-            &episode_id,
-            false,
-        )
-        .unwrap();
-
-        db.set_kv(
-            &format!(
-                "fact_extraction_episode_done.{}.{}",
-                other_session.session_id, episode_id
-            ),
-            &other_session.session_id,
-        )
-        .unwrap();
-        assert!(
-            store
-                .summary_extraction_completed(&other_session.session_id, &episode_id)
-                .await
-                .is_err()
-        );
-        assert!(
-            !store
-                .summary_extraction_completed(&owner_session.session_id, &episode_id)
-                .await
-                .unwrap()
-        );
-
-        assert!(
-            store
-                .commit_summary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &other_session.session_id,
-                    &episode_id,
-                )
-                .await
-                .is_err()
-        );
-        assert!(db.list_facts().unwrap().is_empty());
-        assert!(
-            db.get_kv(&format!(
-                "fact_extraction_episode_done.{}.{}",
-                other_session.session_id, episode_id
-            ))
-            .unwrap()
-            .is_some()
-        );
-
-        assert!(
-            store
-                .commit_summary_extraction(
-                    vec![inferred_write("user", "likes", "Rust")],
-                    0.55,
-                    &owner_session.session_id,
-                    &episode_id,
-                )
-                .await
-                .unwrap()
-        );
-        assert!(
-            store
-                .summary_extraction_completed(&owner_session.session_id, &episode_id)
-                .await
-                .unwrap()
         );
     }
 
@@ -916,6 +743,376 @@ mod tests {
                 .unwrap()
                 .facts
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn user_memory_write_defaults_to_profile_and_supports_procedures() {
+        let (_db, store) = store();
+        let profile = store
+            .set_user_fact("user".into(), "likes".into(), "tea".into(), vec![])
+            .await
+            .unwrap();
+        assert_eq!(profile.memory_kind, crate::MemoryFactKind::Profile);
+
+        let procedure = store
+            .set_user_fact_with_kind(
+                "user".into(),
+                "prepare_tea".into(),
+                "heat water, steep leaves, serve".into(),
+                vec![],
+                crate::MemoryFactKind::Procedural,
+            )
+            .await
+            .unwrap();
+        assert_eq!(procedure.memory_kind, crate::MemoryFactKind::Procedural);
+
+        let error = store
+            .set_user_fact_with_kind(
+                "user".into(),
+                "not_allowed".into(),
+                "semantic writes are inferred".into(),
+                vec![],
+                crate::MemoryFactKind::Semantic,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("profile or procedural"));
+    }
+
+    #[tokio::test]
+    async fn history_snapshot_restores_replaced_fact_until_explicit_forget() {
+        let (db, store) = store();
+        let old = store
+            .set_user_fact("user".into(), "city".into(), "Oslo".into(), vec![])
+            .await
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE facts SET created_at = '2020-01-01T00:00:00Z', recorded_at = '2020-01-01T00:00:00.000Z' WHERE id = ?1",
+                rusqlite::params![old.fact_id],
+            )
+            .unwrap();
+
+        let before_correction = store
+            .list_visible_facts_as_of("2020-01-02T00:00:00Z".into(), Some("user".into()), 10)
+            .await
+            .unwrap();
+        assert_eq!(before_correction.facts.len(), 1);
+        assert_eq!(before_correction.facts[0].object, "Oslo");
+        assert_eq!(before_correction.at, "2020-01-02T00:00:00.000Z");
+
+        store
+            .set_user_fact("user".into(), "city".into(), "Tokyo".into(), vec![])
+            .await
+            .unwrap();
+
+        let before = store
+            .list_visible_facts_as_of("2020-01-02T00:00:00Z".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            before
+                .facts
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["Oslo"]
+        );
+        let after = store
+            .list_visible_facts_as_of("2100-01-01T00:00:00Z".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            after
+                .facts
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["Tokyo"]
+        );
+
+        let current = store
+            .list_visible_facts_for_subject_limited("user".into(), 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            current
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["Tokyo"]
+        );
+
+        assert_eq!(
+            store
+                .delete_facts_by_triple("user".into(), "city".into(), None)
+                .await
+                .unwrap(),
+            1
+        );
+        let forgotten = store
+            .list_visible_facts_as_of("2020-01-02T00:00:00Z".into(), None, 10)
+            .await
+            .unwrap();
+        assert!(forgotten.facts.is_empty());
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn history_snapshot_validates_time_and_bounds_visible_rows() {
+        let (db, store) = store();
+        assert!(
+            store
+                .list_visible_facts_as_of("not a timestamp".into(), None, 10)
+                .await
+                .is_err()
+        );
+        for index in 0..(MAX_FACT_HISTORY_RESULTS + 3) {
+            db.insert_fact(
+                "alice",
+                "likes",
+                &format!("item-{index}"),
+                "inferred",
+                0.9,
+                &[],
+            )
+            .unwrap();
+        }
+        db.insert_fact("alice", "api_key", "hidden", "inferred", 1.0, &[])
+            .unwrap();
+
+        let snapshot = store
+            .list_visible_facts_as_of(
+                "2100-01-01T00:00:00Z".into(),
+                Some("alice".into()),
+                usize::MAX,
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.facts.len(), MAX_FACT_HISTORY_RESULTS);
+        assert!(snapshot.truncated);
+        assert!(
+            snapshot
+                .facts
+                .iter()
+                .all(crate::repositories::facts::is_visible_fact)
+        );
+        assert!(snapshot.facts.iter().all(|fact| fact.subject == "alice"));
+    }
+
+    #[tokio::test]
+    async fn valid_at_uses_explicit_intervals_and_single_value_corrections_close_old_ranges() {
+        let (_db, store) = store();
+        let old = store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "employer".into(),
+                "Acme".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2024-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "employer".into(),
+                "Northwind".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2025-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .set_user_fact("user".into(), "likes".into(), "tea".into(), vec![])
+            .await
+            .unwrap();
+
+        let before = store
+            .list_visible_facts_valid_at("2024-12-31".into(), Some("user".into()), 10)
+            .await
+            .unwrap();
+        assert_eq!(before.at, "2024-12-31T00:00:00.000Z");
+        assert_eq!(before.facts.len(), 1);
+        assert_eq!(before.facts[0].fact_id, old.fact_id);
+        assert_eq!(before.facts[0].object, "Acme");
+        assert_eq!(
+            before.facts[0].valid_to.as_deref(),
+            Some("2025-01-01T00:00:00.000Z")
+        );
+
+        let boundary = store
+            .list_visible_facts_valid_at("2025-01-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            boundary
+                .facts
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["Northwind"],
+            "valid_to is exclusive and the corrected value starts at valid_from"
+        );
+    }
+
+    #[tokio::test]
+    async fn out_of_order_single_value_correction_stops_before_the_known_later_value() {
+        let (_db, store) = store();
+        store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "employer".into(),
+                "Northwind".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2025-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "employer".into(),
+                "Acme".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2024-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let before = store
+            .list_visible_facts_valid_at("2024-06-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(before.facts.len(), 1);
+        assert_eq!(before.facts[0].object, "Acme");
+        assert_eq!(
+            before.facts[0].valid_to.as_deref(),
+            Some("2025-01-01T00:00:00.000Z")
+        );
+
+        let later = store
+            .list_visible_facts_valid_at("2025-06-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(later.facts.len(), 1);
+        assert_eq!(later.facts[0].object, "Northwind");
+    }
+
+    #[tokio::test]
+    async fn explicit_forget_erases_valid_time_history_and_unknown_intervals_are_omitted() {
+        let (_db, store) = store();
+        store
+            .set_user_fact_with_kind_and_validity(
+                "user".into(),
+                "city".into(),
+                "Oslo".into(),
+                vec![],
+                crate::MemoryFactKind::Profile,
+                crate::FactValidity {
+                    valid_from: Some("2020-01-01".into()),
+                    valid_to: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .set_user_fact("user".into(), "likes".into(), "tea".into(), vec![])
+            .await
+            .unwrap();
+        let known = store
+            .list_visible_facts_valid_at("2021-01-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert_eq!(known.facts.len(), 1);
+        assert_eq!(known.facts[0].object, "Oslo");
+
+        store
+            .delete_facts_by_triple("user".into(), "city".into(), None)
+            .await
+            .unwrap();
+        let forgotten = store
+            .list_visible_facts_valid_at("2021-01-01".into(), None, 10)
+            .await
+            .unwrap();
+        assert!(forgotten.facts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_by_id_and_clearing_facts_purge_history() {
+        let (db, store) = store();
+        let old = store
+            .set_user_fact("user".into(), "city".into(), "Oslo".into(), vec![])
+            .await
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE facts SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
+                rusqlite::params![old.fact_id],
+            )
+            .unwrap();
+        let current = store
+            .set_user_fact("user".into(), "city".into(), "Tokyo".into(), vec![])
+            .await
+            .unwrap();
+
+        store.delete_fact(current.fact_id).await.unwrap();
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "deleting a fact by id must erase its historical versions"
+        );
+
+        store
+            .set_user_fact("user".into(), "city".into(), "Oslo".into(), vec![])
+            .await
+            .unwrap();
+        store
+            .set_user_fact("user".into(), "city".into(), "Tokyo".into(), vec![])
+            .await
+            .unwrap();
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+
+        store.clear_facts().await.unwrap();
+        assert_eq!(
+            db.conn()
+                .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "clearing current facts must erase history as well"
         );
     }
 

@@ -12,6 +12,7 @@ use crate::db::Database;
 use crate::repositories::embedding_store::MemoryEmbeddingStore;
 use crate::repositories::fact_store::MemoryFactStore;
 use crate::repositories::memory_fact_extraction_store::MemoryFactExtractionStore;
+use crate::repositories::memory_fact_proposal_store::MemoryFactProposalStore;
 use crate::repositories::memory_maintenance_store::MemoryMaintenanceStore;
 use crate::repositories::memory_outbox_store::MemoryOutboxStore;
 use crate::repositories::memory_recall_store::MemoryRecallStore;
@@ -33,6 +34,7 @@ pub struct MemoryStores {
     outbox: MemoryOutboxStore,
     facts: MemoryFactStore,
     fact_extraction: MemoryFactExtractionStore,
+    fact_proposals: MemoryFactProposalStore,
     maintenance: MemoryMaintenanceStore,
     recall: MemoryRecallStore,
     embeddings: MemoryEmbeddingStore,
@@ -76,6 +78,7 @@ impl MemoryStores {
             outbox: MemoryOutboxStore::new(db.clone()),
             facts: MemoryFactStore::new(db.clone()),
             fact_extraction: MemoryFactExtractionStore::new(db.clone()),
+            fact_proposals: MemoryFactProposalStore::new(db.clone()),
             maintenance: MemoryMaintenanceStore::new(db.clone()),
             recall: MemoryRecallStore::new(db.clone()),
             embeddings: MemoryEmbeddingStore::new(db),
@@ -97,6 +100,11 @@ impl MemoryStores {
     /// Return ordinary and summary extraction cursor/transcript persistence.
     pub fn fact_extraction_store(&self) -> MemoryFactExtractionStore {
         self.fact_extraction.clone()
+    }
+
+    /// Return the typed queue for pending inferred facts and review actions.
+    pub fn fact_proposal_store(&self) -> MemoryFactProposalStore {
+        self.fact_proposals.clone()
     }
 
     /// Return deterministic memory maintenance operations.

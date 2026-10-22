@@ -6,9 +6,11 @@
 //! vector fusion, deterministic ordering, and defense-in-depth filtering.
 
 use crate::Database;
-use crate::embeddings::EmbeddedText;
+use crate::embeddings::{EmbeddedText, MemoryEmbeddingFilter};
+use crate::repositories::fact_graph_recall::MAX_GRAPH_SEED_FACTS;
 use crate::repositories::facts::{
-    Fact, fact_effective_confidence, filter_visible_facts, is_sensitive_text, is_visible_fact,
+    Fact, MemoryFactKind, fact_effective_confidence, filter_visible_facts, is_sensitive_text,
+    is_visible_fact,
 };
 use std::collections::HashMap;
 
@@ -34,20 +36,85 @@ pub fn normalize_memory_query(text: &str) -> anyhow::Result<String> {
 
 pub use crate::embeddings::MemoryEntityKind;
 
+/// User-facing recall categories. These are semantic filters over the
+/// canonical fact/episode storage domains, not additional embedding tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryRecallKind {
+    Fact,
+    Episode,
+    Profile,
+    Semantic,
+    Procedural,
+}
+
+impl MemoryRecallKind {
+    pub fn parse(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "fact" => Ok(Self::Fact),
+            "episode" => Ok(Self::Episode),
+            "profile" => Ok(Self::Profile),
+            "semantic" => Ok(Self::Semantic),
+            "procedural" => Ok(Self::Procedural),
+            _ => anyhow::bail!("kind must be fact, episode, profile, semantic, or procedural"),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fact => "fact",
+            Self::Episode => "episode",
+            Self::Profile => "profile",
+            Self::Semantic => "semantic",
+            Self::Procedural => "procedural",
+        }
+    }
+
+    pub const fn storage_kind(self) -> MemoryEntityKind {
+        match self {
+            Self::Episode => MemoryEntityKind::Episode,
+            Self::Fact | Self::Profile | Self::Semantic | Self::Procedural => {
+                MemoryEntityKind::Fact
+            }
+        }
+    }
+
+    pub const fn fact_kind(self) -> Option<MemoryFactKind> {
+        match self {
+            Self::Profile => Some(MemoryFactKind::Profile),
+            Self::Semantic => Some(MemoryFactKind::Semantic),
+            Self::Procedural => Some(MemoryFactKind::Procedural),
+            Self::Fact | Self::Episode => None,
+        }
+    }
+}
+
+impl From<MemoryEntityKind> for MemoryRecallKind {
+    fn from(kind: MemoryEntityKind) -> Self {
+        match kind {
+            MemoryEntityKind::Fact => Self::Fact,
+            MemoryEntityKind::Episode => Self::Episode,
+        }
+    }
+}
+
 /// One typed memory retrieval request. The optional scopes are kept here so
 /// every caller applies current-session exclusion and fact subject narrowing
 /// through the same read path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryQuery {
     text: String,
-    kind: MemoryEntityKind,
+    kind: MemoryRecallKind,
     limit: usize,
     exclude_session_id: Option<String>,
     fact_subject: Option<String>,
 }
 
 impl MemoryQuery {
-    pub fn new(text: &str, kind: MemoryEntityKind, limit: usize) -> anyhow::Result<Self> {
+    pub fn new<K>(text: &str, kind: K, limit: usize) -> anyhow::Result<Self>
+    where
+        K: Into<MemoryRecallKind>,
+    {
         let text = normalize_memory_query(text)?;
         anyhow::ensure!(limit > 0, "memory recall limit must be greater than zero");
         anyhow::ensure!(
@@ -56,7 +123,7 @@ impl MemoryQuery {
         );
         Ok(Self {
             text,
-            kind,
+            kind: kind.into(),
             limit,
             exclude_session_id: None,
             fact_subject: None,
@@ -67,7 +134,7 @@ impl MemoryQuery {
         &self.text
     }
 
-    pub fn kind(&self) -> MemoryEntityKind {
+    pub fn kind(&self) -> MemoryRecallKind {
         self.kind
     }
 
@@ -213,13 +280,15 @@ impl<'db> MemoryRetriever<'db> {
     /// without repeating SQL or embedding work.
     pub(crate) fn keyword(&self, query: &MemoryQuery) -> anyhow::Result<Vec<MemoryHit>> {
         let hits = match query.kind {
-            MemoryEntityKind::Fact => {
+            kind if kind.storage_kind() == MemoryEntityKind::Fact => {
                 let terms = haven_common::text::memory_recall_terms(&query.text);
                 let term_refs = haven_common::text::memory_recall_term_sample(&terms, 6);
-                let facts = self.db.search_facts_any_scoped(
+                let memory_kind = query.kind.fact_kind().map(MemoryFactKind::as_str);
+                let facts = self.db.search_facts_any_scoped_by_kind(
                     &term_refs,
                     query.limit.saturating_mul(4),
                     query.fact_subject.as_deref(),
+                    memory_kind,
                 )?;
                 let mut facts = filter_visible_facts(facts);
                 facts.truncate(query.limit);
@@ -236,7 +305,7 @@ impl<'db> MemoryRetriever<'db> {
                     })
                     .collect()
             }
-            MemoryEntityKind::Episode => self
+            MemoryRecallKind::Episode => self
                 .db
                 .search_episodes_by_keywords(
                     &haven_common::text::memory_recall_term_sample(
@@ -258,6 +327,7 @@ impl<'db> MemoryRetriever<'db> {
                 })
                 .take(query.limit)
                 .collect(),
+            _ => unreachable!("fact recall kinds share the fact storage branch"),
         };
         Ok(hits)
     }
@@ -276,16 +346,19 @@ impl<'db> MemoryRetriever<'db> {
             return Ok(Vec::new());
         }
         let candidate_limit = query.limit.saturating_mul(4);
-        let raw = self.db.search_embeddings_filtered(
-            query.kind.entity_type(),
+        let raw = self.db.search_embeddings_filtered_by_memory_kind(
+            query.kind.storage_kind().entity_type(),
             vector,
             candidate_limit,
             model,
-            query.fact_subject.as_deref(),
-            query.exclude_session_id.as_deref(),
+            MemoryEmbeddingFilter {
+                fact_subject: query.fact_subject.as_deref(),
+                exclude_session_id: query.exclude_session_id.as_deref(),
+                memory_kind: query.kind.fact_kind().map(MemoryFactKind::as_str),
+            },
         )?;
         let mut hits: Vec<MemoryHit> = match query.kind {
-            MemoryEntityKind::Fact => {
+            kind if kind.storage_kind() == MemoryEntityKind::Fact => {
                 let ids: Vec<String> = raw
                     .iter()
                     .map(|(embedding, _)| embedding.entity_id.clone())
@@ -308,11 +381,12 @@ impl<'db> MemoryRetriever<'db> {
                     })
                     .collect()
             }
-            MemoryEntityKind::Episode => raw
+            MemoryRecallKind::Episode => raw
                 .into_iter()
                 .filter(|(embedding, _)| !is_sensitive_text(&embedding.text))
                 .map(|(embedding, score)| MemoryHit::from_embedding(embedding, score))
                 .collect(),
+            _ => unreachable!("fact recall kinds share the fact storage branch"),
         };
         hits.sort_by(|a, b| {
             b.score
@@ -426,8 +500,52 @@ impl<'db> MemoryRetriever<'db> {
         vector_hits: Option<Vec<MemoryHit>>,
     ) -> anyhow::Result<MemoryRecall> {
         let vector_configured = vector_hits.is_some();
-        let keyword_hits = self.keyword(query)?;
-        let mut recall = self.merge(query, keyword_hits, vector_hits.unwrap_or_default());
+        let mut keyword_hits = self.keyword(query)?;
+        let vector_hits = vector_hits.unwrap_or_default();
+        if query.kind.storage_kind() == MemoryEntityKind::Fact {
+            let mut seed_ids = Vec::new();
+            let mut seen_seeds = std::collections::HashSet::new();
+            for hit in keyword_hits.iter().chain(vector_hits.iter()) {
+                if seen_seeds.insert(hit.entity_id.clone()) {
+                    seed_ids.push(hit.entity_id.clone());
+                }
+                if seed_ids.len() >= MAX_GRAPH_SEED_FACTS {
+                    break;
+                }
+            }
+            if !seed_ids.is_empty() {
+                let memory_kind = query.kind.fact_kind().map(MemoryFactKind::as_str);
+                let related = self.db.related_facts_for_recall(
+                    &seed_ids,
+                    query.limit.saturating_mul(4),
+                    query.fact_subject.as_deref(),
+                    memory_kind,
+                )?;
+                let mut seen_ids: std::collections::HashSet<String> = keyword_hits
+                    .iter()
+                    .chain(vector_hits.iter())
+                    .map(|hit| hit.entity_id.clone())
+                    .collect();
+                keyword_hits.extend(
+                    filter_visible_facts(related)
+                        .into_iter()
+                        .filter(|fact| seen_ids.insert(fact.fact_id.clone()))
+                        .map(|fact| {
+                            let score = fact_effective_confidence(&fact);
+                            MemoryHit {
+                                entity_id: fact.fact_id,
+                                text: format!(
+                                    "{}: {}={}",
+                                    fact.subject, fact.predicate, fact.object
+                                ),
+                                score,
+                                model: String::new(),
+                            }
+                        }),
+                );
+            }
+        }
+        let mut recall = self.merge(query, keyword_hits, vector_hits);
         if recall.hits.is_empty()
             && !vector_configured
             && let Some(diagnostics) = recall.diagnostics.as_mut()
@@ -459,6 +577,82 @@ mod tests {
         assert_eq!(recall.hits.len(), 1);
         assert_eq!(recall.hits[0].entity_id, safe.fact_id);
         assert_eq!(recall.hits[0].text, "likes=Rust");
+    }
+
+    #[test]
+    fn profile_semantic_and_procedural_recall_filter_facts_by_memory_kind() {
+        let db = Database::open_in_memory().unwrap();
+        let profile = db
+            .set_user_fact("user", "preferred_editor", "Nova", &[])
+            .unwrap();
+        let semantic = db
+            .insert_fact("user", "uses", "Orion", "inferred", 0.9, &[])
+            .unwrap();
+        let procedural = db
+            .set_user_fact_with_kind(
+                "user",
+                "publish_release_steps",
+                "run checks then tag the release",
+                &[],
+                MemoryFactKind::Procedural,
+            )
+            .unwrap();
+
+        for (kind, query_text, expected) in [
+            (MemoryRecallKind::Profile, "Nova", profile.fact_id.clone()),
+            (
+                MemoryRecallKind::Semantic,
+                "Orion",
+                semantic.fact_id.clone(),
+            ),
+            (
+                MemoryRecallKind::Procedural,
+                "release",
+                procedural.fact_id.clone(),
+            ),
+        ] {
+            let query = MemoryQuery::new(query_text, kind, 5).unwrap();
+            let hits = MemoryRetriever::new(&db).keyword(&query).unwrap();
+            assert_eq!(hits.len(), 1, "kind={kind:?}");
+            assert_eq!(hits[0].entity_id, expected, "kind={kind:?}");
+        }
+
+        for fact in [&profile, &semantic, &procedural] {
+            db.persist_embedding(
+                entity_kind::FACT,
+                &fact.fact_id,
+                "model-a",
+                &[1.0, 0.0],
+                "memory",
+            )
+            .unwrap();
+        }
+        let query = MemoryQuery::new("memory", MemoryRecallKind::Procedural, 5).unwrap();
+        let hits = MemoryRetriever::new(&db)
+            .vector(&query, &[1.0, 0.0], "model-a")
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entity_id, procedural.fact_id);
+    }
+
+    #[test]
+    fn recall_categories_use_closed_snake_case_values() {
+        for (wire, expected) in [
+            ("profile", MemoryRecallKind::Profile),
+            ("semantic", MemoryRecallKind::Semantic),
+            ("procedural", MemoryRecallKind::Procedural),
+        ] {
+            assert_eq!(MemoryRecallKind::parse(wire).unwrap(), expected);
+            assert_eq!(
+                serde_json::to_string(&expected).unwrap(),
+                format!("\"{wire}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<MemoryRecallKind>(&format!("\"{wire}\"")).unwrap(),
+                expected
+            );
+        }
+        assert!(MemoryRecallKind::parse("all").is_err());
     }
 
     #[test]
@@ -540,6 +734,79 @@ mod tests {
         assert_eq!(recall.mode, MemoryRecallMode::Keyword);
         assert_eq!(recall.hits[0].entity_id, fact.fact_id);
         assert!(recall.hits[0].model.is_empty());
+    }
+
+    #[test]
+    fn fact_recall_expands_two_hops_and_filters_sensitive_neighbors() {
+        let db = Database::open_in_memory().unwrap();
+        let seed = db
+            .insert_fact("user", "employer", "Acme", "user", 1.0, &["employer"])
+            .unwrap();
+        let headquarters = db
+            .insert_fact("Acme", "headquartered_in", "Seattle", "inferred", 0.9, &[])
+            .unwrap();
+        let acquired = db
+            .insert_fact("Globex", "acquired", "Acme", "inferred", 0.8, &[])
+            .unwrap();
+        let in_state = db
+            .insert_fact("Seattle", "in_state", "Washington", "inferred", 0.8, &[])
+            .unwrap();
+        let secret = db
+            .insert_fact("Acme", "api_key", "secret-value", "inferred", 1.0, &[])
+            .unwrap();
+
+        let query = MemoryQuery::new("employer", MemoryRecallKind::Fact, 10).unwrap();
+        let recall = MemoryRetriever::new(&db).retrieve(&query, None).unwrap();
+        let ids: Vec<&str> = recall
+            .hits
+            .iter()
+            .map(|hit| hit.entity_id.as_str())
+            .collect();
+
+        assert!(ids.contains(&seed.fact_id.as_str()));
+        assert!(ids.contains(&headquarters.fact_id.as_str()));
+        assert!(ids.contains(&acquired.fact_id.as_str()));
+        assert!(ids.contains(&in_state.fact_id.as_str()));
+        assert!(!ids.contains(&secret.fact_id.as_str()));
+        assert_eq!(
+            recall.hits.len(),
+            ids.iter().collect::<std::collections::HashSet<_>>().len()
+        );
+        assert!(recall.hits.iter().any(|hit| {
+            hit.entity_id == headquarters.fact_id && hit.text == "Acme: headquartered_in=Seattle"
+        }));
+        assert!(recall.hits.iter().any(|hit| {
+            hit.entity_id == in_state.fact_id && hit.text == "Seattle: in_state=Washington"
+        }));
+        assert_eq!(recall.hits[0].entity_id, seed.fact_id);
+    }
+
+    #[test]
+    fn vector_fact_hits_are_graph_expansion_seeds() {
+        let db = Database::open_in_memory().unwrap();
+        let seed = db
+            .insert_fact("user", "works_at", "Acme", "user", 1.0, &[])
+            .unwrap();
+        let related = db
+            .insert_fact("Acme", "headquartered_in", "Seattle", "inferred", 0.9, &[])
+            .unwrap();
+        let query = MemoryQuery::new("unrelated query", MemoryRecallKind::Fact, 5).unwrap();
+        let vector_seed = MemoryHit {
+            entity_id: seed.fact_id.clone(),
+            text: "works_at=Acme".into(),
+            score: 0.9,
+            model: "model-a".into(),
+        };
+
+        let recall = MemoryRetriever::new(&db)
+            .retrieve(&query, Some(vec![vector_seed]))
+            .unwrap();
+
+        assert_eq!(recall.mode, MemoryRecallMode::Hybrid);
+        assert!(recall.hits.iter().any(|hit| hit.entity_id == seed.fact_id));
+        assert!(recall.hits.iter().any(|hit| {
+            hit.entity_id == related.fact_id && hit.text == "Acme: headquartered_in=Seattle"
+        }));
     }
 
     #[test]

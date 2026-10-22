@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
 > 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布及 HCS quota 验收仍是 §5.1 Open Gate。
-> 更新日期：2026-10-19
+> 更新日期：2026-10-21
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | 无。ADR 1324 的实现与验证已完成；后续结构目标按 §5.5 重新审计后再立项。 |
+| **Active / Next** | 暂无 Active/Next 结构切片。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -154,7 +154,7 @@ Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request 
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。当前无 Active 结构切片。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布及 HCS quota 验收仍是独立 Open Gate（§5.1）。
+**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1359）、§5.10 Prompt 记忆召回分路（ADR 1360）与 §5.11 事实历史与按时点查询（ADR 1361）已完成；§5.12 推断事实先审核再写入（ADR 1362）、§5.13 原文证据核验与受控自动接受（ADR 1363）、§5.14 有界两跳事实图召回（ADR 1364）与 §5.15 事实现实有效时间（ADR 1365）已完成。当前没有 Active/Next 结构切片。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布及 HCS quota 验收仍是独立 Open Gate（§5.1）。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 
@@ -193,6 +193,34 @@ CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-c
 - **受管 MCP package 证明：**catalog v6 的 `tree_sha256` 覆盖 package 普通文件树；扫描拒绝 reparse point、未证明的模块搜索目录和 NTFS 命名 alternate data streams。管理员摘要工具与启动 probe 共用扫描器。见 [ADR 1288](adr/1288-verify-managed-mcp-package-trees.md) 与 [ADR 1289](adr/1289-reject-mcp-package-alternate-data-streams.md)。
 
 **保留的安全边界与发布验收：**`FullAccess` 下获准的宿主进程仍继承当前 Windows 用户的 OS 文件/网络权限；Haven 的工具授权不等于系统级进程隔离。没有可用且通过配额 attestation 的 HCS backend 时，受限执行 fail closed。管理页 Skill 预览只在静止 Paused 会话中作为真实会话步骤执行；没有活动会话时 WorkspaceWrite 仍 fail closed。真实 HCS guest 超额写入、支持的 Windows build、broker token、固定镜像与安装包验收仍属于 §5.1 Open Gate；本仓库已实现的启动 probe 不能替代目标环境验收。见 [ADR 1326](adr/1326-run-management-skill-previews-as-session-steps.md)。
+
+### 5.9 Memory recall 的图谱扩展（已完成）
+
+当前 facts 以 `memory_nodes` 与 SPO 节点 ID 表达关系；此前召回只匹配事实文本与 embedding。ADR 1358 已完成事实类别过滤，ADR 1359 增加受限的一跳图邻居扩展：使用关键词/向量命中的 facts 作种子，忽略通用 `user` 节点，限制种子与返回行数，并复用事实类别、主体范围和敏感内容过滤。验证覆盖 subject/object 两侧邻接、种子去重、边界限制、空结果和敏感邻居；没有引入多跳遍历或模型查询分解。后续按 §5.5 重新复核下一候选。见 [ADR 1359](adr/1359-bounded-graph-aware-memory-recall.md)。
+
+### 5.10 Prompt 记忆召回的类型分路与上下文预算（已完成）
+
+typed memory categories 与图邻居目前已由显式 recall 查询使用，但 Agent prompt 原先将事实类别合并成一个候选池，且通过 keyword/vector 两条旁路读候选。ADR 1360 已为 Profile、Semantic、Procedural 使用共享 query embedding 的分路检索，并让各路经同一 `MemoryRecallStore.retrieve` 进入关键词、向量与一跳图扩展。Prompt 的 15 条事实预算对每类先保留最多两个高分候选，再以原有总分补足；episode 的 5 条上限、同 session 排除和总 token/字符预算不变。路由不使用 LLM 分类器，数据与 IPC 契约不变。见 [ADR 1360](adr/1360-route-prompt-memory-by-typed-kind.md)。
+
+### 5.11 事实历史与按时点查询（已完成）
+
+ADR 1361 定义系统记录时间（knowledge time），不将事实创建时间推断为现实有效时间。替换或语义改写前的 facts 快照由 Memory 保存；MemoryTool `history` 可按 RFC3339 时点查询，默认 search/list/recall、prompt、FTS 与 embedding 继续只读当前 `facts`。显式 forget、clear 和敏感清理在同一事务清除历史副本；维护性低置信度修剪保留快照。schema v57，旧数据库按 §4 完整备份并重置。Memory/Tools 全量测试、workspace 编译、strict Clippy、格式与 ADR 索引通过；workspace 测试在未修改的 Windows `haven-platform` 中有 3 个进程/HCS 用例失败，具体结果见 [ADR 1361](adr/1361-temporal-fact-history.md)。
+
+### 5.12 推断事实先审核再写入（已完成）
+
+Transcript 与 compaction summary 的模型抽取现写入有界 pending proposal，并与 extraction cursor/summary marker 原子提交；提案不进入普通召回。Memory Center 提供来源、置信度、分页及接受/拒绝；接受在同一事务复用 FactGraph 规则，拒绝不改写现有 facts。fprop-* 待审上限为 500，队列满时整批回滚并保留重试位置。Schema v58，旧数据库按 §4 重置。定向 Memory、Agent 与 UI 测试，以及 strict Clippy、Svelte、格式、IPC 和 ADR index 检查通过；workspace 门禁被未修改的 Windows HCS 用例阻断，全量 UI 有 4 个未修改组件断言失败，详见 [ADR 1362](adr/1362-review-inferred-fact-proposals.md)。本切片完成后暂无 Active/Next 结构目标。
+
+### 5.13 原文证据核验与受控自动接受（已完成）
+
+普通 transcript 候选由单独的 verifier 请求对照原始用户消息；`supported` 必须带精确引文，Agent 校验来源身份和原文子串，Memory 在事务内再核对持久化用户消息和引文。核验错误/失败、摘要来源、不确定与矛盾候选均 fail closed 到提案队列。只有原话明确支持的候选才在 extraction marker 同一事务内经 FactGraph 自动写入，并将置信度设为至少 0.9。置信度不是统计概率；不做额外公开网搜索。schema v59，旧库按 §4 重置。验证覆盖正向、伪引文、缺失/敏感证据、模型异常、事务回滚和 UI 状态；结果见 [ADR 1363](adr/1363-source-grounded-fact-validation.md)。
+
+### 5.14 有界两跳事实图召回（已完成）
+
+现有 ADR 1359 只扩展一跳邻居。本切片将事实图遍历上限固定为两跳：最多 16 个种子、每跳最多 16 个概念节点、最多 80 个总候选；第二跳只经过可见的一跳事实，并保持类别、主体与敏感事实过滤。无需 schema、IPC 或旧库重置变化。Memory 全量测试为 496 passed、2 ignored；workspace strict Clippy 与格式检查通过。详见 [ADR 1364](adr/1364-bounded-two-hop-fact-recall.md)。
+
+### 5.15 事实有效时间（Valid Time，已完成）
+
+事实区间以可选 `valid_from` / `valid_to` 表示，使用规范 UTC 毫秒时间，按 `[valid_from, valid_to)` 解释；缺失边界保持未知，不从 `created_at` 推断。`recorded_at` 独立维护 system-time 版本，`history` 与 `valid_at` 分别回答“当时记录了什么”和“事实在现实时间是否成立”。单值更正会在新值有明确开始时间时关闭已知的旧开放区间；普通召回仍只读当前 facts。显式忘记、按 ID 删除、清空与敏感清理继续擦除全部历史副本。抽取与验证只保留用户明确说出的日期；来源核验必须支持事实及时间边界，未核验时间继续留在待审提案。schema v60，旧库按 §4 重置。Memory 全量测试通过（501 passed、0 failed、2 ignored）；其余门禁结果记录在 [ADR 1365](adr/1365-fact-valid-time.md)。
 
 ## 6. 更新规则
 

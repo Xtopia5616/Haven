@@ -55,6 +55,7 @@
 | `interrupt_session` | mutate | pauses the selected active session without deleting it |
 | `is_autostart_enabled` | read | state boolean only |
 | `list_builtin_tool_manifests` | read | builtin manifest projection; schemas are dynamic extension data |
+| `list_fact_proposals` | read | bounded pending-only queue; credential-like values filtered |
 | `list_facts` | read | read-only fact projection |
 | `list_mcp_prompts` | execute | user-driven prompt discovery; enabled live target binding; no model callable surface |
 | `list_mcp_resource_templates` | execute | user-driven template discovery; enabled live target binding; bounded opaque URI templates |
@@ -87,6 +88,7 @@
 | `reset_tool_circuits` | mutate | clears local circuit state only |
 | `resolve_confirmation` | mutate | owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending |
 | `respond_mcp_feature_input` | execute | explicit user response to a bounded form request; enabled live target binding; schema-validated answers |
+| `review_fact_proposal` | mutate | canonical fprop ID; one-shot transactional accept/reject |
 | `revoke_permission` | mutate | non-empty exact permanent key; session grants are retained |
 | `revoke_session_permission` | mutate | non-empty session id and capability; removes one session grant |
 | `rollback_session` | mutate | event cursor and projection clock rollback |

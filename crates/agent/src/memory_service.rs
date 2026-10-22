@@ -14,16 +14,21 @@ use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
 use haven_memory::{
-    MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryQuery, MemoryRecall,
+    MAX_MEMORY_QUERY_CHARS, MemoryEntityKind, MemoryQuery, MemoryRecall, MemoryRecallKind,
 };
 use haven_memory::{
-    MemoryFactExtractionStore, MemoryFactStore, MemoryMaintenanceStore, MemoryOutboxStore,
-    MemoryRecallStore, MemoryStores,
+    MemoryFactExtractionStore, MemoryFactProposalStore, MemoryFactStore, MemoryMaintenanceStore,
+    MemoryOutboxStore, MemoryRecallStore, MemoryStores,
 };
 
 use crate::memory_index::MemoryEmbeddingIndex;
 
 const MAX_EPISODES_IN_PROMPT: usize = 5;
+const PROMPT_FACT_RECALL_ROUTES: [(MemoryRecallKind, usize); 3] = [
+    (MemoryRecallKind::Profile, 8),
+    (MemoryRecallKind::Semantic, 8),
+    (MemoryRecallKind::Procedural, 4),
+];
 
 /// Raw, bounded candidates for prompt memory rendering.
 ///
@@ -91,6 +96,7 @@ pub struct MemoryService {
     test_database: Option<Arc<Database>>,
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
+    fact_proposal_store: MemoryFactProposalStore,
     maintenance_store: MemoryMaintenanceStore,
     outbox_store: MemoryOutboxStore,
     recall_store: MemoryRecallStore,
@@ -111,6 +117,7 @@ impl MemoryService {
         let outbox_store = stores.outbox_store();
         let fact_store = stores.fact_store();
         let fact_extraction_store = stores.fact_extraction_store();
+        let fact_proposal_store = stores.fact_proposal_store();
         let maintenance_store = stores.maintenance_store();
         let recall_store = stores.recall_store();
         let embeddings = stores.embedding_store();
@@ -127,6 +134,7 @@ impl MemoryService {
             test_database,
             fact_store,
             fact_extraction_store,
+            fact_proposal_store,
             maintenance_store,
             outbox_store,
             recall_store,
@@ -160,6 +168,10 @@ impl MemoryService {
     /// projections.
     pub(crate) fn memory_fact_extraction_store(&self) -> MemoryFactExtractionStore {
         self.fact_extraction_store.clone()
+    }
+
+    pub(crate) fn memory_fact_proposal_store(&self) -> MemoryFactProposalStore {
+        self.fact_proposal_store.clone()
     }
 
     /// Return the shared persistence port for deterministic and LLM
@@ -226,41 +238,56 @@ impl MemoryService {
             };
 
         let candidates = async {
-            let keyword_fact_hits = if query_text.trim().is_empty() {
-                Vec::new()
-            } else {
-                let query =
-                    MemoryQuery::new(&query_text, MemoryEntityKind::Fact, MAX_RECALL_LIMIT)?;
-                self.recall_store.keyword_recall(query).await?
-            };
+            let mut routed_fact_hits = Vec::new();
+            let mut vector_fact_hits = Vec::new();
+            let mut vector_episode_hits = Vec::new();
+            if !query_text.trim().is_empty() {
+                let query_vector = vector.as_deref().filter(|_| !embedding_model.is_empty());
+                for (kind, limit) in PROMPT_FACT_RECALL_ROUTES {
+                    let query = MemoryQuery::new(&query_text, kind, limit)?;
+                    let category_vector_hits = if let Some(query_vector) = query_vector {
+                        let hits = self
+                            .recall_store
+                            .vector_recall(
+                                query.clone(),
+                                query_vector.to_vec(),
+                                embedding_model.clone(),
+                            )
+                            .await?;
+                        vector_fact_hits.extend(hits.iter().cloned());
+                        Some(hits)
+                    } else {
+                        None
+                    };
+                    let recall = self
+                        .recall_store
+                        .retrieve(query, category_vector_hits)
+                        .await?;
+                    routed_fact_hits.extend(recall.hits);
+                }
 
-            let (vector_fact_hits, vector_episode_hits) =
-                if let Some(vector) = vector.as_deref().filter(|_| !embedding_model.is_empty()) {
-                    let fact_query = MemoryQuery::new(&query_text, MemoryEntityKind::Fact, 8)?
-                        .with_fact_subject(Some("user"));
+                if let Some(query_vector) = query_vector {
                     let episode_query = MemoryQuery::new(
                         &query_text,
                         MemoryEntityKind::Episode,
                         MAX_EPISODES_IN_PROMPT,
                     )?
                     .with_excluded_session(key.exclude_session_id.as_deref())?;
-                    let fact_hits = self
+                    vector_episode_hits = self
                         .recall_store
-                        .vector_recall(fact_query, vector.to_vec(), embedding_model.clone())
+                        .vector_recall(
+                            episode_query,
+                            query_vector.to_vec(),
+                            embedding_model.clone(),
+                        )
                         .await?;
-                    let episode_hits = self
-                        .recall_store
-                        .vector_recall(episode_query, vector.to_vec(), embedding_model.clone())
-                        .await?;
-                    (fact_hits, episode_hits)
-                } else {
-                    (Vec::new(), Vec::new())
-                };
+                }
+            }
 
             let mut all_facts = self.recall_store.visible_user_facts(40).await?;
             let mut seen_ids: HashSet<String> =
                 all_facts.iter().map(|fact| fact.fact_id.clone()).collect();
-            let candidate_ids: Vec<String> = keyword_fact_hits
+            let candidate_ids: Vec<String> = routed_fact_hits
                 .iter()
                 .chain(vector_fact_hits.iter())
                 .map(|hit| hit.entity_id.clone())
@@ -524,6 +551,58 @@ mod tests {
                 .has_cached_prompt_candidates("Rust testing", Some(&current.session_id))
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn prompt_candidates_route_each_fact_kind_and_expand_graph_neighbors() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        for index in 0..60 {
+            db.insert_fact(
+                "user",
+                "prefers_release_note",
+                &format!("release preference {index}"),
+                "user",
+                1.0,
+                &["release"],
+            )
+            .unwrap();
+        }
+        let semantic_seed = db
+            .insert_fact("user", "maintains", "Acme", "inferred", 0.9, &["release"])
+            .unwrap();
+        let semantic_neighbor = db
+            .insert_fact("Acme", "uses", "Rust", "inferred", 0.9, &[])
+            .unwrap();
+        let memory = MemoryService::new(db, None, 1);
+        let procedural = memory
+            .memory_fact_store()
+            .set_user_fact_with_kind(
+                "user".into(),
+                "release_steps".into(),
+                "run checks before tagging".into(),
+                vec!["release".into()],
+                haven_memory::MemoryFactKind::Procedural,
+            )
+            .await
+            .unwrap();
+
+        let candidates = memory
+            .prompt_candidates("release deployment", None)
+            .await
+            .unwrap();
+        let ids: HashSet<String> = candidates
+            .all_facts
+            .iter()
+            .map(|fact| fact.fact_id.clone())
+            .collect();
+
+        assert!(ids.contains(&semantic_seed.fact_id));
+        assert!(ids.contains(&semantic_neighbor.fact_id));
+        assert!(ids.contains(&procedural.fact_id));
+        assert!(candidates.all_facts.iter().any(|fact| {
+            fact.fact_id == semantic_neighbor.fact_id
+                && fact.memory_kind == haven_memory::MemoryFactKind::Semantic
+        }));
     }
 
     #[tokio::test]

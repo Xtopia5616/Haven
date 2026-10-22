@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 54;
+pub const SCHEMA_VERSION: i32 = 60;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -172,16 +172,191 @@ const SCHEMA_SQL: &[&str] = &[
         object_id TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
         source TEXT NOT NULL DEFAULT 'inferred'
             CHECK(source IN ('user','inferred')),
+        memory_kind TEXT NOT NULL DEFAULT 'semantic'
+            CHECK(memory_kind IN ('profile','semantic','procedural')),
         confidence REAL NOT NULL DEFAULT 1.0 CHECK(confidence >= 0.0 AND confidence <= 1.0),
         created_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK(
+            length(recorded_at) = 24 AND
+            recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', recorded_at) = recorded_at
+        ),
+        valid_from TEXT CHECK(valid_from IS NULL OR (
+            length(valid_from) = 24 AND
+            valid_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_from) = valid_from
+        )),
+        valid_to TEXT CHECK(valid_to IS NULL OR (
+            length(valid_to) = 24 AND
+            valid_to GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_to) = valid_to
+        )),
         tags TEXT NOT NULL DEFAULT '[]',
         durability REAL NOT NULL DEFAULT 1.0 CHECK(durability >= 0.0 AND durability <= 1.0),
         mention_count INTEGER NOT NULL DEFAULT 0,
         last_seen_at TEXT,
         provenance_item_id TEXT REFERENCES memory_items(id) ON DELETE SET NULL,
         provenance_record_id TEXT,
-        provenance_snippet TEXT
+        provenance_snippet TEXT,
+        CHECK(valid_from IS NULL OR valid_to IS NULL OR valid_from < valid_to)
     )",
+    // Pending model-inferred facts wait for an explicit UI review before
+    // entering the current facts graph and its prompt/recall indexes.
+    "CREATE TABLE IF NOT EXISTS fact_proposals (
+        proposal_id TEXT PRIMARY KEY CHECK(
+            length(proposal_id) = 38 AND substr(proposal_id, 1, 6) = 'fprop-' AND
+            substr(proposal_id, 7) NOT GLOB '*[^0-9a-f]*'
+        ),
+        subject TEXT NOT NULL,
+        predicate TEXT NOT NULL,
+        object TEXT NOT NULL,
+        confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+        tags TEXT NOT NULL DEFAULT '[]',
+        durability REAL NOT NULL CHECK(durability >= 0.0 AND durability <= 1.0),
+        valid_from TEXT CHECK(valid_from IS NULL OR (
+            length(valid_from) = 24 AND
+            valid_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_from) = valid_from
+        )),
+        valid_to TEXT CHECK(valid_to IS NULL OR (
+            length(valid_to) = 24 AND
+            valid_to GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_to) = valid_to
+        )),
+        created_at TEXT NOT NULL CHECK(
+            length(created_at) = 24 AND
+            created_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', created_at) = created_at
+        ),
+        provenance_record_id TEXT,
+        provenance_snippet TEXT,
+        evidence_status TEXT NOT NULL DEFAULT 'unverified'
+            CHECK(evidence_status IN ('supported','uncertain','contradicted','unverified')),
+        evidence_quote TEXT CHECK(evidence_quote IS NULL OR length(evidence_quote) <= 120),
+        CHECK(valid_from IS NULL OR valid_to IS NULL OR valid_from < valid_to)
+    )",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_fact_proposals_pending_triple
+        ON fact_proposals(subject, predicate, object)",
+    "CREATE INDEX IF NOT EXISTS idx_fact_proposals_created_at
+        ON fact_proposals(created_at, proposal_id)",
+    // Prior system-known fact snapshots. Ordinary recall remains current-only;
+    // explicit history queries select the version active at a recorded time.
+    "CREATE TABLE IF NOT EXISTS fact_history (
+        history_id INTEGER PRIMARY KEY,
+        id TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        subject_id TEXT,
+        predicate TEXT NOT NULL,
+        object TEXT NOT NULL,
+        object_id TEXT,
+        source TEXT NOT NULL CHECK(source IN ('user','inferred')),
+        memory_kind TEXT NOT NULL CHECK(memory_kind IN ('profile','semantic','procedural')),
+        confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+        created_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL CHECK(
+            length(recorded_at) = 24 AND
+            recorded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', recorded_at) = recorded_at
+        ),
+        valid_from TEXT CHECK(valid_from IS NULL OR (
+            length(valid_from) = 24 AND
+            valid_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_from) = valid_from
+        )),
+        valid_to TEXT CHECK(valid_to IS NULL OR (
+            length(valid_to) = 24 AND
+            valid_to GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', valid_to) = valid_to
+        )),
+        tags TEXT NOT NULL DEFAULT '[]',
+        durability REAL NOT NULL CHECK(durability >= 0.0 AND durability <= 1.0),
+        mention_count INTEGER NOT NULL DEFAULT 0,
+        last_seen_at TEXT,
+        provenance_item_id TEXT REFERENCES memory_items(id) ON DELETE SET NULL,
+        provenance_record_id TEXT,
+        provenance_snippet TEXT,
+        superseded_at TEXT NOT NULL CHECK(
+            length(superseded_at) = 24 AND
+            superseded_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' AND
+            strftime('%Y-%m-%dT%H:%M:%fZ', superseded_at) = superseded_at
+        ),
+        CHECK(valid_from IS NULL OR valid_to IS NULL OR valid_from < valid_to)
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_fact_history_id_superseded
+        ON fact_history(id, superseded_at)",
+    "CREATE INDEX IF NOT EXISTS idx_fact_history_subject_time
+        ON fact_history(subject, created_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_fact_history_valid_range
+        ON fact_history(valid_from, valid_to)",
+    "CREATE TRIGGER IF NOT EXISTS facts_history_before_update
+        BEFORE UPDATE OF subject, predicate, object, source, memory_kind, valid_from, valid_to ON facts
+        WHEN OLD.subject IS NOT NEW.subject
+          OR OLD.predicate IS NOT NEW.predicate
+          OR OLD.object IS NOT NEW.object
+          OR OLD.source IS NOT NEW.source
+          OR OLD.memory_kind IS NOT NEW.memory_kind
+          OR OLD.valid_from IS NOT NEW.valid_from
+          OR OLD.valid_to IS NOT NEW.valid_to
+        BEGIN
+            INSERT INTO fact_history (
+                id, subject, subject_id, predicate, object, object_id, source,
+                memory_kind, confidence, created_at, recorded_at, valid_from, valid_to,
+                tags, durability, mention_count,
+                last_seen_at, provenance_item_id, provenance_record_id,
+                provenance_snippet, superseded_at
+            ) VALUES (
+                OLD.id, OLD.subject, OLD.subject_id, OLD.predicate, OLD.object, OLD.object_id,
+                OLD.source, OLD.memory_kind, OLD.confidence, OLD.created_at, OLD.recorded_at,
+                OLD.valid_from, OLD.valid_to, OLD.tags,
+                OLD.durability, OLD.mention_count, OLD.last_seen_at,
+                OLD.provenance_item_id, OLD.provenance_record_id, OLD.provenance_snippet,
+                CASE
+                    WHEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') > OLD.recorded_at
+                    THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    ELSE strftime('%Y-%m-%dT%H:%M:%fZ', julianday(OLD.recorded_at) + 1.0 / 86400000.0)
+                END
+            );
+        END",
+    "CREATE TRIGGER IF NOT EXISTS facts_recorded_at_after_update
+        AFTER UPDATE OF subject, predicate, object, source, memory_kind, valid_from, valid_to ON facts
+        WHEN OLD.subject IS NOT NEW.subject
+          OR OLD.predicate IS NOT NEW.predicate
+          OR OLD.object IS NOT NEW.object
+          OR OLD.source IS NOT NEW.source
+          OR OLD.memory_kind IS NOT NEW.memory_kind
+          OR OLD.valid_from IS NOT NEW.valid_from
+          OR OLD.valid_to IS NOT NEW.valid_to
+        BEGIN
+            UPDATE facts
+            SET recorded_at = CASE
+                WHEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') > NEW.recorded_at
+                THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                ELSE strftime('%Y-%m-%dT%H:%M:%fZ', julianday(NEW.recorded_at) + 1.0 / 86400000.0)
+            END
+            WHERE id = NEW.id;
+        END",
+    "CREATE TRIGGER IF NOT EXISTS facts_history_before_delete
+        BEFORE DELETE ON facts
+        BEGIN
+            INSERT INTO fact_history (
+                id, subject, subject_id, predicate, object, object_id, source,
+                memory_kind, confidence, created_at, recorded_at, valid_from, valid_to,
+                tags, durability, mention_count,
+                last_seen_at, provenance_item_id, provenance_record_id,
+                provenance_snippet, superseded_at
+            ) VALUES (
+                OLD.id, OLD.subject, OLD.subject_id, OLD.predicate, OLD.object, OLD.object_id,
+                OLD.source, OLD.memory_kind, OLD.confidence, OLD.created_at, OLD.recorded_at,
+                OLD.valid_from, OLD.valid_to, OLD.tags,
+                OLD.durability, OLD.mention_count, OLD.last_seen_at,
+                OLD.provenance_item_id, OLD.provenance_record_id, OLD.provenance_snippet,
+                CASE
+                    WHEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') > OLD.recorded_at
+                    THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                    ELSE strftime('%Y-%m-%dT%H:%M:%fZ', julianday(OLD.recorded_at) + 1.0 / 86400000.0)
+                END
+            );
+        END",
     "CREATE TABLE IF NOT EXISTS tool_runs (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL DEFAULT 'background' CHECK(kind = 'background'),
@@ -380,6 +555,12 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_memory_items_session ON memory_items(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_memory_nodes_label ON memory_nodes(label)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_memory_kind ON facts(memory_kind, subject)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_subject_id ON facts(subject_id)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_object_id ON facts(object_id)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_valid_range ON facts(valid_from, valid_to)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_recorded_at ON facts(recorded_at, id)",
+    "CREATE INDEX IF NOT EXISTS idx_fact_history_recorded_range ON fact_history(recorded_at, superseded_at)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_llm_usage_session_kind ON llm_usage(session_id, call_kind)",
     "CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at)",
@@ -624,6 +805,20 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("memory_nodes", "kind"),
     ("memory_items", "content"),
     ("facts", "durability"),
+    ("facts", "recorded_at"),
+    ("facts", "valid_from"),
+    ("facts", "valid_to"),
+    ("fact_proposals", "proposal_id"),
+    ("fact_proposals", "created_at"),
+    ("fact_proposals", "evidence_status"),
+    ("fact_proposals", "evidence_quote"),
+    ("fact_proposals", "valid_from"),
+    ("fact_proposals", "valid_to"),
+    ("fact_history", "superseded_at"),
+    ("fact_history", "recorded_at"),
+    ("fact_history", "valid_from"),
+    ("fact_history", "valid_to"),
+    ("fact_history", "provenance_item_id"),
     ("tool_runs", "kind"),
     ("tool_runs", "tool_name"),
     ("tool_runs", "source_step_id"),
@@ -867,6 +1062,8 @@ mod tests {
             "kv_store",
             "llm_usage",
             "facts",
+            "fact_proposals",
+            "fact_history",
             "memory_embeddings",
             "memory_items",
             "memory_nodes",
@@ -897,6 +1094,23 @@ mod tests {
         let version = user_version(&conn).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         assert!(table_exists(&conn, "memory_fts").unwrap());
+        let fact_indexes = conn
+            .prepare("SELECT name FROM pragma_index_list('facts')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            fact_indexes
+                .iter()
+                .any(|name| name == "idx_facts_subject_id")
+        );
+        assert!(
+            fact_indexes
+                .iter()
+                .any(|name| name == "idx_facts_object_id")
+        );
 
         let columns = conn
             .prepare("SELECT name FROM pragma_table_info('messages')")
@@ -1141,6 +1355,24 @@ mod tests {
             [],
         )
         .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT memory_kind FROM facts WHERE id = 'fact-4239df0ceaf003ef339c54b852a35b0a'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "semantic"
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO facts
+                    (id, subject, predicate, object, created_at, memory_kind)
+                 VALUES ('fact-67cfb58b793e179d3249941f635c7c46', 'user', 'likes', 'Rust', '2026-01-01', 'unknown')",
+                [],
+            )
+            .is_err()
+        );
 
         assert!(
             conn.execute(
@@ -1178,6 +1410,92 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn fact_history_archives_semantic_changes_and_deletions() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        let fact_id = "fact-4239df0ceaf003ef339c54b852a35b0a";
+        conn.execute(
+            "INSERT INTO facts (id, subject, predicate, object, created_at)
+             VALUES (?1, 'user', 'city', 'Old City', '2025-01-01T00:00:00Z')",
+            rusqlite::params![fact_id],
+        )
+        .unwrap();
+
+        conn.execute(
+            "UPDATE facts SET confidence = 0.5 WHERE id = ?1",
+            rusqlite::params![fact_id],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "reinforcement metadata must not create a historical version"
+        );
+
+        conn.execute(
+            "UPDATE facts SET object = 'New City' WHERE id = ?1",
+            rusqlite::params![fact_id],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT object FROM fact_history WHERE id = ?1",
+                rusqlite::params![fact_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "Old City"
+        );
+
+        conn.execute(
+            "DELETE FROM facts WHERE id = ?1",
+            rusqlite::params![fact_id],
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM fact_history WHERE id = ?1",
+                rusqlite::params![fact_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT superseded_at FROM fact_history ORDER BY history_id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .len(),
+            24
+        );
+    }
+
+    #[test]
+    fn fact_history_rejects_noncanonical_superseded_at() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        let error = conn
+            .execute(
+                "INSERT INTO fact_history (
+                    id, subject, predicate, object, source, memory_kind, confidence,
+                    created_at, recorded_at, durability, superseded_at
+                ) VALUES (
+                    'fact-4239df0ceaf003ef339c54b852a35b0a', 'user', 'city', 'Oslo',
+                    'user', 'profile', 1.0, '2025-01-01T00:00:00Z',
+                    '2025-01-01T00:00:00.000Z', 1.0, '2025-01-01'
+                )",
+                [],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("CHECK constraint failed"));
     }
 
     #[test]

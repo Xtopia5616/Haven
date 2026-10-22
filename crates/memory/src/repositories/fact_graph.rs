@@ -8,7 +8,8 @@
 use super::fact_query::{FACT_COLS, fact_from_row};
 use super::fact_store::MemoryFactWrite;
 use super::facts::{
-    Fact, FactSourceRef, UpsertOutcome, is_sensitive_text, is_single_valued_predicate,
+    Fact, FactSourceRef, FactValidity, MemoryFactKind, UpsertOutcome, is_sensitive_object,
+    is_sensitive_predicate, is_sensitive_text, is_single_valued_predicate, normalize_fact_validity,
     normalize_predicate, polarity_opposite,
 };
 use crate::db::Database;
@@ -32,7 +33,7 @@ fn serialize_tags(tags: &[&str]) -> String {
     serde_json::to_string(tags).unwrap_or_else(|_| "[]".into())
 }
 
-fn in_immediate_transaction<T>(
+pub(super) fn in_immediate_transaction<T>(
     conn: &Connection,
     operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
@@ -126,6 +127,48 @@ impl<'db> FactGraph<'db> {
         Self { db }
     }
 
+    pub(super) fn validate_inferred_proposal(
+        write: &MemoryFactWrite,
+    ) -> anyhow::Result<MemoryFactWrite> {
+        let predicate = normalize_predicate(&write.predicate);
+        validate_fact_fields(
+            &write.subject,
+            &predicate,
+            &write.object,
+            "inferred",
+            write.confidence,
+            write.durability,
+        )?;
+        validate_source_ref(write.source_ref.as_ref())?;
+        let (valid_from, valid_to) =
+            normalize_fact_validity(write.valid_from.as_deref(), write.valid_to.as_deref())?;
+        anyhow::ensure!(
+            !is_sensitive_text(&write.subject)
+                && !is_sensitive_predicate(&predicate)
+                && !is_sensitive_object(&write.object),
+            "refusing to store credential-like fact proposal"
+        );
+        const ALLOWED_TAGS: &[&str] = &["identity", "preference", "workspace", "project"];
+        let tags = write
+            .tags
+            .iter()
+            .map(|tag| tag.trim().to_ascii_lowercase())
+            .filter(|tag| ALLOWED_TAGS.contains(&tag.as_str()))
+            .take(4)
+            .collect();
+        Ok(MemoryFactWrite {
+            subject: write.subject.trim().to_string(),
+            predicate,
+            object: write.object.trim().to_string(),
+            confidence: write.confidence,
+            tags,
+            source_ref: sanitize_source_ref(write.source_ref.as_ref()),
+            durability: write.durability,
+            valid_from,
+            valid_to,
+        })
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn insert(
         &self,
@@ -159,6 +202,7 @@ impl<'db> FactGraph<'db> {
         let conn = self.db.try_conn()?;
         self.insert_with_source_ref_on_connection(
             &conn, subject, predicate, object, source, confidence, tags, source_ref, durability,
+            None, None,
         )
     }
 
@@ -174,10 +218,13 @@ impl<'db> FactGraph<'db> {
         tags: &[&str],
         source_ref: Option<&FactSourceRef>,
         durability: f64,
+        valid_from: Option<&str>,
+        valid_to: Option<&str>,
     ) -> anyhow::Result<Fact> {
         let predicate = normalize_predicate(predicate);
         validate_fact_fields(subject, &predicate, object, source, confidence, durability)?;
         validate_source_ref(source_ref)?;
+        let (valid_from, valid_to) = normalize_fact_validity(valid_from, valid_to)?;
         let safe_source_ref = sanitize_source_ref(source_ref);
         let id = haven_common::types::new_id("fact");
         let now = Utc::now().to_rfc3339();
@@ -193,12 +240,18 @@ impl<'db> FactGraph<'db> {
             object,
         )?;
         let provenance = Self::provenance_cols_from_source_ref(conn, source_ref)?;
+        let memory_kind = if source == "user" {
+            "profile"
+        } else {
+            "semantic"
+        };
         conn.execute(
             "INSERT INTO facts (
                 id, subject, subject_id, predicate, object, object_id,
                 source, confidence, created_at, tags, mention_count, last_seen_at,
-                provenance_item_id, provenance_record_id, provenance_snippet, durability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13, ?14, ?15)",
+                provenance_item_id, provenance_record_id, provenance_snippet, durability,
+                memory_kind, valid_from, valid_to
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             rusqlite::params![
                 id,
                 subject,
@@ -214,7 +267,10 @@ impl<'db> FactGraph<'db> {
                 provenance.provenance_item_id,
                 provenance.provenance_record_id,
                 provenance.provenance_snippet,
-                durability
+                durability,
+                memory_kind,
+                valid_from,
+                valid_to
             ],
         )?;
         self.db.cache_invalidate_facts(subject);
@@ -224,6 +280,11 @@ impl<'db> FactGraph<'db> {
             predicate,
             object: object.into(),
             source: source.into(),
+            memory_kind: if memory_kind == "profile" {
+                MemoryFactKind::Profile
+            } else {
+                MemoryFactKind::Semantic
+            },
             confidence,
             tags: tags.iter().map(|s| s.to_string()).collect(),
             created_at: now.clone(),
@@ -231,6 +292,8 @@ impl<'db> FactGraph<'db> {
             last_seen_at: Some(now),
             source_ref: safe_source_ref,
             durability,
+            valid_from,
+            valid_to,
         })
     }
 
@@ -274,15 +337,22 @@ impl<'db> FactGraph<'db> {
         }
     }
 
+    // This private SQL row mapper keeps the INSERT columns explicit next to
+    // the returned domain object; the validity bounds are grouped separately.
+    #[allow(clippy::too_many_arguments)]
     fn insert_user_row(
         conn: &rusqlite::Connection,
         subject: &str,
-        subject_id: &str,
+        node_ids: (&str, &str),
         predicate: &str,
         object: &str,
-        object_id: &str,
         tags: &[&str],
+        memory_kind: MemoryFactKind,
+        validity: &FactValidity,
     ) -> anyhow::Result<Fact> {
+        let (subject_id, object_id) = node_ids;
+        let (valid_from, valid_to) =
+            normalize_fact_validity(validity.valid_from.as_deref(), validity.valid_to.as_deref())?;
         let id = haven_common::types::new_id("fact");
         let now = Utc::now().to_rfc3339();
         let tags_json = serialize_tags(tags);
@@ -290,10 +360,20 @@ impl<'db> FactGraph<'db> {
             "INSERT INTO facts (
                 id, subject, subject_id, predicate, object, object_id,
                 source, confidence, created_at, tags, mention_count, last_seen_at,
-                durability
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'user', 1.0, ?7, ?8, 0, ?7, 1.0)",
+                durability, memory_kind, valid_from, valid_to
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'user', 1.0, ?7, ?8, 0, ?7, 1.0, ?9, ?10, ?11)",
             rusqlite::params![
-                id, subject, subject_id, predicate, object, object_id, now, tags_json
+                id,
+                subject,
+                subject_id,
+                predicate,
+                object,
+                object_id,
+                now,
+                tags_json,
+                memory_kind.as_str(),
+                valid_from,
+                valid_to
             ],
         )?;
         Ok(Fact {
@@ -302,6 +382,7 @@ impl<'db> FactGraph<'db> {
             predicate: predicate.into(),
             object: object.into(),
             source: "user".into(),
+            memory_kind,
             confidence: 1.0,
             tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
             created_at: now.clone(),
@@ -309,20 +390,26 @@ impl<'db> FactGraph<'db> {
             last_seen_at: Some(now),
             source_ref: None,
             durability: 1.0,
+            valid_from,
+            valid_to,
         })
     }
 
     /// Store a fact explicitly stated by the user. User facts are
     /// authoritative and single-valued predicates replace all prior values.
-    pub(crate) fn set_user_fact(
+    pub(crate) fn set_user_fact_with_kind_and_validity(
         &self,
         subject: &str,
         predicate: &str,
         object: &str,
         tags: &[&str],
+        memory_kind: MemoryFactKind,
+        validity: &FactValidity,
     ) -> anyhow::Result<Fact> {
         let predicate = normalize_predicate(predicate);
         validate_fact_fields(subject, &predicate, object, "user", 1.0, 1.0)?;
+        let (valid_from, valid_to) =
+            normalize_fact_validity(validity.valid_from.as_deref(), validity.valid_to.as_deref())?;
         // Resolve node ids before opening the edge transaction. Node creation is
         // independently idempotent; the transaction below makes the user-edge
         // replacement itself atomic, so a failed insert cannot leave a missing
@@ -347,31 +434,116 @@ impl<'db> FactGraph<'db> {
                     conn.execute(
                         "UPDATE facts
                          SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = 1.0,
-                             durability = 1.0
-                         WHERE id = ?2",
-                        rusqlite::params![now, existing.fact_id],
+                             durability = 1.0, memory_kind = ?2,
+                             valid_from = CASE WHEN ?3 THEN ?4 ELSE valid_from END,
+                             valid_to = CASE WHEN ?3 THEN ?5 ELSE valid_to END
+                         WHERE id = ?6",
+                        rusqlite::params![
+                            now,
+                            memory_kind.as_str(),
+                            valid_from.is_some() || valid_to.is_some(),
+                            valid_from,
+                            valid_to,
+                            existing.fact_id
+                        ],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                        rusqlite::params![subject, predicate, object],
                     )?;
                     let mut fact = existing;
                     fact.confidence = 1.0;
                     fact.durability = 1.0;
+                    fact.memory_kind = memory_kind;
                     fact.mention_count += 1;
                     fact.last_seen_at = Some(now);
+                    if valid_from.is_some() || valid_to.is_some() {
+                        fact.valid_from = valid_from.clone();
+                        fact.valid_to = valid_to.clone();
+                    }
                     return Ok((fact, true));
                 }
                 conn.execute(
                     "UPDATE facts
-                     SET source = 'user', confidence = 1.0, last_seen_at = ?1, durability = 1.0
-                     WHERE id = ?2",
-                    rusqlite::params![now, existing.fact_id],
+                     SET source = 'user', confidence = 1.0, last_seen_at = ?1,
+                         durability = 1.0, memory_kind = ?2,
+                         valid_from = CASE WHEN ?3 THEN ?4 ELSE valid_from END,
+                         valid_to = CASE WHEN ?3 THEN ?5 ELSE valid_to END
+                     WHERE id = ?6",
+                    rusqlite::params![
+                        now,
+                        memory_kind.as_str(),
+                        valid_from.is_some() || valid_to.is_some(),
+                        valid_from,
+                        valid_to,
+                        existing.fact_id
+                    ],
+                )?;
+                conn.execute(
+                    "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                    rusqlite::params![subject, predicate, object],
                 )?;
                 let mut fact = existing;
                 fact.source = "user".into();
                 fact.confidence = 1.0;
                 fact.durability = 1.0;
+                fact.memory_kind = memory_kind;
                 fact.last_seen_at = Some(now);
+                if valid_from.is_some() || valid_to.is_some() {
+                    fact.valid_from = valid_from.clone();
+                    fact.valid_to = valid_to.clone();
+                }
                 return Ok((fact, true));
             }
-            let replaced = if is_single_valued_predicate(&predicate) {
+            let replaced = if memory_kind != MemoryFactKind::Procedural
+                && is_single_valued_predicate(&predicate)
+            {
+                if let Some(start) = valid_from.as_deref() {
+                    let inferred_end = if valid_to.is_none() {
+                        conn.query_row(
+                            "SELECT MIN(valid_from) FROM facts
+                             WHERE subject = ?1 AND predicate = ?2 AND object <> ?3
+                               AND valid_from > ?4
+                               AND (valid_to IS NULL OR valid_to > ?4)",
+                            rusqlite::params![subject, predicate, object, start],
+                            |row| row.get::<_, Option<String>>(0),
+                        )?
+                    } else {
+                        None
+                    };
+                    // Close known overlapping intervals before replacement.
+                    // Unknown historical bounds stay unknown and are never guessed.
+                    conn.execute(
+                        "UPDATE facts SET valid_to = ?1
+                         WHERE subject = ?2 AND predicate = ?3
+                           AND valid_from IS NOT NULL AND valid_from < ?1
+                           AND (valid_to IS NULL OR valid_to > ?1)",
+                        rusqlite::params![start, subject, predicate],
+                    )?;
+                    let end = valid_to.clone().or(inferred_end);
+                    let fact = Self::insert_user_row(
+                        &conn,
+                        subject,
+                        (&subject_id, &object_id),
+                        &predicate,
+                        object,
+                        tags,
+                        memory_kind,
+                        &FactValidity {
+                            valid_from: valid_from.clone(),
+                            valid_to: end,
+                        },
+                    )?;
+                    conn.execute(
+                        "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2 AND id <> ?3",
+                        rusqlite::params![subject, predicate, fact.fact_id],
+                    )?;
+                    conn.execute(
+                        "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2",
+                        rusqlite::params![subject, predicate],
+                    )?;
+                    return Ok((fact, true));
+                }
                 conn.execute(
                     "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
                     rusqlite::params![subject, predicate],
@@ -382,12 +554,27 @@ impl<'db> FactGraph<'db> {
             let fact = Self::insert_user_row(
                 &conn,
                 subject,
-                &subject_id,
+                (&subject_id, &object_id),
                 &predicate,
                 object,
-                &object_id,
                 tags,
+                memory_kind,
+                &FactValidity {
+                    valid_from,
+                    valid_to,
+                },
             )?;
+            if is_single_valued_predicate(&predicate) && memory_kind != MemoryFactKind::Procedural {
+                conn.execute(
+                    "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2",
+                    rusqlite::params![subject, predicate],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                    rusqlite::params![subject, predicate, object],
+                )?;
+            }
             Ok((fact, replaced))
         })();
         let result = match result {
@@ -416,20 +603,51 @@ impl<'db> FactGraph<'db> {
     ) -> anyhow::Result<u64> {
         let predicate = normalize_predicate(predicate);
         let conn = self.db.try_conn()?;
-        let deleted = match object {
-            Some(obj) => conn.execute(
-                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
-                rusqlite::params![subject, predicate, obj],
-            )?,
-            None => conn.execute(
-                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
-                rusqlite::params![subject, predicate],
-            )?,
-        };
+        let deleted = in_immediate_transaction(&conn, |conn| {
+            let deleted = match object {
+                Some(obj) => conn.execute(
+                    "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                    rusqlite::params![subject, predicate, obj],
+                )?,
+                None => conn.execute(
+                    "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
+                    rusqlite::params![subject, predicate],
+                )?,
+            };
+            match object {
+                Some(obj) => {
+                    conn.execute(
+                        "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                        rusqlite::params![subject, predicate, obj],
+                    )?;
+                }
+                None => {
+                    conn.execute(
+                        "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2",
+                        rusqlite::params![subject, predicate],
+                    )?;
+                }
+            }
+            match object {
+                Some(obj) => {
+                    conn.execute(
+                        "DELETE FROM fact_history WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                        rusqlite::params![subject, predicate, obj],
+                    )?;
+                }
+                None => {
+                    conn.execute(
+                        "DELETE FROM fact_history WHERE subject = ?1 AND predicate = ?2",
+                        rusqlite::params![subject, predicate],
+                    )?;
+                }
+            }
+            Ok(deleted as u64)
+        })?;
         self.db.cache_invalidate_facts(subject);
         self.db
             .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-        Ok(deleted as u64)
+        Ok(deleted)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -477,6 +695,7 @@ impl<'db> FactGraph<'db> {
         let conn = self.db.try_conn()?;
         self.upsert_on_connection(
             &conn, subject, predicate, object, source, confidence, tags, source_ref, durability,
+            None, None,
         )
     }
 
@@ -504,6 +723,7 @@ impl<'db> FactGraph<'db> {
     /// Persist one inferred batch and its caller-owned completion state in the
     /// same transaction. The hooks are deliberately synchronous so they can
     /// inspect/update rows on the transaction's connection.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn upsert_inferred_batch_with_transaction_hook(
         &self,
         writes: &[MemoryFactWrite],
@@ -529,7 +749,7 @@ impl<'db> FactGraph<'db> {
         })
     }
 
-    fn upsert_inferred_batch_on_connection(
+    pub(super) fn upsert_inferred_batch_on_connection(
         &self,
         conn: &Connection,
         writes: &[MemoryFactWrite],
@@ -598,6 +818,8 @@ impl<'db> FactGraph<'db> {
                     &tags,
                     write.source_ref.as_ref(),
                     write.durability,
+                    write.valid_from.as_deref(),
+                    write.valid_to.as_deref(),
                 )
                 .with_context(|| {
                     format!(
@@ -627,10 +849,13 @@ impl<'db> FactGraph<'db> {
         tags: &[&str],
         source_ref: Option<&FactSourceRef>,
         durability: f64,
+        valid_from: Option<&str>,
+        valid_to: Option<&str>,
     ) -> anyhow::Result<UpsertOutcome> {
         let predicate = normalize_predicate(predicate);
         validate_fact_fields(subject, &predicate, object, source, confidence, durability)?;
         validate_source_ref(source_ref)?;
+        let (valid_from, mut valid_to) = normalize_fact_validity(valid_from, valid_to)?;
         let now = Utc::now().to_rfc3339();
         let mut corrected = false;
         let opposite = polarity_opposite(&predicate);
@@ -647,6 +872,17 @@ impl<'db> FactGraph<'db> {
             let boosted = (existing.confidence * 1.05).min(1.0).max(confidence);
             let merged_durability = existing.durability.max(durability).clamp(0.0, 1.0);
             let merged_ref = source_ref.or(existing.source_ref.as_ref());
+            let has_new_validity = valid_from.is_some() || valid_to.is_some();
+            let merged_valid_from = if has_new_validity {
+                valid_from.clone()
+            } else {
+                existing.valid_from.clone()
+            };
+            let merged_valid_to = if has_new_validity {
+                valid_to.clone()
+            } else {
+                existing.valid_to.clone()
+            };
             let mut merged_tags = existing.tags.clone();
             for tag in tags {
                 if !merged_tags.iter().any(|item| item == tag) {
@@ -660,8 +896,9 @@ impl<'db> FactGraph<'db> {
                 "UPDATE facts
                  SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = ?2,
                      provenance_item_id = ?3, provenance_record_id = ?4,
-                     provenance_snippet = ?5, tags = ?6, durability = ?7
-                 WHERE id = ?8",
+                     provenance_snippet = ?5, tags = ?6, durability = ?7,
+                     valid_from = ?8, valid_to = ?9
+                 WHERE id = ?10",
                 rusqlite::params![
                     now,
                     boosted,
@@ -670,6 +907,8 @@ impl<'db> FactGraph<'db> {
                     provenance.provenance_snippet,
                     tags_json,
                     merged_durability,
+                    merged_valid_from,
+                    merged_valid_to,
                     existing.fact_id
                 ],
             )?;
@@ -690,6 +929,35 @@ impl<'db> FactGraph<'db> {
                 .is_some();
             if has_user_value && source == "inferred" {
                 return Ok(UpsertOutcome::Skipped);
+            }
+            if let Some(start) = valid_from.as_deref() {
+                let inferred_end = if valid_to.is_none() {
+                    conn.query_row(
+                        "SELECT MIN(valid_from) FROM facts
+                         WHERE subject = ?1 AND predicate = ?2 AND object <> ?3
+                           AND valid_from > ?4
+                           AND (valid_to IS NULL OR valid_to > ?4)",
+                        rusqlite::params![subject, predicate, object, start],
+                        |row| row.get::<_, Option<String>>(0),
+                    )?
+                } else {
+                    None
+                };
+                conn.execute(
+                    "UPDATE facts SET valid_to = ?1
+                     WHERE subject = ?2 AND predicate = ?3 AND object <> ?4
+                       AND valid_from IS NOT NULL AND valid_from < ?1
+                       AND (valid_to IS NULL OR valid_to > ?1)",
+                    rusqlite::params![start, subject, predicate, object],
+                )?;
+                if let Some(inferred_end) = inferred_end {
+                    // When importing a correction older than a known later value,
+                    // stop the new interval at that later start to avoid overlap.
+                    // The source-provided end always takes precedence.
+                    if valid_to.is_none() {
+                        valid_to = Some(inferred_end);
+                    }
+                }
             }
             let n = conn.execute(
                 "UPDATE facts SET confidence = confidence * ?1
@@ -719,7 +987,17 @@ impl<'db> FactGraph<'db> {
                 .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         }
         let _ = self.insert_with_source_ref_on_connection(
-            conn, subject, &predicate, object, source, confidence, tags, source_ref, durability,
+            conn,
+            subject,
+            &predicate,
+            object,
+            source,
+            confidence,
+            tags,
+            source_ref,
+            durability,
+            valid_from.as_deref(),
+            valid_to.as_deref(),
         )?;
         Ok(if corrected {
             UpsertOutcome::Corrected
@@ -730,17 +1008,41 @@ impl<'db> FactGraph<'db> {
 
     pub(crate) fn delete_fact_by_id(&self, fact_id: &str) -> anyhow::Result<()> {
         let conn = self.db.try_conn()?;
-        let subject: Option<String> = conn
-            .query_row(
-                "SELECT subject FROM facts WHERE id = ?1",
+        let subject = in_immediate_transaction(&conn, |conn| {
+            let triple: Option<(String, String, String)> = conn
+                .query_row(
+                    "SELECT subject, predicate, object FROM facts WHERE id = ?1",
+                    rusqlite::params![fact_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            conn.execute(
+                "DELETE FROM facts WHERE id = ?1",
                 rusqlite::params![fact_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        conn.execute(
-            "DELETE FROM facts WHERE id = ?1",
-            rusqlite::params![fact_id],
-        )?;
+            )?;
+            conn.execute(
+                "DELETE FROM fact_history WHERE id = ?1",
+                rusqlite::params![fact_id],
+            )?;
+            if let Some((subject, predicate, object)) = triple.as_ref() {
+                conn.execute(
+                    "DELETE FROM fact_proposals WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                    rusqlite::params![subject, predicate, object],
+                )?;
+                if is_single_valued_predicate(predicate) {
+                    conn.execute(
+                        "DELETE FROM fact_history WHERE subject = ?1 AND predicate = ?2",
+                        rusqlite::params![subject, predicate],
+                    )?;
+                } else {
+                    conn.execute(
+                        "DELETE FROM fact_history WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                        rusqlite::params![subject, predicate, object],
+                    )?;
+                }
+            }
+            Ok(triple.map(|(subject, _, _)| subject))
+        })?;
         if let Some(subject) = subject {
             self.db.cache_invalidate_facts(&subject);
         }
@@ -751,7 +1053,12 @@ impl<'db> FactGraph<'db> {
 
     pub(crate) fn clear_all(&self) -> anyhow::Result<u64> {
         let conn = self.db.try_conn()?;
-        let deleted = conn.execute("DELETE FROM facts", [])? as u64;
+        let deleted = in_immediate_transaction(&conn, |conn| {
+            let deleted = conn.execute("DELETE FROM facts", [])? as u64;
+            conn.execute("DELETE FROM fact_proposals", [])?;
+            conn.execute("DELETE FROM fact_history", [])?;
+            Ok(deleted)
+        })?;
         self.db.cache_invalidate_all_facts();
         self.db
             .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
@@ -763,7 +1070,7 @@ impl<'db> FactGraph<'db> {
 mod tests {
     use super::FactGraph;
     use crate::Database;
-    use crate::repositories::facts::{FactSourceRef, UpsertOutcome};
+    use crate::repositories::facts::{FactSourceRef, MemoryFactKind, UpsertOutcome};
 
     #[test]
     fn insert_links_both_labels_to_graph_nodes() {
@@ -856,7 +1163,14 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let graph = FactGraph::new(&db);
         graph
-            .set_user_fact("user", "project_path", "D:/authoritative", &[])
+            .set_user_fact_with_kind_and_validity(
+                "user",
+                "project_path",
+                "D:/authoritative",
+                &[],
+                MemoryFactKind::Profile,
+                &crate::FactValidity::default(),
+            )
             .unwrap();
 
         let outcome = graph

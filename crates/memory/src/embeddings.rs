@@ -15,6 +15,14 @@ pub struct EmbeddedText {
     pub updated_at: String,
 }
 
+/// Optional domain narrowing applied before embedding candidate limits.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MemoryEmbeddingFilter<'a> {
+    pub fact_subject: Option<&'a str>,
+    pub exclude_session_id: Option<&'a str>,
+    pub memory_kind: Option<&'a str>,
+}
+
 /// Stable keyword candidate for an episodic memory item. Typed recall uses
 /// this identity so equal summaries from different sessions are not
 /// collapsed together.
@@ -661,6 +669,7 @@ impl Database {
     /// `max(limit * 4, EMBEDDING_SEARCH_SCAN_CAP)` newest matching rows.
     /// At/above that size, LSH bucket probing (M5) replaces the newest-only
     /// scan so older high-similarity rows are still reachable.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn search_embeddings_filtered(
         &self,
         entity_type: &str,
@@ -670,8 +679,39 @@ impl Database {
         fact_subject: Option<&str>,
         exclude_session_id: Option<&str>,
     ) -> anyhow::Result<Vec<(EmbeddedText, f64)>> {
+        self.search_embeddings_filtered_by_memory_kind(
+            entity_type,
+            query_vec,
+            limit,
+            model,
+            MemoryEmbeddingFilter {
+                fact_subject,
+                exclude_session_id,
+                memory_kind: None,
+            },
+        )
+    }
+
+    pub(crate) fn search_embeddings_filtered_by_memory_kind(
+        &self,
+        entity_type: &str,
+        query_vec: &[f32],
+        limit: usize,
+        model: &str,
+        filter: MemoryEmbeddingFilter<'_>,
+    ) -> anyhow::Result<Vec<(EmbeddedText, f64)>> {
         validate_entity_type(entity_type)?;
-        if let Some(session_id) = exclude_session_id {
+        if let Some(memory_kind) = filter.memory_kind {
+            anyhow::ensure!(
+                matches!(memory_kind, "profile" | "semantic" | "procedural"),
+                "invalid fact memory kind filter"
+            );
+            anyhow::ensure!(
+                entity_type == entity_kind::FACT,
+                "memory kind only applies to facts"
+            );
+        }
+        if let Some(session_id) = filter.exclude_session_id {
             anyhow::ensure!(
                 haven_common::types::is_canonical_id(session_id, "ses"),
                 "invalid excluded session id"
@@ -689,23 +729,10 @@ impl Database {
             && self.embedding_lsh_ready_for_ann(entity_type, model, total)?;
         let candidates = if use_ann {
             let probe_cap = (limit.saturating_mul(8)).max(LSH_PROBE_CANDIDATE_CAP);
-            self.list_embeddings_via_lsh(
-                entity_type,
-                model,
-                query_vec,
-                probe_cap,
-                fact_subject,
-                exclude_session_id,
-            )?
+            self.list_embeddings_via_lsh(entity_type, model, query_vec, probe_cap, filter)?
         } else {
             let scan_cap = (limit.saturating_mul(4)).max(EMBEDDING_SEARCH_SCAN_CAP);
-            self.list_embeddings_for_search(
-                entity_type,
-                model,
-                scan_cap,
-                fact_subject,
-                exclude_session_id,
-            )?
+            self.list_embeddings_for_search(entity_type, model, scan_cap, filter)?
         };
         let mut hits: Vec<(EmbeddedText, f64)> = candidates
             .into_iter()
@@ -793,8 +820,7 @@ impl Database {
         model: &str,
         query_vec: &[f32],
         probe_cap: usize,
-        fact_subject: Option<&str>,
-        exclude_session_id: Option<&str>,
+        filter: MemoryEmbeddingFilter<'_>,
     ) -> anyhow::Result<Vec<EmbeddedText>> {
         let buckets = lsh_probe_buckets(lsh_bucket(query_vec));
         let placeholders = buckets.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -815,7 +841,9 @@ impl Database {
               AND l.entity_id = e.entity_id
               AND l.model = e.model ",
         );
-        if entity_type == entity_kind::FACT && fact_subject.is_some_and(|s| !s.is_empty()) {
+        if entity_type == entity_kind::FACT
+            && (filter.fact_subject.is_some_and(|s| !s.is_empty()) || filter.memory_kind.is_some())
+        {
             sql.push_str("INNER JOIN facts f ON f.id = e.entity_id ");
         }
         if entity_type == entity_kind::EPISODE {
@@ -827,13 +855,19 @@ impl Database {
             live_owner_filter("e")
         ));
         if entity_type == entity_kind::FACT
-            && let Some(subject) = fact_subject.filter(|s| !s.is_empty())
+            && let Some(subject) = filter.fact_subject.filter(|s| !s.is_empty())
         {
             sql.push_str("AND f.subject = ? ");
             bind.push(Box::new(subject.to_string()));
         }
+        if entity_type == entity_kind::FACT
+            && let Some(memory_kind) = filter.memory_kind
+        {
+            sql.push_str("AND f.memory_kind = ? ");
+            bind.push(Box::new(memory_kind.to_string()));
+        }
         if entity_type == entity_kind::EPISODE
-            && let Some(sid) = exclude_session_id.filter(|s| !s.is_empty())
+            && let Some(sid) = filter.exclude_session_id.filter(|s| !s.is_empty())
         {
             sql.push_str(
                 "AND e.entity_id NOT IN (
@@ -858,13 +892,7 @@ impl Database {
         };
         if out.is_empty() {
             let scan_cap = probe_cap.min(EMBEDDING_SEARCH_SCAN_CAP.saturating_mul(4));
-            return self.list_embeddings_for_search(
-                entity_type,
-                model,
-                scan_cap,
-                fact_subject,
-                exclude_session_id,
-            );
+            return self.list_embeddings_for_search(entity_type, model, scan_cap, filter);
         }
         Ok(out)
     }
@@ -877,13 +905,13 @@ impl Database {
         entity_type: &str,
         model: &str,
         scan_cap: usize,
-        fact_subject: Option<&str>,
-        exclude_session_id: Option<&str>,
+        filter: MemoryEmbeddingFilter<'_>,
     ) -> anyhow::Result<Vec<EmbeddedText>> {
         // Fast path: cached full list filtered by model when no SQL domain
         // filter is needed and the cache is smaller than the scan cap.
-        if fact_subject.is_none()
-            && exclude_session_id.is_none()
+        if filter.fact_subject.is_none()
+            && filter.exclude_session_id.is_none()
+            && filter.memory_kind.is_none()
             && let Some(cached) = self.cache_get_embeddings(entity_type)
         {
             let filtered_embeddings: Vec<_> =
@@ -895,19 +923,27 @@ impl Database {
         }
 
         let conn = self.try_conn()?;
-        match (entity_type, fact_subject, exclude_session_id) {
-            (entity_kind::FACT, Some(subject), _) => {
+        match entity_type {
+            entity_kind::FACT if filter.fact_subject.is_some() || filter.memory_kind.is_some() => {
                 let mut stmt = conn.prepare(
                     "SELECT e.entity_type, e.entity_id, e.model, e.vector, e.text,
                             e.created_at, e.updated_at
                      FROM memory_embeddings e
                      INNER JOIN facts f ON f.id = e.entity_id
-                     WHERE e.entity_type = ?1 AND e.model = ?2 AND f.subject = ?3
+                     WHERE e.entity_type = ?1 AND e.model = ?2
+                       AND (?3 IS NULL OR f.subject = ?3)
+                       AND (?4 IS NULL OR f.memory_kind = ?4)
                      ORDER BY e.updated_at DESC
-                     LIMIT ?4",
+                     LIMIT ?5",
                 )?;
                 let rows = stmt.query_map(
-                    rusqlite::params![entity_type, model, subject, scan_cap as i64],
+                    rusqlite::params![
+                        entity_type,
+                        model,
+                        filter.fact_subject,
+                        filter.memory_kind,
+                        scan_cap as i64
+                    ],
                     row_to_embedded,
                 )?;
                 let mut out = Vec::new();
@@ -916,7 +952,7 @@ impl Database {
                 }
                 Ok(out)
             }
-            (entity_kind::EPISODE, _, Some(sid)) => {
+            entity_kind::EPISODE if filter.exclude_session_id.is_some() => {
                 let mut stmt = conn.prepare(
                     "SELECT e.entity_type, e.entity_id, e.model, e.vector, e.text,
                             e.created_at, e.updated_at
@@ -928,7 +964,12 @@ impl Database {
                      LIMIT ?4",
                 )?;
                 let rows = stmt.query_map(
-                    rusqlite::params![entity_type, model, sid, scan_cap as i64],
+                    rusqlite::params![
+                        entity_type,
+                        model,
+                        filter.exclude_session_id,
+                        scan_cap as i64
+                    ],
                     row_to_embedded,
                 )?;
                 let mut out = Vec::new();
@@ -2067,7 +2108,13 @@ mod tests {
         .unwrap();
         // Force LSH path regardless of ANN_ACTIVATE_MIN.
         let candidates = db
-            .list_embeddings_via_lsh(entity_kind::FACT, "m", &target, 16, None, None)
+            .list_embeddings_via_lsh(
+                entity_kind::FACT,
+                "m",
+                &target,
+                16,
+                MemoryEmbeddingFilter::default(),
+            )
             .unwrap();
         assert!(
             candidates.iter().any(|e| e.entity_id == FACT_ID_3),

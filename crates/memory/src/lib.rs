@@ -15,22 +15,23 @@ pub use embeddings::EmbeddedText;
 pub use persistence::{MemoryPersistence, MemoryStores};
 pub use recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryEntityKind, MemoryHit, MemoryQuery,
-    MemoryRecall, MemoryRecallDiagnostics, MemoryRecallEmptyReason, MemoryRecallMode,
-    MemoryRecallSourceStatus, MemoryRecallSuggestion, normalize_memory_query,
+    MemoryRecall, MemoryRecallDiagnostics, MemoryRecallEmptyReason, MemoryRecallKind,
+    MemoryRecallMode, MemoryRecallSourceStatus, MemoryRecallSuggestion, normalize_memory_query,
 };
 pub use repositories::embedding_store::{
     MemoryEmbeddingPersistFailure, MemoryEmbeddingPersistReport, MemoryEmbeddingStore,
     MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
 pub use repositories::fact_store::{
-    DEFAULT_FACT_PAGE_SIZE, FactPage, FactPageCursor, MAX_FACT_PAGE_SIZE, MemoryFactStore,
-    MemoryFactWrite,
+    DEFAULT_FACT_PAGE_SIZE, FactHistorySnapshot, FactPage, FactPageCursor, FactValiditySnapshot,
+    MAX_FACT_HISTORY_RESULTS, MAX_FACT_PAGE_SIZE, MemoryFactStore, MemoryFactWrite,
 };
 pub use repositories::facts::{
     CANONICAL_MERGE_TARGETS, ContradictionCandidate, ContradictionKind, Fact, FactSourceRef,
-    UpsertOutcome, fact_effective_confidence, fact_within_demote_age, is_canonical_merge_target,
-    is_identity_predicate, is_sensitive_object, is_sensitive_predicate, is_sensitive_text,
-    is_visible_fact, normalize_predicate, pick_contradiction_keeper,
+    FactValidity, MemoryFactKind, UpsertOutcome, fact_effective_confidence, fact_within_demote_age,
+    is_canonical_merge_target, is_identity_predicate, is_sensitive_object, is_sensitive_predicate,
+    is_sensitive_text, is_visible_fact, normalize_fact_validity, normalize_predicate,
+    pick_contradiction_keeper,
 };
 pub use repositories::kv_store::{
     FactExtractionMarker, FactExtractionMarkerState, SummaryExtractionMarker,
@@ -40,6 +41,12 @@ pub use repositories::kv_store::{
 pub use repositories::kv_store::{MAX_MEMORY_OUTBOX_PAGE_SIZE, MAX_MEMORY_SESSION_ID_PAGE_SIZE};
 pub use repositories::memory_fact_extraction_store::{
     FactExtractionProjection, MemoryFactExtractionStore,
+};
+pub use repositories::memory_fact_proposal_store::{
+    FactEvidenceStatus, FactProposal, FactProposalCommitOutcome, FactProposalCursor,
+    FactProposalDecision, FactProposalPage, FactProposalReviewOutcome, MAX_FACT_PROPOSAL_PAGE_SIZE,
+    MAX_PENDING_FACT_PROPOSALS, MemoryFactProposalStore, MemoryFactProposalWrite,
+    VERIFIED_FACT_CONFIDENCE_FLOOR,
 };
 pub use repositories::memory_maintenance_store::{MemoryMaintenanceStore, PredicateCount};
 pub use repositories::memory_outbox_store::MemoryOutboxStore;

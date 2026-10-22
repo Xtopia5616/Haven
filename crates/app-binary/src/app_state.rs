@@ -230,6 +230,7 @@ impl AppState {
         let supervisor_session_store = memory_persistence.session_store();
         let memory_stores = memory_persistence.memory_stores();
         let memory_fact_store = memory_stores.fact_store();
+        let memory_fact_proposal_store = memory_stores.fact_proposal_store();
         tracing::debug!(
             "AppState::new phase=db elapsed={}ms",
             t0.elapsed().as_millis()
@@ -297,6 +298,7 @@ impl AppState {
         let runtime = Arc::new(ApplicationRuntime::new(RuntimeServices {
             session_store: session_store.clone(),
             memory_fact_store: memory_fact_store.clone(),
+            memory_fact_proposal_store: memory_fact_proposal_store.clone(),
             tools: tools.clone(),
             tool_services,
             executor: executor.clone(),

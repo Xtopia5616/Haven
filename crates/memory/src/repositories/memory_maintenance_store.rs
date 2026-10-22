@@ -213,6 +213,28 @@ mod tests {
         assert_eq!(store.demote_obvious_contradictions(None).await.unwrap(), 1);
         assert_eq!(store.flush_low_confidence(0.3, None).await.unwrap(), 1);
         assert_eq!(store.cleanup_orphan_source_refs(None).await.unwrap(), 1);
+        assert_eq!(
+            db.conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM fact_history WHERE predicate = 'api_key'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "sensitive cleanup must purge its archived snapshot"
+        );
+        assert_eq!(
+            db.conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM fact_history WHERE object = 'Stale'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "automatic low-confidence cleanup preserves a time-addressable snapshot"
+        );
     }
 
     #[tokio::test]

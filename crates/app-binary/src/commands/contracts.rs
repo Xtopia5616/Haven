@@ -210,6 +210,16 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "read-only fact projection",
     },
     CommandContract {
+        name: "list_fact_proposals",
+        boundary: CommandBoundary::Read,
+        security: "bounded pending-only queue; credential-like values filtered",
+    },
+    CommandContract {
+        name: "review_fact_proposal",
+        boundary: CommandBoundary::Mutate,
+        security: "canonical fprop ID; one-shot transactional accept/reject",
+    },
+    CommandContract {
         name: "add_fact",
         boundary: CommandBoundary::Mutate,
         security: "credential-like predicates and values rejected",

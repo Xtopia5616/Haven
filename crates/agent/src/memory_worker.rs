@@ -1,5 +1,9 @@
 mod maintenance;
 use maintenance::MemoryMaintenancePass;
+mod fact_verification;
+use fact_verification::{
+    FactEvidenceSource, PreparedFactWrite, unverified_fact_write, verify_fact_writes,
+};
 mod outbox;
 use outbox::{MemoryExtractionHandler, MemoryOutbox};
 #[cfg(test)]
@@ -16,10 +20,12 @@ use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
 use haven_memory::{
-    FactSourceRef, is_sensitive_object, is_sensitive_predicate, normalize_predicate,
+    FactSourceRef, is_sensitive_object, is_sensitive_predicate, normalize_fact_validity,
+    normalize_predicate,
 };
 use haven_memory::{
-    MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryMaintenanceStore,
+    MemoryFactExtractionStore, MemoryFactProposalStore, MemoryFactStore, MemoryFactWrite,
+    MemoryMaintenanceStore,
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -42,6 +48,7 @@ use crate::memory_service::MemoryService;
 #[cfg(test)]
 use haven_memory::Fact;
 
+#[cfg(test)]
 const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
 
 /// Extraction fields after resolving transcript provenance, before the
@@ -54,6 +61,8 @@ struct MemoryFactCandidate {
     tags: Vec<String>,
     source_ref: Option<FactSourceRef>,
     durability: f64,
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 }
 
 /// Background memory worker: fact extraction, maintenance, outbox draining,
@@ -62,6 +71,7 @@ pub(crate) struct MemoryWorker {
     memory: Arc<MemoryService>,
     outbox: Arc<MemoryOutbox>,
     fact_store: MemoryFactStore,
+    fact_proposal_store: MemoryFactProposalStore,
     fact_extraction_store: MemoryFactExtractionStore,
     maintenance_store: MemoryMaintenanceStore,
     inference: Arc<dyn MemoryInferencePort>,
@@ -150,11 +160,13 @@ impl MemoryWorker {
             shutdown_token.clone(),
         ));
         let fact_extraction_store = memory.memory_fact_extraction_store();
+        let fact_proposal_store = memory.memory_fact_proposal_store();
         let maintenance_store = memory.memory_maintenance_store();
         Self {
             memory,
             outbox,
             fact_store,
+            fact_proposal_store,
             fact_extraction_store,
             maintenance_store,
             inference,
@@ -506,13 +518,8 @@ impl MemoryWorker {
             // kickoff / cross-session) so extraction does not stall forever.
             if let Some(last) = window.cursor_last
                 && let Err(error) = self
-                    .fact_store
-                    .commit_ordinary_extraction(
-                        Vec::new(),
-                        PERSIST_CONFIDENCE_FLOOR,
-                        session_id,
-                        &last,
-                    )
+                    .fact_proposal_store
+                    .commit_ordinary_extraction(Vec::new(), session_id, &last)
                     .await
             {
                 tracing::warn!(
@@ -551,18 +558,19 @@ impl MemoryWorker {
                     tracing::debug!("LLM found no facts in session {}", session_id);
                 }
                 let fact_count = facts.len();
-                let writes = self.prepare_fact_writes(facts, &window.messages);
+                let writes = self.prepare_fact_writes(facts, &window.messages, true);
+                let writes = verify_fact_writes(
+                    self.inference.as_ref(),
+                    self.inference_semaphore.as_ref(),
+                    writes,
+                )
+                .await;
                 let Some(last_message_id) = window.cursor_last.as_deref() else {
                     return FactInferenceOutcome::Done;
                 };
                 match self
-                    .fact_store
-                    .commit_ordinary_extraction(
-                        writes,
-                        PERSIST_CONFIDENCE_FLOOR,
-                        session_id,
-                        last_message_id,
-                    )
+                    .fact_proposal_store
+                    .commit_validated_ordinary_extraction(writes, session_id, last_message_id)
                     .await
                 {
                     Ok(wrote) => wrote,
@@ -586,8 +594,14 @@ impl MemoryWorker {
                 return FactInferenceOutcome::Retryable;
             }
         };
-        if wrote {
-            self.mark_memory_dirty(session_id);
+        if wrote.queued > 0 || wrote.auto_accepted > 0 {
+            tracing::info!(
+                proposals = wrote.queued,
+                auto_accepted = wrote.auto_accepted,
+                facts_written = wrote.facts_written,
+                session_id,
+                "fact extraction verified and committed memory candidates"
+            );
         }
         FactInferenceOutcome::Done
     }
@@ -640,59 +654,116 @@ impl MemoryWorker {
         &self,
         facts: Vec<LlmFact>,
         messages: &[haven_memory::Message],
-    ) -> Vec<MemoryFactWrite> {
-        let candidates = facts.into_iter().map(|fact| {
-            let source_ref = fact
-                .message_index
-                .and_then(|message_index| resolve_source_message(messages, message_index))
-                .map(|message| FactSourceRef::from_message(&message.message_id, &message.content));
-            MemoryFactCandidate {
-                subject: fact.subject,
-                predicate: fact.predicate,
-                object: fact.object,
-                confidence: fact.confidence,
-                tags: fact.tags,
-                source_ref,
-                durability: fact.durability.unwrap_or(0.6),
-            }
-        });
-        self.prepare_fact_candidates(candidates)
+        verify_user_evidence: bool,
+    ) -> Vec<PreparedFactWrite> {
+        facts
+            .into_iter()
+            .filter_map(|fact| {
+                let source_message = fact
+                    .message_index
+                    .and_then(|message_index| resolve_source_message(messages, message_index));
+                let source_ref = source_message.map(|message| {
+                    FactSourceRef::from_message(&message.message_id, &message.content)
+                });
+                let evidence = if verify_user_evidence {
+                    source_message.map(|message| {
+                        let assistant_context = messages
+                            .iter()
+                            .position(|candidate| candidate.message_id == message.message_id)
+                            .and_then(|source_index| {
+                                messages[..source_index]
+                                    .iter()
+                                    .rev()
+                                    .take_while(|candidate| {
+                                        candidate.role != haven_common::types::CanonicalRole::User
+                                    })
+                                    .find(|candidate| {
+                                        candidate.role
+                                            == haven_common::types::CanonicalRole::Assistant
+                                            && !matches!(
+                                                candidate.message_type,
+                                                Some(haven_common::types::TranscriptMessageKind::Reasoning)
+                                                    | Some(haven_common::types::TranscriptMessageKind::Thought)
+                                                    | Some(haven_common::types::TranscriptMessageKind::ToolCall)
+                                                    | Some(haven_common::types::TranscriptMessageKind::Observation)
+                                            )
+                                    })
+                                    .map(|candidate| candidate.content.clone())
+                            });
+                        FactEvidenceSource {
+                            message_id: message.message_id.clone(),
+                            user_text: message.content.clone(),
+                            assistant_context,
+                        }
+                    })
+                } else {
+                    None
+                };
+                let candidate = MemoryFactCandidate {
+                    subject: fact.subject,
+                    predicate: fact.predicate,
+                    object: fact.object,
+                    confidence: fact.confidence,
+                    tags: fact.tags,
+                    source_ref,
+                    durability: fact.durability.unwrap_or(0.6),
+                    valid_from: fact.valid_from,
+                    valid_to: fact.valid_to,
+                };
+                let write = self.prepare_fact_candidate(candidate)?;
+                Some(PreparedFactWrite { write, evidence })
+            })
+            .collect()
     }
 
+    #[cfg(test)]
     fn prepare_fact_candidates(
         &self,
         facts: impl IntoIterator<Item = MemoryFactCandidate>,
     ) -> Vec<MemoryFactWrite> {
-        let mut writes = Vec::new();
-        for fact in facts {
-            let subject = sanitize_fact_field(&fact.subject, self.sanitize_max_chars);
-            let predicate = normalize_predicate(&fact.predicate);
-            let object = sanitize_fact_field(&fact.object, self.sanitize_max_chars);
-            if predicate.is_empty() || subject.is_empty() || object.is_empty() {
-                tracing::debug!(
-                    "fact inference: dropping degenerate fact (empty subject/predicate/object)"
-                );
-                continue;
-            }
-            if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
-                tracing::debug!("fact inference: dropping sensitive fact");
-                continue;
-            }
-            // Clamp to the documented range so an over-eager model
-            // (e.g. 1.2) does not skew decay/ordering.
-            let confidence = fact.confidence.clamp(0.5, 1.0);
-            let tags = sanitize_tags(&fact.tags);
-            writes.push(MemoryFactWrite {
-                subject,
-                predicate,
-                object,
-                confidence,
-                tags,
-                source_ref: fact.source_ref,
-                durability: fact.durability.clamp(0.1, 1.0),
-            });
+        facts
+            .into_iter()
+            .filter_map(|fact| self.prepare_fact_candidate(fact))
+            .collect()
+    }
+
+    fn prepare_fact_candidate(&self, fact: MemoryFactCandidate) -> Option<MemoryFactWrite> {
+        let subject = sanitize_fact_field(&fact.subject, self.sanitize_max_chars);
+        let predicate = normalize_predicate(&fact.predicate);
+        let object = sanitize_fact_field(&fact.object, self.sanitize_max_chars);
+        if predicate.is_empty() || subject.is_empty() || object.is_empty() {
+            tracing::debug!(
+                "fact inference: dropping degenerate fact (empty subject/predicate/object)"
+            );
+            return None;
         }
-        writes
+        if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
+            tracing::debug!("fact inference: dropping sensitive fact");
+            return None;
+        }
+        let (valid_from, valid_to) = match normalize_fact_validity(
+            fact.valid_from.as_deref(),
+            fact.valid_to.as_deref(),
+        ) {
+            Ok(validity) => validity,
+            Err(error) => {
+                tracing::debug!(error = %error, "fact inference: dropping invalid valid-time interval");
+                return None;
+            }
+        };
+        // Clamp to the documented range so an over-eager model (e.g. 1.2)
+        // does not skew decay/ordering.
+        Some(MemoryFactWrite {
+            subject,
+            predicate,
+            object,
+            confidence: fact.confidence.clamp(0.5, 1.0),
+            tags: sanitize_tags(&fact.tags),
+            source_ref: fact.source_ref,
+            durability: fact.durability.clamp(0.1, 1.0),
+            valid_from,
+            valid_to,
+        })
     }
 
     #[cfg(test)]
@@ -848,7 +919,7 @@ impl MemoryWorker {
             return SummaryExtractOutcome::Done;
         }
         let already_completed = match self
-            .fact_store
+            .fact_proposal_store
             .summary_extraction_completed(session_id, episode_id)
             .await
         {
@@ -938,7 +1009,10 @@ impl MemoryWorker {
                         session_id
                     );
                 }
-                self.prepare_fact_writes(facts, std::slice::from_ref(&synthetic))
+                self.prepare_fact_writes(facts, std::slice::from_ref(&synthetic), false)
+                    .into_iter()
+                    .map(|prepared| unverified_fact_write(prepared.write))
+                    .collect()
             }
             Err(_) => {
                 tracing::warn!(
@@ -951,13 +1025,20 @@ impl MemoryWorker {
         };
 
         match self
-            .fact_store
-            .commit_summary_extraction(writes, PERSIST_CONFIDENCE_FLOOR, session_id, episode_id)
+            .fact_proposal_store
+            .commit_validated_summary_extraction(writes, session_id, episode_id)
             .await
         {
-            Ok(wrote) => {
-                if wrote {
-                    self.mark_memory_dirty(session_id);
+            Ok(outcome) => {
+                if outcome.queued > 0 || outcome.auto_accepted > 0 {
+                    tracing::info!(
+                        proposals = outcome.queued,
+                        auto_accepted = outcome.auto_accepted,
+                        facts_written = outcome.facts_written,
+                        session_id,
+                        episode_id,
+                        "summary extraction committed unverified memory candidates"
+                    );
                 }
             }
             Err(error) => {
@@ -1456,6 +1537,15 @@ mod tests {
             256,
             fact_extraction_min_interval_secs,
         )
+    }
+
+    async fn pending_proposals(worker: &MemoryWorker) -> Vec<haven_memory::FactProposal> {
+        worker
+            .fact_proposal_store
+            .list_pending_page(None, haven_memory::MAX_FACT_PROPOSAL_PAGE_SIZE)
+            .await
+            .unwrap()
+            .proposals
     }
 
     fn insert_noncanonical_predicate(db: &Database, predicate: &str, object: &str) -> String {
@@ -2097,9 +2187,16 @@ mod tests {
             predicate: predicate.into(),
             object: object.into(),
             source: source.into(),
+            memory_kind: if source == "user" {
+                haven_memory::MemoryFactKind::Profile
+            } else {
+                haven_memory::MemoryFactKind::Semantic
+            },
             confidence,
             tags: vec![],
             created_at: now.clone(),
+            valid_from: None,
+            valid_to: None,
             mention_count: 0,
             last_seen_at: Some(now),
             source_ref: None,
@@ -2710,8 +2807,6 @@ mod tests {
     async fn failed_summary_marker_ack_keeps_marker_and_requeues_live_job() {
         let db = temp_db();
         let session = db.create_session("outbox summary retry").unwrap();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
-            .unwrap();
         let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_pending_extraction(
             &session.session_id,
@@ -2784,9 +2879,8 @@ mod tests {
         .expect("the summary job should retry acknowledgement after inference commit");
 
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
-        let facts = db.list_facts_by_subject("user").unwrap();
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].mention_count, 1);
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
         worker.shutdown();
     }
 
@@ -2946,21 +3040,20 @@ mod tests {
 
         assert!(worker.infer_facts(&session.session_id).await);
 
-        let facts = db.list_facts_by_subject("user").unwrap();
+        let facts = pending_proposals(&worker).await;
         assert!(
             facts
                 .iter()
-                .any(|fact| { fact.predicate == "likes" && fact.object == "Rust" })
+                .any(|proposal| { proposal.predicate == "likes" && proposal.object == "Rust" })
         );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
-    async fn ordinary_fact_writes_roll_back_when_cursor_commit_fails() {
+    async fn ordinary_proposals_roll_back_when_cursor_commit_fails() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("ordinary atomic extraction").unwrap();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
-            .unwrap();
         let message = db
             .add_message(
                 &session.session_id,
@@ -2990,10 +3083,8 @@ mod tests {
             .unwrap();
 
         assert!(!worker.infer_facts(&session.session_id).await);
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            0
-        );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert!(pending_proposals(&worker).await.is_empty());
         assert_eq!(
             db.get_kv(&format!("fact_extraction.{}", session.session_id))
                 .unwrap(),
@@ -3011,9 +3102,8 @@ mod tests {
                 .as_deref(),
             Some(message.message_id.as_str())
         );
-        let facts = db.list_facts_by_subject("user").unwrap();
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].mention_count, 1);
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
     }
 
@@ -3047,6 +3137,8 @@ mod tests {
                         snippet: "I still use Rust.".into(),
                     }),
                     durability: 0.8,
+                    valid_from: None,
+                    valid_to: None,
                 },
                 MemoryFactCandidate {
                     subject: "user".into(),
@@ -3056,6 +3148,8 @@ mod tests {
                     tags: vec![],
                     source_ref: None,
                     durability: 0.6,
+                    valid_from: None,
+                    valid_to: None,
                 },
                 MemoryFactCandidate {
                     subject: "user".into(),
@@ -3065,6 +3159,8 @@ mod tests {
                     tags: vec![],
                     source_ref: None,
                     durability: 0.6,
+                    valid_from: None,
+                    valid_to: None,
                 },
                 MemoryFactCandidate {
                     subject: "user".into(),
@@ -3074,6 +3170,8 @@ mod tests {
                     tags: vec![],
                     source_ref: None,
                     durability: 0.6,
+                    valid_from: None,
+                    valid_to: None,
                 },
             ])
             .await
@@ -3151,11 +3249,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn summary_facts_and_completion_marker_commit_atomically() {
+    async fn summary_proposals_and_completion_marker_commit_atomically() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("summary persistence retry").unwrap();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
-            .unwrap();
         db.conn()
             .expect("test database connection checkout failed")
             .execute_batch(
@@ -3193,10 +3289,8 @@ mod tests {
             None,
             "a failed fact transaction must leave the episode retryable"
         );
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            0
-        );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert!(pending_proposals(&worker).await.is_empty());
 
         db.conn()
             .expect("test database connection checkout failed")
@@ -3217,11 +3311,12 @@ mod tests {
             .as_deref(),
             Some(session.session_id.as_str())
         );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
         assert!(
-            db.list_facts_by_subject("user")
-                .unwrap()
+            pending_proposals(&worker)
+                .await
                 .iter()
-                .any(|fact| fact.predicate == "likes" && fact.object == "Rust")
+                .any(|proposal| proposal.predicate == "likes" && proposal.object == "Rust")
         );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
 
@@ -3232,10 +3327,7 @@ mod tests {
             SummaryExtractOutcome::Done
         );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            1
-        );
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
     }
 
     #[tokio::test]
@@ -3270,10 +3362,8 @@ mod tests {
                 .await,
             SummaryExtractOutcome::Done
         );
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            1
-        );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
 
         assert_eq!(
             worker
@@ -3281,10 +3371,8 @@ mod tests {
                 .await,
             SummaryExtractOutcome::Done
         );
-        assert_eq!(
-            db.list_facts_by_subject("user").unwrap()[0].mention_count,
-            1
-        );
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
+        assert_eq!(pending_proposals(&worker).await.len(), 1);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
     }
 
@@ -3485,7 +3573,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn infer_facts_partial_invalid_batch_persists_only_valid_fact() {
+    async fn infer_facts_partial_invalid_batch_queues_only_valid_proposal() {
         let db = temp_db();
         let session = db.create_session("partial malformed fact batch").unwrap();
         db.add_message(
@@ -3507,10 +3595,11 @@ mod tests {
 
         engine.infer_facts(&session.session_id).await;
 
-        let facts = db.list_facts_by_subject("user").unwrap();
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].predicate, "uses");
-        assert_eq!(facts[0].object, "TypeScript");
+        let proposals = pending_proposals(&engine).await;
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(proposals[0].predicate, "uses");
+        assert_eq!(proposals[0].object, "TypeScript");
+        assert!(db.list_facts_by_subject("user").unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -409,10 +409,15 @@ Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：
 `MemoryRecallStore` 调度 recall SQL 并返回 typed domain results。Tools 的 `MemoryTool` Recall
 只调用已绑定的 `MemoryRecallPort`，由 Agent `MemoryService` 复用该 typed recall boundary；它不再通过
 `MemoryFactStore` 执行本地 keyword fallback。`MemoryFactStore` 负责事实持久化与事实查询，未装配 recall
-capability 时工具显式失败（ADR 0918）。`MemoryEntityKind` 由 Memory 持有 `fact` / `episode` 的闭合词汇并生成到 `recall_memory` IPC；renderer 的
-`all` 是 UI 筛选项，只展开为两次独立查询，不进入后端 domain enum（ADR 0732）。Agent 保留 prompt
-查询归一化、embedding provider 调用、候选合并与预算；`MemoryEmbeddingStore` 负责
-embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路由、provider 校验、
+capability 时工具显式失败（ADR 0918）。`MemoryEntityKind` 是 embedding 存储的 `fact` / `episode`
+闭合词汇；`MemoryRecallKind` 是 `recall_memory` IPC 的闭合集合，包含 `fact`、`episode`、`profile`、
+`semantic` 与 `procedural`。后三类按 facts.memory_kind 筛选，不增加第二套事实存储；renderer 的
+`all` 是 UI 筛选项，只展开为 fact 与 episode 两次独立查询，不进入后端 domain enum（ADR 0732、1358）。Agent 保留 prompt
+查询归一化、embedding provider 调用、prompt 候选合并与预算；Memory 的 `MemoryRetriever` 在 fact 召回时
+从最多 16 个关键词/向量种子沿 concept 节点扩展至两跳，每跳最多 16 个节点、总计最多 80 个候选；跳过通用 user 节点，只从可见的一跳事实继续扩展，并复用类别、subject 和敏感内容过滤（ADR 1359、1364）。`MemoryEmbeddingStore` 负责
+embedding 生命周期读写和 LSH 维护。Agent `MemoryService` 对 Profile、Semantic、Procedural
+分别使用 8/8/4 候选上限，共享一次 query embedding 并统一经 `MemoryRecallStore.retrieve`；prompt
+最多 15 条 fact 对每类先保留两个候选，再由原有分数补齐（ADR 1360）。Memory `fact_history` 按 system time 保存语义更改与维护删除前的事实快照；只有显式 MemoryTool `history` 查询读取它，search/list/recall、Prompt、FTS 与 embedding 仍只使用当前 facts。`forget`、清空和敏感事实清理同步擦除历史副本；时点结果经 `MemoryFactStore` 的有界快照端口返回（ADR 1361）。模型从 transcript 与 compaction summary 抽取的事实进入原子、最多 500 条的 `fact_proposals` 队列；普通 transcript 中经来源身份与原文精确引文核验、明确受用户原话支持的事实可直接由 FactGraph 写入，置信度至少为 0.9。summary、未核验、不确定或矛盾的候选仍待 Memory Center 审核。该核验只判断用户是否这样表达，不代表外部事实查证；置信度是内部强度分，不是校准概率（ADR 1362、1363）。事实当前版本、历史版本及待审提案都保留显式 `valid_from` / `valid_to`；半开区间 `[from, to)` 只按明确时间查询，缺失时间不从创建时间推断。`recorded_at` 表示 knowledge time；`history` 回答 Haven 当时记录了什么，`valid_at` 查询最新记录的现实有效状态。单值更正仅在旧区间已知且可安全收束时结束旧区间；显式忘记和隐私清理同步擦除历史（ADR 1365）。`memory_index.rs` 保留模型路由、provider 校验、
 批处理和维护门控（ADR 0021、0303、0304）。组合根 `AppState` 通过 Memory 的
 `MemoryPersistence::open` 打开数据库，并分别取得拥有独立 live-event channel 的 SessionStore、ToolRunStore
 与单一 typed `MemoryStores` bundle。bundle 的 store 字段保持私有，App/Agent 通过具名 getter 获取共享 handle，不能拼接不同数据库 owner 的 store；App 与 `MemoryService` 共用由 `fact_store()` 克隆的能力（ADR 0910）。不再从

@@ -1,6 +1,6 @@
 use crate::app_state::AppState;
 use crate::commands::{log_err, validate_command_id};
-use haven_memory::{MemoryEntityKind, MemoryQuery};
+use haven_memory::{FactProposalDecision, MemoryQuery, MemoryRecallKind};
 use std::sync::Arc;
 use tauri::State;
 
@@ -91,6 +91,7 @@ pub struct MemoryFactResponse {
     pub predicate: String,
     pub object: String,
     pub source: MemoryFactSource,
+    pub memory_kind: haven_memory::MemoryFactKind,
     pub confidence: f64,
     pub tags: Vec<String>,
     pub created_at: String,
@@ -98,12 +99,111 @@ pub struct MemoryFactResponse {
     pub last_seen_at: Option<String>,
     pub source_ref: Option<MemoryFactSourceRef>,
     pub durability: f64,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MemoryFactPageResponse {
     pub facts: Vec<MemoryFactResponse>,
     pub next_cursor: Option<MemoryFactCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryFactProposalCursor {
+    pub created_at: String,
+    pub proposal_id: String,
+}
+
+impl From<haven_memory::FactProposalCursor> for MemoryFactProposalCursor {
+    fn from(cursor: haven_memory::FactProposalCursor) -> Self {
+        Self {
+            created_at: cursor.created_at,
+            proposal_id: cursor.proposal_id,
+        }
+    }
+}
+
+impl From<MemoryFactProposalCursor> for haven_memory::FactProposalCursor {
+    fn from(cursor: MemoryFactProposalCursor) -> Self {
+        Self {
+            created_at: cursor.created_at,
+            proposal_id: cursor.proposal_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactProposalResponse {
+    pub proposal_id: String,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub confidence: f64,
+    pub tags: Vec<String>,
+    pub durability: f64,
+    pub created_at: String,
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+    pub source_ref: Option<MemoryFactSourceRef>,
+    pub evidence_status: haven_memory::FactEvidenceStatus,
+    pub evidence_quote: Option<String>,
+}
+
+impl From<haven_memory::FactProposal> for MemoryFactProposalResponse {
+    fn from(proposal: haven_memory::FactProposal) -> Self {
+        Self {
+            proposal_id: proposal.proposal_id,
+            subject: proposal.subject,
+            predicate: proposal.predicate,
+            object: proposal.object,
+            confidence: proposal.confidence,
+            tags: proposal.tags,
+            durability: proposal.durability,
+            valid_from: proposal.valid_from,
+            valid_to: proposal.valid_to,
+            created_at: proposal.created_at,
+            source_ref: proposal.source_ref.map(Into::into),
+            evidence_status: proposal.evidence_status,
+            evidence_quote: proposal.evidence_quote,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryFactProposalPageResponse {
+    pub proposals: Vec<MemoryFactProposalResponse>,
+    pub next_cursor: Option<MemoryFactProposalCursor>,
+}
+
+impl From<haven_memory::FactProposalPage> for MemoryFactProposalPageResponse {
+    fn from(page: haven_memory::FactProposalPage) -> Self {
+        Self {
+            proposals: page.proposals.into_iter().map(Into::into).collect(),
+            next_cursor: page.next_cursor.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MemoryFactProposalReviewResponse {
+    Accepted { fact_written: bool },
+    Rejected,
+    AlreadyReviewed,
+}
+
+impl From<haven_memory::FactProposalReviewOutcome> for MemoryFactProposalReviewResponse {
+    fn from(outcome: haven_memory::FactProposalReviewOutcome) -> Self {
+        match outcome {
+            haven_memory::FactProposalReviewOutcome::Accepted { fact_written } => {
+                Self::Accepted { fact_written }
+            }
+            haven_memory::FactProposalReviewOutcome::Rejected => Self::Rejected,
+            haven_memory::FactProposalReviewOutcome::AlreadyReviewed => Self::AlreadyReviewed,
+        }
+    }
 }
 
 impl TryFrom<haven_memory::FactPage> for MemoryFactPageResponse {
@@ -134,9 +234,12 @@ impl TryFrom<haven_memory::Fact> for MemoryFactResponse {
             predicate: fact.predicate,
             object: fact.object,
             source,
+            memory_kind: fact.memory_kind,
             confidence: fact.confidence,
             tags: fact.tags,
             created_at: fact.created_at,
+            valid_from: fact.valid_from,
+            valid_to: fact.valid_to,
             mention_count: fact.mention_count,
             last_seen_at: fact.last_seen_at,
             source_ref: fact.source_ref.map(Into::into),
@@ -179,11 +282,11 @@ pub async fn run_memory_maintenance(state: State<'_, Arc<AppState>>) -> Result<u
 #[tauri::command]
 pub async fn recall_memory(
     query: String,
-    kind: Option<MemoryEntityKind>,
+    kind: Option<MemoryRecallKind>,
     limit: Option<usize>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<MemoryRecallItem>, String> {
-    let kind = kind.unwrap_or(MemoryEntityKind::Fact);
+    let kind = kind.unwrap_or(MemoryRecallKind::Fact);
     let limit = limit.unwrap_or(5);
     let query = MemoryQuery::new(&query, kind, limit).map_err(|e| log_err("recall_memory", e))?;
     state
@@ -229,12 +332,56 @@ pub async fn list_facts(
     MemoryFactPageResponse::try_from(page).map_err(|e| log_err("list_facts", e))
 }
 
+#[tauri::command]
+pub async fn list_fact_proposals(
+    state: State<'_, Arc<AppState>>,
+    cursor: Option<MemoryFactProposalCursor>,
+    limit: Option<u32>,
+) -> Result<MemoryFactProposalPageResponse, String> {
+    let limit = limit.unwrap_or(haven_memory::MAX_FACT_PROPOSAL_PAGE_SIZE as u32);
+    if limit == 0 || limit as usize > haven_memory::MAX_FACT_PROPOSAL_PAGE_SIZE {
+        return Err(log_err(
+            "list_fact_proposals",
+            format!(
+                "limit must be between 1 and {}",
+                haven_memory::MAX_FACT_PROPOSAL_PAGE_SIZE
+            ),
+        ));
+    }
+    state
+        .runtime
+        .memory_fact_proposal_store
+        .list_pending_page(cursor.map(Into::into), limit as usize)
+        .await
+        .map(MemoryFactProposalPageResponse::from)
+        .map_err(|error| log_err("list_fact_proposals", error))
+}
+
+#[tauri::command]
+pub async fn review_fact_proposal(
+    state: State<'_, Arc<AppState>>,
+    proposal_id: String,
+    decision: FactProposalDecision,
+) -> Result<MemoryFactProposalReviewResponse, String> {
+    validate_command_id(&proposal_id, "proposal_id", "fprop")
+        .map_err(|error| log_err("review_fact_proposal", error))?;
+    state
+        .runtime
+        .memory_fact_proposal_store
+        .review(proposal_id, decision)
+        .await
+        .map(MemoryFactProposalReviewResponse::from)
+        .map_err(|error| log_err("review_fact_proposal", error))
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct AddFactInput {
     subject: String,
     predicate: String,
     object: String,
     tags: Vec<String>,
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 }
 
 fn validate_add_fact_input(
@@ -242,8 +389,10 @@ fn validate_add_fact_input(
     predicate: String,
     object: String,
     tags: Option<Vec<String>>,
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 ) -> Result<AddFactInput, String> {
-    use haven_memory::{is_sensitive_object, is_sensitive_predicate};
+    use haven_memory::{is_sensitive_object, is_sensitive_predicate, normalize_fact_validity};
 
     let subject = subject.trim().to_string();
     let predicate = predicate.trim().to_string();
@@ -263,12 +412,17 @@ fn validate_add_fact_input(
         .map(|tag| tag.trim().to_string())
         .filter(|tag| !tag.is_empty())
         .collect();
+    let (valid_from, valid_to) =
+        normalize_fact_validity(valid_from.as_deref(), valid_to.as_deref())
+            .map_err(|error| error.to_string())?;
 
     Ok(AddFactInput {
         subject,
         predicate,
         object,
         tags,
+        valid_from,
+        valid_to,
     })
 }
 
@@ -279,13 +433,25 @@ pub async fn add_fact(
     predicate: String,
     object: String,
     tags: Option<Vec<String>>,
+    valid_from: Option<String>,
+    valid_to: Option<String>,
 ) -> Result<MemoryFactResponse, String> {
-    let input = validate_add_fact_input(subject, predicate, object, tags)
+    let input = validate_add_fact_input(subject, predicate, object, tags, valid_from, valid_to)
         .map_err(|error| log_err("add_fact", error))?;
     let fact = state
         .runtime
         .memory_fact_store
-        .set_user_fact(input.subject, input.predicate, input.object, input.tags)
+        .set_user_fact_with_kind_and_validity(
+            input.subject,
+            input.predicate,
+            input.object,
+            input.tags,
+            haven_memory::MemoryFactKind::Profile,
+            haven_memory::FactValidity {
+                valid_from: input.valid_from,
+                valid_to: input.valid_to,
+            },
+        )
         .await
         .map_err(|e| log_err("add_fact", e))?;
     MemoryFactResponse::try_from(fact).map_err(|e| log_err("add_fact", e))
@@ -327,6 +493,8 @@ mod tests {
             " likes ".into(),
             " Rust ".into(),
             Some(vec![" preference ".into(), "  ".into(), "workspace".into()]),
+            None,
+            None,
         )
         .unwrap();
 
@@ -337,6 +505,8 @@ mod tests {
                 predicate: "likes".into(),
                 object: "Rust".into(),
                 tags: vec!["preference".into(), "workspace".into()],
+                valid_from: None,
+                valid_to: None,
             }
         );
     }
@@ -344,16 +514,59 @@ mod tests {
     #[test]
     fn add_fact_input_preserves_empty_and_sensitive_rejections() {
         assert_eq!(
-            validate_add_fact_input("user".into(), "  ".into(), "Rust".into(), None),
+            validate_add_fact_input("user".into(), "  ".into(), "Rust".into(), None, None, None),
             Err("subject, predicate, and object are required".into())
         );
         assert_eq!(
-            validate_add_fact_input("user".into(), "api_key".into(), "value".into(), None),
+            validate_add_fact_input(
+                "user".into(),
+                "api_key".into(),
+                "value".into(),
+                None,
+                None,
+                None
+            ),
             Err("refusing to store credential-like facts".into())
         );
         assert_eq!(
-            validate_add_fact_input("user".into(), "likes".into(), "sk-secret".into(), None),
+            validate_add_fact_input(
+                "user".into(),
+                "likes".into(),
+                "sk-secret".into(),
+                None,
+                None,
+                None
+            ),
             Err("refusing to store credential-like facts".into())
+        );
+    }
+
+    #[test]
+    fn add_fact_input_normalizes_and_validates_valid_time_bounds() {
+        let input = validate_add_fact_input(
+            "user".into(),
+            "employer".into(),
+            "Acme".into(),
+            None,
+            Some("2024-01-01".into()),
+            Some("2025-01-01".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            input.valid_from.as_deref(),
+            Some("2024-01-01T00:00:00.000Z")
+        );
+        assert_eq!(input.valid_to.as_deref(), Some("2025-01-01T00:00:00.000Z"));
+        assert!(
+            validate_add_fact_input(
+                "user".into(),
+                "employer".into(),
+                "Acme".into(),
+                None,
+                Some("2025-01-01".into()),
+                Some("2024-01-01".into()),
+            )
+            .is_err()
         );
     }
 
@@ -385,9 +598,12 @@ mod tests {
             predicate: "likes".into(),
             object: "Rust".into(),
             source: "user".into(),
+            memory_kind: haven_memory::MemoryFactKind::Profile,
             confidence: 1.0,
             tags: vec!["language".into()],
             created_at: "2026-10-06T00:00:00Z".into(),
+            valid_from: Some("2026-10-01T00:00:00.000Z".into()),
+            valid_to: None,
             mention_count: 2,
             last_seen_at: Some("2026-10-06T00:00:00Z".into()),
             source_ref: Some(haven_memory::FactSourceRef {
@@ -406,9 +622,12 @@ mod tests {
                 "predicate": "likes",
                 "object": "Rust",
                 "source": "user",
+                "memory_kind": "profile",
                 "confidence": 1.0,
                 "tags": ["language"],
                 "created_at": "2026-10-06T00:00:00Z",
+                "valid_from": "2026-10-01T00:00:00.000Z",
+                "valid_to": null,
                 "mention_count": 2,
                 "last_seen_at": "2026-10-06T00:00:00Z",
                 "source_ref": {

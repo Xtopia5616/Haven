@@ -814,6 +814,8 @@ pub(crate) fn run() {
             commands::tools::discard_sandbox_output_review,
             commands::tools::pick_sandbox_output_destination,
             commands::memory::list_facts,
+            commands::memory::list_fact_proposals,
+            commands::memory::review_fact_proposal,
             commands::memory::add_fact,
             commands::memory::delete_fact,
             commands::memory::clear_facts,

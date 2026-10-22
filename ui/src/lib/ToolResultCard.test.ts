@@ -2112,6 +2112,28 @@ describe('ToolResultCard memory', () => {
 		expect(screen.getByText('置信度 0.92')).toBeTruthy();
 	});
 
+	it('renders explicit valid-time fact intervals', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'memory',
+			content: JSON.stringify({
+				operation: 'valid_at',
+				at: '2024-06-01T00:00:00.000Z',
+				facts: [
+					{
+						fact_id: 'fact-00000000000000000000000000000002',
+						subject: 'user',
+						predicate: 'employer',
+						object: 'Acme',
+						valid_from: '2024-01-01T00:00:00.000Z',
+						valid_to: '2025-01-01T00:00:00.000Z',
+					},
+				],
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('2024-01-01T00:00:00.000Z 至 2025-01-01T00:00:00.000Z')).toBeTruthy();
+	});
+
 	it('renders recall hits and empty states', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'memory',

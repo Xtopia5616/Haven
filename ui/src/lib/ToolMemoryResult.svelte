@@ -14,6 +14,8 @@
 		confidence?: number | null;
 		tags?: string[] | null;
 		source_snippet?: string | null;
+		valid_from?: string | null;
+		valid_to?: string | null;
 	};
 	type MemoryHit = {
 		entity_id: string;
@@ -41,6 +43,11 @@
 	function scoreLabel(value: number): string {
 		return Number.isFinite(value) ? value.toFixed(2) : '—';
 	}
+
+	function validityLabel(fact: MemoryFact): string {
+		if (!fact.valid_from && !fact.valid_to) return '现实有效时间未指定';
+		return `${fact.valid_from || '起始未知'} 至 ${fact.valid_to || '仍有效'}`;
+	}
 </script>
 
 {#if Array.isArray(data.facts)}
@@ -65,6 +72,7 @@
 								{#if Array.isArray(fact.tags) && fact.tags.length > 0}<span
 										>{fact.tags.join(' · ')}</span
 									>{/if}
+								{#if data.operation === 'valid_at'}<span>{validityLabel(fact)}</span>{/if}
 							</div>
 							{#if fact.source_snippet}<div class="memory-snippet">
 									{fact.source_snippet}

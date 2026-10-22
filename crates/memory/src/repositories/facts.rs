@@ -1,4 +1,5 @@
 use crate::db::Database;
+use chrono::{DateTime, NaiveDate, SecondsFormat, TimeZone, Utc};
 use haven_common::types::is_canonical_id;
 
 use super::fact_graph::FactGraph;
@@ -8,6 +9,38 @@ pub use super::fact_maintenance::{
 };
 pub use super::fact_query::fact_effective_confidence;
 pub use super::fact_security::{is_sensitive_object, is_sensitive_predicate, is_sensitive_text};
+
+/// Bounded semantic role assigned to a durable fact row.
+///
+/// `profile` is explicitly user-maintained information, `semantic` is a
+/// reusable fact inferred from conversation, and `procedural` is a reusable
+/// user-maintained instruction or workflow. Provenance (`source`) remains a
+/// separate axis: it records who supplied the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryFactKind {
+    Profile,
+    Semantic,
+    Procedural,
+}
+
+/// Explicit real-world validity bounds for a fact. Missing bounds remain
+/// unknown and are never inferred from the time Haven recorded the fact.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FactValidity {
+    pub valid_from: Option<String>,
+    pub valid_to: Option<String>,
+}
+
+impl MemoryFactKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Profile => "profile",
+            Self::Semantic => "semantic",
+            Self::Procedural => "procedural",
+        }
+    }
+}
 
 /// Predicate row count used by memory maintenance policy.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -23,9 +56,15 @@ pub struct Fact {
     pub predicate: String,
     pub object: String,
     pub source: String,
+    pub memory_kind: MemoryFactKind,
     pub confidence: f64,
     pub tags: Vec<String>,
     pub created_at: String,
+    /// Real-world interval start, if the user or source explicitly provided it.
+    /// `None` means unknown; it is never inferred from `created_at`.
+    pub valid_from: Option<String>,
+    /// Exclusive real-world interval end, if known.
+    pub valid_to: Option<String>,
     /// How many times this fact has been re-confirmed (reinforcement).
     #[serde(default)]
     pub mention_count: i64,
@@ -41,6 +80,44 @@ pub struct Fact {
     /// User-stated facts and identity predicates never decay regardless.
     #[serde(default = "default_durability")]
     pub durability: f64,
+}
+
+/// Normalize optional valid-time bounds to canonical UTC millisecond RFC3339.
+/// Date-only values mean midnight UTC. Both missing bounds mean unknown
+/// validity and are excluded from explicit valid-time queries.
+pub fn normalize_fact_validity(
+    valid_from: Option<&str>,
+    valid_to: Option<&str>,
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    fn normalize(value: Option<&str>) -> anyhow::Result<Option<String>> {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        anyhow::ensure!(value.len() <= 64, "fact valid-time boundary is too long");
+        let instant = if value.len() == 10 {
+            let date = NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| {
+                anyhow::anyhow!("fact valid-time boundary must be RFC3339 or YYYY-MM-DD")
+            })?;
+            let midnight = date
+                .and_hms_opt(0, 0, 0)
+                .ok_or_else(|| anyhow::anyhow!("fact valid-time date is invalid"))?;
+            Utc.from_utc_datetime(&midnight)
+        } else {
+            DateTime::parse_from_rfc3339(value)
+                .map_err(|_| {
+                    anyhow::anyhow!("fact valid-time boundary must be RFC3339 or YYYY-MM-DD")
+                })?
+                .with_timezone(&Utc)
+        };
+        Ok(Some(instant.to_rfc3339_opts(SecondsFormat::Millis, true)))
+    }
+
+    let valid_from = normalize(valid_from)?;
+    let valid_to = normalize(valid_to)?;
+    if let (Some(from), Some(to)) = (valid_from.as_deref(), valid_to.as_deref()) {
+        anyhow::ensure!(from < to, "fact valid_from must be earlier than valid_to");
+    }
+    Ok((valid_from, valid_to))
 }
 
 fn default_durability() -> f64 {
@@ -271,6 +348,7 @@ impl Database {
     /// Store a fact explicitly stated by the user. User-stated facts are
     /// authoritative; single-valued predicates replace prior values and
     /// repeated statements reinforce the existing row.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_user_fact(
         &self,
         subject: &str,
@@ -278,8 +356,51 @@ impl Database {
         object: &str,
         tags: &[&str],
     ) -> anyhow::Result<Fact> {
+        self.set_user_fact_with_kind(subject, predicate, object, tags, MemoryFactKind::Profile)
+    }
+
+    /// Store an explicitly maintained profile or procedural memory.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_user_fact_with_kind(
+        &self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        tags: &[&str],
+        memory_kind: MemoryFactKind,
+    ) -> anyhow::Result<Fact> {
+        self.set_user_fact_with_kind_and_validity(
+            subject,
+            predicate,
+            object,
+            tags,
+            memory_kind,
+            &FactValidity::default(),
+        )
+    }
+
+    pub(crate) fn set_user_fact_with_kind_and_validity(
+        &self,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        tags: &[&str],
+        memory_kind: MemoryFactKind,
+        validity: &FactValidity,
+    ) -> anyhow::Result<Fact> {
+        anyhow::ensure!(
+            memory_kind != MemoryFactKind::Semantic,
+            "user-maintained memory kind must be profile or procedural"
+        );
         self.with_fact_write(|| {
-            FactGraph::new(self).set_user_fact(subject, predicate, object, tags)
+            FactGraph::new(self).set_user_fact_with_kind_and_validity(
+                subject,
+                predicate,
+                object,
+                tags,
+                memory_kind,
+                validity,
+            )
         })
     }
 
@@ -481,13 +602,30 @@ pub const CONTRADICTION_DEMOTE_FACTOR: f64 = 0.5;
 mod tests {
     use super::{
         FactSourceRef, UpsertOutcome, fact_effective_confidence, is_sensitive_object,
-        is_single_valued_predicate, is_volatile_predicate,
+        is_single_valued_predicate, is_volatile_predicate, normalize_fact_validity,
     };
     use crate::Database;
     use chrono::Utc;
 
     fn create_db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn fact_validity_normalizes_offsets_and_rejects_empty_or_reversed_intervals() {
+        assert_eq!(
+            normalize_fact_validity(Some("2025-03-01"), Some("2025-04-01")).unwrap(),
+            (
+                Some("2025-03-01T00:00:00.000Z".into()),
+                Some("2025-04-01T00:00:00.000Z".into())
+            )
+        );
+        assert_eq!(
+            normalize_fact_validity(Some("2025-03-01T05:00:00+05:00"), None).unwrap(),
+            (Some("2025-03-01T00:00:00.000Z".into()), None)
+        );
+        assert!(normalize_fact_validity(Some("2025-03-02"), Some("2025-03-02")).is_err());
+        assert!(normalize_fact_validity(Some("not-a-date"), None).is_err());
     }
 
     #[test]

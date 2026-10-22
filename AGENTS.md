@@ -78,6 +78,7 @@ corepack pnpm run check
 | `msg-` | 消息 messages.id；记忆条目 memory_items.id（compaction 摘要等）与 transcript 共用该 ID 空间 | `haven_memory` |
 | `step-` | 步骤 session_steps.id | `haven_memory` |
 | `fact-` | 事实 facts.id（SPO 图谱行） | `haven_memory` |
+| `fprop-` | 待审核推断事实 proposals.id（pending queue only） | `haven_memory` |
 | `node-` | 记忆节点 memory_nodes.id | `haven_memory` |
 | `toolrun-` | 后台工具调用 tool_runs.id（仅 kind=`background`） | `haven_tools` |
 | `sched-` | Schedule 计划 schedules.id（一次性或周期计划） | `haven_memory` / `haven_tools` |

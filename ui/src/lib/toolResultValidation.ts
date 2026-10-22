@@ -580,7 +580,9 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					mode: isToolMemoryRecallMode,
 					deleted: isFiniteNumber,
 				}) &&
-				(!('hits' in data) || data.kind === 'fact' || data.kind === 'episode') &&
+				(!('hits' in data) ||
+					(isString(data.kind) &&
+						['fact', 'profile', 'semantic', 'procedural', 'episode'].includes(data.kind))) &&
 				hasValidObjectFields(data, { stored: stringFields('predicate', 'object') }) &&
 				hasValidUniqueRecordArray(
 					data,
@@ -596,7 +598,11 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 								'object',
 								'source_snippet',
 							),
+							valid_from: (value) => value === null || isString(value),
+							valid_to: (value) => value === null || isString(value),
 							confidence: isFiniteNumber,
+							memory_kind: (value) =>
+								value === 'profile' || value === 'semantic' || value === 'procedural',
 							tags: isStringArray,
 						}) && isCanonicalEntityId(row.fact_id, 'fact'),
 				) &&
@@ -604,13 +610,13 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					data,
 					'hits',
 					'entity_id',
-					(value) => isCanonicalEntityId(value, data.kind === 'fact' ? 'fact' : 'msg'),
+					(value) => isCanonicalEntityId(value, data.kind === 'episode' ? 'msg' : 'fact'),
 					(row) =>
 						hasValidOptionalFields(row, {
 							...stringFields('text', 'model'),
 							score: isFiniteNumber,
 						}) &&
-						isCanonicalEntityId(row.entity_id, data.kind === 'fact' ? 'fact' : 'msg'),
+						isCanonicalEntityId(row.entity_id, data.kind === 'episode' ? 'msg' : 'fact'),
 				)
 			);
 		case 'shell':
