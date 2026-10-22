@@ -12,10 +12,8 @@ import {
 	mediaCapabilityBackend,
 	normalizeApiStyle,
 	providerWireStyle,
-	samplingFieldsHint,
 	sttCapabilityBackend,
 	supportsBuiltinWebSearch,
-	supportsSamplingField,
 } from './apiStyle.ts';
 import { supportsBuiltinWebSearchForModel } from './providerSearchCapabilities.ts';
 
@@ -165,13 +163,23 @@ describe('apiStyle', () => {
 			supportsBuiltinWebSearchForModel('openai-chat', 'groq', 'openai/gpt-oss-20b', ''),
 		).toBe(true);
 		expect(
-			supportsBuiltinWebSearchForModel('openai-chat', 'ollama', 'llama3', 'http://localhost:11434'),
+			supportsBuiltinWebSearchForModel(
+				'openai-chat',
+				'ollama',
+				'llama3',
+				'http://localhost:11434',
+			),
 		).toBe(false);
+		expect(supportsBuiltinWebSearchForModel('dashscope', 'dashscope', 'qwen3.8-max', '')).toBe(
+			true,
+		);
 		expect(
-			supportsBuiltinWebSearchForModel('dashscope', 'dashscope', 'qwen3.8-max', ''),
-		).toBe(true);
-		expect(
-			supportsBuiltinWebSearchForModel('openai-responses', 'deepseek', 'deepseek-v4-flash', ''),
+			supportsBuiltinWebSearchForModel(
+				'openai-responses',
+				'deepseek',
+				'deepseek-v4-flash',
+				'',
+			),
 		).toBe(false);
 	});
 
@@ -315,16 +323,5 @@ describe('apiStyle', () => {
 		expect(isKnownApiStyle('openai-respones')).toBe(false);
 		// Vendor preset ids are not wire styles.
 		expect(isKnownApiStyle('moonshot')).toBe(false);
-	});
-
-	it('marks sampling fields by style', () => {
-		expect(supportsSamplingField('openai-chat', 'frequency_penalty')).toBe(true);
-		expect(supportsSamplingField('openai-responses', 'top_p')).toBe(true);
-		expect(supportsSamplingField('openai-responses', 'top_k')).toBe(false);
-		expect(supportsSamplingField('anthropic', 'reasoning_effort')).toBe(true);
-		expect(supportsSamplingField('gemini', 'seed')).toBe(true);
-		expect(supportsSamplingField('gemini', 'reasoning_effort')).toBe(false);
-		expect(supportsSamplingField('deepgram', 'temperature')).toBe(false);
-		expect(samplingFieldsHint('anthropic')).toContain('top_k');
 	});
 });

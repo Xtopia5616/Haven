@@ -19,7 +19,6 @@ fn request_fixture_pins_messages_wire_keys() {
     let endpoint = ModelEndpoint {
         model_name: "claude-test".into(),
         max_tokens: 128,
-        temperature: 0.2,
         ..Default::default()
     };
     let actual = serde_json::to_value(AnthropicAdapter::new(endpoint).build_request_body(
@@ -28,7 +27,20 @@ fn request_fixture_pins_messages_wire_keys() {
         false,
     ))
     .unwrap();
-    for key in ["model", "max_tokens", "stream", "temperature"] {
+    for key in [
+        "temperature",
+        "seed",
+        "top_p",
+        "top_k",
+        "frequency_penalty",
+        "presence_penalty",
+        "topP",
+        "topK",
+    ] {
+        let config = actual.get("generationConfig").unwrap_or(&actual);
+        assert!(config.get(key).is_none(), "removed sampling key {key}");
+    }
+    for key in ["model", "max_tokens", "stream"] {
         assert_eq!(actual[key], expected[key], "wire key {key}");
     }
 }

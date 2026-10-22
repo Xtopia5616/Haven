@@ -150,16 +150,6 @@ impl OpenAiResponsesAdapter {
             }
         };
         let reasoning = responses_reasoning_config(&self.endpoint);
-        let temperature = if reasoning.is_some() || self.endpoint.temperature == 1.0 {
-            None
-        } else {
-            Some(self.endpoint.temperature)
-        };
-        let top_p = if reasoning.is_some() {
-            None
-        } else {
-            self.endpoint.top_p
-        };
         let text = self.endpoint.response_format.clone().map(|format| {
             if format.get("format").is_some() {
                 format
@@ -172,8 +162,6 @@ impl OpenAiResponsesAdapter {
             instructions: converted_input.instructions,
             input: converted_input.input,
             max_output_tokens: (!is_chatgpt_plan).then_some(max_output_tokens),
-            temperature: (!is_chatgpt_plan).then_some(temperature).flatten(),
-            top_p: (!is_chatgpt_plan).then_some(top_p).flatten(),
             stream: stream || is_chatgpt_plan,
             store: is_chatgpt_plan.then_some(false),
             tools: if tools_json.is_empty() {

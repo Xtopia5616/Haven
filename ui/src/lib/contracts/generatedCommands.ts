@@ -182,8 +182,8 @@ export type IndependentSearchConfigInput = { provider: 'deepseek_search'; count?
 export type IndependentSearchConfig = { provider: 'deepseek_search'; count: number; need_content: boolean; pass_original_question: boolean; localization?: string | null } | { provider: 'perplexity_search'; max_results: number; search_type: PerplexitySearchType; recency_filter: PerplexitySearchRecency | null; country?: string | null; max_tokens?: number | null; max_tokens_per_page?: number | null; search_language_filter: string[]; search_domain_filter: string[]; last_updated_after_filter?: string | null; last_updated_before_filter?: string | null; search_after_date_filter?: string | null; search_before_date_filter?: string | null } | { provider: 'aliyun_ai_search'; endpoint: string; workspace_name: string; top_k: number; query_rewrite: boolean; content_type: AliyunSearchContentType; way: AliyunSearchWay; time_range: AliyunSearchTimeRange; api_key_ref?: string | null } | { provider: 'mistral_web_search'; premium: boolean } | { provider: 'zhipu_web_search' };
 export interface LlmConfigInput { providers?: ProviderConfigInput[]; models?: ModelConfigInput[]; request_policies?: RequestPolicyInput[]; max_total_duration_secs?: number; stream_idle_timeout_secs?: number; retry_max_retries?: number; retry_base_secs?: number; retry_factor?: number; retry_max_secs?: number; retry_jitter?: number; max_concurrent_requests?: number }
 export interface LlmConfig { providers: ProviderConfig[]; models: ModelConfig[]; request_policies: RequestPolicy[]; max_total_duration_secs: number; stream_idle_timeout_secs: number; retry_max_retries: number; retry_base_secs: number; retry_factor: number; retry_max_secs: number; retry_jitter: number; max_concurrent_requests: number }
-export interface ModelConfigInput { id?: string; provider_name?: string; model?: string; capabilities?: CapabilityInput[]; temperature?: number | null; context_window?: number | null; cost_per_1k_input_tokens?: number | null; cost_per_1k_output_tokens?: number | null; cost_per_1k_cache_read_tokens?: number | null; cost_per_1k_cache_write_tokens?: number | null; max_tokens?: number | null; reasoning_effort?: string | null; web_search?: string | null; independent_search?: IndependentSearchConfigInput | null; reasoning_echo_max_chars?: number | null }
-export interface ModelConfig { id: string; provider_name: string; model: string; capabilities: Capability[]; temperature?: number; context_window?: number; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number; cost_per_1k_cache_read_tokens?: number; cost_per_1k_cache_write_tokens?: number; max_tokens?: number; reasoning_effort?: string; web_search?: string; independent_search?: IndependentSearchConfig; reasoning_echo_max_chars?: number }
+export interface ModelConfigInput { id?: string; provider_name?: string; model?: string; capabilities?: CapabilityInput[]; context_window?: number | null; cost_per_1k_input_tokens?: number | null; cost_per_1k_output_tokens?: number | null; cost_per_1k_cache_read_tokens?: number | null; cost_per_1k_cache_write_tokens?: number | null; max_tokens?: number | null; reasoning_effort?: string | null; web_search?: string | null; independent_search?: IndependentSearchConfigInput | null; reasoning_echo_max_chars?: number | null }
+export interface ModelConfig { id: string; provider_name: string; model: string; capabilities: Capability[]; context_window?: number; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number; cost_per_1k_cache_read_tokens?: number; cost_per_1k_cache_write_tokens?: number; max_tokens?: number; reasoning_effort?: string; web_search?: string; independent_search?: IndependentSearchConfig; reasoning_echo_max_chars?: number }
 export const PERPLEXITY_SEARCH_RECENCY_INPUT_VALUES = ['hour', 'day', 'week', 'month', 'year'] as const;
 export type PerplexitySearchRecencyInput = (typeof PERPLEXITY_SEARCH_RECENCY_INPUT_VALUES)[number];
 export const PERPLEXITY_SEARCH_RECENCY_VALUES = ['hour', 'day', 'week', 'month', 'year'] as const;
@@ -192,8 +192,8 @@ export const PERPLEXITY_SEARCH_TYPE_INPUT_VALUES = ['web', 'fast', 'people'] as 
 export type PerplexitySearchTypeInput = (typeof PERPLEXITY_SEARCH_TYPE_INPUT_VALUES)[number];
 export const PERPLEXITY_SEARCH_TYPE_VALUES = ['web', 'fast', 'people'] as const;
 export type PerplexitySearchType = (typeof PERPLEXITY_SEARCH_TYPE_VALUES)[number];
-export interface ProviderConfigInput { name?: string; provider?: string; api_style?: string | null; media_capabilities: ProviderMediaCapabilitiesInput; base_url?: string; api_key?: string; api_key_ref?: string | null; auth_header_name?: string; auth_header_prefix?: string; proxy_url?: string | null; no_proxy?: string | null; default_max_tokens?: number | null; default_temperature?: number | null; default_timeout_secs?: number | null; default_timeout_streaming_secs?: number | null; default_web_search?: string | null }
-export interface ProviderConfig { name: string; provider: string; api_style: string | null; media_capabilities: ProviderMediaCapabilities; base_url: string; api_key_ref?: string; auth_header_name: string; auth_header_prefix: string; proxy_url: string | null; no_proxy: string | null; default_max_tokens?: number; default_temperature?: number; default_timeout_secs?: number; default_timeout_streaming_secs?: number; default_web_search?: string }
+export interface ProviderConfigInput { name?: string; provider?: string; api_style?: string | null; media_capabilities: ProviderMediaCapabilitiesInput; base_url?: string; api_key?: string; api_key_ref?: string | null; auth_header_name?: string; auth_header_prefix?: string; proxy_url?: string | null; no_proxy?: string | null; default_max_tokens?: number | null; default_timeout_secs?: number | null; default_timeout_streaming_secs?: number | null; default_web_search?: string | null }
+export interface ProviderConfig { name: string; provider: string; api_style: string | null; media_capabilities: ProviderMediaCapabilities; base_url: string; api_key_ref?: string; auth_header_name: string; auth_header_prefix: string; proxy_url: string | null; no_proxy: string | null; default_max_tokens?: number; default_timeout_secs?: number; default_timeout_streaming_secs?: number; default_web_search?: string }
 export interface ProviderMediaCapabilitiesInput { stt: boolean; tts: boolean; image_gen: boolean }
 export interface ProviderMediaCapabilities { stt: boolean; tts: boolean; image_gen: boolean }
 export const REQUEST_KIND_INPUT_VALUES = ['chat', 'fast_chat', 'vision', 'audio_chat', 'transcription', 'embedding', 'image_generation', 'speech_synthesis'] as const;
@@ -4064,10 +4064,6 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 									optional: true,
 									shape: { kind: 'number' },
 								},
-								'default_temperature': {
-									optional: true,
-									shape: { kind: 'number' },
-								},
 								'default_timeout_secs': {
 									optional: true,
 									shape: { kind: 'number' },
@@ -4103,10 +4099,6 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 								'capabilities': {
 									optional: false,
 									shape: { kind: 'array', items: { kind: 'enum', values: CAPABILITY_VALUES } },
-								},
-								'temperature': {
-									optional: true,
-									shape: { kind: 'number' },
 								},
 								'context_window': {
 									optional: true,
@@ -8953,10 +8945,6 @@ export const SETTINGS_RESPONSE_SHAPE = {
 									optional: true,
 									shape: { kind: 'number' },
 								},
-								'default_temperature': {
-									optional: true,
-									shape: { kind: 'number' },
-								},
 								'default_timeout_secs': {
 									optional: true,
 									shape: { kind: 'number' },
@@ -8992,10 +8980,6 @@ export const SETTINGS_RESPONSE_SHAPE = {
 								'capabilities': {
 									optional: false,
 									shape: { kind: 'array', items: { kind: 'enum', values: CAPABILITY_VALUES } },
-								},
-								'temperature': {
-									optional: true,
-									shape: { kind: 'number' },
 								},
 								'context_window': {
 									optional: true,

@@ -50,8 +50,6 @@ pub(super) struct OpenAiRequest {
     pub(super) messages: Vec<OpenAiMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) max_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) temperature: Option<f32>,
     pub(super) stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tools: Option<Vec<OpenAiTool>>,
@@ -59,17 +57,7 @@ pub(super) struct OpenAiRequest {
     pub(super) tool_choice: Option<serde_json::Value>,
     // §2.8: additional model parameters
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) top_p: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) top_k: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) frequency_penalty: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) presence_penalty: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) stop: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) seed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) response_format: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

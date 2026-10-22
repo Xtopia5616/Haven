@@ -22,8 +22,6 @@ pub(crate) async fn independent_search(
     let body = json!({
         "model": "web-search-pro",
         "messages": [{"role": "user", "content": query}],
-        "top_p": 0.7,
-        "temperature": 0.1,
         "stream": false,
     });
     let response = super::independent_search::post_json(

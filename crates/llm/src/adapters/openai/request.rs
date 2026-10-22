@@ -90,18 +90,6 @@ impl OpenAiAdapter {
         )
         .with_provider(self.endpoint.provider.clone());
         let thinking_extras = chat_thinking_extras(&self.endpoint);
-        let omit_temperature =
-            thinking_extras.reasoning_effort.is_some() || thinking_extras.thinking.is_some();
-        // DeepSeek explicitly documents these sampling parameters as
-        // unsupported in thinking mode. Omit them instead of relying on the
-        // compatibility behavior that silently ignores them.
-        let deepseek_thinking = is_deepseek(&self.endpoint)
-            && thinking_extras
-                .thinking
-                .as_ref()
-                .and_then(|value| value.get("type"))
-                .and_then(Value::as_str)
-                == Some("enabled");
         let mut request_tools = if tools.is_empty() {
             Vec::new()
         } else {
@@ -130,9 +118,6 @@ impl OpenAiAdapter {
             model: self.endpoint.model_name.clone(),
             messages: wire_messages,
             max_tokens: Some(max_tokens),
-            // Reasoning / thinking modes reject or ignore non-default
-            // temperature. Omit whenever effort or vendor thinking is pinned.
-            temperature: (!omit_temperature).then_some(self.endpoint.temperature),
             stream,
             tools: if request_tools.is_empty() {
                 None
@@ -140,18 +125,7 @@ impl OpenAiAdapter {
                 Some(request_tools)
             },
             tool_choice,
-            top_p: (!deepseek_thinking)
-                .then_some(self.endpoint.top_p)
-                .flatten(),
-            top_k: self.endpoint.top_k,
-            frequency_penalty: (!deepseek_thinking)
-                .then_some(self.endpoint.frequency_penalty)
-                .flatten(),
-            presence_penalty: (!deepseek_thinking)
-                .then_some(self.endpoint.presence_penalty)
-                .flatten(),
             stop: self.endpoint.stop.clone(),
-            seed: self.endpoint.seed,
             response_format: self.endpoint.response_format.clone(),
             reasoning_effort: thinking_extras.reasoning_effort,
             thinking: thinking_extras.thinking,

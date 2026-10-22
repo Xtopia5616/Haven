@@ -1071,25 +1071,7 @@ fn validate_float_fields(
         1.0,
     )?;
 
-    for (index, provider) in llm.providers.iter().enumerate() {
-        if let Some(temperature) = provider.default_temperature {
-            validate_range(
-                &format!("llm.providers[{index}].default_temperature"),
-                f64::from(temperature),
-                0.0,
-                2.0,
-            )?;
-        }
-    }
     for (index, model) in llm.models.iter().enumerate() {
-        if let Some(temperature) = model.temperature {
-            validate_range(
-                &format!("llm.models[{index}].temperature"),
-                f64::from(temperature),
-                0.0,
-                2.0,
-            )?;
-        }
         for (field, value) in [
             ("cost_per_1k_input_tokens", model.cost_per_1k_input_tokens),
             ("cost_per_1k_output_tokens", model.cost_per_1k_output_tokens),
@@ -2127,13 +2109,6 @@ mod tests {
 
         config.llm.retry_jitter = 0.2;
         config.context_limits.compaction_ratio = 1.0;
-        assert!(validate_app_config_numbers(&config).is_err());
-
-        config.context_limits.compaction_ratio = 0.65;
-        config.llm.models.push(crate::config::ModelConfig {
-            temperature: Some(2.1),
-            ..Default::default()
-        });
         assert!(validate_app_config_numbers(&config).is_err());
     }
 

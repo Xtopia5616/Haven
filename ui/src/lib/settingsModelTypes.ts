@@ -77,7 +77,6 @@ export type ProviderKeyCheckInput = Pick<
 
 /** Model settings fields that the UI lets a user override per model. */
 export type ModelOverrideField =
-	| 'temperature'
 	| 'context_window'
 	| 'cost_per_1k_input_tokens'
 	| 'cost_per_1k_output_tokens'

@@ -45,10 +45,8 @@ const U32_FIELDS = new Set([
 const FLOAT_RANGES = new Map<string, readonly [number, number]>([
 	['attachment_image_jpeg_quality', [0, 1]],
 	['compaction_ratio', [0.1, 0.95]],
-	['default_temperature', [0, 2]],
 	['min_confidence', [0, 1]],
 	['retry_jitter', [0, 1]],
-	['temperature', [0, 2]],
 	['vad_threshold', [0, 1]],
 ]);
 
@@ -78,7 +76,6 @@ const NUMERIC_FIELDS = new Set([
 	'cost_per_1k_output_tokens',
 	'default_context_window',
 	'default_max_tokens',
-	'default_temperature',
 	'default_timeout_secs',
 	'default_timeout_streaming_secs',
 	'embedding_chunk_size',
@@ -154,7 +151,6 @@ const NUMERIC_FIELDS = new Set([
 	'skills_max_parse_lines',
 	'stream_idle_timeout_secs',
 	'stream_stall_warn_delay_ms',
-	'temperature',
 	'timeout_secs',
 	'tool_run_result_context_chars',
 	'tool_run_terminal_ttl_secs',
@@ -169,7 +165,6 @@ const NULLABLE_NUMERIC_FIELDS = new Set([
 	'cost_per_1k_input_tokens',
 	'cost_per_1k_output_tokens',
 	'default_max_tokens',
-	'default_temperature',
 	'default_timeout_secs',
 	'default_timeout_streaming_secs',
 	'max_steps_per_session',
@@ -355,7 +350,6 @@ function findInvalidSettingsNumber(
 
 function isNullableNumericField(field: string, path: string): boolean {
 	if (NULLABLE_NUMERIC_FIELDS.has(field)) return true;
-	if (field === 'temperature') return path.startsWith('settings.llm.models[');
 	if (field === 'reasoning_echo_max_chars') return path.startsWith('settings.llm.models[');
 	if (field === 'timeout_secs') return path.startsWith('settings.tool_settings.');
 	return false;
@@ -722,13 +716,14 @@ function isIndependentSearchConfig(value: unknown, provider: unknown): boolean {
 				typeof value.need_content === 'boolean' &&
 				typeof value.pass_original_question === 'boolean' &&
 				(value.localization == null ||
-					(typeof value.localization === 'string' && isValidIpAddress(value.localization)))
+					(typeof value.localization === 'string' &&
+						isValidIpAddress(value.localization)))
 			);
 		case 'perplexity_search': {
-			const optionalString = (candidate: unknown) => candidate == null || typeof candidate === 'string';
+			const optionalString = (candidate: unknown) =>
+				candidate == null || typeof candidate === 'string';
 			const validDate = (candidate: unknown) =>
-				candidate == null ||
-				(typeof candidate === 'string' && isValidMmddyyyy(candidate));
+				candidate == null || (typeof candidate === 'string' && isValidMmddyyyy(candidate));
 			const validTokenLimit = (candidate: unknown) =>
 				candidate == null ||
 				(isSafeUnsignedInteger(candidate) && candidate >= 1 && candidate <= 1_000_000);
@@ -741,17 +736,27 @@ function isIndependentSearchConfig(value: unknown, provider: unknown): boolean {
 				value.max_results <= (value.search_type === 'people' ? 50 : 20) &&
 				['web', 'fast', 'people'].includes(String(value.search_type)) &&
 				(value.recency_filter == null ||
-					['hour', 'day', 'week', 'month', 'year'].includes(String(value.recency_filter))) &&
-				(optionalString(value.country) &&
-					(value.country == null || /^[A-Za-z]{2}$/.test(value.country))) &&
+					['hour', 'day', 'week', 'month', 'year'].includes(
+						String(value.recency_filter),
+					)) &&
+				optionalString(value.country) &&
+				(value.country == null || /^[A-Za-z]{2}$/.test(value.country)) &&
 				validTokenLimit(value.max_tokens) &&
 				validTokenLimit(value.max_tokens_per_page) &&
 				Array.isArray(languageFilters) &&
 				languageFilters.length <= 20 &&
-				languageFilters.every((language) => typeof language === 'string' && /^[A-Za-z]{2}$/.test(language)) &&
+				languageFilters.every(
+					(language) => typeof language === 'string' && /^[A-Za-z]{2}$/.test(language),
+				) &&
 				Array.isArray(domainFilters) &&
 				domainFilters.length <= 20 &&
-				domainFilters.every((domain) => typeof domain === 'string' && domain.length > 0 && domain.length <= 253 && !/\s/.test(domain)) &&
+				domainFilters.every(
+					(domain) =>
+						typeof domain === 'string' &&
+						domain.length > 0 &&
+						domain.length <= 253 &&
+						!/\s/.test(domain),
+				) &&
 				validDate(value.last_updated_after_filter) &&
 				validDate(value.last_updated_before_filter) &&
 				validDate(value.search_after_date_filter) &&
@@ -834,8 +839,7 @@ function findInvalidSettingsSemantics(value: unknown): string | null {
 		}
 		if (model.independent_search != null) {
 			const provider = providers.find(
-				(candidate) =>
-					isRecord(candidate) && candidate.name === model.provider_name,
+				(candidate) => isRecord(candidate) && candidate.name === model.provider_name,
 			);
 			if (
 				!isRecord(provider) ||

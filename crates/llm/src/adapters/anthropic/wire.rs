@@ -21,12 +21,6 @@ pub(super) struct AnthropicRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) system: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) top_p: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) top_k: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) stop_sequences: Option<Vec<String>>,
     /// Client function tools and Anthropic server tools (`web_search_*`) share
     /// this array as raw JSON objects.

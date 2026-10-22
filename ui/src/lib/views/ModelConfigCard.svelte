@@ -231,25 +231,10 @@
 					<MaterialCollapsible lazy bind:open={advancedOpen}>
 						{#snippet header()}
 							<span class="advanced-heading">高级参数</span>
-							<span class="advanced-hint">温度、上下文窗口与用量成本</span>
+							<span class="advanced-hint">上下文窗口与用量成本</span>
 						{/snippet}
 						{#snippet children()}
 							<div class="advanced-fields">
-								<div class="model-field settings-field-layout">
-									<label class="field-label" for="{fieldId}-temperature"
-										>温度（默认 0.7）</label
-									>
-									<MaterialNumberField
-										id="{fieldId}-temperature"
-										value={model.temperature ?? 0.7}
-										step={0.1}
-										min={0}
-										max={2}
-										onChange={withNumberValue((value) =>
-											onUpdateOverride(model, 'temperature', value),
-										)}
-									/>
-								</div>
 								<div class="model-field settings-field-layout">
 									<div class="model-field-copy">
 										<label class="field-label" for="{fieldId}-context-window"

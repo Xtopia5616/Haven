@@ -32,6 +32,8 @@ schema v60 为当前事实、历史版本和待审核提案增加规范化的现
 
 ## 当前配置契约
 
+生成采样参数已移除：Provider 的 `default_temperature`、模型的 `temperature`，以及运行时 endpoint 的 `temperature`、`top_p`、`top_k`、`frequency_penalty`、`presence_penalty`、`seed`。旧配置键按未知字段拒绝，不迁移、不兼容；请从 `config.toml` 的相应表中删除这些键，或仅重建该文件。无需重置数据库、凭据或会话。独立搜索的 `top_k` 是结果数量，继续保留（ADR 1369）。
+
 `config.toml` 文件上限为 4 MiB。超过上限的文件在启动读取或外部修改指纹检查时直接报错：原文件不备份、不改写，也不会回退到默认配置；Settings 序列化结果超限会拒绝更新并保留已有文件、快照和版本。请缩小 `config.toml` 后重启，无需删除数据库。
 
 媒体 provider timeout 的范围与 Settings UI 共用同一契约：`[media.stt].timeout_secs` 为 5–600 秒，`[media.ocr].timeout_secs` 与 `[media.tts].timeout_secs` 为 5–300 秒，`[media.image_gen].timeout_secs` 为 10–600 秒。超出范围的 TOML 会备份整份配置并在当前进程使用默认值；Settings 更新则拒绝写入并保留现有配置。需要保留其它配置时，先把这些值改到范围内；无需删除数据库。

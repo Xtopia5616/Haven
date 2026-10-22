@@ -457,7 +457,6 @@
 				form.proxy_mode === 'direct' ? '' : form.proxy_mode === 'custom' ? proxyUrl : null,
 			no_proxy: form.proxy_mode === 'custom' ? form.no_proxy.trim() || null : null,
 			default_max_tokens: previous?.default_max_tokens ?? null,
-			default_temperature: previous?.default_temperature ?? null,
 			default_timeout_secs:
 				previous?.default_timeout_secs ?? (isSttOnlyStyle(form.api_style) ? 30 : null),
 			default_timeout_streaming_secs: previous?.default_timeout_streaming_secs ?? null,

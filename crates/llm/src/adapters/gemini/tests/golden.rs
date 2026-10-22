@@ -19,9 +19,6 @@ fn request_fixture_pins_generate_content_wire_keys() {
     let endpoint = ModelEndpoint {
         model_name: "gemini-test".into(),
         max_tokens: 128,
-        temperature: 0.2,
-        top_p: Some(0.9),
-        top_k: Some(40),
         ..Default::default()
     };
     let actual = serde_json::to_value(GeminiAdapter::new(endpoint).build_request_body(
@@ -30,6 +27,19 @@ fn request_fixture_pins_generate_content_wire_keys() {
         false,
     ))
     .unwrap();
+    for key in [
+        "temperature",
+        "seed",
+        "top_p",
+        "top_k",
+        "frequency_penalty",
+        "presence_penalty",
+        "topP",
+        "topK",
+    ] {
+        let config = actual.get("generationConfig").unwrap_or(&actual);
+        assert!(config.get(key).is_none(), "removed sampling key {key}");
+    }
     assert_eq!(actual["generationConfig"], expected["generationConfig"]);
 }
 

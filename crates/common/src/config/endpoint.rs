@@ -50,15 +50,9 @@ pub struct ModelEndpoint {
     /// It is distinct from Haven's stable model-configuration identity.
     pub model_name: String,
     pub max_tokens: u32,
-    pub temperature: f32,
     pub timeout_secs: u64,
     // §2.8: additional model parameters
-    pub top_p: Option<f32>,
-    pub top_k: Option<u32>,
-    pub frequency_penalty: Option<f32>,
-    pub presence_penalty: Option<f32>,
     pub stop: Option<Vec<String>>,
-    pub seed: Option<u64>,
     pub response_format: Option<serde_json::Value>,
     // §2.5: proxy support. None follows environment proxies, Some("") forces
     // a direct connection, and a non-empty value selects an explicit proxy.
@@ -129,14 +123,8 @@ impl std::fmt::Debug for ModelEndpoint {
             .field("api_key", &"[REDACTED]")
             .field("model_name", &self.model_name)
             .field("max_tokens", &self.max_tokens)
-            .field("temperature", &self.temperature)
             .field("timeout_secs", &self.timeout_secs)
-            .field("top_p", &self.top_p)
-            .field("top_k", &self.top_k)
-            .field("frequency_penalty", &self.frequency_penalty)
-            .field("presence_penalty", &self.presence_penalty)
             .field("stop", &self.stop)
-            .field("seed", &self.seed)
             .field("response_format", &self.response_format)
             .field(
                 "proxy_url",
@@ -211,14 +199,8 @@ impl Default for ModelEndpoint {
             api_key: String::new(),
             model_name: "gpt-4o-mini".into(),
             max_tokens: 8192,
-            temperature: 0.7,
             timeout_secs: 7,
-            top_p: None,
-            top_k: None,
-            frequency_penalty: None,
-            presence_penalty: None,
             stop: None,
-            seed: None,
             response_format: None,
             proxy_url: None,
             no_proxy: None,
@@ -284,10 +266,6 @@ pub struct ProviderConfig {
     /// Default per-response token cap for models on this provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_max_tokens: Option<u32>,
-    /// Default sampling temperature for models on this provider.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// Default sampling temperature, constrained to 0–2.
-    pub default_temperature: Option<f32>,
     /// Default total HTTP request timeout (secs) for non-streaming requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_timeout_secs: Option<u64>,
@@ -566,7 +544,6 @@ impl std::fmt::Debug for ProviderConfig {
             )
             .field("no_proxy", &self.no_proxy.as_ref().map(|_| "[CONFIGURED]"))
             .field("default_max_tokens", &self.default_max_tokens)
-            .field("default_temperature", &self.default_temperature)
             .field("default_timeout_secs", &self.default_timeout_secs)
             .field(
                 "default_timeout_streaming_secs",
@@ -592,7 +569,6 @@ impl Default for ProviderConfig {
             proxy_url: None,
             no_proxy: None,
             default_max_tokens: None,
-            default_temperature: None,
             default_timeout_secs: None,
             default_timeout_streaming_secs: None,
             default_web_search: None,
@@ -784,9 +760,6 @@ pub struct ModelConfig {
     pub model: String,
     #[serde(default)]
     pub capabilities: Vec<Capability>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// Sampling temperature override, constrained to 0–2.
-    pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1026,7 +999,6 @@ impl LlmConfig {
         ep.proxy_url = p.proxy_url.clone();
         ep.no_proxy = p.no_proxy.clone();
         ep.max_tokens = p.default_max_tokens.unwrap_or(ep.max_tokens);
-        ep.temperature = p.default_temperature.unwrap_or(ep.temperature);
         ep.timeout_secs = p.default_timeout_secs.unwrap_or(ep.timeout_secs);
         ep.timeout_streaming_secs = p.default_timeout_streaming_secs;
         ep.web_search = if is_chatgpt_plan_provider(&p.provider) {
@@ -1035,9 +1007,6 @@ impl LlmConfig {
             p.default_web_search.clone()
         };
         // Per-model overrides win over provider defaults.
-        if let Some(t) = model_config.temperature {
-            ep.temperature = t;
-        }
         if let Some(c) = model_config.context_window {
             ep.context_window = Some(c);
         }
@@ -1811,5 +1780,36 @@ mod tests {
         assert!(llm.is_request_configured(RequestKind::Chat));
         assert!(llm.is_request_configured(RequestKind::Vision));
         assert!(!llm.is_request_configured(RequestKind::Embedding));
+    }
+}
+
+#[cfg(test)]
+mod sampling_contract_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_removed_sampling_configuration() {
+        let endpoint = serde_json::to_value(ModelEndpoint::default()).unwrap();
+        let provider = serde_json::to_value(ProviderConfig::default()).unwrap();
+        let model = serde_json::to_value(ModelConfig::default()).unwrap();
+        for key in [
+            "temperature",
+            "top_p",
+            "seed",
+            "top_k",
+            "frequency_penalty",
+            "presence_penalty",
+        ] {
+            assert!(endpoint.get(key).is_none());
+            let mut removed = endpoint.clone();
+            removed[key] = serde_json::json!(1);
+            assert!(serde_json::from_value::<ModelEndpoint>(removed).is_err());
+        }
+        let mut removed = provider;
+        removed["default_temperature"] = serde_json::json!(0.7);
+        assert!(serde_json::from_value::<ProviderConfig>(removed).is_err());
+        let mut removed = model;
+        removed["temperature"] = serde_json::json!(0.7);
+        assert!(serde_json::from_value::<ModelConfig>(removed).is_err());
     }
 }

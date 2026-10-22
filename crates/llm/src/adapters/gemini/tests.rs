@@ -534,9 +534,6 @@ fn build_request_body_with_tools_and_config() {
     let ep = ModelEndpoint {
         model_name: "gemini-2.5-flash".into(),
         max_tokens: 2048,
-        temperature: 0.2,
-        top_p: Some(0.9),
-        top_k: Some(40),
         ..Default::default()
     };
     let client = GeminiAdapter::new(ep);
@@ -558,9 +555,6 @@ fn build_request_body_with_tools_and_config() {
     }
     let cfg = body.generation_config.unwrap();
     assert_eq!(cfg.max_output_tokens, 2048);
-    assert_eq!(cfg.temperature, 0.2);
-    assert_eq!(cfg.top_p, Some(0.9));
-    assert_eq!(cfg.top_k, Some(40));
 }
 
 #[test]

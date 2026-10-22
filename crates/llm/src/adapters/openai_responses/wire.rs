@@ -31,10 +31,6 @@ pub(super) struct ResponsesRequest {
     pub(super) input: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) max_output_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) top_p: Option<f32>,
     pub(super) stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) store: Option<bool>,

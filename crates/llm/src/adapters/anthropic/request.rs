@@ -124,20 +124,11 @@ impl AnthropicAdapter {
             &self.endpoint.model_name,
             self.endpoint.reasoning_effort.as_deref(),
         );
-        let thinking_active = thinking_config
-            .thinking
-            .as_ref()
-            .and_then(|value| value.get("type"))
-            .and_then(Value::as_str)
-            .is_some_and(|kind| matches!(kind, "adaptive" | "enabled"));
         AnthropicRequest {
             model: self.endpoint.model_name.clone(),
             max_tokens,
             messages,
             system: Self::system_with_cache_control(converted.system),
-            temperature: (!thinking_active).then_some(self.endpoint.temperature),
-            top_p: self.endpoint.top_p,
-            top_k: self.endpoint.top_k,
             stop_sequences: self.endpoint.stop.clone(),
             tools: if tools_json.is_empty() {
                 None

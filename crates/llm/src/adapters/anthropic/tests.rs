@@ -745,7 +745,6 @@ fn build_request_body_fields() {
     let ep = ModelEndpoint {
         model_name: "claude-sonnet-4-20250514".into(),
         max_tokens: 4096,
-        temperature: 0.3,
         ..Default::default()
     };
     let client = AnthropicAdapter::new(ep);
@@ -766,7 +765,6 @@ fn build_request_body_fields() {
     );
     assert_eq!(body.model, "claude-sonnet-4-20250514");
     assert_eq!(body.max_tokens, 4096);
-    assert_eq!(body.temperature, Some(0.3));
     assert!(body.stream);
     assert!(body.tools.is_none());
     assert!(body.system.is_none());
@@ -778,13 +776,11 @@ fn build_request_body_uses_adaptive_thinking_for_claude_46() {
         model_name: "claude-sonnet-4-6".into(),
         max_tokens: 4096,
         reasoning_effort: Some("medium".into()),
-        temperature: 0.4,
         ..Default::default()
     };
     let body = AnthropicAdapter::new(ep).build_request_body(vec![], vec![], false);
     assert_eq!(body.thinking, Some(json!({"type": "adaptive"})));
     assert_eq!(body.output_config, Some(json!({"effort": "medium"})));
-    assert!(body.temperature.is_none());
 }
 
 #[test]

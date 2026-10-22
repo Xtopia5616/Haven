@@ -1001,32 +1001,12 @@ fn build_request_body_deepseek_thinking_enabled_maps_medium() {
         provider: "deepseek".into(),
         base_url: "https://api.deepseek.com".into(),
         model_name: "deepseek-v4-pro".into(),
-        temperature: 0.7,
         reasoning_effort: Some("medium".into()),
         ..Default::default()
     };
     let body = OpenAiAdapter::new(ep).build_request_body(vec![], vec![], false);
     assert_eq!(body.thinking, Some(serde_json::json!({"type": "enabled"})));
     assert_eq!(body.reasoning_effort.as_deref(), Some("high"));
-    assert!(body.temperature.is_none());
-}
-
-#[test]
-fn build_request_body_deepseek_thinking_omits_unsupported_sampling_fields() {
-    let ep = ModelEndpoint {
-        provider: "deepseek".into(),
-        base_url: "https://api.deepseek.com".into(),
-        model_name: "deepseek-v4-pro".into(),
-        top_p: Some(0.8),
-        frequency_penalty: Some(0.2),
-        presence_penalty: Some(0.1),
-        reasoning_effort: Some("high".into()),
-        ..Default::default()
-    };
-    let body = OpenAiAdapter::new(ep).build_request_body(vec![], vec![], false);
-    assert!(body.top_p.is_none());
-    assert!(body.frequency_penalty.is_none());
-    assert!(body.presence_penalty.is_none());
 }
 
 #[test]
@@ -1075,31 +1055,6 @@ fn build_request_body_openai_passes_reasoning_effort_without_thinking() {
 }
 
 #[test]
-fn build_request_body_omits_temperature_for_reasoning_effort_models() {
-    // o1/o3-family models reject a non-default temperature; when a
-    // reasoning_effort is pinned the temperature field must be omitted
-    // (provider default 1.0 applies).
-    let ep = ModelEndpoint {
-        temperature: 0.7,
-        reasoning_effort: Some("high".into()),
-        ..Default::default()
-    };
-    let client = OpenAiAdapter::new(ep);
-    let body = client.build_request_body(vec![], vec![], false);
-    assert!(body.temperature.is_none());
-    assert_eq!(body.reasoning_effort.as_deref(), Some("high"));
-    // Without reasoning_effort the configured temperature is sent.
-    let ep = ModelEndpoint {
-        temperature: 0.7,
-        reasoning_effort: None,
-        ..Default::default()
-    };
-    let client = OpenAiAdapter::new(ep);
-    let body = client.build_request_body(vec![], vec![], false);
-    assert_eq!(body.temperature, Some(0.7));
-}
-
-#[test]
 fn build_request_body_without_tools_has_none() {
     let ep = ModelEndpoint::default();
     let client = OpenAiAdapter::new(ep);
@@ -1110,23 +1065,13 @@ fn build_request_body_without_tools_has_none() {
 #[test]
 fn build_request_body_extra_params_all_present() {
     let ep = ModelEndpoint {
-        top_p: Some(0.9),
-        top_k: Some(40),
-        frequency_penalty: Some(0.5),
-        presence_penalty: Some(0.3),
         stop: Some(vec!["END".into()]),
-        seed: Some(42),
         response_format: Some(serde_json::json!({"type": "json_object"})),
         ..Default::default()
     };
     let client = OpenAiAdapter::new(ep);
     let body = client.build_request_body(vec![], vec![], false);
-    assert_eq!(body.top_p, Some(0.9));
-    assert_eq!(body.top_k, Some(40));
-    assert_eq!(body.frequency_penalty, Some(0.5));
-    assert_eq!(body.presence_penalty, Some(0.3));
     assert_eq!(body.stop, Some(vec!["END".into()]));
-    assert_eq!(body.seed, Some(42));
     assert!(body.response_format.is_some());
 }
 
@@ -1135,12 +1080,7 @@ fn build_request_body_extra_params_none_by_default() {
     let ep = ModelEndpoint::default();
     let client = OpenAiAdapter::new(ep);
     let body = client.build_request_body(vec![], vec![], false);
-    assert_eq!(body.top_p, None);
-    assert_eq!(body.top_k, None);
-    assert_eq!(body.frequency_penalty, None);
-    assert_eq!(body.presence_penalty, None);
     assert_eq!(body.stop, None);
-    assert_eq!(body.seed, None);
     assert_eq!(body.response_format, None);
 }
 

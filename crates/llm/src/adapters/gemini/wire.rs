@@ -52,13 +52,8 @@ pub(super) enum GeminiTool {
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct GeminiGenerationConfig {
-    pub(super) temperature: f32,
     #[serde(rename = "maxOutputTokens")]
     pub(super) max_output_tokens: u32,
-    #[serde(rename = "topP", skip_serializing_if = "Option::is_none")]
-    pub(super) top_p: Option<f32>,
-    #[serde(rename = "topK", skip_serializing_if = "Option::is_none")]
-    pub(super) top_k: Option<u32>,
     #[serde(rename = "stopSequences", skip_serializing_if = "Option::is_none")]
     pub(super) stop_sequences: Option<Vec<String>>,
 }

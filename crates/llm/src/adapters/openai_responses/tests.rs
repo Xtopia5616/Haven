@@ -440,7 +440,6 @@ fn build_request_body_fields() {
     let ep = ModelEndpoint {
         model_name: "gpt-5".into(),
         max_tokens: 2048,
-        temperature: 0.4,
         ..Default::default()
     };
     let client = OpenAiResponsesAdapter::new(ep);
@@ -462,22 +461,19 @@ fn build_request_body_fields() {
     );
     assert_eq!(body.model, "gpt-5");
     assert_eq!(body.max_output_tokens, Some(2048));
-    assert_eq!(body.temperature, Some(0.4));
     assert!(body.stream);
     assert!(body.tools.is_none());
     assert!(body.tool_choice.is_none());
 }
 
 #[test]
-fn build_request_body_maps_top_p_and_nested_text_format() {
+fn build_request_body_maps_nested_text_format() {
     let ep = ModelEndpoint {
         model_name: "gpt-5".into(),
-        top_p: Some(0.8),
         response_format: Some(json!({"type": "json_object"})),
         ..Default::default()
     };
     let body = OpenAiResponsesAdapter::new(ep).build_request_body(vec![], vec![], false);
-    assert_eq!(body.top_p, Some(0.8));
     assert_eq!(body.text, Some(json!({"format": {"type": "json_object"}})));
 }
 
@@ -487,26 +483,13 @@ fn build_request_body_maps_deepseek_effort_to_output_config() {
         provider: "deepseek".into(),
         base_url: "https://api.deepseek.com".into(),
         model_name: "deepseek-v4-pro".into(),
-        top_p: Some(0.8),
         reasoning_effort: Some("medium".into()),
         ..Default::default()
     };
     let body = OpenAiResponsesAdapter::new(ep).build_request_body(vec![], vec![], false);
     assert_eq!(body.reasoning, Some(json!({"effort": "high"})));
     assert_eq!(body.output_config, Some(json!({"effort": "high"})));
-    assert!(body.top_p.is_none());
     assert!(body.prompt_cache_key.is_none());
-}
-
-#[test]
-fn build_request_body_skips_temperature_one() {
-    let ep = ModelEndpoint {
-        temperature: 1.0,
-        ..Default::default()
-    };
-    let client = OpenAiResponsesAdapter::new(ep);
-    let body = client.build_request_body(vec![], Vec::new(), false);
-    assert_eq!(body.temperature, None);
 }
 
 #[test]
@@ -539,8 +522,6 @@ fn chatgpt_plan_request_obeys_preview_transport_and_parameter_limits() {
             api_key: "cred-00000000000000000000000000000000".into(),
             model_name: "gpt-6.1-sol".into(),
             max_tokens: 8192,
-            temperature: 0.25,
-            top_p: Some(0.75),
             ..Default::default()
         },
         Some(Arc::new(ChatGptPlanAuthStub)),
@@ -1146,7 +1127,6 @@ fn build_headers_default_auth_header() {
 fn build_request_body_forwards_reasoning_effort() {
     let ep = ModelEndpoint {
         model_name: "gpt-5".into(),
-        temperature: 0.4,
         reasoning_effort: Some("medium".into()),
         ..Default::default()
     };
@@ -1160,7 +1140,6 @@ fn build_request_body_forwards_reasoning_effort() {
         body.reasoning,
         Some(serde_json::json!({"effort": "medium"}))
     );
-    assert!(body.temperature.is_none());
 }
 
 #[test]
@@ -1171,7 +1150,6 @@ fn build_request_body_deepseek_reasoning_maps_medium_and_none() {
         model_name: "deepseek-v4-flash".into(),
         api_style: Some("openai-responses".into()),
         reasoning_effort: Some("medium".into()),
-        temperature: 0.7,
         ..Default::default()
     };
     let body = OpenAiResponsesAdapter::new(ep.clone()).build_request_body_with_mode(
@@ -1181,7 +1159,6 @@ fn build_request_body_deepseek_reasoning_maps_medium_and_none() {
         WebSearchMode::Off,
     );
     assert_eq!(body.reasoning, Some(serde_json::json!({"effort": "high"})));
-    assert!(body.temperature.is_none());
 
     let off = ModelEndpoint {
         reasoning_effort: Some("none".into()),
@@ -1200,7 +1177,6 @@ fn build_request_body_deepseek_reasoning_maps_medium_and_none() {
 fn build_request_body_omits_reasoning_when_effort_unset() {
     let ep = ModelEndpoint {
         model_name: "gpt-5".into(),
-        temperature: 0.4,
         ..Default::default()
     };
     let body = OpenAiResponsesAdapter::new(ep).build_request_body_with_mode(
@@ -1210,7 +1186,6 @@ fn build_request_body_omits_reasoning_when_effort_unset() {
         WebSearchMode::Off,
     );
     assert!(body.reasoning.is_none());
-    assert_eq!(body.temperature, Some(0.4));
 }
 
 #[test]

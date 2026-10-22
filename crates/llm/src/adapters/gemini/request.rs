@@ -132,10 +132,7 @@ impl GeminiAdapter {
                 Some(tools_json)
             },
             generation_config: Some(GeminiGenerationConfig {
-                temperature: self.endpoint.temperature,
                 max_output_tokens,
-                top_p: self.endpoint.top_p,
-                top_k: self.endpoint.top_k,
                 stop_sequences: self.endpoint.stop.clone(),
             }),
             cache_diagnostics: CacheDiagnostics::for_provider_cache(system_split)

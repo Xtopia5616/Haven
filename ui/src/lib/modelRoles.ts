@@ -39,7 +39,6 @@ export function emptyModel(id: string) {
 		providerName: '',
 		model: '',
 		capabilities: [],
-		temperature: null as number | null,
 		context_window: null as number | null,
 		cost_per_1k_input_tokens: null as number | null,
 		cost_per_1k_output_tokens: null as number | null,
