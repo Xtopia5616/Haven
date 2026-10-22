@@ -194,7 +194,7 @@ CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-c
 
 **保留的安全边界与发布验收：**`FullAccess` 下获准的宿主进程仍继承当前 Windows 用户的 OS 文件/网络权限；Haven 的工具授权不等于系统级进程隔离。没有可用且通过配额 attestation 的 HCS backend 时，受限执行 fail closed。管理页 Skill 预览只在静止 Paused 会话中作为真实会话步骤执行；没有活动会话时 WorkspaceWrite 仍 fail closed。真实 HCS guest 超额写入、支持的 Windows build、broker token、固定镜像与安装包验收仍属于 §5.1 Open Gate；本仓库已实现的启动 probe 不能替代目标环境验收。见 [ADR 1326](adr/1326-run-management-skill-previews-as-session-steps.md)。
 
-2026-10-22 本机验收尝试未关闭 Gate：Windows 11 Insider build 29683 上 `containerd` 创建并启动 LTSC 2025 HCS VM 后，`runhcs` shim 在 guest 网络命名空间能力探测处 panic；Haven broker 镜像层 staging 又被 `HcsExportLayer` 的 `0x80070002` 阻断。未产生 quota proof，也未执行 guest 超额写入；临时 broker 服务注册已移除，但不完整 Program Files layer staging 因 ACL 拒绝删除而残留，禁止复用。该 Insider 预览主机不能替代受支持 Windows build 的正式验收，详细结果见 [ADR 1260](adr/1260-attest-hcs-storage-quota-at-service-start.md)。
+2026-10-22 本机验收尝试未关闭 Gate：Windows 11 Insider build 29683 上 `containerd` 创建并启动 LTSC 2025 HCS VM 后，`runhcs` shim 在 guest 网络命名空间能力探测处 panic；Haven broker 镜像层 staging 又被 `HcsExportLayer` 的 `0x80070002` 阻断。未产生 quota proof，也未执行 guest 超额写入。随后使用 `HcsDestroyLayer` 销毁本次创建的 HCS layers，并移除了 broker staging、containerd 目录和整棵验收临时目录；`Containers` 与完整 Hyper-V 已设为 Disabled（重启待完成），保留 `VirtualMachinePlatform` 供既有 WSL2 使用。该 Insider 预览主机不能替代受支持 Windows build 的正式验收，详细结果见 [ADR 1260](adr/1260-attest-hcs-storage-quota-at-service-start.md)。
 
 ### 5.9 Memory recall 的图谱扩展（已完成）
 
