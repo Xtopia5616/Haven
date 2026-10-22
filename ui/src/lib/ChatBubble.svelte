@@ -34,7 +34,6 @@
 	}
 
 	interface Props {
-		sessionId?: string | null;
 		role: CanonicalRole;
 		content: string;
 		type?: SessionMessagePresentationType | null;
@@ -73,7 +72,6 @@
 	}
 
 	let {
-		sessionId = null,
 		role,
 		content,
 		type: msgType,
@@ -558,7 +556,6 @@
 			</div>
 		{:else if msgType === 'tool'}
 			<ToolResultCard
-				sessionId={sessionId ?? undefined}
 				embedded
 				{toolName}
 				{outcome}

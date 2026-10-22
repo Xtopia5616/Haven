@@ -71,6 +71,7 @@ impl SessionRunAdmission {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn try_acquire(self: &Arc<Self>) -> Option<SessionRunPermit> {
         self.try_take().then(|| SessionRunPermit {
             admission: self.clone(),
@@ -118,71 +119,6 @@ impl SessionRunAdmission {
 impl Drop for SessionRunPermit {
     fn drop(&mut self) {
         self.admission.release();
-    }
-}
-
-/// A management-page tool invocation temporarily admitted as the session's
-/// sole run. The lease is intentionally limited to quiescent Paused sessions;
-/// it lets renderer-triggered tool calls use the same session/step identity
-/// and Agent execution boundary as model-issued calls.
-pub(crate) struct ManagedToolStepRunLease {
-    pub(crate) actor: actor::SessionActorHandle,
-    executor: Arc<super::SessionSupervisor>,
-    session_id: String,
-    permit: Option<SessionRunPermit>,
-    finished: bool,
-}
-
-impl ManagedToolStepRunLease {
-    pub(crate) async fn finish(&mut self) -> anyhow::Result<SessionStatus> {
-        if self.finished {
-            return self
-                .actor
-                .snapshot()
-                .await
-                .map(|snapshot| snapshot.status)
-                .ok_or_else(|| anyhow::anyhow!("managed session actor stopped"));
-        }
-        let result = self.actor.finish_managed_tool_run().await;
-        self.finished = true;
-        if let Ok(SessionStatus::Pending) = result {
-            self.executor.enqueue_pending(&self.session_id).await;
-            self.executor.wake_dispatcher();
-        }
-        self.executor
-            .reconcile_run_exit(&self.session_id, &self.actor)
-            .await;
-        self.permit.take();
-        result
-    }
-}
-
-impl Drop for ManagedToolStepRunLease {
-    fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        self.actor.run_cancellation_token().cancel();
-        let executor = self.executor.clone();
-        let actor = self.actor.clone();
-        let session_id = self.session_id.clone();
-        let permit = self.permit.take();
-        tokio::spawn(async move {
-            match actor.finish_managed_tool_run().await {
-                Ok(SessionStatus::Pending) => {
-                    executor.enqueue_pending(&session_id).await;
-                    executor.wake_dispatcher();
-                }
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    session_id,
-                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                    "failed to finish cancelled management tool run"
-                ),
-            }
-            executor.reconcile_run_exit(&session_id, &actor).await;
-            drop(permit);
-        });
     }
 }
 
@@ -274,89 +210,6 @@ impl Drop for DirectSessionRunAdmissionWaiterGuard {
 }
 
 impl SessionSupervisor {
-    /// Admit one renderer-triggered tool step on a quiescent Paused session.
-    /// Running, Pending, terminal, queued, or interaction-waiting sessions
-    /// fail closed so this entry point cannot race the normal ReAct loop.
-    pub(crate) async fn begin_managed_tool_step_run(
-        self: &Arc<Self>,
-        session_id: &str,
-    ) -> anyhow::Result<ManagedToolStepRunLease> {
-        let _lifecycle = self.lifecycle_guard().await;
-        self.ensure_lifecycle_open()?;
-        anyhow::ensure!(
-            !self.is_session_closing(session_id),
-            "session is closing and cannot run a management tool"
-        );
-        let actor = self
-            .actor_for(session_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("session is not active"))?;
-        let snapshot = actor
-            .snapshot()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("session actor stopped"))?;
-        anyhow::ensure!(
-            snapshot.status == SessionStatus::Paused,
-            "management tool execution requires an idle Paused session"
-        );
-        anyhow::ensure!(
-            !actor.is_running().await,
-            "session already has a run in flight"
-        );
-        anyhow::ensure!(
-            !actor.has_pending_context().await,
-            "session has queued input and cannot run a management tool"
-        );
-        anyhow::ensure!(
-            actor.interactions(None, true).await.is_empty(),
-            "session has a pending interaction and cannot run a management tool"
-        );
-        anyhow::ensure!(
-            self.store
-                .pending_session_inputs(session_id)
-                .await?
-                .is_empty(),
-            "session has pending durable input and cannot run a management tool"
-        );
-
-        let permit = self
-            .admission
-            .try_acquire()
-            .ok_or_else(|| anyhow::anyhow!("session run capacity is currently full"))?;
-        let current_actor = self.actor_for(session_id).await;
-        anyhow::ensure!(
-            self.ensure_lifecycle_open().is_ok()
-                && !self.is_session_closing(session_id)
-                && current_actor
-                    .as_ref()
-                    .is_some_and(|current| current.same_instance(&actor))
-                && !actor.is_running().await,
-            "session changed while admitting a management tool run"
-        );
-        anyhow::ensure!(
-            self.update_session_status_if(
-                session_id,
-                SessionStatus::Paused,
-                SessionStatus::Running
-            )
-            .await?,
-            "session is no longer Paused"
-        );
-        if !actor.claim_managed_tool_run().await {
-            let _ = self
-                .update_session_status_if(session_id, SessionStatus::Running, SessionStatus::Paused)
-                .await;
-            anyhow::bail!("session run could not be claimed for a management tool");
-        }
-        Ok(ManagedToolStepRunLease {
-            actor,
-            executor: self.clone(),
-            session_id: session_id.to_string(),
-            permit: Some(permit),
-            finished: false,
-        })
-    }
-
     pub(super) fn wake_dispatcher(&self) {
         self.dispatch_tx.send_modify(|counter| *counter += 1);
     }

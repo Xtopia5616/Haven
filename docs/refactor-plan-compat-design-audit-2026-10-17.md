@@ -50,7 +50,7 @@
 | `crates/memory/src/repositories/usage.rs`、`crates/memory/src/repositories/session_events.rs` | `LlmUsageRecord` 的 `id` / `role` aliases 只服务旧 durable event；当前 writer 写 `usage_id` / `request_kind`。`llm_usage.role` 是仍在用的 SQLite 物理列名，不属于 JSON alias。 | 删除 JSON aliases 与 legacy fixture；不顺带重命名 SQL 列。 |
 | `crates/memory/src/repositories/usage.rs::SessionUsage` | 由 SQLite 查询构造后直接作为 IPC response 序列化给 UI；无 JSON 反序列化消费者，TS response 字段均 required。Serde `Deserialize` / `Default` 和新计数列 defaults 只放宽 response DTO 的旧 shape。 | 保留 `Serialize`，删除 `Deserialize`、`Default` 和旧 response defaults。不要改 `LlmUsageRecord` 的持久 event owner。 |
 | `crates/common/src/tools.rs::deserialize_legacy_operation_idempotency` | 宽松 parser 把未知 enum 字符串吞成 `Unknown`；UI 当前 mapper 对 enum 严格校验。 | 删除自定义降级读取，直接使用严格 enum Serde；未知值在边界报错。 |
-| `crates/common/src/tools.rs::ToolResultEnvelope` | `Default` 仅被测试使用且生成假的 `Failed` outcome；`assets` writer 总会序列化（含空数组），其 `serde(default)` 无当前省略形态。`sandbox_output_review_step_ids` 在空时会省略，需保留其 default。`retry_safety` 的字段值实际是 `OperationIdempotency`。 | 删除误导性 `Default`，测试显式构造。把 Rust/UI/IPC 字段统一改为 `idempotency`；删除 `assets` 的无用 default，保留空值可省略字段的 default。Envelope 本身承载 transcript UI 需要、不可进入模型 observation 的资产和 sandbox review 信息，保留。 |
+| `crates/common/src/tools.rs::ToolResultEnvelope` | `Default` 仅被测试使用且生成假的 `Failed` outcome；`assets` writer 总会序列化（含空数组），其 `serde(default)` 无当前省略形态。`retry_safety` 的字段值实际是 `OperationIdempotency`。 | 删除误导性 `Default`，测试显式构造。把 Rust/UI/IPC 字段统一改为 `idempotency`；删除 `assets` 的无用 default，保留当前契约。Envelope 承载 transcript UI 需要、不可进入模型 observation 的资产。 |
 | `crates/agent/src/react/tool_batch.rs` | 主批处理路径先传 `Unknown`，之后通过 `with_default_retry_safety` 改成已知 policy；helper 没有必要作为两阶段构造 API。workflow/codemode 当前没有同一具体 policy 来源，`Unknown` 仍是其语义。 | 主批处理直接传真实 idempotency 并删掉 setter；workflow/codemode 保留 Unknown 的显式语义，不用兼容性名义误删。 |
 | `crates/common/src/tool_run_completion.rs`、`crates/tools/src/tool_run_service/views.rs` | `status_projection_kind` 被序列化为 legacy JSON key `kind`，生产只从 view 写入 `background`；仓内没有 payload reader。完成类型已由 outbox row 的 `kind` 和 `ToolRunCompletion` enum 表达。 | 删除冗余字段、旧 JSON rename 和赋值/struct literals；相同完成记录不再保存重复的 UI 投影标签。新增 superseding ADR 记录删除原因；ADR 0871 保持历史原文。 |
 | `ui/src/lib/toolResultPresentation.ts`、`ToolRunsResult.svelte`、`ToolScheduleResult.svelte` | 当前 Rust `tool_runs` 只发 `list/inspect/cancel`，scheduled tool 只发 `set/list/cancel`；`tool_runs_*` 和 `schedule_*` alias 没有当前 producer。`tool_runs_result_injected` 是 UI reducer 的合成名，不是 Rust wire operation。 | operation union 收敛到 canonical 值，删除 normalize 函数；reducer 合成 `result_injected`，组件按联合类型直接分支。 |
@@ -150,7 +150,7 @@ Inbox 侧格式要按无兼容目标明确切换：升级前备份后重置 `inb
 
 ### Slice 9 — 延续第一轮仍成立的内部职责切片
 
-**实施完成（ADR 1302–1314）。** 通知配置单 owner、AppCommand confirmation/admin adapter、SessionStore 私有职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser 与 App command DTO/process helper 均已完成。Slice 7 复核保留 AppState/bootstrap composition owner，不新增容器或纯文件搬移。当前无剩余 Active 结构切片；Windows 发布及 HCS quota 验收继续作为路线图 §5.1 的独立 Open Gate。
+**实施完成（ADR 1302–1314）。** 通知配置单 owner、AppCommand confirmation/admin adapter、SessionStore 私有职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser 与 App command DTO/process helper 均已完成。Slice 7 复核保留 AppState/bootstrap composition owner，不新增容器或纯文件搬移。当前无剩余 Active 结构切片；Windows 发布验收按路线图 §5.1 跟踪。
 
 ## 5. 实施门禁与数据切换
 

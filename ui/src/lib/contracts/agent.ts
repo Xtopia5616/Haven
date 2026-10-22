@@ -117,7 +117,6 @@ export interface AgentToolResultEnvelope {
 	verificationHint?: string | null;
 	nextAction?: string | null;
 	assets: string[];
-	sandboxOutputReviewStepIds?: string[];
 }
 
 export interface AgentChunkPayload {
@@ -313,14 +312,6 @@ function isCanonicalAssetIdArray(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every((assetId) => isCanonicalEntityId(assetId, 'asset'));
 }
 
-function isCanonicalSandboxReviewStepIdArray(value: unknown): value is string[] {
-	return (
-		Array.isArray(value) &&
-		value.length <= 64 &&
-		value.every((stepId) => isCanonicalEntityId(stepId, 'step'))
-	);
-}
-
 function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 	if (!isRecord(value)) return null;
 	const outcome = readStringField(value, 'outcome');
@@ -335,8 +326,6 @@ function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 			errorClass !== null &&
 			!isOneOf(errorClass, TOOL_ERROR_CLASS_VALUES)) ||
 		!isCanonicalAssetIdArray(value.assets) ||
-		(value.sandbox_output_review_step_ids !== undefined &&
-			!isCanonicalSandboxReviewStepIdArray(value.sandbox_output_review_step_ids)) ||
 		!['verification_hint', 'next_action'].every(
 			(field) => value[field] === undefined || nullableStringIsValid(value[field]),
 		)
@@ -351,7 +340,6 @@ function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 		verificationHint: value.verification_hint as string | null | undefined,
 		nextAction: value.next_action as string | null | undefined,
 		assets: value.assets,
-		sandboxOutputReviewStepIds: value.sandbox_output_review_step_ids as string[] | undefined,
 	};
 }
 

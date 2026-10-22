@@ -347,7 +347,6 @@ mod tests {
             name: "server".into(),
             exposure: None,
             transport: None,
-            stdio_execution: None,
             command: None,
             url: None,
             args: None,

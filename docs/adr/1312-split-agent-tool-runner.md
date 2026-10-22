@@ -27,4 +27,4 @@
 - `cargo clippy --locked -p haven-agent -- -D warnings` 通过。
 - Windows `cargo test --workspace --locked -- --test-threads=1` 通过；Agent 行为测试通过，Tools 为 976 passed、2 ignored，MCP integration 为 7 passed，workspace doc tests 通过。
 - Windows `cargo clippy --workspace --locked -- -D warnings`、`cargo fmt --all -- --check` 与 `scripts/check-adr-index.ps1` 通过；ADR index 为 1294 项且本地链接均可解析。
-- Windows installer/UI 流程与 HCS quota 实际超限仍按路线图 §5.1 作为独立发布 Open Gate。
+- Windows installer/UI 流程仍按路线图 §5.1 作为独立发布 Gate。

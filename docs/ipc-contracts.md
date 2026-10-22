@@ -33,7 +33,6 @@
 | `delete_fact` | mutate | delete one fact by id |
 | `delete_session` | mutate | delete by session id and release runtime state |
 | `disable_autostart` | execute | managed autostart entry only |
-| `discard_sandbox_output_review` | mutate | canonical session/step pair; only the owning Shell review can be discarded |
 | `discard_staged_chatgpt_plan_credential` | mutate | deletes only the exact uncommitted ChatGPT plan credential reference abandoned by the settings draft |
 | `discard_staged_credentials` | mutate | deletes staged values not committed by a Settings save |
 | `discover_models` | execute | http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint |
@@ -47,11 +46,9 @@
 | `get_log_info` | read | path is optional; no environment details |
 | `get_mcp_prompt` | execute | explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages |
 | `get_performance_metrics` | read | bounded content-free backend counters plus renderer stream counters |
-| `get_sandbox_output_review` | read | canonical session/step pair; only completed Shell steps; bounded owner manifest without file content or absolute source paths |
 | `get_session_for_resume` | read | session-scoped persisted projection |
 | `get_session_lineage` | read | parent and direct child sessions of the selected session only |
 | `get_settings` | read | config response redacts credentials and MCP environment values |
-| `get_shell_execution_security_status` | read | effective sandbox/network policy and authenticated broker gate only; no paths or diagnostics |
 | `interrupt_session` | mutate | pauses the selected active session without deleting it |
 | `is_autostart_enabled` | read | state boolean only |
 | `list_builtin_tool_manifests` | read | builtin manifest projection; schemas are dynamic extension data |
@@ -72,8 +69,6 @@
 | `open_external` | execute | AuthorizationPort; queues AppCommand confirmation; http(s) or validated absolute local path only |
 | `open_skills_dir` | execute | AuthorizationPort; queues AppCommand confirmation; configured skills root only |
 | `pick_execution_workspace_directory` | read | user-selected local directory candidate only; validates but grants no file access |
-| `pick_sandbox_output_destination` | read | native save picker; returns a user-selected candidate only and grants no filesystem access |
-| `promote_sandbox_output` | execute | Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof |
 | `read_log_tail` | read | bounded tail; file logging must be enabled |
 | `read_mcp_resource` | execute | explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content |
 | `reassign_staged_chatgpt_plan_credential` | mutate | moves one exact staged ChatGPT credential reference to another ChatGPT plan provider name without exposing its secret |

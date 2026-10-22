@@ -95,9 +95,6 @@ impl ToolBuiltins {
             tool_runs: ToolRunDeps {
                 live_outputs: runtime.live_outputs.clone(),
                 service: runtime.tool_run_service.clone(),
-                sandbox_output_reviews: runtime.sandbox_output_reviews.clone(),
-                #[cfg(windows)]
-                windows_container_execution: runtime.windows_container_execution.clone(),
             },
             schedule_service: runtime.schedule_service.clone(),
         }

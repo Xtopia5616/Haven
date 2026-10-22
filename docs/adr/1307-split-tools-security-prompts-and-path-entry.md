@@ -29,4 +29,4 @@
 - `cargo clippy --workspace --locked -- -D warnings` 通过。
 - `cargo fmt --all -- --check` 通过。
 - ADR index 检查通过：1290 个唯一编号，所有本地 ADR 链接有效。
-- 本结构切片未更改 sandbox/process 行为；真实 installer UI 与 HCS quota 超限验收仍按 §5.1 独立 Open Gate 跟踪。
+- 本结构切片未更改安全策略或进程行为；Windows 安装与通用发布验收按 §5.1 跟踪。

@@ -47,6 +47,5 @@ ADR 1361 增加的 `fact_history` 记录 Haven 何时保存或改写了某条事
 - Agent：`cargo test --locked -p haven-agent --quiet` 通过，680 passed、1 ignored。
 - Tools：`cargo test --locked -p haven-tools --quiet` 通过，929 passed、2 ignored；MCP integration 7 passed。
 - App：`cargo test --locked -p haven-app-binary commands::memory --quiet` 通过，6 passed；workspace App binary suite 267 passed。
-- Workspace：完整 `cargo test --workspace --locked --quiet` 只在既有 HCS quota probe 用例失败，测试构造的 guest command line 超过 Windows 长度限制。跳过该单一用例后，其余 workspace 测试全部通过；平台 crate 为 233 passed、1 ignored、1 skipped。
 - UI：`corepack pnpm run check` 通过，0 errors / 0 warnings；记忆相关 4 个测试文件 130 passed。完整 UI 测试为 1398 passed、4 failed；失败集中在既有 `SessionHeader` / `SessionToolbar` 样式类与工作区 accessible name 断言。
 - IPC：`scripts/check-ipc-contracts.ps1` 验证 99 个 handler 的 Rust、生成 TypeScript、安全元数据、文档和 UI disposition 一致。ADR 索引覆盖 1343 条记录且本地链接有效。

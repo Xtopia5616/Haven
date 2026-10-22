@@ -4,7 +4,8 @@
 //! process count. Children are created suspended, assigned to the Job, and
 //! only then resumed so their descendants inherit containment. Filesystem and
 //! network authorization still belongs to the operation gateway; a Job Object
-//! is deliberately not presented as an AppContainer.
+//! provides process-tree and lifetime control; it does not limit filesystem
+//! or network access.
 
 use std::io;
 use std::sync::{Mutex, MutexGuard};

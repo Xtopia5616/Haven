@@ -18,7 +18,7 @@
 - `VenvManager::ensure` 要求调用方提供窄 `ProcessStartAuthorization`。venv 创建和 pip 安装各自在 OS spawn 前取得从同一执行 proof 派生的短期 policy read permit；permit 覆盖 spawn 与 containment attach/resume，随后释放，不锁住整个安装过程。
 - 如果策略变化发生在 venv/pip 子进程运行期间，SkillRunner 丢弃 setup future；`kill_on_drop` 和 containment owner 回收该子进程树，已验证的管道/进程树回收测试覆盖 future drop 行为。
 - 全局 `policy_revision` 继续拒绝旧 proof；permission mode、执行边界和永久 trust 规则变更仍取消所有绑定旧 signal 的 Skill/Shell。工具设置与 session trust 依据 ADR 1217/1218 只取消受影响工具或 session；授权 grant 不撤销已运行工作。MCP stdio 尚未接入本生命周期。
-- 本切片只补授权证明、实时撤销与进程启动线性化。Skill 仍不是 AppContainer 文件系统 sandbox；进程环境过滤、私有工作目录或 Job Object 都不代表 OS filesystem/network sandbox，也不改变 Skill 现有 OS 能力。
+- 本切片只补授权证明、实时撤销与进程启动线性化。进程环境过滤、私有工作目录或 Job Object 不限制 Skill 对文件系统和网络的访问，也不改变它的 OS 权限。
 
 ## 替代方案
 

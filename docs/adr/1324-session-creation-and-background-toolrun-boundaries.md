@@ -41,4 +41,4 @@ ToolRunService 同时拥有后台进程和定时计划/触发。`shell` 通过 `
 
 ## 验证与回滚
 
-每个分片按其影响运行必要的 Rust/UI、IPC 生成和 schema 测试；全部切片完成后运行 workspace Rust 与 UI 完整门禁。2026-10-19 完成 workspace Rust tests/clippy、UI typecheck/tests/build 与 IPC contract/event checks；Windows/HCS 发布验收仍由路线图 §5.1 独立跟踪。回滚代码必须同时恢复对应数据库 schema 与模型工具/IPC 契约；schema v48 及以上数据库按 reset policy 重建，不交给旧二进制打开。
+每个分片按其影响运行必要的 Rust/UI、IPC 生成和 schema 测试；全部切片完成后运行 workspace Rust 与 UI 完整门禁。2026-10-19 完成 workspace Rust tests/clippy、UI typecheck/tests/build 与 IPC contract/event checks；Windows 发布验收仍由路线图 §5.1 独立跟踪。回滚代码必须同时恢复对应数据库 schema 与模型工具/IPC 契约；schema v48 及以上数据库按 reset policy 重建，不交给旧二进制打开。

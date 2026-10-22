@@ -107,15 +107,8 @@ export interface SessionResumeResponse { session: SessionRecordDto; messages: Se
 export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }
-export const SHELL_BROKER_GATE_STATUS_VALUES = ['attested', 'quota_unattested', 'service_unavailable', 'unknown', 'unsupported_platform'] as const;
-export type ShellBrokerGateStatus = (typeof SHELL_BROKER_GATE_STATUS_VALUES)[number];
-export interface ShellExecutionSecurityStatus { sandboxMode: SandboxMode; networkPolicy: NetworkPolicy; brokerGateStatus: ShellBrokerGateStatus }
-export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null; stepId: string | null }
+export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
-export interface SandboxOutputReviewChangeDto { changeIndex: number; relativePath: string; change: SandboxOutputReviewChangeKindDto; beforeBytes: number | null; afterBytes: number | null; beforeSha256: string | null; afterSha256: string | null; promoted: boolean }
-export const SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES = ['created', 'modified', 'deleted', 'type_changed'] as const;
-export type SandboxOutputReviewChangeKindDto = (typeof SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES)[number];
-export interface SandboxOutputReviewManifestDto { sessionId: string; sourceStepId: string; expiresAtUnixMs: number; storageChargeBytes: number; changes: SandboxOutputReviewChangeDto[] }
 export interface AgentCompactionEvent { session_id: string; summary: string; tokens_before: number; tokens_after: number; degraded: boolean; episode_id?: string; event_sequence?: number }
 export interface AgentMediaPlanEvent { session_id: string; step_number: number; run_id: number; request_kind: RequestKind; strategy: MediaInputStrategy; projections: MediaProjection[]; notices: MediaPlanNotice[]; event_sequence?: number }
 export interface AgentNotificationEvent { session_id?: string; title: string; body: string; notification_kind?: AgentNotificationKind; tool_run_kind?: ToolRunKindDto; tool_run_id?: string; tool_run_status?: ToolRunCompletionStatusDto }
@@ -238,10 +231,8 @@ export interface McpEnvironmentCredentialRefInput { name: string; credential_ref
 export interface McpEnvironmentCredentialRef { name: string; credential_ref?: string; has_value: boolean }
 export interface McpExposureConfigInput { default?: McpToolExposureInput; tools?: Record<string, McpToolExposureInput> }
 export interface McpExposureConfig { default: McpToolExposure; tools: Record<string, McpToolExposure> }
-export interface McpServerConfigInput { name?: string; transport?: McpServerTransportInput; stdio_execution?: McpStdioExecutionInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean; exposure?: McpExposureConfigInput }
-export interface McpServerConfig { name: string; transport: McpServerTransport; stdio_execution: McpStdioExecution; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean; exposure: McpExposureConfig }
-export type McpStdioExecutionInput = { mode: 'host_process' } | { mode: 'managed_package'; package_id: string };
-export type McpStdioExecution = { mode: 'host_process' } | { mode: 'managed_package'; package_id: string };
+export interface McpServerConfigInput { name?: string; transport?: McpServerTransportInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean; exposure?: McpExposureConfigInput }
+export interface McpServerConfig { name: string; transport: McpServerTransport; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean; exposure: McpExposureConfig }
 export interface MemoryConfigInput { fact_inference_enabled?: boolean }
 export interface MemoryConfig { fact_inference_enabled: boolean }
 export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; permission_requested?: NotifyChannelsInput; tool_run_completed?: NotifyChannelsInput }
@@ -338,7 +329,7 @@ export type ToolOperationScope = (typeof TOOL_OPERATION_SCOPE_VALUES)[number];
 export interface ToolPolicy { risk_level: RiskLevel; permission_key: string; confirmation: ConfirmationRequirement; idempotency: OperationIdempotency; scope: ToolOperationScope; concurrency: ToolConcurrencyMode; effect: OperationEffect; data_sensitivity: DataSensitivity; network_access: NetworkAccess }
 export interface ToolPresentation { label: string; renderer: string; icon: string; represented_source: ToolSource }
 export interface ToolPrompt { when_to_use: string; when_not_to_use: string; key_operations: string[] }
-export interface ToolResultEnvelope { outcome: ToolExecutionOutcome; error_class?: ToolErrorClass; idempotency: OperationIdempotency; retryability: ToolRetryability; verification_hint?: string; next_action?: string; assets: string[]; sandbox_output_review_step_ids?: string[] }
+export interface ToolResultEnvelope { outcome: ToolExecutionOutcome; error_class?: ToolErrorClass; idempotency: OperationIdempotency; retryability: ToolRetryability; verification_hint?: string; next_action?: string; assets: string[] }
 export const TOOL_RETRYABILITY_VALUES = ['retryable', 'not_retryable', 'unknown'] as const;
 export type ToolRetryability = (typeof TOOL_RETRYABILITY_VALUES)[number];
 export interface ToolRootPresentation { label: string; description: string; icon: string }
@@ -432,7 +423,7 @@ export interface McpResourceRead { contents: McpResourceContent[]; ttlMs: number
 export interface McpResourceTemplate { uriTemplate: string; name: string; title?: string; description?: string; mimeType?: string }
 export interface McpResourceTemplateList { resourceTemplates: McpResourceTemplate[]; ttlMs: number | null; cacheScope: McpCacheScope }
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };
-export interface McpServerSnapshot { name: string; transport: McpServerTransport; stdio_execution: McpStdioExecution; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; target_binding: string | null; supports_resources: boolean; supports_resource_subscriptions: boolean; supports_prompts: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
+export interface McpServerSnapshot { name: string; transport: McpServerTransport; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean; target_binding: string | null; supports_resources: boolean; supports_resource_subscriptions: boolean; supports_prompts: boolean; exposure: McpExposureConfig; status: McpClientStatus; tools: McpToolInfo[]; last_error: string | null; diagnostic: string | null; last_seen_at: number | null }
 export interface McpToolInfo { name: string; description: string; input_schema: unknown }
 export const MEMORY_RECALL_KIND_INPUT_VALUES = ['fact', 'episode', 'profile', 'semantic', 'procedural'] as const;
 export type MemoryRecallKindInput = (typeof MEMORY_RECALL_KIND_INPUT_VALUES)[number];
@@ -754,10 +745,6 @@ export const AGENT_OBSERVATION_EVENT_PAYLOAD_SHAPE = {
 					},
 					'assets': {
 						optional: false,
-						shape: { kind: 'array', items: { kind: 'string' } },
-					},
-					'sandbox_output_review_step_ids': {
-						optional: true,
 						shape: { kind: 'array', items: { kind: 'string' } },
 					}
 				}
@@ -1299,7 +1286,6 @@ export const DELETE_ALL_SESSIONS_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const DELETE_FACT_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DELETE_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISABLE_AUTOSTART_RESPONSE_SHAPE = { kind: 'null' } as const;
-export const DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE = { kind: 'boolean' } as const;
 export const DISCARD_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISCARD_STAGED_CREDENTIALS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const DISCOVER_MODELS_RESPONSE_SHAPE = { kind: 'array', items: {
@@ -1357,10 +1343,6 @@ export const EXECUTE_SKILL_RESPONSE_SHAPE = {
 			shape: { kind: 'unknown' },
 		},
 		'error': {
-			optional: false,
-			shape: { kind: 'nullable', inner: { kind: 'string' } },
-		},
-		'stepId': {
 			optional: false,
 			shape: { kind: 'nullable', inner: { kind: 'string' } },
 		}
@@ -2776,67 +2758,6 @@ export const GET_PERFORMANCE_METRICS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
-export const GET_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE = { kind: 'nullable', inner: {
-	kind: 'object',
-	fields: {
-		'sessionId': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'sourceStepId': {
-			optional: false,
-			shape: { kind: 'string' },
-		},
-		'expiresAtUnixMs': {
-			optional: false,
-			shape: { kind: 'number' },
-		},
-		'storageChargeBytes': {
-			optional: false,
-			shape: { kind: 'number' },
-		},
-		'changes': {
-			optional: false,
-			shape: { kind: 'array', items: {
-				kind: 'object',
-				fields: {
-					'changeIndex': {
-						optional: false,
-						shape: { kind: 'number' },
-					},
-					'relativePath': {
-						optional: false,
-						shape: { kind: 'string' },
-					},
-					'change': {
-						optional: false,
-						shape: { kind: 'enum', values: SANDBOX_OUTPUT_REVIEW_CHANGE_KIND_DTO_VALUES },
-					},
-					'beforeBytes': {
-						optional: false,
-						shape: { kind: 'nullable', inner: { kind: 'number' } },
-					},
-					'afterBytes': {
-						optional: false,
-						shape: { kind: 'nullable', inner: { kind: 'number' } },
-					},
-					'beforeSha256': {
-						optional: false,
-						shape: { kind: 'nullable', inner: { kind: 'string' } },
-					},
-					'afterSha256': {
-						optional: false,
-						shape: { kind: 'nullable', inner: { kind: 'string' } },
-					},
-					'promoted': {
-						optional: false,
-						shape: { kind: 'boolean' },
-					}
-				}
-			} },
-		}
-	}
-} } as const;
 export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -4996,33 +4917,6 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: MCP_SERVER_TRANSPORT_VALUES },
 					},
-					'stdio_execution': {
-						optional: false,
-						shape: { kind: 'union', anyOf: [
-							{
-								kind: 'object',
-								fields: {
-									'mode': {
-										optional: false,
-										shape: { kind: 'literal', value: 'host_process' },
-									}
-								}
-							},
-							{
-								kind: 'object',
-								fields: {
-									'mode': {
-										optional: false,
-										shape: { kind: 'literal', value: 'managed_package' },
-									},
-									'package_id': {
-										optional: false,
-										shape: { kind: 'string' },
-									}
-								}
-							}
-						] },
-					},
 					'command': {
 						optional: false,
 						shape: { kind: 'string' },
@@ -5265,23 +5159,6 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 					}
 				}
 			} },
-		}
-	}
-} as const;
-export const GET_SHELL_EXECUTION_SECURITY_STATUS_RESPONSE_SHAPE = {
-	kind: 'object',
-	fields: {
-		'sandboxMode': {
-			optional: false,
-			shape: { kind: 'enum', values: SANDBOX_MODE_VALUES },
-		},
-		'networkPolicy': {
-			optional: false,
-			shape: { kind: 'enum', values: NETWORK_POLICY_VALUES },
-		},
-		'brokerGateStatus': {
-			optional: false,
-			shape: { kind: 'enum', values: SHELL_BROKER_GATE_STATUS_VALUES },
 		}
 	}
 } as const;
@@ -5958,33 +5835,6 @@ export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 		'transport': {
 			optional: false,
 			shape: { kind: 'enum', values: MCP_SERVER_TRANSPORT_VALUES },
-		},
-		'stdio_execution': {
-			optional: false,
-			shape: { kind: 'union', anyOf: [
-				{
-					kind: 'object',
-					fields: {
-						'mode': {
-							optional: false,
-							shape: { kind: 'literal', value: 'host_process' },
-						}
-					}
-				},
-				{
-					kind: 'object',
-					fields: {
-						'mode': {
-							optional: false,
-							shape: { kind: 'literal', value: 'managed_package' },
-						},
-						'package_id': {
-							optional: false,
-							shape: { kind: 'string' },
-						}
-					}
-				}
-			] },
 		},
 		'command': {
 			optional: false,
@@ -6672,8 +6522,6 @@ export const NOTIFICATION_SHOW_EVENT_PAYLOAD_SHAPE = {
 export const OPEN_EXTERNAL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const OPEN_SKILLS_DIR_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE = { kind: 'nullable', inner: { kind: 'string' } } as const;
-export const PICK_SANDBOX_OUTPUT_DESTINATION_RESPONSE_SHAPE = { kind: 'nullable', inner: { kind: 'string' } } as const;
-export const PROMOTE_SANDBOX_OUTPUT_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const READ_LOG_TAIL_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -9958,33 +9806,6 @@ export const SETTINGS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: MCP_SERVER_TRANSPORT_VALUES },
 					},
-					'stdio_execution': {
-						optional: false,
-						shape: { kind: 'union', anyOf: [
-							{
-								kind: 'object',
-								fields: {
-									'mode': {
-										optional: false,
-										shape: { kind: 'literal', value: 'host_process' },
-									}
-								}
-							},
-							{
-								kind: 'object',
-								fields: {
-									'mode': {
-										optional: false,
-										shape: { kind: 'literal', value: 'managed_package' },
-									},
-									'package_id': {
-										optional: false,
-										shape: { kind: 'string' },
-									}
-								}
-							}
-						] },
-					},
 					'command': {
 						optional: false,
 						shape: { kind: 'string' },
@@ -10557,7 +10378,6 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	delete_fact: DELETE_FACT_RESPONSE_SHAPE,
 	delete_session: DELETE_SESSION_RESPONSE_SHAPE,
 	disable_autostart: DISABLE_AUTOSTART_RESPONSE_SHAPE,
-	discard_sandbox_output_review: DISCARD_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE,
 	discard_staged_chatgpt_plan_credential: DISCARD_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE,
 	discard_staged_credentials: DISCARD_STAGED_CREDENTIALS_RESPONSE_SHAPE,
 	discover_models: DISCOVER_MODELS_RESPONSE_SHAPE,
@@ -10571,11 +10391,9 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_log_info: GET_LOG_INFO_RESPONSE_SHAPE,
 	get_mcp_prompt: GET_MCP_PROMPT_RESPONSE_SHAPE,
 	get_performance_metrics: GET_PERFORMANCE_METRICS_RESPONSE_SHAPE,
-	get_sandbox_output_review: GET_SANDBOX_OUTPUT_REVIEW_RESPONSE_SHAPE,
 	get_session_for_resume: GET_SESSION_FOR_RESUME_RESPONSE_SHAPE,
 	get_session_lineage: GET_SESSION_LINEAGE_RESPONSE_SHAPE,
 	get_settings: GET_SETTINGS_RESPONSE_SHAPE,
-	get_shell_execution_security_status: GET_SHELL_EXECUTION_SECURITY_STATUS_RESPONSE_SHAPE,
 	interrupt_session: INTERRUPT_SESSION_RESPONSE_SHAPE,
 	is_autostart_enabled: IS_AUTOSTART_ENABLED_RESPONSE_SHAPE,
 	list_builtin_tool_manifests: LIST_BUILTIN_TOOL_MANIFESTS_RESPONSE_SHAPE,
@@ -10596,8 +10414,6 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	open_external: OPEN_EXTERNAL_RESPONSE_SHAPE,
 	open_skills_dir: OPEN_SKILLS_DIR_RESPONSE_SHAPE,
 	pick_execution_workspace_directory: PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE,
-	pick_sandbox_output_destination: PICK_SANDBOX_OUTPUT_DESTINATION_RESPONSE_SHAPE,
-	promote_sandbox_output: PROMOTE_SANDBOX_OUTPUT_RESPONSE_SHAPE,
 	read_log_tail: READ_LOG_TAIL_RESPONSE_SHAPE,
 	read_mcp_resource: READ_MCP_RESOURCE_RESPONSE_SHAPE,
 	reassign_staged_chatgpt_plan_credential: REASSIGN_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE,
@@ -10743,13 +10559,12 @@ export interface TauriCommandMap {
 	delete_fact: { request: { factId: string }; response: void };
 	delete_session: { request: { sessionId: string }; response: void };
 	disable_autostart: { request: undefined; response: void };
-	discard_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: boolean };
 	discard_staged_chatgpt_plan_credential: { request: { credentialRef: string }; response: void };
 	discard_staged_credentials: { request: undefined; response: void };
 	discover_models: { request: { baseUrl: string; apiKey: string; providerName?: string | null; requestKind?: RequestKindInput | null; authHeaderName?: string | null; authHeaderPrefix?: string | null; skipAuth?: boolean | null; proxyUrl?: string | null; noProxy?: string | null }; response: ModelInfo[] };
 	enable_autostart: { request: undefined; response: void };
 	end_session: { request: { sessionId: string }; response: void };
-	execute_skill: { request: { name: string; params: unknown; sessionId?: string | null }; response: SkillExecutionResponse };
+	execute_skill: { request: { name: string; params: unknown }; response: SkillExecutionResponse };
 	fork_session_from_message: { request: { sessionId: string; messageId: string }; response: string };
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
 	get_bootstrap_status: { request: undefined; response: BootstrapStatus };
@@ -10757,11 +10572,9 @@ export interface TauriCommandMap {
 	get_log_info: { request: undefined; response: LogInfo };
 	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpFeatureCallOutcome };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
-	get_sandbox_output_review: { request: { sessionId: string; sourceStepId: string }; response: SandboxOutputReviewManifestDto | null };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
 	get_settings: { request: undefined; response: SettingsSnapshot };
-	get_shell_execution_security_status: { request: undefined; response: ShellExecutionSecurityStatus };
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
@@ -10782,8 +10595,6 @@ export interface TauriCommandMap {
 	open_external: { request: { target: string }; response: void };
 	open_skills_dir: { request: undefined; response: void };
 	pick_execution_workspace_directory: { request: undefined; response: string | null };
-	pick_sandbox_output_destination: { request: { suggestedName: string }; response: string | null };
-	promote_sandbox_output: { request: { sessionId: string; sourceStepId: string; changeIndex: number; destination: string }; response: void };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpFeatureCallOutcome };
 	reassign_staged_chatgpt_plan_credential: { request: { credentialRef: string; providerName: string }; response: void };
@@ -10868,7 +10679,6 @@ export const TAURI_COMMAND_CONTRACTS = {
 	delete_fact: { boundary: 'mutate', security: "delete one fact by id" },
 	delete_session: { boundary: 'mutate', security: "delete by session id and release runtime state" },
 	disable_autostart: { boundary: 'execute', security: "managed autostart entry only" },
-	discard_sandbox_output_review: { boundary: 'mutate', security: "canonical session/step pair; only the owning Shell review can be discarded" },
 	discard_staged_chatgpt_plan_credential: { boundary: 'mutate', security: "deletes only the exact uncommitted ChatGPT plan credential reference abandoned by the settings draft" },
 	discard_staged_credentials: { boundary: 'mutate', security: "deletes staged values not committed by a Settings save" },
 	discover_models: { boundary: 'execute', security: "http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint" },
@@ -10882,11 +10692,9 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_log_info: { boundary: 'read', security: "path is optional; no environment details" },
 	get_mcp_prompt: { boundary: 'execute', security: "explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages" },
 	get_performance_metrics: { boundary: 'read', security: "bounded content-free backend counters plus renderer stream counters" },
-	get_sandbox_output_review: { boundary: 'read', security: "canonical session/step pair; only completed Shell steps; bounded owner manifest without file content or absolute source paths" },
 	get_session_for_resume: { boundary: 'read', security: "session-scoped persisted projection" },
 	get_session_lineage: { boundary: 'read', security: "parent and direct child sessions of the selected session only" },
 	get_settings: { boundary: 'read', security: "config response redacts credentials and MCP environment values" },
-	get_shell_execution_security_status: { boundary: 'read', security: "effective sandbox/network policy and authenticated broker gate only; no paths or diagnostics" },
 	interrupt_session: { boundary: 'mutate', security: "pauses the selected active session without deleting it" },
 	is_autostart_enabled: { boundary: 'read', security: "state boolean only" },
 	list_builtin_tool_manifests: { boundary: 'read', security: "builtin manifest projection; schemas are dynamic extension data" },
@@ -10907,8 +10715,6 @@ export const TAURI_COMMAND_CONTRACTS = {
 	open_external: { boundary: 'execute', security: "AuthorizationPort; queues AppCommand confirmation; http(s) or validated absolute local path only" },
 	open_skills_dir: { boundary: 'execute', security: "AuthorizationPort; queues AppCommand confirmation; configured skills root only" },
 	pick_execution_workspace_directory: { boundary: 'read', security: "user-selected local directory candidate only; validates but grants no file access" },
-	pick_sandbox_output_destination: { boundary: 'read', security: "native save picker; returns a user-selected candidate only and grants no filesystem access" },
-	promote_sandbox_output: { boundary: 'execute', security: "Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof" },
 	read_log_tail: { boundary: 'read', security: "bounded tail; file logging must be enabled" },
 	read_mcp_resource: { boundary: 'execute', security: "explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content" },
 	reassign_staged_chatgpt_plan_credential: { boundary: 'mutate', security: "moves one exact staged ChatGPT credential reference to another ChatGPT plan provider name without exposing its secret" },

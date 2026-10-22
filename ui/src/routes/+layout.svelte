@@ -53,7 +53,6 @@
 	} from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 	import { loadSettings } from '$lib/settingsCommands.ts';
-	import { readShellExecutionSecurityStatus } from '$lib/shellExecutionCommands.ts';
 	import { toolRunStatusLabel } from '$lib/toolRunTerminology.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
 	import { listBuiltinToolManifests } from '$lib/toolsCommands.ts';
@@ -80,7 +79,6 @@
 	import type { ReActExecutionPhase } from '$lib/reactExecutionPhaseStore.ts';
 	import type { ToolRunPayload } from '$lib/contracts/toolRun.ts';
 	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
-	import type { ShellExecutionSecurityStatus } from '$lib/contracts/shellExecution.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
 	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
 	import {
@@ -674,41 +672,6 @@
 			(requestedConfirmationRequestId === activeConfirmRequest.requestId ||
 				!dismissedConfirmationRequestIds.has(activeConfirmRequest.requestId)),
 	);
-	let shellExecutionStatus = $state<ShellExecutionSecurityStatus | null>(null);
-	let shellExecutionStatusLoading = $state(false);
-	$effect(() => {
-		const requestId =
-			activeConfirmOpen && activeConfirmRequest?.toolName === 'shell'
-				? activeConfirmRequest.requestId
-				: null;
-		if (!requestId) {
-			shellExecutionStatus = null;
-			shellExecutionStatusLoading = false;
-			return;
-		}
-		let disposed = false;
-		shellExecutionStatus = null;
-		shellExecutionStatusLoading = true;
-		void readShellExecutionSecurityStatus()
-			.then((status) => {
-				if (!disposed) shellExecutionStatus = status;
-			})
-			.catch((error) => {
-				if (!disposed) {
-					reportError(error, {
-						context: 'ConfirmationDialog',
-						message: '读取 Shell 执行边界失败',
-						log: false,
-					});
-				}
-			})
-			.finally(() => {
-				if (!disposed) shellExecutionStatusLoading = false;
-			});
-		return () => {
-			disposed = true;
-		};
-	});
 	function dismissConfirmation(requestId: string) {
 		dismissedConfirmationRequestIds = new Set(dismissedConfirmationRequestIds).add(requestId);
 		if (requestedConfirmationRequestId === requestId) clearRequestedConfirmation();
@@ -1321,7 +1284,6 @@
 								>
 									<TabComponent
 										isVisible={activeTab === 'tools'}
-										{activeSessionId}
 									/>
 								</WorkspaceSurface>
 							{:else if lazyViewStates.tools === 'error'}
@@ -1425,18 +1387,14 @@
 			open={activeConfirmOpen}
 			requestId={activeConfirmRequest?.requestId || null}
 			toolName={activeConfirmRequest?.toolName || ''}
-			onceOnly={activeConfirmRequest?.toolName === 'files.promote_sandbox_output'}
 			sessionId={activeConfirmRequest?.sessionId}
-			allowSessionScope={Boolean(activeConfirmRequest?.sessionId) &&
-				activeConfirmRequest?.toolName !== 'files.promote_sandbox_output'}
+			allowSessionScope={Boolean(activeConfirmRequest?.sessionId)}
 			sessionTitle={activeConfirmSessionTitle}
 			riskLevel={activeConfirmRequest?.riskLevel || 'medium'}
 			summary={activeConfirmRequest?.summary || '此操作需要你的许可。'}
 			permissionKey={activeConfirmRequest?.permissionKey ||
 				activeConfirmRequest?.toolName ||
 				''}
-			shellExecutionStatus={shellExecutionStatus}
-			shellExecutionStatusLoading={shellExecutionStatusLoading}
 			createdAt={activeConfirmRequest?.createdAt || ''}
 			deadlineAt={activeConfirmDeadlineAt ?? Number.NaN}
 			onDismiss={dismissConfirmation}

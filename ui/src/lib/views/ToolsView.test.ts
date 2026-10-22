@@ -83,7 +83,6 @@ function mcpServer(name: string, status: string) {
 	return {
 		name,
 		transport: 'stdio',
-		stdio_execution: { mode: 'host_process' },
 		command: 'server.exe',
 		args: [],
 		env: [],
@@ -274,39 +273,18 @@ describe('ToolsView toolbar actions', () => {
 		}
 	});
 
-	it('runs a Skill against the active session and binds output review to its returned step', async () => {
-		const sessionId = 'ses-00000000000000000000000000000001';
-		const stepId = 'step-00000000000000000000000000000002';
-		const review = {
-			sessionId,
-			sourceStepId: stepId,
-			expiresAtUnixMs: Date.now() + 60_000,
-			storageChargeBytes: 128,
-			changes: [
-				{
-					changeIndex: 0,
-					relativePath: 'report.txt',
-					change: 'created',
-					beforeBytes: null,
-					afterBytes: 12,
-					beforeSha256: null,
-					afterSha256: 'a'.repeat(64),
-					promoted: false,
-				},
-			],
-		};
+	it('runs a Skill through the regular management authorization action', async () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'list_builtin_tool_manifests') return { tools: [] };
 			if (command === 'list_mcp_servers') return [];
 			if (command === 'list_skills') return [skillInfo('docs', true, true)];
 			if (command === 'execute_skill') {
-				return { success: true, output: { ok: true }, error: null, stepId };
+				return { success: true, output: { ok: true }, error: null };
 			}
-			if (command === 'get_sandbox_output_review') return review;
 			return undefined;
 		});
 
-		render(ToolsView, { activeSessionId: sessionId });
+		render(ToolsView);
 		await fireEvent.click(await screen.findByRole('tab', { name: '技能' }));
 		await screen.findByText('docs');
 		await fireEvent.click(screen.getByText('docs').closest('[role="button"]')!);
@@ -316,15 +294,8 @@ describe('ToolsView toolbar actions', () => {
 			expect(invoke).toHaveBeenCalledWith('execute_skill', {
 				name: 'docs',
 				params: {},
-				sessionId,
 			}),
 		);
-		await screen.findByTestId('sandbox-output-review');
-		expect(invoke).toHaveBeenCalledWith('get_sandbox_output_review', {
-			sessionId,
-			sourceStepId: stepId,
-		});
-		expect(screen.getByText('report.txt')).toBeTruthy();
 	});
 
 	it('serializes skill toggles and reconciles the latest failed intent from the backend', async () => {

@@ -72,7 +72,6 @@ describe('settings command contracts', () => {
 		payload.mcp_servers.push({
 			name: 'local',
 			transport: 'stdio',
-			stdio_execution: { mode: 'host_process' },
 			command: 'server',
 			args: [],
 			env_refs: [
@@ -114,7 +113,6 @@ describe('settings command contracts', () => {
 		badMcp.mcp_servers.push({
 			name: 'local',
 			transport: 'stdio',
-			stdio_execution: { mode: 'host_process' },
 			command: 'server',
 			args: [],
 			env_refs: [{ name: 'TOKEN', credential_ref: 'plain-reference', has_value: false }],
@@ -185,7 +183,6 @@ describe('settings command contracts', () => {
 		mcpStt.mcp_servers.push({
 			name: 'transcriber',
 			transport: 'stdio',
-			stdio_execution: { mode: 'host_process' },
 			command: 'server',
 			args: [],
 			cwd: null,

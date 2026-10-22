@@ -133,7 +133,7 @@ Settings 保存还有一个必须覆盖的分支：`SettingsView.svelte` 将 par
 4. **已完成（ADR 1310）：** FileRead/FileWrite policy、路径解析/允许判断 helper 与七项独立路径/句柄安全测试进入私有 `security/filesystem.rs`。原授权 roots 仍由唯一 engine 派生；`security.rs` 保持既有 crate 内 facade re-export 和公开 `is_safe_local_path` 入口。
 5. **已完成（ADR 1311）：** `AuthorizationEngine`/`SafetyConfig`、状态/revoke 实现与授权测试进入私有 `security/engine.rs`；`security.rs` 继续 re-export 原 `AuthorizationEngine`。`authorize_for_execution`、`verify_receipt` 与 `verify_execution_proof` 共用按“禁用操作 → host-process sandbox → network → path/sandbox”顺序执行的硬边界检查；各入口独有的 grant、critical floor、receipt/proof 绑定和时效规则保持各自验证。完整 Windows workspace tests 以单线程 harness 通过，strict Clippy 与格式检查通过；并发子进程用例波动已在 ADR 中记录。
 
-整个 Slice 保留唯一 AuthorizationEngine/SafetyConfig/AuthorizationPort；保留 critical floor、grant scope、receipt/proof 绑定与时效、revoke 生命周期、MCP stdio 与 Skill process-start 两套不同 permit，以及网络/路径/reparse 和执行期 live policy guard。最终验收覆盖 deny/revision 后重验、tool/session 局部 revoke、MCP/Skill 子进程入口，使用 workspace locked tests/clippy；Windows release/HCS quota 验收记录在 §5.1 独立 Open Gate。
+整个 Slice 保留唯一 AuthorizationEngine/SafetyConfig/AuthorizationPort；保留 critical floor、grant scope、receipt/proof 绑定与时效、revoke 生命周期、MCP stdio 与 Skill process-start 两套不同 permit，以及网络/路径/reparse 和执行期 live policy guard。最终验收覆盖 deny/revision 后重验、tool/session 局部 revoke、MCP/Skill 子进程入口，使用 workspace locked tests/clippy；Windows 发布验收按路线图 §5.1 跟踪。
 
 ### Slice 6 — 拆分 Agent tool runner
 

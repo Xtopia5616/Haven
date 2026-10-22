@@ -459,11 +459,6 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "availability boolean only",
     },
     CommandContract {
-        name: "get_shell_execution_security_status",
-        boundary: CommandBoundary::Read,
-        security: "effective sandbox/network policy and authenticated broker gate only; no paths or diagnostics",
-    },
-    CommandContract {
         name: "enable_autostart",
         boundary: CommandBoundary::Execute,
         security: "release build only",
@@ -520,26 +515,6 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         boundary: CommandBoundary::Mutate,
         security: "clears local circuit state only",
     },
-    CommandContract {
-        name: "promote_sandbox_output",
-        boundary: CommandBoundary::Execute,
-        security: "Windows only; owner-held change index; exact session request; required one-time confirmation; current Files capability and live execution proof",
-    },
-    CommandContract {
-        name: "get_sandbox_output_review",
-        boundary: CommandBoundary::Read,
-        security: "canonical session/step pair; only completed Shell steps; bounded owner manifest without file content or absolute source paths",
-    },
-    CommandContract {
-        name: "discard_sandbox_output_review",
-        boundary: CommandBoundary::Mutate,
-        security: "canonical session/step pair; only the owning Shell review can be discarded",
-    },
-    CommandContract {
-        name: "pick_sandbox_output_destination",
-        boundary: CommandBoundary::Read,
-        security: "native save picker; returns a user-selected candidate only and grants no filesystem access",
-    },
 ];
 
 #[cfg(test)]
@@ -560,9 +535,5 @@ mod tests {
         assert!(names.contains(&"list_session_permissions"));
         assert!(names.contains(&"revoke_session_permission"));
         assert!(names.contains(&"reset_session_permissions"));
-        assert!(names.contains(&"get_sandbox_output_review"));
-        assert!(names.contains(&"discard_sandbox_output_review"));
-        assert!(names.contains(&"pick_sandbox_output_destination"));
-        assert!(names.contains(&"promote_sandbox_output"));
     }
 }

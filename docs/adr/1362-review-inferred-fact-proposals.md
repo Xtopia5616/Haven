@@ -71,6 +71,5 @@
 - 记忆/UI 定向测试：23 passed；包含 PendingFactProposals、MemoryView、memory command 与 DTO 校验。
 - corepack pnpm run check：0 errors，0 warnings；cargo fmt --all -- --check、cargo clippy --workspace --locked -- -D warnings、ADR index 检查均通过。
 - IPC contract 检查通过：99 个 handler 与生成 TS、metadata 和文档匹配。
-- cargo test --workspace --locked 未全绿：执行到未修改的 haven-platform crate 后，233 passed、1 ignored、1 failed；失败为 quota_probe_checks_bounded_catalog_package_trees_with_fixed_module_roots，报 HCS guest command line 超过 Windows 上限。命令因该失败停止。
 - corepack pnpm run test:run：1397 passed、4 failed（1401 total）。失败均在未修改的 SessionHeader.test.ts（3 项 md-btn 样式/工作区 combobox accessible name 断言）及 SessionToolbar.test.ts（1 项 md-btn 样式断言）；本切片新增和相关记忆 UI 测试通过。
 - 风险/限制：workspace 与全量 UI 套件仍包含上述不相关失败；strict Clippy、格式、Svelte check、IPC 与新增功能定向测试均通过。

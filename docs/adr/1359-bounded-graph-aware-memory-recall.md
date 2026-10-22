@@ -43,7 +43,4 @@ Facts 已以 SPO 形式持久化，并通过 `subject_id`、`object_id` 关联 `
 通过；Memory 为 480 passed / 2 ignored。图谱召回用例覆盖 keyword 与 vector 种子、
 subject/object 两侧、类别与主体过滤、80 候选上限、规范 ID、敏感邻居过滤及主体上下文。
 
-`cargo test --workspace --locked` 仍失败于未改动的
-`haven-platform::windows_container::hcs_process::tests::quota_probe_checks_bounded_catalog_package_trees_with_fixed_module_roots`：
-测试生成的 HCS guest command line 超出 Windows 长度上限。workspace 编译和 strict Clippy
-通过；该 platform 测试与本切片无依赖。
+workspace 编译和 strict Clippy 通过；图谱召回用例覆盖以下行为：

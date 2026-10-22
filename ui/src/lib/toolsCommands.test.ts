@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	addMcpServer,
-	discardSandboxOutputReview,
 	executeSkill,
 	listBuiltinToolManifests,
 	listMcpPrompts,
@@ -35,7 +34,6 @@ function makeMcpServerSnapshot(overrides: Record<string, unknown> = {}) {
 	return {
 		name: 'future-server',
 		transport: 'stdio',
-		stdio_execution: { mode: 'host_process' },
 		command: 'server.exe',
 		args: ['--quiet'],
 		env: ['TOKEN=<redacted>'],
@@ -93,21 +91,6 @@ describe('ToolsView command boundary', () => {
 		invoke.mockReset();
 	});
 
-	it('validates the sandbox review discard response as a boolean', async () => {
-		const request = {
-			sessionId: 'ses-00000000000000000000000000000001',
-			sourceStepId: 'step-00000000000000000000000000000002',
-		};
-		invoke.mockResolvedValueOnce(true);
-		expect(await discardSandboxOutputReview(request)).toBe(true);
-		expect(invoke).toHaveBeenCalledWith('discard_sandbox_output_review', request);
-
-		invoke.mockResolvedValueOnce('true');
-		await expect(discardSandboxOutputReview(request)).rejects.toThrow(
-			'Invalid discard_sandbox_output_review boolean response',
-		);
-	});
-
 	it('maps MCP snapshots to camelCase views while preserving dynamic schemas', async () => {
 		const manifestResponse = {
 			tools: [{ identity: { stable_name: 'files.read', extension: { source: 'future' } } }],
@@ -139,7 +122,6 @@ describe('ToolsView command boundary', () => {
 			{
 				name: 'future-server',
 				transport: 'stdio',
-				stdioExecution: { mode: 'host_process' },
 				command: 'server.exe',
 				args: ['--quiet'],
 				env: ['TOKEN=<redacted>'],
@@ -479,7 +461,6 @@ describe('ToolsView command boundary', () => {
 			success: true,
 			output: { summary: 'ready' },
 			error: null,
-			stepId: null,
 		};
 		invoke.mockResolvedValueOnce(response);
 

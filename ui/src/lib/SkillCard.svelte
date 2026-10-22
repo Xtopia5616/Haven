@@ -3,7 +3,6 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
-	import SandboxOutputReviewPanel from '$lib/SandboxOutputReviewPanel.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import type {
@@ -15,12 +14,11 @@
 
 	interface Props {
 		skill: SkillInfoView;
-		activeSessionId?: string | null;
 		onPreview: (request: ExecuteSkillRequest) => Promise<SkillExecutionResponse>;
 		onToggle?: (name: string, enabled: boolean) => void | Promise<void>;
 	}
 
-	let { skill, activeSessionId = null, onPreview, onToggle }: Props = $props();
+	let { skill, onPreview, onToggle }: Props = $props();
 
 	function handleToggle(checked: boolean) {
 		onToggle?.(skill.name, checked);
@@ -60,16 +58,12 @@
 
 	let previewParams = $state('{}');
 	let previewResult = $state<string | null>(null);
-	let previewSessionId = $state<string | null>(null);
-	let previewStepId = $state<string | null>(null);
 	let running = $state(false);
 
 	async function runPreview() {
 		if (running) return;
 		running = true;
 		previewResult = null;
-		previewSessionId = activeSessionId;
-		previewStepId = null;
 		let params: unknown;
 		try {
 			params = JSON.parse(previewParams);
@@ -82,10 +76,8 @@
 			const result = await onPreview({
 				name: skill.name,
 				params,
-				sessionId: activeSessionId,
 			});
 			previewResult = JSON.stringify(result, null, 2);
-			previewStepId = result.stepId ?? null;
 		} catch (err) {
 			const msg = formatError(err);
 			try {
@@ -167,12 +159,6 @@
 			</div>
 			{#if previewResult}
 				<pre class="preview-result">{previewResult}</pre>
-			{/if}
-			{#if previewSessionId && previewStepId}
-				<SandboxOutputReviewPanel
-					sessionId={previewSessionId}
-					sourceStepId={previewStepId}
-				/>
 			{/if}
 		{/if}
 	{/snippet}

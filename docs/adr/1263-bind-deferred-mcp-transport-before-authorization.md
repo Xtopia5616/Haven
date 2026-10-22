@@ -35,4 +35,4 @@ ADR 1262 将执行边界与网络边界拆开后，配置 transport 已知的 HT
 - 通过实际 `ToolsFacade` 授权解析确认 HTTP 与 stdio 从可信 config 得到不同 execution boundary，且策略解析不创建 client。
 - 确认配置在授权和执行之间改变时，旧 target binding 在连接/启动前失效。
 - 以 live HTTP MCP server 验证旧 client generation 与新配置不一致时拒绝复用；以 manager 测试验证 transport 不匹配时不给出 client target binding。
-- `cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked`、ADR 索引和 crate 依赖门禁均按本切片执行；本轮不运行真实 HCS 或 guest 超额写入验收。
+- `cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked`、ADR 索引和 crate 依赖门禁均按本切片执行。

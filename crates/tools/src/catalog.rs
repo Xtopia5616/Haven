@@ -26,18 +26,10 @@ impl McpServerIndexEntry {
     }
 }
 
-fn attach_mcp_output_review_owner(
-    adapter: McpToolAdapter,
-    runtime: &crate::tool_runtime::ToolRuntime,
-) -> McpToolAdapter {
-    adapter.with_sandbox_output_reviews(runtime.sandbox_output_reviews.clone())
-}
-
 fn refreshed_mcp_adapters(
     server_name: &str,
     manager: &haven_mcp::McpManager,
     transport: &haven_common::mcp::McpServerTransport,
-    runtime: &crate::tool_runtime::ToolRuntime,
     active_tools: Vec<(String, String, ToolHandle)>,
     available: &[McpToolInfo],
 ) -> (Vec<ToolHandle>, Vec<String>) {
@@ -52,14 +44,11 @@ fn refreshed_mcp_adapters(
             removals.push(qualified_name);
             continue;
         };
-        let refreshed = attach_mcp_output_review_owner(
-            McpToolAdapter::new_with_transport(
-                manager.clone(),
-                server_name,
-                (**info).clone(),
-                transport.clone(),
-            ),
-            runtime,
+        let refreshed = McpToolAdapter::new_with_transport(
+            manager.clone(),
+            server_name,
+            (**info).clone(),
+            transport.clone(),
         );
         let refreshed = Arc::new(refreshed) as ToolHandle;
         if current.tool_manifest() != refreshed.tool_manifest() {
@@ -308,14 +297,11 @@ impl ToolsFacade {
         let adapters = tools
             .into_iter()
             .map(|info| {
-                Arc::new(attach_mcp_output_review_owner(
-                    McpToolAdapter::new_with_transport(
-                        self.coordinator.builtins.mcp_manager.clone(),
-                        server_name,
-                        info,
-                        config.transport.clone(),
-                    ),
-                    &self.coordinator.runtime,
+                Arc::new(McpToolAdapter::new_with_transport(
+                    self.coordinator.builtins.mcp_manager.clone(),
+                    server_name,
+                    info,
+                    config.transport.clone(),
                 )) as ToolHandle
             })
             .collect();
@@ -420,14 +406,11 @@ impl ToolsFacade {
                 }
                 let qualified_name = McpToolAdapter::qualified_name_of(&config.name, &info.name);
                 if qualified_name == name && tool_config_enabled(settings, &qualified_name) {
-                    return Some(Arc::new(attach_mcp_output_review_owner(
-                        McpToolAdapter::new_with_transport(
-                            manager.clone(),
-                            &config.name,
-                            info,
-                            config.transport.clone(),
-                        ),
-                        &self.coordinator.runtime,
+                    return Some(Arc::new(McpToolAdapter::new_with_transport(
+                        manager.clone(),
+                        &config.name,
+                        info,
+                        config.transport.clone(),
                     )) as ToolHandle);
                 }
             }
@@ -634,14 +617,11 @@ impl OperationCatalog<'_> {
                 if !tool_config_enabled(settings, &name) {
                     continue;
                 }
-                tools.push(Arc::new(attach_mcp_output_review_owner(
-                    McpToolAdapter::new_with_transport(
-                        manager.clone(),
-                        &config.name,
-                        info,
-                        config.transport.clone(),
-                    ),
-                    &self.facade.coordinator.runtime,
+                tools.push(Arc::new(McpToolAdapter::new_with_transport(
+                    manager.clone(),
+                    &config.name,
+                    info,
+                    config.transport.clone(),
                 )) as ToolHandle);
             }
         }
@@ -758,7 +738,6 @@ impl OperationCatalog<'_> {
                 &server_name,
                 manager,
                 &config.transport,
-                &self.facade.coordinator.runtime,
                 eligible,
                 &available,
             );
@@ -1069,7 +1048,6 @@ mod mcp_refresh_tests {
     #[test]
     fn refresh_updates_only_active_tools_and_drops_deleted_tools() {
         let manager = McpManager::new();
-        let runtime = crate::tool_runtime::ToolRuntime::new();
         let old_schema = serde_json::json!({
             "type": "object",
             "properties": {"title": {"type": "string"}},
@@ -1106,7 +1084,6 @@ mod mcp_refresh_tests {
             "calendar",
             &manager,
             &haven_common::mcp::McpServerTransport::Stdio,
-            &runtime,
             active,
             &available,
         );
@@ -1146,7 +1123,6 @@ mod mcp_refresh_tests {
             "calendar",
             &manager,
             &haven_common::mcp::McpServerTransport::Stdio,
-            &runtime,
             active,
             &available[1..],
         );

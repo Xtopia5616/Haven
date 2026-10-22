@@ -29,4 +29,4 @@ Slice 7 还要求复核 AppState/bootstrap/cleanup 是否存在可独立的私�
 - `cargo fmt --all -- --check`、`cargo test --locked -p haven-app-binary`（253 passed）、`cargo test --workspace --locked -- --test-threads=1` 与 `cargo clippy --workspace --locked -- -D warnings` 通过。
 - `scripts/check-ipc-contracts.ps1`（85 handlers，含 generator `--check`）、UI `corepack pnpm run check`、`test:run`（161 files / 1337 tests）和 `build` 通过；响应 DTO wire shapes 未变。
 - ADR index（1297 unique records）与 `git diff --check` 通过。
-- AppState/bootstrap no-split 依据记录在[第一轮源码审计](../refactor-plan-source-audit-2026-10-17.md)与[路线图](../architecture-refactor-roadmap.md)；结构切片清空，Windows 发布与 HCS quota 仍按 §5.1 单独签核。
+- AppState/bootstrap no-split 依据记录在[第一轮源码审计](../refactor-plan-source-audit-2026-10-17.md)与[路线图](../architecture-refactor-roadmap.md)；结构切片清空，Windows 发布仍按 §5.1 单独签核。

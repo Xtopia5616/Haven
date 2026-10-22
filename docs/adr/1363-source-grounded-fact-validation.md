@@ -49,6 +49,3 @@ ADR 1362 将 transcript 与 compaction summary 抽取的事实都送入待审核
 - IPC checker 通过，99 个 handler 的 Rust、生成 TypeScript、security metadata 和文档一致。
 - `corepack pnpm run check`：0 errors、0 warnings；记忆 UI 定向测试 18 passed；生产构建成功。
 - 全量 UI 测试为 1397 passed、4 failed；4 项仍是未修改的 SessionHeader（3 项）与 SessionToolbar（1 项）断言。
-- `cargo test --workspace --locked` 被未修改的 `haven-platform` 用例
-  `quota_probe_checks_bounded_catalog_package_trees_with_fixed_module_roots` 阻断，错误为 HCS guest
-  command line 超过 Windows 限制。

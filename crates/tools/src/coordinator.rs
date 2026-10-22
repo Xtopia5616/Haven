@@ -154,8 +154,6 @@ impl ToolRuntimeCoordinator {
         );
         self.rebuild_catalog_scoped(CatalogRebuildScope::All)
             .await?;
-        #[cfg(windows)]
-        self.runtime.sandbox_output_reviews.start_expiry_worker();
         Ok(())
     }
 

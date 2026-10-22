@@ -32,7 +32,6 @@ mod prompts;
 pub(crate) mod registry;
 mod runtime_capabilities;
 #[cfg(windows)]
-mod sandbox_review;
 mod schedule_capabilities;
 mod schedule_service;
 pub(crate) mod security;
@@ -203,11 +202,6 @@ pub use output::{
 pub(crate) use process::read_stream_text_capped;
 pub(crate) use registry::ToolRegistry;
 pub use registry::{ToolCatalogSnapshot, ToolCatalogVersion};
-pub(crate) use sandbox_review::SandboxOutputReviewOwner;
-pub use sandbox_review::{
-    SandboxOutputPromotionResult, SandboxOutputReviewChange, SandboxOutputReviewChangeKind,
-    SandboxOutputReviewManifest, SandboxOutputReviewPort, SandboxOutputReviewReservation,
-};
 pub use schedule_service::{ScheduleRestoreSummary, ScheduleRunTriggered, ScheduleService};
 #[cfg(test)]
 pub(crate) use security::AuthorizationEngine;

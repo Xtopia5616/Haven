@@ -49,10 +49,5 @@ facts 只保存当前行。用户修正单值事实时旧行被删除，维护�
 7 passed。新增用例验证更正前后快照、forget 后历史擦除、敏感清理抹除和自动修剪保留、
 RFC3339、subject、结果上限及敏感过滤。
 
-`cargo test --workspace --locked` 运行至 haven-platform 时有 3 个未修改的
-Windows 平台测试失败：`process_containment::tests::job_active_process_limit_blocks_new_descendants`
-收到空 stdout 而非 `blocked`；`windows_container::hcs_process::tests::quota_probe_checks_bounded_catalog_package_trees_with_fixed_module_roots`
-因 HCS guest command line 超过 Windows 长度上限失败；
-`windows_container::execution::broker_mcp_session::tests::supervisor_relays_stdio_while_answering_control_status`
-超时。Agent（workspace run 为 675 passed / 1 ignored）、Memory（485 passed / 2 ignored）、
-Tools（928 passed / 2 ignored，MCP 集成 7 passed）均通过；这些平台失败不涉及本切片改动。
+当时 workspace 测试在 `haven-platform` 有 Windows 专项用例失败；Agent（675 passed / 1 ignored）、
+Memory（485 passed / 2 ignored）、Tools（928 passed / 2 ignored，MCP 集成 7 passed）均通过。

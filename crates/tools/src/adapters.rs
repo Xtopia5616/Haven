@@ -9,10 +9,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::operation_view::{OperationIdentity, OperationSpec};
-use crate::{
-    OperationPolicy, SandboxOutputReviewPort, StructuredToolError, Tool, ToolErrorMetadata,
-    ToolResult,
-};
+use crate::{OperationPolicy, StructuredToolError, Tool, ToolErrorMetadata, ToolResult};
 use haven_mcp::{McpManager, McpToolInfo};
 
 /// External capability metadata is data, not an instruction channel. Keep
@@ -174,7 +171,7 @@ fn skill_execution_policy_for_sandbox(
 ) -> OperationPolicy {
     match sandbox_mode {
         haven_common::types::SandboxMode::WorkspaceWrite => {
-            policy.execution_boundary = crate::ExecutionBoundary::WorkspaceIsolated;
+            policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
             policy.network_access = crate::NetworkAccess::None;
         }
         haven_common::types::SandboxMode::FullAccess
@@ -192,7 +189,6 @@ pub struct McpToolAdapter {
     server_name: String,
     transport: McpServerTransport,
     spec: OperationSpec,
-    sandbox_output_reviews: Option<crate::SandboxOutputReviewOwner>,
     #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
     panic_on_execute: bool,
 }
@@ -251,18 +247,9 @@ impl McpToolAdapter {
             server_name,
             transport,
             spec,
-            sandbox_output_reviews: None,
             #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
             panic_on_execute: false,
         }
-    }
-
-    pub(crate) fn with_sandbox_output_reviews(
-        mut self,
-        reviews: crate::SandboxOutputReviewOwner,
-    ) -> Self {
-        self.sandbox_output_reviews = Some(reviews);
-        self
     }
 
     /// Construct a real MCP adapter that panics when executed. This is only
@@ -316,11 +303,7 @@ impl McpToolAdapter {
         input: Value,
         cancel: CancellationToken,
         target_binding: Option<String>,
-        one_shot_managed_call: bool,
-        workspace_input: Option<
-            haven_platform::windows_container::execution::WindowsContainerWorkspaceInput,
-        >,
-    ) -> anyhow::Result<(ToolResult, Option<haven_platform::SandboxOutputReview>)> {
+    ) -> anyhow::Result<ToolResult> {
         #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
         if self.panic_on_execute {
             panic!("simulated MCP adapter panic");
@@ -347,44 +330,24 @@ impl McpToolAdapter {
                 permission_error_metadata(),
             )));
         }
-        let (out, output_review) = if one_shot_managed_call {
-            let managed = self
-                .manager
-                .call_tool_once_at_target_binding(
-                    &self.server_name,
-                    &target_binding,
-                    &self.info.name,
-                    input,
-                    workspace_input,
-                    cancel,
-                )
-                .await
-                .map_err(mcp_call_error)?;
-            (managed.call_output, managed.sandbox_output_review)
+        let output = self
+            .manager
+            .call_tool_at_target_binding(
+                &self.server_name,
+                &target_binding,
+                &self.info.name,
+                input,
+                cancel,
+            )
+            .await
+            .map_err(mcp_call_error)?;
+        if output.success {
+            Ok(ToolResult::from_output(output.output, false))
         } else {
-            let out = self
-                .manager
-                .call_tool_at_target_binding(
-                    &self.server_name,
-                    &target_binding,
-                    &self.info.name,
-                    input,
-                    cancel,
-                )
-                .await
-                .map_err(mcp_call_error)?;
-            (out, None)
-        };
-        if out.success {
-            Ok((ToolResult::from_output(out.output, false), output_review))
-        } else {
-            Ok((
-                ToolResult::failed_with_metadata(
-                    out.output,
-                    "MCP tool returned an error",
-                    ToolErrorMetadata::unknown_failure(),
-                ),
-                output_review,
+            Ok(ToolResult::failed_with_metadata(
+                output.output,
+                "MCP tool returned an error",
+                ToolErrorMetadata::unknown_failure(),
             ))
         }
     }
@@ -436,9 +399,7 @@ impl Tool for McpToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        self.execute_target_bound(input, cancel, None, false, None)
-            .await
-            .map(|(result, _)| result)
+        self.execute_target_bound(input, cancel, None).await
     }
 
     async fn execute_with_authorization_target(
@@ -474,74 +435,10 @@ impl Tool for McpToolAdapter {
                 permission_error_metadata(),
             ))
         })?;
-        let permit = authorization
+        authorization
             .acquire()
             .await
             .map_err(crate::security::execution_policy_denied)?;
-        let sandbox_mode = permit.sandbox_mode();
-        drop(permit);
-
-        let one_shot_managed_call = sandbox_mode
-            == haven_common::types::SandboxMode::WorkspaceWrite
-            && self.transport == McpServerTransport::Stdio;
-        let mut workspace_input = None;
-        let mut review_reservation = None;
-        let mut review_step_id = None;
-        if one_shot_managed_call {
-            let session_id = context.call_session_id.as_deref().ok_or_else(|| {
-                crate::security::execution_policy_denied(
-                    "workspace-write MCP stdio requires a canonical session id".into(),
-                )
-            })?;
-            let step_id = context.call_step_id.as_deref().ok_or_else(|| {
-                crate::security::execution_policy_denied(
-                    "workspace-write MCP stdio requires a canonical tool step id".into(),
-                )
-            })?;
-            review_step_id = Some(step_id.to_owned());
-            if !haven_common::types::is_canonical_id(session_id, "ses")
-                || !haven_common::types::is_canonical_id(step_id, "step")
-            {
-                return Err(crate::security::execution_policy_denied(
-                    "workspace-write MCP stdio requires canonical session and tool step ids".into(),
-                ));
-            }
-            let directory = context
-                .execution_workspace
-                .as_ref()
-                .and_then(crate::execution_workspace::ExecutionWorkspace::directory)
-                .ok_or_else(|| {
-                    crate::security::execution_policy_denied(
-                        "workspace-write MCP stdio has no authorized execution workspace".into(),
-                    )
-                })?;
-            let (policy_revision, workspace_generation) = authorization.policy_stamp();
-            workspace_input = Some(
-                haven_platform::windows_container::execution::WindowsContainerWorkspaceInput::new(
-                    directory.clone(),
-                )
-                .with_review_stamp(workspace_generation, policy_revision)
-                .map_err(|error| crate::security::execution_policy_denied(error.to_string()))?,
-            );
-            let reviews = self.sandbox_output_reviews.as_ref().ok_or_else(|| {
-                crate::security::execution_policy_denied(
-                    "workspace-write MCP stdio output review is unavailable".into(),
-                )
-            })?;
-            review_reservation = Some(
-                reviews
-                    .reserve(session_id, step_id, 384 * 1024 * 1024)
-                    .await
-                    .map_err(anyhow::Error::msg)?,
-            );
-        }
-
-        let Some(target_binding) = target_binding else {
-            return Err(anyhow::Error::new(StructuredToolError::new(
-                "MCP execution is missing an authorization-bound target",
-                permission_error_metadata(),
-            )));
-        };
         let call_cancel = cancel.child_token();
         let revoke_cancel = call_cancel.clone();
         let revocation = tokio::spawn(async move {
@@ -549,33 +446,11 @@ impl Tool for McpToolAdapter {
             revoke_cancel.cancel();
         });
         let result = self
-            .execute_target_bound(
-                input,
-                call_cancel,
-                Some(target_binding.to_owned()),
-                one_shot_managed_call,
-                workspace_input,
-            )
+            .execute_target_bound(input, call_cancel, target_binding.map(ToOwned::to_owned))
             .await;
         revocation.abort();
         let _ = revocation.await;
-        let (mut result, output_review) = result?;
-        if one_shot_managed_call {
-            let output_review = output_review.ok_or_else(|| {
-                crate::security::execution_policy_denied(
-                    "workspace-write MCP broker returned no bounded output review".into(),
-                )
-            })?;
-            review_reservation
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("MCP output review reservation is unavailable"))?
-                .retain(output_review)
-                .map_err(anyhow::Error::msg)?;
-            if let Some(step_id) = review_step_id {
-                result = result.with_sandbox_output_review_step_ids([step_id]);
-            }
-        }
-        Ok(result)
+        result
     }
 }
 
@@ -619,68 +494,6 @@ mod tests {
             .expect_err("target binding alone must not authorize an MCP call");
 
         assert!(error.to_string().contains("proof-bound Tools context"));
-    }
-
-    #[tokio::test]
-    async fn workspace_write_mcp_stdio_requires_canonical_call_identity() {
-        let adapter = mcp_adapter(serde_json::json!({"type": "object"}));
-        let (execution_authorization, _) =
-            crate::security::ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
-                haven_common::types::SandboxMode::WorkspaceWrite,
-            );
-        let context = crate::ToolExecutionContext {
-            execution_authorization: Some(execution_authorization),
-            call_session_id: Some("ses-00000000000000000000000000000001".into()),
-            call_step_id: Some("step-invalid".into()),
-            ..Default::default()
-        };
-
-        let error = adapter
-            .execute_with_authorization_context(
-                serde_json::json!({}),
-                CancellationToken::new(),
-                Some("opaque-target-binding"),
-                &context,
-            )
-            .await
-            .expect_err("workspace-write stdio calls need a canonical tool step");
-
-        assert!(
-            error
-                .to_string()
-                .contains("canonical session and tool step ids")
-        );
-    }
-
-    #[tokio::test]
-    async fn workspace_write_mcp_stdio_requires_an_authorized_workspace() {
-        let adapter = mcp_adapter(serde_json::json!({"type": "object"}));
-        let (execution_authorization, _) =
-            crate::security::ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
-                haven_common::types::SandboxMode::WorkspaceWrite,
-            );
-        let context = crate::ToolExecutionContext {
-            execution_authorization: Some(execution_authorization),
-            call_session_id: Some("ses-00000000000000000000000000000001".into()),
-            call_step_id: Some("step-00000000000000000000000000000002".into()),
-            ..Default::default()
-        };
-
-        let error = adapter
-            .execute_with_authorization_context(
-                serde_json::json!({}),
-                CancellationToken::new(),
-                Some("opaque-target-binding"),
-                &context,
-            )
-            .await
-            .expect_err("workspace-write stdio calls need an authorized workspace");
-
-        assert!(
-            error
-                .to_string()
-                .contains("no authorized execution workspace")
-        );
     }
 
     #[tokio::test]
@@ -732,7 +545,7 @@ mod tests {
         );
         assert_eq!(
             workspace_write.execution_boundary,
-            crate::ExecutionBoundary::WorkspaceIsolated
+            crate::ExecutionBoundary::HostProcess
         );
         assert_eq!(workspace_write.network_access, crate::NetworkAccess::None);
         assert_eq!(
@@ -750,7 +563,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skill_workspace_write_authorization_fails_closed_without_review_runtime() {
+    async fn skill_workspace_write_denies_host_process_execution() {
         let root = tempfile::tempdir().unwrap();
         let skill = Arc::new(
             crate::test_support::discover_skill_fixture(root.path(), "echo", "Echo", None).await,
@@ -771,7 +584,7 @@ mod tests {
             .authorization_contract(&serde_json::json!({ "params": {} }))
             .await
             .unwrap_err();
-        assert!(error.contains("Windows container"));
+        assert!(error.contains("Skill subprocesses are unavailable in Workspace Write mode"));
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use crate::client::McpClient;
 use crate::protocol::{
-    McpCallOutput, McpClientStatus, McpManagedCallOutput, McpResourceChangeEvent,
-    McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
+    McpCallOutput, McpClientStatus, McpResourceChangeEvent, McpServerSnapshot,
+    McpStatusChangeEvent, McpToolInfo,
 };
 use crate::{
     McpElicitationAnswer, McpFeatureCallOutcome, McpPromptList, McpResourceList,
@@ -169,7 +169,6 @@ pub struct McpManager {
     connection_tasks: Arc<StdMutex<HashMap<u64, tokio::task::JoinHandle<()>>>>,
     next_connection_generation: Arc<AtomicU64>,
     shutting_down: Arc<AtomicBool>,
-    one_shot_invocations_cancel: CancellationToken,
     #[cfg(test)]
     panic_next_connection: Arc<AtomicBool>,
     connection_slots: Arc<Semaphore>,
@@ -182,8 +181,6 @@ pub struct McpManager {
     /// Existing stdio clients retain the snapshot they were created with.
     stdio_process_authorization:
         Arc<RwLock<Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>>>,
-    /// Launcher assigned to newly created stdio client generations.
-    stdio_process_launcher: Arc<RwLock<Arc<dyn crate::McpStdioProcessLauncher>>>,
     /// Owner for the policy-revocation subscription installed by Tools.
     stdio_policy_watcher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Changes whenever the configured server set or a server's tools/list
@@ -204,7 +201,6 @@ impl Clone for McpManager {
             connection_tasks: self.connection_tasks.clone(),
             next_connection_generation: self.next_connection_generation.clone(),
             shutting_down: self.shutting_down.clone(),
-            one_shot_invocations_cancel: self.one_shot_invocations_cancel.clone(),
             #[cfg(test)]
             panic_next_connection: self.panic_next_connection.clone(),
             connection_slots: self.connection_slots.clone(),
@@ -214,7 +210,6 @@ impl Clone for McpManager {
             limits: self.limits.clone(),
             network_policy: self.network_policy.clone(),
             stdio_process_authorization: self.stdio_process_authorization.clone(),
-            stdio_process_launcher: self.stdio_process_launcher.clone(),
             stdio_policy_watcher: self.stdio_policy_watcher.clone(),
             catalog_version: self.catalog_version.clone(),
         }
@@ -242,7 +237,6 @@ impl McpManager {
             connection_tasks: Arc::new(StdMutex::new(HashMap::new())),
             next_connection_generation: Arc::new(AtomicU64::new(1)),
             shutting_down: Arc::new(AtomicBool::new(false)),
-            one_shot_invocations_cancel: CancellationToken::new(),
             #[cfg(test)]
             panic_next_connection: Arc::new(AtomicBool::new(false)),
             connection_slots: Arc::new(Semaphore::new(crate::MCP_MAX_PARALLEL_CONNECTIONS)),
@@ -256,9 +250,6 @@ impl McpManager {
             )),
             network_policy: Arc::new(tokio::sync::RwLock::new(network_policy)),
             stdio_process_authorization: Arc::new(RwLock::new(None)),
-            stdio_process_launcher: Arc::new(RwLock::new(
-                crate::client::default_stdio_process_launcher(),
-            )),
             stdio_policy_watcher: Arc::new(Mutex::new(None)),
             catalog_version: Arc::new(AtomicU64::new(0)),
         }
@@ -350,13 +341,12 @@ impl McpManager {
         }
 
         let stdio_process_authorization = self.stdio_process_authorization.read().await.clone();
-        let stdio_process_launcher = self.stdio_process_launcher.read().await.clone();
         let client = Arc::new(McpClient::new_managed_with_launcher(
             config,
             limits.mcp_max_binary_base64_bytes,
             limits.mcp_max_sse_buffer_bytes,
             stdio_process_authorization,
-            stdio_process_launcher,
+            crate::client::local_stdio_process_launcher(),
         ));
         client.set_network_policy(network_policy).await;
 
@@ -762,17 +752,6 @@ impl McpManager {
         authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
     ) {
         *self.stdio_process_authorization.write().await = authorization;
-    }
-
-    /// Set the process owner for future stdio client generations. Changing it
-    /// disconnects live stdio clients so a reconnect cannot retain an obsolete
-    /// host/HCS execution boundary.
-    pub async fn set_stdio_process_launcher(
-        &self,
-        launcher: Arc<dyn crate::McpStdioProcessLauncher>,
-    ) {
-        *self.stdio_process_launcher.write().await = launcher;
-        self.disconnect_stdio_clients().await;
     }
 
     /// Subscribe to the authorization owner's policy signal. Each change
@@ -1344,7 +1323,6 @@ impl McpManager {
         {
             let _lifecycle = self.connection_lifecycle.lock().await;
             self.shutting_down.store(true, Ordering::SeqCst);
-            self.one_shot_invocations_cancel.cancel();
             for attempt in self
                 .active_connections
                 .lock()
@@ -1537,80 +1515,6 @@ impl McpManager {
             .await?;
         self.call_tool_on_client(client, tool_name, input, cancel)
             .await
-    }
-
-    /// Execute one managed-package tool call in a fresh MCP client generation.
-    /// The selected manager generation supplies the pinned package/config
-    /// identity; each invocation performs protocol discovery and is stopped
-    /// before its result is returned.
-    pub async fn call_tool_once_at_target_binding(
-        &self,
-        client_name: &str,
-        expected_binding: &str,
-        tool_name: &str,
-        input: Value,
-        workspace_input: Option<
-            haven_platform::windows_container::execution::WindowsContainerWorkspaceInput,
-        >,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<McpManagedCallOutput> {
-        if self.shutting_down.load(Ordering::SeqCst)
-            || self.one_shot_invocations_cancel.is_cancelled()
-        {
-            anyhow::bail!("MCP manager is shutting down");
-        }
-        let client = self
-            .client_at_target_binding(client_name, expected_binding)
-            .await?;
-        if !matches!(
-            &client.transport,
-            haven_common::mcp::McpServerTransport::Stdio
-        ) || !matches!(
-            &client.stdio_execution,
-            haven_common::config::McpStdioExecution::ManagedPackage { .. }
-        ) {
-            anyhow::bail!("one-shot MCP calls require a managed stdio package");
-        }
-
-        let _slot = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => anyhow::bail!("MCP invocation was cancelled before admission"),
-            _ = self.one_shot_invocations_cancel.cancelled() => anyhow::bail!("MCP manager is shutting down"),
-            permit = self.connection_slots.clone().acquire_owned() => {
-                permit.map_err(|error| anyhow::anyhow!("MCP invocation admission closed: {error}"))?
-            }
-        };
-        if self.shutting_down.load(Ordering::SeqCst) {
-            anyhow::bail!("MCP manager is shutting down");
-        }
-        let current = self
-            .client_at_target_binding(client_name, expected_binding)
-            .await?;
-        if !Arc::ptr_eq(&client, &current) {
-            return Err(anyhow::Error::new(McpTargetChanged));
-        }
-
-        let invocation_cancel = CancellationToken::new();
-        let cancel_from_call = cancel.clone();
-        let cancel_from_manager = self.one_shot_invocations_cancel.clone();
-        let cancel_invocation = invocation_cancel.clone();
-        let cancellation_watcher = tokio::spawn(async move {
-            tokio::select! {
-                _ = cancel_from_call.cancelled() => cancel_invocation.cancel(),
-                _ = cancel_from_manager.cancelled() => cancel_invocation.cancel(),
-            }
-        });
-        let result = client
-            .call_tool_in_fresh_managed_generation(
-                tool_name,
-                input,
-                workspace_input,
-                invocation_cancel,
-            )
-            .await;
-        cancellation_watcher.abort();
-        let _ = cancellation_watcher.await;
-        result
     }
 
     /// List the current resource catalog through the selected live connection.

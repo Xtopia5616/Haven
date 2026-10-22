@@ -27,7 +27,7 @@
 
 - `PermissionMode` 改为 `plan`、`default`、`auto_edit`、`autonomous`。它只定义确认体验。
 - `OperationPolicy` 同时声明 effect、data sensitivity、network access、risk 和执行契约；`concurrency = ReadOnly` 不再被当作“安全读取”的同义词。
-- `SandboxMode` 改为 `read_only`、`workspace_write`、`full_access`，并支持可选的绝对 `writable_roots`。`read_only` 在授权网关拦截修改，`workspace_write` 叠加路径规范化检查并拒绝无法约束的 opaque 子进程；Windows 子进程还加入 Job Object 的进程树/生命周期约束。Job Object 不是 AppContainer，不能伪装成完整的文件系统或网络隔离。
+- `SandboxMode` 改为 `read_only`、`workspace_write`、`full_access`，并支持可选的绝对 `writable_roots`。`read_only` 在授权网关拦截修改，`workspace_write` 叠加路径规范化检查并拒绝无法约束的 opaque 子进程；Windows 子进程还加入 Job Object 的进程树/生命周期约束。
 - `NetworkPolicy` 改为 `deny`、`restricted`、`open`。`restricted` 保留 HTTP/MCP 的 SSRF、私网/元数据地址拦截、DNS 地址固定和禁止跨源重定向；`deny` 阻断所有声明为 Public/Opaque 的网络能力，包括 HTTP、MCP、Skill、Shell 和会调用外部 provider 的操作。
 
 默认值是 `default + workspace_write + restricted`，兼顾桌面助手可用性和现有安全默认。

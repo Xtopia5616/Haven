@@ -74,8 +74,6 @@ pub(crate) enum UiConfirmationAction {
     Admin {
         request: Box<haven_tools::AdminRequest>,
     },
-    /// A reviewed sandbox file selected for a one-time destination write.
-    SandboxOutputPromotion,
 }
 
 pub(crate) struct UiConfirmationPending {
@@ -386,8 +384,6 @@ pub(super) async fn arbitrate_app_confirmation(
     {
         return Ok(AppConfirmationResolution::Stale);
     }
-    validate_app_confirmation_decision(&pending.action, perm_scope, perm_target)
-        .map_err(|error| log_err("resolve_confirmation", error))?;
     if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
         return Err(log_err(
             "resolve_confirmation",
@@ -411,22 +407,6 @@ pub(super) async fn arbitrate_app_confirmation(
         .remove(request_id)
         .expect("accepted app confirmation remains registered");
     Ok(AppConfirmationResolution::Resolved(pending))
-}
-
-pub(super) fn validate_app_confirmation_decision(
-    action: &UiConfirmationAction,
-    scope: haven_common::types::PermissionScope,
-    target: haven_common::types::PermissionTarget,
-) -> Result<(), &'static str> {
-    if matches!(action, UiConfirmationAction::SandboxOutputPromotion) {
-        if scope != haven_common::types::PermissionScope::Once {
-            return Err("sandbox output promotion only accepts a one-time decision");
-        }
-        if target != haven_common::types::PermissionTarget::Operation {
-            return Err("sandbox output promotion only accepts an operation-scoped decision");
-        }
-    }
-    Ok(())
 }
 
 pub(super) async fn accept_ui_confirmation(
@@ -572,36 +552,6 @@ async fn execute_ui_confirmation_action(
             .await?;
             crate::commands::finalize_confirmed_admin_ui_operation(state, app, request, &result)
                 .await?;
-        }
-        UiConfirmationAction::SandboxOutputPromotion => {
-            let proof = state
-                .runtime
-                .services
-                .authorization
-                .confirm_for_execution(&pending.authorization_request, &pending.receipt)
-                .await
-                .map_err(|error| log_err("resolve_ui_confirmation sandbox promotion", error))?;
-            #[cfg(windows)]
-            {
-                state
-                    .runtime
-                    .tools
-                    .promote_reviewed_sandbox_output(
-                        &pending.authorization_request,
-                        &proof,
-                        tokio_util::sync::CancellationToken::new(),
-                    )
-                    .await
-                    .map_err(|error| log_err("resolve_ui_confirmation sandbox promotion", error))?;
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = proof;
-                return Err(log_err(
-                    "resolve_ui_confirmation sandbox promotion",
-                    "sandbox output promotion is available only on Windows",
-                ));
-            }
         }
     }
     Ok(())

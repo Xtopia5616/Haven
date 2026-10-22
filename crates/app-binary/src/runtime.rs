@@ -86,8 +86,6 @@ pub(crate) struct AppServices {
     pub(crate) skills: Arc<dyn SkillCatalogPort>,
     pub(crate) skill_execution: Arc<dyn SkillExecutionPort>,
     pub(crate) authorization: Arc<dyn AuthorizationPort>,
-    #[cfg(windows)]
-    pub(crate) sandbox_output_reviews: Arc<dyn haven_tools::SandboxOutputReviewPort>,
     pub(crate) tool_runs: Arc<dyn ToolRunManagementCapability>,
     pub(crate) schedules: Arc<dyn ScheduleAgentCapability>,
     pub(crate) schedule_management: Arc<dyn ScheduleManagementCapability>,
@@ -104,8 +102,6 @@ impl ApplicationRuntime {
             skills: tool_services.skills,
             skill_execution: tool_services.skill_execution,
             authorization: tool_services.authorization,
-            #[cfg(windows)]
-            sandbox_output_reviews: tool_services.sandbox_output_reviews,
             tool_runs: tool_services.tool_run_management,
             schedules: tool_services.schedule_agent,
             schedule_management: tool_services.schedule_management,

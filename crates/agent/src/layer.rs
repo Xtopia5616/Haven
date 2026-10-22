@@ -277,40 +277,6 @@ impl AgentLayer {
         }
     }
 
-    /// Run a management-page Skill preview as a durable step on the selected
-    /// session. The session id is renderer-selected, but the Agent validates
-    /// its live actor and mints the step identity before the tool boundary.
-    pub async fn execute_managed_skill_preview(
-        &self,
-        session_id: &str,
-        skill_name: &str,
-        params: &Value,
-    ) -> anyhow::Result<(String, haven_tools::ToolResult)> {
-        anyhow::ensure!(
-            haven_common::types::is_canonical_id(session_id, "ses"),
-            "management Skill preview requires a canonical session id"
-        );
-        let emitter = self
-            .events
-            .emitter_arc()
-            .ok_or_else(|| anyhow::anyhow!("Agent event emitter is unavailable"))?;
-        let mut lease = self
-            .executor
-            .begin_managed_tool_step_run(session_id)
-            .await?;
-        self.events
-            .emit_session_updated(session_id, SessionStatus::Running)
-            .await;
-        let cancellation = lease.actor.run_cancellation_token();
-        let result = self
-            .react_engine
-            .execute_managed_skill_step(session_id, skill_name, params, emitter, cancellation)
-            .await;
-        let status = lease.finish().await?;
-        self.events.emit_session_updated(session_id, status).await;
-        result
-    }
-
     /// Subscribe to committed session events. The production consumer is the
     /// committed UI bridge started from [`Self::set_emitter`]: after each
     /// successful commit it publishes transcript UI events by sequence.

@@ -21,7 +21,7 @@ use crate::{
 use async_trait::async_trait;
 #[cfg(test)]
 use haven_common::config::McpServerConfig;
-use haven_common::config::{ConfigService, ConfigVersion, LogLevel, McpStdioExecution};
+use haven_common::config::{ConfigService, ConfigVersion, LogLevel};
 use haven_common::{mcp::McpServerTransport, types::RiskLevel};
 use haven_llm::LlmRouter;
 use haven_mcp::{McpManager, McpReconcile};
@@ -186,8 +186,6 @@ pub enum McpOperationArgs {
         name: String,
         transport: McpServerTransport,
         #[serde(default)]
-        stdio_execution: McpStdioExecution,
-        #[serde(default)]
         exposure: haven_common::config::McpExposureConfig,
         #[serde(default)]
         command: Option<String>,
@@ -211,8 +209,6 @@ pub enum McpOperationArgs {
         exposure: Option<haven_common::config::McpExposureConfig>,
         #[serde(default)]
         transport: Option<McpServerTransport>,
-        #[serde(default)]
-        stdio_execution: Option<McpStdioExecution>,
         #[serde(default)]
         command: Option<String>,
         #[serde(default)]
@@ -359,7 +355,6 @@ pub enum ConfigOperationArgs {
 pub struct McpAddFields {
     pub name: String,
     pub transport: McpServerTransport,
-    pub stdio_execution: McpStdioExecution,
     pub exposure: haven_common::config::McpExposureConfig,
     pub command: Option<String>,
     pub url: Option<String>,
@@ -375,7 +370,6 @@ pub struct McpUpdateFields {
     pub name: String,
     pub exposure: Option<haven_common::config::McpExposureConfig>,
     pub transport: Option<McpServerTransport>,
-    pub stdio_execution: Option<McpStdioExecution>,
     pub command: Option<String>,
     pub url: Option<String>,
     pub args: Option<Vec<String>>,
@@ -1221,7 +1215,6 @@ impl TypedToolOperation for McpAdminOperation {
             McpOperationArgs::McpAdd {
                 name,
                 transport,
-                stdio_execution,
                 exposure,
                 command,
                 url,
@@ -1235,7 +1228,6 @@ impl TypedToolOperation for McpAdminOperation {
                 .mcp_add(&McpAddFields {
                     name,
                     transport,
-                    stdio_execution,
                     exposure,
                     command,
                     url,
@@ -1252,7 +1244,6 @@ impl TypedToolOperation for McpAdminOperation {
                 name,
                 exposure,
                 transport,
-                stdio_execution,
                 command,
                 url,
                 args,
@@ -1265,7 +1256,6 @@ impl TypedToolOperation for McpAdminOperation {
                     name,
                     exposure,
                     transport,
-                    stdio_execution,
                     command,
                     url,
                     args,
@@ -2059,7 +2049,6 @@ mod tests {
         reconcile.to_connect_new.push(McpServerConfig {
             name: "new-server".into(),
             transport: McpServerTransport::Stdio,
-            stdio_execution: Default::default(),
             exposure: Default::default(),
             command: "private-command".into(),
             args: vec!["private-arg".into()],
@@ -2072,7 +2061,6 @@ mod tests {
         reconcile.to_connect_changed.push(McpServerConfig {
             name: "changed-server".into(),
             transport: McpServerTransport::Stdio,
-            stdio_execution: Default::default(),
             exposure: Default::default(),
             command: "private-command".into(),
             args: vec![],
@@ -2464,7 +2452,6 @@ mod tests {
             .upsert_fixture(McpServerConfig {
                 name: "private-server".into(),
                 transport: McpServerTransport::Stdio,
-                stdio_execution: Default::default(),
                 exposure: Default::default(),
                 command: "hidden-command".into(),
                 args: vec!["PRIVATE_ARG_MARKER".into()],
@@ -2738,7 +2725,6 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "duplicate-server".into(),
                     transport: McpServerTransport::Stdio,
-                    stdio_execution: Default::default(),
                     exposure: Default::default(),
                     command: Some("server-one".into()),
                     url: None,
@@ -2766,7 +2752,6 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "duplicate-server".into(),
                     transport: McpServerTransport::Stdio,
-                    stdio_execution: Default::default(),
                     exposure: Default::default(),
                     command: Some("server-two".into()),
                     url: None,
@@ -2833,7 +2818,6 @@ mod tests {
                     name: "duplicate-server".into(),
                     exposure: None,
                     transport: None,
-                    stdio_execution: None,
                     command: None,
                     url: None,
                     args: None,
@@ -2910,7 +2894,6 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "partial-server".into(),
                     transport: McpServerTransport::Stdio,
-                    stdio_execution: Default::default(),
                     exposure: Default::default(),
                     command: Some(missing_command.clone()),
                     url: None,
@@ -3018,139 +3001,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_mcp_profile_is_saved_without_host_process_start() {
-        let (surfaces, _dir) = test_surfaces();
-        let output = surfaces
-            .execute(
-                AdminRequest::Mcp(McpOperationArgs::McpAdd {
-                    name: "managed-server".into(),
-                    transport: McpServerTransport::Stdio,
-                    stdio_execution: McpStdioExecution::ManagedPackage {
-                        package_id: "calendar".into(),
-                    },
-                    exposure: Default::default(),
-                    command: None,
-                    url: None,
-                    args: Vec::new(),
-                    env: Vec::new(),
-                    cwd: None,
-                    enabled: true,
-                    auto_connect: true,
-                }),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(output.output["saved"], json!(true));
-        assert_eq!(output.output["connected"], json!(false));
-        assert!(
-            !surfaces
-                .mcp
-                .services
-                .mcp_manager
-                .has_client("managed-server")
-                .await
-        );
-        let saved = surfaces
-            .mcp
-            .services
-            .context
-            .config_service
-            .as_ref()
-            .unwrap()
-            .snapshot()
-            .unwrap()
-            .config
-            .mcp_servers
-            .into_iter()
-            .find(|server| server.name == "managed-server")
-            .unwrap();
-        assert_eq!(
-            saved.stdio_execution,
-            McpStdioExecution::ManagedPackage {
-                package_id: "calendar".into()
-            }
-        );
-        assert!(saved.command.is_empty());
-        assert!(saved.args.is_empty());
-        assert!(saved.env_refs.is_empty());
-        assert!(saved.cwd.is_none());
-    }
-
-    #[tokio::test]
-    async fn switching_mcp_to_managed_package_clears_host_process_configuration() {
-        let (surfaces, _dir) = test_surfaces();
-        let config_service = surfaces
-            .mcp
-            .services
-            .context
-            .config_service
-            .as_ref()
-            .unwrap();
-        config_service
-            .apply_patch(ConfigPatch::McpServers(vec![McpServerConfig {
-                name: "switch-server".into(),
-                command: "old-host-command".into(),
-                args: vec!["old-argument".into()],
-                env_refs: vec![haven_common::config::McpEnvironmentCredentialRef {
-                    name: "FLAG".into(),
-                    credential_ref: None,
-                    has_value: false,
-                }],
-                cwd: Some("C:\\old-host-cwd".into()),
-                url: "https://old-host.invalid/mcp".into(),
-                enabled: false,
-                ..Default::default()
-            }]))
-            .unwrap();
-
-        let output = surfaces
-            .execute(
-                AdminRequest::Mcp(McpOperationArgs::McpUpdate {
-                    name: "switch-server".into(),
-                    exposure: None,
-                    transport: None,
-                    stdio_execution: Some(McpStdioExecution::ManagedPackage {
-                        package_id: "calendar".into(),
-                    }),
-                    command: None,
-                    url: None,
-                    args: None,
-                    env: None,
-                    cwd: None,
-                    enabled: Some(true),
-                }),
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(output.output["saved"], json!(true));
-        assert_eq!(output.output["connected"], json!(false));
-        let saved = config_service
-            .snapshot()
-            .unwrap()
-            .config
-            .mcp_servers
-            .into_iter()
-            .find(|server| server.name == "switch-server")
-            .unwrap();
-        assert_eq!(
-            saved.stdio_execution,
-            McpStdioExecution::ManagedPackage {
-                package_id: "calendar".into()
-            }
-        );
-        assert!(saved.command.is_empty());
-        assert!(saved.args.is_empty());
-        assert!(saved.env.is_empty());
-        assert!(saved.env_refs.is_empty());
-        assert!(saved.cwd.is_none());
-        assert!(saved.url.is_empty());
-    }
-
-    #[tokio::test]
     async fn mcp_reload_and_native_refresh_keep_partial_failure_shapes_private() {
         let (surfaces, dir) = test_surfaces();
         let command = dir
@@ -3161,7 +3011,6 @@ mod tests {
         let server = McpServerConfig {
             name: "broken-server".into(),
             transport: McpServerTransport::Stdio,
-            stdio_execution: Default::default(),
             exposure: Default::default(),
             command: command.clone(),
             args: vec!["PRIVATE_MCP_ARG_MARKER".into()],
@@ -3432,7 +3281,6 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "demo".into(),
                     transport: McpServerTransport::Stdio,
-                    stdio_execution: Default::default(),
                     exposure: Default::default(),
                     command: Some("demo-mcp".into()),
                     url: None,
@@ -3516,7 +3364,6 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "disabled-server".into(),
                     transport: McpServerTransport::Stdio,
-                    stdio_execution: Default::default(),
                     exposure: Default::default(),
                     command: Some("not-started".into()),
                     url: None,

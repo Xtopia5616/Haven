@@ -10,9 +10,6 @@ describe('Tauri command boundary directory', () => {
 		expect(TAURI_COMMAND_CONTRACTS.pick_execution_workspace_directory.security).toContain(
 			'grants no file access',
 		);
-		expect(TAURI_COMMAND_CONTRACTS.get_sandbox_output_review.boundary).toBe('read');
-		expect(TAURI_COMMAND_CONTRACTS.discard_sandbox_output_review.boundary).toBe('mutate');
-		expect(TAURI_COMMAND_CONTRACTS.pick_sandbox_output_destination.boundary).toBe('read');
 		for (const contract of Object.values(TAURI_COMMAND_CONTRACTS)) {
 			expect(Object.keys(contract).sort()).toEqual(['boundary', 'security']);
 			expect(contract.security.trim().length).toBeGreaterThan(0);
@@ -35,7 +32,6 @@ describe('Tauri command boundary directory', () => {
 				'read_mcp_resource',
 				'list_mcp_prompts',
 				'get_mcp_prompt',
-				'promote_sandbox_output',
 			]),
 		);
 		expect(TAURI_COMMAND_CONTRACTS.execute_skill.security).toContain('AuthorizationPort');

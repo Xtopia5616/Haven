@@ -6,7 +6,7 @@
 
 ## 背景
 
-`NetworkPolicy` 决定 Haven 是否为工具操作签发执行授权，但不会在 Windows 创建防火墙规则、AppContainer 网络 capability 或其它进程级网络隔离。网络设置中的简短说明容易让“禁止网络”“受限网络”被理解成 OS 全局封锁，尤其是 `FullAccess` 下经确认启动的 Shell、Skill 与 MCP stdio 子进程仍以当前用户权限运行。
+`NetworkPolicy` 决定 Haven 是否为工具操作签发执行授权，但不创建 Windows 防火墙规则或其它系统级网络限制。网络设置中的简短说明容易让“禁止网络”“受限网络”被理解成 OS 全局封锁；获准启动的宿主子进程仍按当前 Windows 用户权限联网。
 
 ## 决定
 

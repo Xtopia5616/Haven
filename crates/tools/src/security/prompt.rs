@@ -220,27 +220,6 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
     if tool_name == "open_skills_dir" {
         return "将在文件管理器中打开配置的 Skills 目录（路径已隐藏）".into();
     }
-    if tool_name == "files.promote_sandbox_output" {
-        let change_index = params
-            .get("change_index")
-            .and_then(Value::as_u64)
-            .map(|index| format!("#{index}"))
-            .unwrap_or_else(|| "所选文件".into());
-        let destination = params
-            .get("destination")
-            .and_then(Value::as_str)
-            .map(|path| {
-                path.chars()
-                    .filter(|character| !character.is_control())
-                    .take(240)
-                    .collect::<String>()
-            })
-            .filter(|path| !path.is_empty())
-            .unwrap_or_else(|| "所选目标".into());
-        return format!(
-            "将审阅结果 {change_index} 创建到：{destination}。目标已存在时会拒绝覆盖。"
-        );
-    }
     if tool_name == "haven.mcp.reconnect" {
         return "将重新连接一个当前配置的 MCP 服务器（服务器配置详情已隐藏）".into();
     }
@@ -347,23 +326,6 @@ mod tests {
         assert!(summary.contains("受保护的本机命令"));
         assert!(!summary.contains("super-secret"));
         assert!(!summary.contains("curl"));
-    }
-
-    #[test]
-    fn sandbox_output_promotion_prompt_shows_bounded_destination_and_no_overwrite_rule() {
-        let summary = permission_prompt_summary(
-            "files.promote_sandbox_output",
-            &json!({
-                "change_index": 2,
-                "destination": "C:/Users/example/Workspace/result.txt\nignored",
-                "private_source_path": "C:/private/sandbox/file.txt"
-            }),
-        );
-        assert!(summary.contains("#2"));
-        assert!(summary.contains("C:/Users/example/Workspace/result.txtignored"));
-        assert!(summary.contains("拒绝覆盖"));
-        assert!(!summary.contains("private_source_path"));
-        assert!(!summary.contains("C:/private/sandbox/file.txt"));
     }
 
     #[test]

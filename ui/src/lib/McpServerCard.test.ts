@@ -7,7 +7,6 @@ function server(tools: McpToolInfoView[]): McpServerSnapshotView {
 	return {
 		name: 'docs-server',
 		transport: 'stdio',
-		stdioExecution: { mode: 'host_process' },
 		command: 'server.exe',
 		args: [],
 		env: [],

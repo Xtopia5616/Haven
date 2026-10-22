@@ -105,10 +105,6 @@ pub(crate) struct MediaDeps {
 pub(crate) struct ToolRunDeps {
     pub(crate) live_outputs: Arc<crate::live_output::LiveOutputHub>,
     pub(crate) service: Arc<ToolRunService>,
-    pub(crate) sandbox_output_reviews: crate::SandboxOutputReviewOwner,
-    #[cfg(windows)]
-    pub(crate) windows_container_execution:
-        Arc<dyn haven_platform::windows_container::execution::WindowsContainerExecutionPort>,
 }
 
 /// Complete dependency object for constructing the builtin catalog. Keeping
@@ -177,9 +173,6 @@ pub(crate) async fn register_builtin_tools(
             ToolRunDeps {
                 live_outputs,
                 service: tool_run_service,
-                sandbox_output_reviews,
-                #[cfg(windows)]
-                windows_container_execution,
             },
     } = context;
     let execution_workspace = authorization.execution_workspace().await;
@@ -305,10 +298,6 @@ pub(crate) async fn register_builtin_tools(
         max_output_chars: tool_output_cap(settings, "shell", limits.max_observation_chars),
         default_shell: default_shell.as_str().into(),
         execution_workspace,
-        #[cfg(windows)]
-        sandbox_output_reviews: sandbox_output_reviews.clone(),
-        #[cfg(windows)]
-        windows_container_execution: windows_container_execution.clone(),
         #[cfg(test)]
         test_output_log_root: None,
     }));
@@ -378,16 +367,8 @@ pub(crate) async fn register_builtin_tools(
         .into_iter()
         .filter(|skill| skill.enabled() && skill.has_script())
     {
-        let mut adapter =
-            crate::adapters::SkillToolAdapter::new(Arc::new(skill), skill_runner.clone())
-                .with_authorization_engine(authorization.clone());
-        #[cfg(windows)]
-        {
-            adapter = adapter.with_windows_container_runtime(
-                windows_container_execution.clone(),
-                sandbox_output_reviews.clone(),
-            );
-        }
+        let adapter = crate::adapters::SkillToolAdapter::new(Arc::new(skill), skill_runner.clone())
+            .with_authorization_engine(authorization.clone());
         tools.push(Arc::new(adapter));
     }
     // Keep the control-plane surface stable even when no optional Skill or
@@ -412,7 +393,6 @@ pub(crate) async fn register_builtin_tools(
         registry: registry.clone(),
         session_tool_overlay,
         max_tools_per_request: max_tools,
-        sandbox_output_reviews: sandbox_output_reviews.clone(),
     }));
     if let Some(ctx) = admin_context {
         // The composition root provides this typed capability explicitly;
@@ -1699,7 +1679,6 @@ mod tests {
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {
                     name: "server-a".into(),
                     transport: McpServerTransport::Http,
-                    stdio_execution: Default::default(),
                     exposure: Default::default(),
                     command: None,
                     url: Some("https://example.invalid/mcp".into()),
@@ -1723,7 +1702,6 @@ mod tests {
                     name: "server-a".into(),
                     exposure: None,
                     transport: Some(McpServerTransport::Http),
-                    stdio_execution: None,
                     command: None,
                     url: Some("https://example.invalid/mcp".into()),
                     args: None,

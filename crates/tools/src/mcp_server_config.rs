@@ -3,7 +3,7 @@
 //! Production reads always come from `ConfigService`; test fixtures are
 //! available only in unit tests or the explicit `test-support` feature.
 
-use haven_common::config::{ConfigService, McpServerConfig, McpStdioExecution};
+use haven_common::config::{ConfigService, McpServerConfig};
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;
 #[cfg(any(test, feature = "test-support"))]
@@ -20,18 +20,11 @@ pub(crate) struct VersionedMcpServerConfig {
 
 impl VersionedMcpServerConfig {
     pub(crate) fn authorization_target_binding(&self) -> String {
-        let execution = match &self.server.stdio_execution {
-            McpStdioExecution::HostProcess => "host".to_string(),
-            McpStdioExecution::ManagedPackage { package_id } => {
-                format!("package:{package_id}")
-            }
-        };
         format!(
-            "mcp-config-v2:{}:{}:{}:{}",
+            "mcp-config-v1:{}:{}:{}",
             self.revision,
             self.server.name,
-            self.server.transport.as_str(),
-            execution
+            self.server.transport.as_str()
         )
     }
 }
@@ -159,36 +152,25 @@ impl McpServerConfigSource {
 #[cfg(test)]
 mod tests {
     use super::VersionedMcpServerConfig;
-    use haven_common::config::{McpServerConfig, McpStdioExecution};
+    use haven_common::config::McpServerConfig;
 
     #[test]
-    fn authorization_target_binding_includes_execution_profile() {
-        let host = VersionedMcpServerConfig {
+    fn authorization_target_binding_includes_config_revision_and_server_identity() {
+        let first = VersionedMcpServerConfig {
             server: McpServerConfig {
                 name: "calendar".into(),
                 ..Default::default()
             },
             revision: 7,
         };
-        let managed = VersionedMcpServerConfig {
-            server: McpServerConfig {
-                name: "calendar".into(),
-                stdio_execution: McpStdioExecution::ManagedPackage {
-                    package_id: "calendar".into(),
-                },
-                ..Default::default()
-            },
-            revision: 7,
+        let changed = VersionedMcpServerConfig {
+            revision: 8,
+            ..first.clone()
         };
 
         assert_ne!(
-            host.authorization_target_binding(),
-            managed.authorization_target_binding()
-        );
-        assert!(
-            managed
-                .authorization_target_binding()
-                .ends_with("package:calendar")
+            first.authorization_target_binding(),
+            changed.authorization_target_binding()
         );
     }
 }

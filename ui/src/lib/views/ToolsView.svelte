@@ -1,8 +1,5 @@
 <script lang="ts">
-	let {
-		isVisible = true,
-		activeSessionId = null,
-	}: { isVisible?: boolean; activeSessionId?: string | null } = $props();
+	let { isVisible = true }: { isVisible?: boolean } = $props();
 	let mcpServers = $state<McpServerSnapshotView[]>([]);
 	let skills = $state<SkillInfoView[]>([]);
 	let builtinTools = $state<BuiltinToolEntry[]>([]);
@@ -791,7 +788,6 @@
 							{#each visibleSkills as skill (skill.name)}
 								<SkillCard
 									{skill}
-									{activeSessionId}
 									onPreview={executeSkill}
 									onToggle={handleToggle}
 								/>

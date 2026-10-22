@@ -142,13 +142,6 @@ pub trait CodeModeSubcallPort: Send + Sync {
     fn pending_confirmation(&self) -> Option<NestedConfirmationRequest> {
         None
     }
-
-    /// Return review identities created by completed child calls. This stays
-    /// out of the JavaScript result and is projected only into the parent UI
-    /// result envelope.
-    fn sandbox_output_review_step_ids(&self) -> Vec<String> {
-        Vec::new()
-    }
 }
 
 /// A completed, bounded CodeMode script result.

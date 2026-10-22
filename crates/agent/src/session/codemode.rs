@@ -7,10 +7,7 @@
 //! continuation after a pause or process restart.
 
 use crate::session::nested_execution::{NestedCallCompletion, NestedExecutionJournal};
-use crate::session::tool_ports::{
-    ToolAuthorizationPort, ToolExecutionContext, ToolExecutionPort,
-    sandbox_output_review_matches_step,
-};
+use crate::session::tool_ports::{ToolAuthorizationPort, ToolExecutionContext, ToolExecutionPort};
 use async_trait::async_trait;
 use haven_common::types::is_canonical_id;
 use haven_tools::{AuthorizationDecision, CodeModeCallResult, CodeModeSubcallPort};
@@ -31,7 +28,6 @@ pub(super) struct AuthorizedCodeModeSubcallPort {
     resume_confirmation: Option<haven_tools::NestedConfirmationRequest>,
     pending_confirmation: Mutex<Option<haven_tools::NestedConfirmationRequest>>,
     next_call_index: AtomicU32,
-    sandbox_output_review_step_ids: Mutex<Vec<String>>,
 }
 
 impl AuthorizedCodeModeSubcallPort {
@@ -52,7 +48,6 @@ impl AuthorizedCodeModeSubcallPort {
             resume_confirmation,
             pending_confirmation: Mutex::new(None),
             next_call_index: AtomicU32::new(0),
-            sandbox_output_review_step_ids: Mutex::new(Vec::new()),
         }
     }
 }
@@ -165,19 +160,6 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
 
         if let Some(completed) = completed {
             let result = completed.result;
-            if let Some(review_step_id) = completed.sandbox_output_review_step_id
-                && sandbox_output_review_matches_step(&result, &review_step_id)
-            {
-                let mut step_ids = self
-                    .sandbox_output_review_step_ids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if !step_ids.contains(&review_step_id)
-                    && step_ids.len() < haven_common::tools::MAX_SANDBOX_OUTPUT_REVIEW_STEP_IDS
-                {
-                    step_ids.push(review_step_id);
-                }
-            }
             return Ok(CodeModeCallResult {
                 success: result.success,
                 output: result.output,
@@ -221,18 +203,6 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
             ));
         }
 
-        if sandbox_output_review_matches_step(&result, &step_id) {
-            let mut step_ids = self
-                .sandbox_output_review_step_ids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !step_ids.contains(&step_id)
-                && step_ids.len() < haven_common::tools::MAX_SANDBOX_OUTPUT_REVIEW_STEP_IDS
-            {
-                step_ids.push(step_id.clone());
-            }
-        }
-
         if let Some(journal) = &self.journal {
             journal
                 .finish_call(NestedCallCompletion {
@@ -241,7 +211,6 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
                     tool_name,
                     input: &input,
                     result: &result,
-                    sandbox_output_review_step_id: None,
                 })
                 .await?;
         }
@@ -256,13 +225,6 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
 
     fn pending_confirmation(&self) -> Option<haven_tools::NestedConfirmationRequest> {
         self.pending_confirmation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn sandbox_output_review_step_ids(&self) -> Vec<String> {
-        self.sandbox_output_review_step_ids
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()

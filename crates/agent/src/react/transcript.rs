@@ -477,52 +477,6 @@ impl ReActEngine {
         result
     }
 
-    /// Commit a management-page tool card/result through the authoritative
-    /// transcript event stream. There is no live ReActState to update because
-    /// this is a standalone renderer-originated step on an idle session; its
-    /// canonical projection is reconstructed from the committed records on
-    /// the next session run.
-    pub(super) async fn commit_managed_tool_write(
-        &self,
-        ctx: &StepCtx,
-        write: TranscriptWrite,
-        cancel: tokio_util::sync::CancellationToken,
-    ) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            matches!(
-                &write,
-                TranscriptWrite::ToolCall { .. } | TranscriptWrite::ToolResult { .. }
-            ),
-            "management tool commit accepts only ToolCall or ToolResult records"
-        );
-        let is_tool_call = matches!(&write, TranscriptWrite::ToolCall { .. });
-        let tool_call_step_ids = match &write {
-            TranscriptWrite::ToolCall {
-                tool_call_cards, ..
-            } => tool_call_cards
-                .iter()
-                .map(|card| card.step_id.clone())
-                .collect::<Vec<_>>(),
-            _ => Vec::new(),
-        };
-        let (_, _, _, committed) = self.build_transcript_write(ctx, write).await?;
-        let write_result = self
-            .event_store
-            .commit_transcript_cancellable(&ctx.session_id, committed, Some(cancel))
-            .await?;
-        self.committed_ui
-            .publish(&ctx.emitter, &write_result.events)
-            .await;
-        if is_tool_call {
-            for step_id in tool_call_step_ids {
-                self.committed_ui
-                    .publish_tool_call(&ctx.emitter, &ctx.session_id, &step_id)
-                    .await;
-            }
-        }
-        Ok(())
-    }
-
     /// Commit and publish one completed tool result without appending it to
     /// the model-facing canonical projection yet. Parallel results may arrive
     /// in any order; `ToolBatchState` applies the committed events to canonical
@@ -805,7 +759,6 @@ mod tests {
     use async_trait::async_trait;
     use haven_memory::Database;
     use std::sync::Arc;
-    use tokio_util::sync::CancellationToken;
 
     struct NoopEmitter;
     #[async_trait]
@@ -1499,125 +1452,6 @@ mod tests {
             )),
             "expected ToolCall card, got {ev:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn managed_tool_writes_commit_real_step_and_observation_events() {
-        let db = Arc::new(Database::open_in_memory().unwrap());
-        let session = db.create_session("managed Skill step").unwrap();
-        let engine = test_engine(db.clone());
-        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let ctx = StepCtx {
-            session_id: session.session_id.clone(),
-            step_number: 1,
-            run_id: 4,
-            emitter: Arc::new(RecordingEmitter {
-                events: events.clone(),
-            }),
-        };
-        let step_id = haven_common::types::new_id("step");
-        let call_id = haven_common::types::new_id("call");
-        let tool_name = "skill__sample".to_string();
-        let tool_input = serde_json::json!({ "params": { "value": 1 } });
-        let tool_call = AgentToolCall {
-            tool_name: tool_name.clone(),
-            tool_input: tool_input.clone(),
-            is_final: false,
-            tool_call_id: Some(call_id.clone()),
-        };
-
-        engine
-            .commit_managed_tool_write(
-                &ctx,
-                TranscriptWrite::ToolCall {
-                    text: String::new(),
-                    tool_calls: vec![CanonicalToolCall {
-                        tool_call_id: call_id.clone(),
-                        name: tool_name.clone(),
-                        arguments: tool_input.clone(),
-                    }],
-                    reasoning: None,
-                    web_search_calls: Vec::new(),
-                    thinking_blocks: Vec::new(),
-                    tool_call_cards: vec![ToolCallCard {
-                        tool_name: tool_name.clone(),
-                        tool_input: tool_input.clone(),
-                        tool_call_id: Some(call_id.clone()),
-                        step_id: step_id.clone(),
-                        tool_index: 0,
-                        suppress_streamed_thought: true,
-                        is_high_risk: true,
-                        silent: false,
-                    }],
-                    persist_text_id: None,
-                },
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-
-        let persisted_steps = db.list_session_steps(&session.session_id).unwrap();
-        assert_eq!(persisted_steps.len(), 1);
-        assert_eq!(persisted_steps[0].step_id, step_id);
-        assert_eq!(
-            engine
-                .event_store
-                .read_active_transcript(&session.session_id)
-                .unwrap()
-                .len(),
-            1
-        );
-
-        let result = haven_tools::ToolResult::ok(serde_json::json!({ "ok": true }));
-        let observation = engine.executor.observation_text(&tool_name, &result).await;
-        engine
-            .commit_managed_tool_write(
-                &ctx,
-                TranscriptWrite::ToolResult {
-                    canonical_observation: observation.clone(),
-                    history_observation: observation,
-                    tool_call_id: Some(call_id.clone()),
-                    tool_call,
-                    tool_index: 0,
-                    step_id: step_id.clone(),
-                    observation_card: Some(Box::new(ObservationCard {
-                        tool_name,
-                        tool_call_id: Some(call_id),
-                        step_id: step_id.clone(),
-                        tool_index: 0,
-                        silent: false,
-                        ask_options: Vec::new(),
-                        idempotency: OperationIdempotency::Unknown,
-                        operation_scope: ToolOperationScope::Session,
-                        renderer: "skill".into(),
-                        result_envelope: result.envelope(OperationIdempotency::Unknown),
-                    })),
-                },
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-
-        let committed = engine
-            .event_store
-            .read_active_transcript(&session.session_id)
-            .unwrap();
-        assert_eq!(committed.len(), 2);
-        assert!(matches!(
-            serde_json::from_str::<TranscriptRecord>(&committed[0].payload).unwrap(),
-            TranscriptRecord::ToolCall { step_number: 1, .. }
-        ));
-        assert!(matches!(
-            serde_json::from_str::<TranscriptRecord>(&committed[1].payload).unwrap(),
-            TranscriptRecord::ToolResult { step_id: result_step, .. } if result_step == step_id
-        ));
-        assert!(events.lock().unwrap().iter().any(|event| matches!(
-            event,
-            crate::event::AgentEvent::Observation {
-                step_id: observed_step,
-                ..
-            } if observed_step == &step_id
-        )));
     }
 
     #[tokio::test]

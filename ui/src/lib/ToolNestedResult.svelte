@@ -1,14 +1,11 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
-	import SandboxOutputReviewPanel from '$lib/SandboxOutputReviewPanel.svelte';
 
 	interface Props {
 		data: Record<string, unknown>;
 		rawText?: string;
 		kind?: string | null;
 		liveStreaming?: boolean;
-		sessionId?: string | null;
-		reviewStepIds?: string[];
 		failed?: boolean;
 	}
 
@@ -17,8 +14,6 @@
 		rawText = '',
 		kind = null,
 		liveStreaming = false,
-		sessionId = null,
-		reviewStepIds = [],
 		failed = false,
 	}: Props = $props();
 	let hasOutput = $derived(Object.keys(data).length > 0 || rawText.length > 0);
@@ -34,12 +29,6 @@
 	</div>
 {:else}
 	<p class="tool-result-message">（无输出）</p>
-{/if}
-
-{#if !liveStreaming && sessionId}
-	{#each reviewStepIds as sourceStepId (sourceStepId)}
-		<SandboxOutputReviewPanel {sessionId} {sourceStepId} />
-	{/each}
 {/if}
 
 <style>

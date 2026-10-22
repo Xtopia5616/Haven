@@ -7,8 +7,6 @@
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import { describePermissionRuleImpact } from './permissionRuleDescription.ts';
-	import { describeShellExecutionStatus } from './shellExecutionPresentation.ts';
-	import type { ShellExecutionSecurityStatus } from './contracts/shellExecution.ts';
 	import type {
 		PermissionEffectInput,
 		PermissionScopeInput,
@@ -23,13 +21,10 @@
 		toolName?: string;
 		sessionId?: string;
 		allowSessionScope?: boolean;
-		onceOnly?: boolean;
 		sessionTitle?: string;
 		riskLevel?: RiskLevel;
 		summary?: string;
 		permissionKey?: string;
-		shellExecutionStatus?: ShellExecutionSecurityStatus | null;
-		shellExecutionStatusLoading?: boolean;
 		createdAt: string;
 		deadlineAt: number;
 		onDismiss?: (requestId: string) => void;
@@ -50,13 +45,10 @@
 		toolName,
 		sessionId,
 		allowSessionScope = Boolean(sessionId),
-		onceOnly = false,
 		sessionTitle,
 		riskLevel,
 		summary,
 		permissionKey,
-		shellExecutionStatus = null,
-		shellExecutionStatusLoading = false,
 		createdAt,
 		deadlineAt,
 		onDismiss,
@@ -74,9 +66,6 @@
 	let riskLabel = $derived(RISK_LABELS[normalizedRisk] || '中风险');
 	let timeoutPercent = $derived(
 		Math.min(100, Math.max(0, ((remaining * 1000) / countdownDurationMs) * 100)),
-	);
-	let shellExecutionSummary = $derived(
-		describeShellExecutionStatus(shellExecutionStatus),
 	);
 
 	function buildTargetOptions(
@@ -170,11 +159,7 @@
 		target: PermissionTargetInput = 'operation',
 	) {
 		const activeRequestId = requestId;
-		if (
-			!activeRequestId ||
-			submittedRequestId === activeRequestId ||
-			(effect === 'allow' && toolName === 'shell' && shellExecutionStatusLoading)
-		) {
+		if (!activeRequestId || submittedRequestId === activeRequestId) {
 			return;
 		}
 		submittedRequestId = activeRequestId;
@@ -287,22 +272,6 @@
 				<p>{summary || '此操作需要你的许可。'}</p>
 			</section>
 
-			{#if toolName === 'shell'}
-				<section class="shell-boundary" aria-label="Shell 执行边界">
-					<div class="section-label">当前生效的 Shell 边界</div>
-					{#if shellExecutionStatusLoading}
-						<p>正在读取当前安全模式与 broker 状态…</p>
-					{:else}
-						<strong>{shellExecutionSummary.title}</strong>
-						<p>{shellExecutionSummary.details}</p>
-						<div class="shell-boundary__network">
-							<strong>{shellExecutionSummary.networkTitle}</strong>
-							<p>{shellExecutionSummary.networkDetails}</p>
-						</div>
-					{/if}
-				</section>
-			{/if}
-
 			<div
 				class="timeout"
 				class:warn={remaining <= 15}
@@ -323,13 +292,11 @@
 	{#snippet footer()}
 		<footer class="dialog-footer">
 			<div class="action-heading">
-				<span>{onceOnly ? '仅对此次文件晋升授权' : '选择允许范围和期限'}</span>
+				<span>选择允许范围和期限</span>
 				<span class="action-hint">
-					{onceOnly
-						? '此授权不会保存为会话规则或永久规则'
-						: allowSessionScope
-							? '本会话授权不会按时间自动到期；撤销、清除授权或删除会话后失效'
-							: '永久授权跨会话生效，关键操作仍可能继续要求确认'}
+					{allowSessionScope
+						? '本会话授权不会按时间自动到期；撤销、清除授权或删除会话后失效'
+						: '永久授权跨会话生效，关键操作仍可能继续要求确认'}
 				</span>
 			</div>
 			{#if pendingPersistentTarget}
@@ -350,7 +317,6 @@
 						variant="danger"
 						label="永久允许"
 						ariaLabel="确认永久允许"
-						disabled={toolName === 'shell' && shellExecutionStatusLoading}
 						onclick={() =>
 							decide('allow', 'always', pendingPersistentTarget || 'operation')}
 					/>
@@ -362,25 +328,22 @@
 						variant="filled"
 						className="btn-once"
 						label="本次允许"
-						disabled={toolName === 'shell' && shellExecutionStatusLoading}
 						onclick={() => decide('allow', 'once', 'operation')}
 					/>
-					{#if allowSessionScope && !onceOnly}
+					{#if allowSessionScope}
 						<MaterialButton
 							variant="tonal"
 							className="btn-session"
 							label="本会话允许"
 							ariaLabel="本会话允许此操作"
-							disabled={toolName === 'shell' && shellExecutionStatusLoading}
 							onclick={() => decide('allow', 'session', 'operation')}
 						/>
 					{/if}
-					{#if !onceOnly}<div class="more-allow">
+					<div class="more-allow">
 							<MaterialButton
 								variant="text"
 								className="more-allow-trigger"
 								label="更多允许"
-								disabled={toolName === 'shell' && shellExecutionStatusLoading}
 								ariaExpanded={showAllowMenu}
 								ariaHaspopup="menu"
 								onclick={() => (showAllowMenu = !showAllowMenu)}
@@ -409,16 +372,9 @@
 									{/each}
 								</div>
 							{/if}
-						</div>{/if}
+						</div>
 				</div>
-				{#if onceOnly}
-					<MaterialButton
-						variant="danger"
-						className="deny-split"
-						label="拒绝"
-						onclick={() => decide('deny', 'once')}
-					/>
-				{:else}<MaterialSplitButton
+				<MaterialSplitButton
 						label="拒绝"
 						variant="danger"
 						className="deny-split"
@@ -465,7 +421,7 @@
 								</div>
 							{/if}
 						{/snippet}
-					</MaterialSplitButton>{/if}
+				</MaterialSplitButton>
 			</div>
 		</footer>
 	{/snippet}
@@ -623,34 +579,6 @@
 	.summary {
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
-	}
-
-	.shell-boundary {
-		padding: 16px 18px;
-		border: 1px solid color-mix(in srgb, var(--md-sys-color-outline) 36%, transparent);
-		border-radius: var(--md-sys-shape-large);
-		background: color-mix(in srgb, var(--md-sys-color-secondary-container) 38%, transparent);
-	}
-
-	.shell-boundary > strong,
-	.shell-boundary__network > strong {
-		display: block;
-		margin-top: 7px;
-		color: var(--md-sys-color-on-surface);
-		font-size: 0.94rem;
-	}
-
-	.shell-boundary p {
-		margin: 6px 0 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: 0.84rem;
-		line-height: 1.5;
-	}
-
-	.shell-boundary__network {
-		margin-top: 12px;
-		padding-top: 10px;
-		border-top: 1px solid color-mix(in srgb, var(--md-sys-color-outline) 24%, transparent);
 	}
 
 	.operation-card {

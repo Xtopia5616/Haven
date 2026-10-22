@@ -4,8 +4,6 @@ mod manager;
 mod network;
 mod protocol;
 mod sse;
-#[cfg(windows)]
-mod stdio_broker;
 mod stdio_process;
 mod transport;
 
@@ -21,14 +19,9 @@ impl<T: Send> McpStdioProcessStartPermit for T {}
 pub type McpStdioProcessStartPermitFuture<'a> =
     Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn McpStdioProcessStartPermit>>> + Send + 'a>>;
 
-/// Tools-owned authorization for each MCP stdio generation start. The typed
-/// profile lets the authority reject host processes in WorkspaceWrite while
-/// allowing only fixed managed packages through the broker.
+/// Tools-owned authorization for each MCP stdio generation start.
 pub trait McpStdioProcessStartAuthorization: Send + Sync {
-    fn acquire_process_start_permit(
-        &self,
-        execution: haven_common::config::McpStdioExecution,
-    ) -> McpStdioProcessStartPermitFuture<'_>;
+    fn acquire_process_start_permit(&self) -> McpStdioProcessStartPermitFuture<'_>;
 }
 
 #[cfg(test)]
@@ -45,10 +38,10 @@ pub use features::{
 };
 pub use manager::{McpManager, McpReconcile, McpTargetChanged};
 pub use protocol::{
-    MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpCallOutput, McpClientStatus, McpManagedCallOutput,
-    McpResourceChangeEvent, McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
+    MCP_TOOLS_NOT_DISCOVERED_DIAGNOSTIC, McpCallOutput, McpClientStatus, McpResourceChangeEvent,
+    McpServerSnapshot, McpStatusChangeEvent, McpToolInfo,
 };
-pub use stdio_process::{
+pub(crate) use stdio_process::{
     McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher, McpStdioReader, McpStdioWriter,
 };
 

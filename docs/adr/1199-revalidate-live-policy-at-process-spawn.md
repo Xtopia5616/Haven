@@ -17,7 +17,7 @@
 - 前台 Shell 在构造命令、设置环境和创建 Job Object 后，紧邻 `tokio::process::Command::spawn` 取得 permit。策略不匹配通过结构化 `Permission` 错误返回，不做自动重试。
 - 后台 Shell 将 spawn authorization 留在当前进程内的 admission 请求中，不写入数据库。它先保留现有持久化/注册顺序，再紧邻 `spawn` 取得 permit；若策略已变化，删除刚创建的 ToolRun 注册并返回权限失败，不启动子进程。ToolRun 重启恢复不会重放该 transient permit。
 - 全局 `process_spawn_lock` 与该 permit 分工不同：前者只防止并发创建继承句柄，后者使 policy 更新不能和授权检查/进程创建交错。持锁顺序固定为 policy read permit 后取得全局 spawn lock；二者都只覆盖同步 spawn 临界区。
-- permit 只定义启动时授权线性化点。子进程启动后的策略更改不会由本 ADR 杀死运行中进程；运行中撤销与 workspace 销毁协调留给进程 owner lifecycle 设计。创建 AppContainer workspace 的有界快照也必须在 permit 之外完成，并在真实 CreateProcessW 前重新取得 permit。
+- permit 只定义启动时授权线性化点。子进程启动后的策略更改不会由本 ADR 杀死运行中进程；运行中撤销由进程 owner lifecycle 管理。
 
 ## 替代方案
 
@@ -34,7 +34,7 @@
 
 - `AuthorizationEngine` 测试验证配置更新先于 spawn permit 时 fail closed、workspace generation 变化使 permit 失效，并验证 permit 持有期间写策略的更新等待，释放后旧 context 不可再启动。
 - Tools 全量测试覆盖前台/后台 Shell、ToolRun 回滚与相邻授权/工作区契约；workspace 检查、严格 Clippy 和格式检查作为本切片门禁。
-- 依赖真实 AppContainer 的最终业务路径、后台 ToolRun 策略拒绝的持久回滚哨兵、启动后撤销进程以及跨崩溃 stale workspace 清理仍由后续切片验收。
+- 后台 ToolRun 策略拒绝的持久回滚哨兵与启动后撤销进程仍由对应进程 owner 测试覆盖。
 
 ## 回滚
 

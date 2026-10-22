@@ -1,6 +1,5 @@
 /** MCP command response contracts at the Rust-to-renderer boundary. */
 import { isValidMcpServerName } from '../mcpServerName.ts';
-import { isValidMcpPackageId } from '../mcpPackageId.ts';
 import { isMcpClientStatus } from './mcpClientStatus.ts';
 import { isRecord } from './objectGuards.ts';
 import {
@@ -34,7 +33,6 @@ export type McpExposureConfigView = GeneratedMcpExposureConfig;
 export interface McpServerSnapshotView {
 	name: string;
 	transport: GeneratedMcpServerSnapshot['transport'];
-	stdioExecution: GeneratedMcpServerSnapshot['stdio_execution'];
 	command: string;
 	args: string[];
 	env: string[];
@@ -99,18 +97,6 @@ function isMcpExposureConfig(value: unknown): value is McpExposureConfigView {
 	);
 }
 
-function isMcpStdioExecution(
-	value: unknown,
-): value is GeneratedMcpServerSnapshot['stdio_execution'] {
-	return (
-		isRecord(value) &&
-		((value.mode === 'host_process') ||
-			(value.mode === 'managed_package' &&
-				isString(value.package_id) &&
-				isValidMcpPackageId(value.package_id)))
-	);
-}
-
 function isMcpToolInfo(value: unknown): value is ValidatedMcpToolInfo {
 	return (
 		isRecord(value) &&
@@ -127,7 +113,6 @@ function isMcpServerSnapshot(value: unknown): value is ValidatedMcpServerSnapsho
 		isString(value.name) &&
 		isValidMcpServerName(value.name) &&
 		isOneOf(value.transport, MCP_SERVER_TRANSPORT_VALUES) &&
-		isMcpStdioExecution(value.stdio_execution) &&
 		isString(value.command) &&
 		isStringArray(value.args) &&
 		isStringArray(value.env) &&
@@ -153,7 +138,6 @@ function toMcpServerSnapshotView(snapshot: ValidatedMcpServerSnapshot): McpServe
 	return {
 		name: snapshot.name,
 		transport: snapshot.transport,
-		stdioExecution: snapshot.stdio_execution,
 		command: snapshot.command,
 		args: snapshot.args,
 		env: snapshot.env,

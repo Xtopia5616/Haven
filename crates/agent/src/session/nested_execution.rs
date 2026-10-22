@@ -14,7 +14,7 @@ const NESTED_EXECUTION_EVENT_TYPE: &str = "nested_tool_call_checkpoint";
 const MAX_NESTED_EXECUTION_EVENT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "state", rename_all = "snake_case")]
 enum NestedExecutionEvent {
     Started {
         parent_execution_id: String,
@@ -30,7 +30,6 @@ enum NestedExecutionEvent {
         tool_name: String,
         input: Value,
         result: Box<ToolResult>,
-        sandbox_output_review_step_id: Option<String>,
     },
 }
 
@@ -38,7 +37,6 @@ enum NestedExecutionEvent {
 pub(super) struct CompletedNestedCall {
     pub child_step_id: String,
     pub result: ToolResult,
-    pub sandbox_output_review_step_id: Option<String>,
 }
 
 pub(super) struct NestedCallCompletion<'a> {
@@ -47,7 +45,6 @@ pub(super) struct NestedCallCompletion<'a> {
     pub(super) tool_name: &'a str,
     pub(super) input: &'a Value,
     pub(super) result: &'a ToolResult,
-    pub(super) sandbox_output_review_step_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,7 +53,6 @@ struct NestedCallRecord {
     tool_name: String,
     input: Value,
     result: Option<ToolResult>,
-    sandbox_output_review_step_id: Option<String>,
 }
 
 pub(super) struct NestedExecutionJournal {
@@ -118,7 +114,6 @@ impl NestedExecutionJournal {
             return Ok(Err(CompletedNestedCall {
                 child_step_id: record.child_step_id.clone(),
                 result,
-                sandbox_output_review_step_id: record.sandbox_output_review_step_id.clone(),
             }));
         }
         if !is_canonical_id(proposed_step_id, "step") {
@@ -153,7 +148,6 @@ impl NestedExecutionJournal {
             tool_name: tool_name.to_owned(),
             input: input.clone(),
             result: None,
-            sandbox_output_review_step_id: None,
         });
         Ok(())
     }
@@ -182,14 +176,9 @@ impl NestedExecutionJournal {
             tool_name: completion.tool_name.to_owned(),
             input: completion.input.clone(),
             result: Box::new(completion.result.clone()),
-            sandbox_output_review_step_id: completion
-                .sandbox_output_review_step_id
-                .map(str::to_owned),
         };
         self.append_event(&event).await?;
         record.result = Some(completion.result.clone());
-        record.sandbox_output_review_step_id =
-            completion.sandbox_output_review_step_id.map(str::to_owned);
         Ok(())
     }
 
@@ -251,7 +240,6 @@ fn replay_records(
                     tool_name,
                     input,
                     result: None,
-                    sandbox_output_review_step_id: None,
                 });
             }
             NestedExecutionEvent::Completed {
@@ -261,7 +249,6 @@ fn replay_records(
                 tool_name,
                 input,
                 result,
-                sandbox_output_review_step_id,
             } if event_parent == parent_execution_id => {
                 let Some(record) = records.get_mut(call_index as usize) else {
                     return Err("nested call completion has no durable start".into());
@@ -274,7 +261,6 @@ fn replay_records(
                     return Err("nested call completion does not match its durable start".into());
                 }
                 record.result = Some(*result);
-                record.sandbox_output_review_step_id = sandbox_output_review_step_id;
             }
             _ => {}
         }
@@ -321,7 +307,6 @@ mod tests {
                 tool_name,
                 input: &input,
                 result: &result,
-                sandbox_output_review_step_id: None,
             })
             .await
             .unwrap();

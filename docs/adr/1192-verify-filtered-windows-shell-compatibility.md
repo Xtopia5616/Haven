@@ -13,7 +13,7 @@ ADR 1188 让 Shell 子进程从运行基线、用户上下文/区域设置和显
 - 增加 Windows-only 子进程回归测试，使用 `build_shell_command_silent` 的实际环境过滤和命令构造路径，不修改测试进程的全局环境。
 - 分别启动 `cmd` 与 Windows PowerShell，验证两者可以运行；PowerShell 还验证 `SystemRoot`、`TEMP`、`TMP`、`USERPROFILE` 可用，且能从保留的 `PATH` 解析 `cmd.exe`、`where.exe` 和 `whoami.exe`。
 - PowerShell 通过 `COMSPEC` 启动 `cmd.exe`，验证常见子命令链路；两个 Shell 都在测试临时工作目录中运行，PowerShell 在其中完成文件写入、读取和清理。
-- 测试不联网、不修改父进程或用户配置、不触碰真实用户文件；这只覆盖所列系统命令与基本工作目录操作，不代表所有 CLI、用户自定义环境依赖或 AppContainer 兼容性。
+- 测试不联网、不修改父进程或用户配置、不触碰真实用户文件；这只覆盖所列系统命令与基本工作目录操作，不代表所有 CLI 或用户自定义环境依赖。
 - 该验证不改变安全语义：环境白名单是凭据传递卫生措施，不限制子进程的同用户文件和网络权限，也不构成 OS sandbox。
 
 ## 替代方案

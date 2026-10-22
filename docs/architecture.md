@@ -20,7 +20,6 @@ haven-app-binary（组合根 / 宿主边界）
 └── haven-platform（操作系统适配）
 
 haven-platform ──► haven-common（credential store 端口）
-haven-container-broker ──► haven-platform（Windows broker service host）
 
 haven-agent ──► haven-tools, haven-memory, haven-messaging, haven-llm, haven-common
 haven-tools ──► haven-input, haven-mcp, haven-memory, haven-messaging, haven-skills, haven-llm, haven-common, haven-platform
@@ -36,7 +35,6 @@ haven-skills ──► haven-common, haven-platform
 |---|---|---|
 | `haven-common` | 无内部依赖 | 纯叶子，全 workspace 共享；`usage` 子域拥有跨层用量契约和值枚举 |
 | `haven-platform` | `haven-common` | CredentialStore 端口、共享 filesystem metadata 安全检查；Windows 凭据管理器和子进程适配 |
-| `haven-container-broker` | `haven-platform` | Windows SCM service host；将受限 IPC 请求交给 platform-owned HCS broker service |
 | `haven-llm` | `haven-common` | 只依赖共享层，不依赖任何业务 crate |
 | `haven-memory` | `haven-common` | 持久化（当前 SQLite schema、版本拒绝与 reset contract、仓库） |
 | `haven-skills` | `haven-common`, `haven-platform` | 技能目录解析、变更检测与 venv 子进程 containment；Skills root API 拥有目录变更判断，`venv` 是私有实现模块 |

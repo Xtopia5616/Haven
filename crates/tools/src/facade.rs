@@ -696,8 +696,6 @@ pub struct ToolServices {
     pub skills: Arc<dyn SkillCatalogPort>,
     pub skill_execution: Arc<dyn SkillExecutionPort>,
     pub authorization: Arc<dyn AuthorizationPort>,
-    #[cfg(windows)]
-    pub sandbox_output_reviews: Arc<dyn SandboxOutputReviewPort>,
     pub managed_assets: Arc<dyn ManagedAssetLifecyclePort>,
     pub tool_run_agent: Arc<dyn ToolRunAgentCapability>,
     pub tool_run_management: Arc<dyn ToolRunManagementCapability>,
@@ -732,8 +730,6 @@ impl ToolServices {
                 authorization: Arc::clone(&coordinator.core.authorization),
             }),
             authorization,
-            #[cfg(windows)]
-            sandbox_output_reviews: Arc::new(coordinator.runtime.sandbox_output_reviews.clone()),
             managed_assets: Arc::new(coordinator.runtime.managed_assets.clone()),
             tool_run_agent: crate::tool_run_capabilities::agent_port(Arc::clone(&tool_run_service)),
             tool_run_management: crate::tool_run_capabilities::management_port(Arc::clone(
@@ -1201,153 +1197,6 @@ impl ToolsFacade {
             .await
     }
 
-    /// Build the authorization request for one user-selected sandbox output
-    /// promotion. The source is identified only by the owner-held manifest
-    /// index; the destination remains an ordinary Files workspace write.
-    #[cfg(windows)]
-    pub fn sandbox_output_promotion_authorization_request(
-        &self,
-        session_id: &str,
-        source_step_id: &str,
-        change_index: u32,
-        destination: &Path,
-    ) -> Result<AuthorizationRequest, String> {
-        if !haven_common::types::is_canonical_id(session_id, "ses")
-            || !haven_common::types::is_canonical_id(source_step_id, "step")
-        {
-            return Err("sandbox output promotion requires canonical session and step ids".into());
-        }
-        if !destination.is_absolute() {
-            return Err("sandbox output destination must be an absolute path".into());
-        }
-        let destination = destination
-            .to_str()
-            .ok_or_else(|| "sandbox output destination is not a valid local path".to_string())?;
-        let input = crate::sandbox_review::SandboxOutputPromotionInput {
-            source_step_id: source_step_id.to_owned(),
-            change_index,
-            destination: destination.to_owned(),
-        };
-        let input = serde_json::to_value(input)
-            .map_err(|_| "sandbox output promotion request could not be encoded".to_string())?;
-        let capability = haven_common::types::CapabilityScope::try_new(
-            crate::sandbox_review::SANDBOX_OUTPUT_PROMOTION_TOOL_NAME,
-        )
-        .map_err(|error| error.to_string())?;
-        let mut policy = OperationPolicy::native(
-            crate::sandbox_review::SANDBOX_OUTPUT_PROMOTION_TOOL_NAME,
-            capability,
-            haven_common::types::RiskLevel::High,
-            NetworkAccess::None,
-        );
-        policy.confirmation = ConfirmationRequirement::Required;
-        policy.effect = OperationEffect::WorkspaceWrite;
-        policy.data_sensitivity = DataSensitivity::None;
-        Ok(AuthorizationRequest::new(
-            Some(session_id),
-            crate::sandbox_review::SANDBOX_OUTPUT_PROMOTION_TOOL_NAME,
-            input,
-            policy,
-        )
-        .with_target_binding(Some(format!(
-            "sandbox-review-entry:{source_step_id}:{change_index}"
-        ))))
-    }
-
-    /// Promote one created regular file after the app's confirmation owner
-    /// turns the matching receipt into an opaque execution proof. The current
-    /// Files policy resolves the destination and a live policy permit remains
-    /// held through the bounded create-if-absent copy.
-    #[cfg(windows)]
-    pub async fn promote_reviewed_sandbox_output(
-        &self,
-        request: &AuthorizationRequest,
-        proof: &AuthorizationExecutionProof,
-        cancel: CancellationToken,
-    ) -> Result<crate::SandboxOutputPromotionResult, String> {
-        let input: crate::sandbox_review::SandboxOutputPromotionInput =
-            serde_json::from_value(request.input.clone())
-                .map_err(|_| "sandbox output promotion request is malformed".to_string())?;
-        let session_id = request
-            .session_id
-            .as_deref()
-            .filter(|session_id| haven_common::types::is_canonical_id(session_id, "ses"))
-            .ok_or_else(|| "sandbox output promotion requires its owning session".to_string())?;
-        if request.tool_name != crate::sandbox_review::SANDBOX_OUTPUT_PROMOTION_TOOL_NAME
-            || request.policy.capability.as_str()
-                != crate::sandbox_review::SANDBOX_OUTPUT_PROMOTION_TOOL_NAME
-            || request.policy.confirmation != ConfirmationRequirement::Required
-            || request.policy.effect != OperationEffect::WorkspaceWrite
-            || request.policy.network_access != NetworkAccess::None
-            || !haven_common::types::is_canonical_id(&input.source_step_id, "step")
-            || request.target_binding.as_deref()
-                != Some(
-                    format!(
-                        "sandbox-review-entry:{}:{}",
-                        input.source_step_id, input.change_index
-                    )
-                    .as_str(),
-                )
-        {
-            return Err(
-                "sandbox output promotion request does not match its operation contract".into(),
-            );
-        }
-
-        self.coordinator
-            .core
-            .authorization
-            .verify_execution_proof(request, proof)
-            .await?;
-        let context = self
-            .coordinator
-            .core
-            .authorization
-            .execution_context_for_proof(request, proof)
-            .await?;
-        let write_policy = context.file_write_policy.as_ref().ok_or_else(|| {
-            "sandbox output promotion has no proof-derived Files authority".to_string()
-        })?;
-        let (destination_root, destination_relative) = write_policy
-            .resolve(Path::new(&input.destination))
-            .map_err(|error| error.to_string())?;
-        let authorization = context
-            .execution_authorization
-            .as_ref()
-            .ok_or_else(|| "sandbox output promotion has no live policy authority".to_string())?;
-        let (policy_revision, workspace_generation) = authorization.policy_stamp();
-        let permit = context
-            .acquire_execution_policy_permit()
-            .await?
-            .ok_or_else(|| "sandbox output promotion requires a live policy permit".to_string())?;
-        let summary = self
-            .coordinator
-            .runtime
-            .sandbox_output_reviews
-            .promote_created_file(
-                session_id,
-                &input.source_step_id,
-                input.change_index,
-                crate::sandbox_review::SandboxOutputPromotionTarget {
-                    execution_workspace_generation: workspace_generation,
-                    policy_revision,
-                    directory: destination_root,
-                    relative_path: destination_relative,
-                },
-                permit,
-                cancel,
-            )
-            .await?;
-        Ok(crate::SandboxOutputPromotionResult {
-            bytes: summary.bytes,
-            sha256: summary
-                .sha256
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect(),
-        })
-    }
-
     /// Validate a configured execution root without changing the active
     /// workspace. Settings commands use this before committing the config.
     pub fn validate_execution_workspace(&self, root: &Path) -> Result<PathBuf, String> {
@@ -1479,60 +1328,6 @@ mod capability_tests {
 
     struct AvailableStt;
 
-    #[cfg(windows)]
-    #[test]
-    fn sandbox_promotion_request_binds_source_index_and_requires_confirmation() {
-        let facade = ToolsFacade::new();
-        let destination = tempfile::tempdir().unwrap();
-        let destination_path = destination.path().join("promoted.txt");
-        let session_id = haven_common::types::new_id("ses");
-        let source_step_id = haven_common::types::new_id("step");
-        let request = facade
-            .sandbox_output_promotion_authorization_request(
-                &session_id,
-                &source_step_id,
-                3,
-                &destination_path,
-            )
-            .unwrap();
-
-        assert_eq!(request.session_id.as_deref(), Some(session_id.as_str()));
-        assert_eq!(request.tool_name, "files.promote_sandbox_output");
-        assert_eq!(
-            request.policy.capability.as_str(),
-            "files.promote_sandbox_output"
-        );
-        assert_eq!(
-            request.policy.effect,
-            OperationEffect::WorkspaceWrite,
-            "sandbox promotion uses the same workspace write boundary as Files"
-        );
-        assert_eq!(
-            request.policy.confirmation,
-            ConfirmationRequirement::Required
-        );
-        assert_eq!(request.input["source_step_id"], source_step_id);
-        assert_eq!(request.input["change_index"], 3);
-        assert_eq!(
-            request.input["destination"],
-            destination_path.to_string_lossy().as_ref()
-        );
-        assert_eq!(
-            request.target_binding.as_deref(),
-            Some(format!("sandbox-review-entry:{source_step_id}:3").as_str())
-        );
-        assert!(
-            facade
-                .sandbox_output_promotion_authorization_request(
-                    "ses-invalid",
-                    &source_step_id,
-                    3,
-                    &destination_path,
-                )
-                .is_err()
-        );
-    }
-
     #[async_trait::async_trait]
     impl haven_llm::SttClient for AvailableStt {
         async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
@@ -1571,6 +1366,7 @@ mod capability_tests {
         }))
     }
 
+    #[cfg(windows)]
     #[test]
     fn execution_workspace_validation_returns_the_normalized_local_root() {
         let selected = tempfile::tempdir().unwrap();

@@ -125,7 +125,6 @@ impl Tool for CodeModeInvocationTool {
             .evaluator
             .execute(script, self.definitions.clone(), subcalls.clone(), cancel)
             .await;
-        let review_step_ids = subcalls.sandbox_output_review_step_ids();
         let mut result = match execution {
             Ok(execution) => ToolResult::from_output(
                 json!({ "output": execution.output, "call_count": execution.call_count }),
@@ -137,7 +136,7 @@ impl Tool for CodeModeInvocationTool {
             Err(error) => ToolResult::failed(Value::Null, error.to_string()),
         };
         result.signals.nested_confirmation = subcalls.pending_confirmation();
-        Ok(result.with_sandbox_output_review_step_ids(review_step_ids))
+        Ok(result)
     }
 }
 
@@ -181,10 +180,6 @@ mod tests {
                 truncated: false,
             })
         }
-
-        fn sandbox_output_review_step_ids(&self) -> Vec<String> {
-            vec!["step-ea869e583dff7756d1747b32ad55e798".into()]
-        }
     }
 
     #[tokio::test]
@@ -210,17 +205,5 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.output["output"]["value"], "hello");
         assert_eq!(result.output["call_count"], 1);
-        assert_eq!(
-            result
-                .envelope(crate::OperationIdempotency::Unknown)
-                .sandbox_output_review_step_ids,
-            ["step-ea869e583dff7756d1747b32ad55e798"]
-        );
-        assert!(
-            result
-                .output
-                .get("sandbox_output_review_step_ids")
-                .is_none()
-        );
     }
 }

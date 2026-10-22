@@ -306,9 +306,6 @@ impl ToolRetryability {
     }
 }
 
-/// Maximum number of child review identities attached to one tool result.
-pub const MAX_SANDBOX_OUTPUT_REVIEW_STEP_IDS: usize = 64;
-
 /// Stable metadata envelope emitted with a terminal observation. The
 /// operation-specific payload remains in `ToolResult::output`; this envelope
 /// carries fields Agent, UI, and logs interpret consistently.
@@ -324,10 +321,6 @@ pub struct ToolResultEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_action: Option<String>,
     pub assets: Vec<String>,
-    /// Ephemeral sandbox child reviews associated with this UI result. These
-    /// identities are never included in the model-facing tool observation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sandbox_output_review_step_ids: Vec<String>,
 }
 
 impl ToolResultEnvelope {
@@ -345,7 +338,6 @@ impl ToolResultEnvelope {
             verification_hint: None,
             next_action: None,
             assets: Vec::new(),
-            sandbox_output_review_step_ids: Vec::new(),
         }
     }
 }
@@ -789,7 +781,6 @@ mod tests {
         );
         let current_json = serde_json::to_value(&current).unwrap();
         assert_eq!(current_json["idempotency"], "non_idempotent");
-        assert!(current_json.get("sandbox_output_review_step_ids").is_none());
         assert_eq!(
             serde_json::from_value::<ToolResultEnvelope>(current_json).unwrap(),
             current
@@ -810,20 +801,6 @@ mod tests {
                 "assets": [],
             }))
             .is_ok()
-        );
-
-        let mut with_review = current;
-        with_review
-            .sandbox_output_review_step_ids
-            .push("step-ea869e583dff7756d1747b32ad55e798".into());
-        let encoded = serde_json::to_value(&with_review).unwrap();
-        assert_eq!(
-            encoded["sandbox_output_review_step_ids"],
-            serde_json::json!(["step-ea869e583dff7756d1747b32ad55e798"])
-        );
-        assert_eq!(
-            serde_json::from_value::<ToolResultEnvelope>(encoded).unwrap(),
-            with_review
         );
     }
 

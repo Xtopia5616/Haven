@@ -18,7 +18,7 @@ Common 中的 `OnceHandler` 是仅安装一次的内部回调槽，ReAct 内部 
 
 ## 替代方案
 
-- 让 Hook 使用 `WorkspaceWrite` HCS：首版拒绝。现有 HCS profile 绑定 Shell/固定 Skill 合约；任意 Hook command 缺少可证明的 runtime、输入输出快照、review owner 与步骤身份，不能复用现有隔离 profile。
+- 让任意 Hook 在 `WorkspaceWrite` 下启动宿主子进程：首版拒绝。Hook command 不受工作区文件授权约束，因此该模式下不启动它。
 - 只用 Job Object 并在 `WorkspaceWrite` 下运行：拒绝。进程树 containment 不限制同一用户身份可访问的文件与网络。
 - 让 `PreToolUse` 的 allow 跳过 Haven 授权：拒绝。Hook 是附加 veto，不是另一个授权系统。
 - 让任意项目文件自动执行：拒绝。项目 Hook 必须由用户在 Haven 的 `config.toml` 中显式信任精确工作区根。

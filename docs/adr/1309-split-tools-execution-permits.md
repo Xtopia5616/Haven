@@ -29,4 +29,4 @@
 - Windows `cargo test --locked -p haven-tools -- --test-threads=4`：975 passed、2 ignored；MCP integration 7 passed。
 - `cargo clippy --locked -p haven-tools -- -D warnings` 通过。
 - `cargo fmt --all -- --check` 通过。
-- 实际 installer UI 与 HCS quota 超限验收不受该模块移动影响，仍由路线图 §5.1 Open Gate 追踪。
+- 实际 installer UI 与通用发布验收不受该模块移动影响，仍由路线图 §5.1 跟踪。

@@ -22,7 +22,6 @@ pub struct LoadMcpTool {
     /// per-request tool budget check.
     pub registry: ToolRegistry,
     pub session_tool_overlay: SessionToolOverlay,
-    pub sandbox_output_reviews: crate::SandboxOutputReviewOwner,
     /// Snapshot of `context_limits.max_tools_per_request` at catalog rebuild.
     pub max_tools_per_request: usize,
 }
@@ -317,8 +316,7 @@ impl LoadMcpTool {
                 server_name,
                 info,
                 transport.clone(),
-            )
-            .with_sandbox_output_reviews(self.sandbox_output_reviews.clone());
+            );
             // The next provider request receives the full schema through
             // `tools[]`; returning it here would duplicate the schema inside
             // the conversation transcript and inflate every later request.

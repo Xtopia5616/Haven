@@ -167,10 +167,6 @@ impl StdioInner {
         self.wait_for_exit(STDIO_KILL_WAIT_TIMEOUT).await
     }
 
-    pub(crate) async fn take_output_review(&self) -> Option<haven_platform::SandboxOutputReview> {
-        self.process.lock().await.take_output_review()
-    }
-
     pub(crate) async fn request(
         &self,
         id: u64,

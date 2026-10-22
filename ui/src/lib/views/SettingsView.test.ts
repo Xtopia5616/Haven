@@ -24,12 +24,6 @@ describe('SettingsView diagnostics export', () => {
 					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
 				case 'is_autostart_enabled':
 					return false;
-				case 'get_shell_execution_security_status':
-					return {
-						sandboxMode: 'workspace_write',
-						networkPolicy: 'ask',
-						brokerGateStatus: 'attested',
-					};
 				case 'get_performance_metrics':
 					return {
 						phases: Array.from({ length: AGENT_METRICS_PHASE_COUNT }, () => ({

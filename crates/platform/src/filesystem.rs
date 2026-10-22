@@ -1,13 +1,5 @@
 //! Shared low-level filesystem metadata checks.
 
-mod tree_copy;
-mod tree_diff;
-pub use tree_copy::{DirectoryTreeCopyLimits, DirectoryTreeCopySummary};
-pub use tree_diff::{
-    DirectoryTreeChange, DirectoryTreeChangeKind, DirectoryTreeDiffLimits, DirectoryTreeEntryKind,
-    DirectoryTreeFileCopySummary, DirectoryTreeOutputManifest,
-};
-
 use std::ffi::OsString;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io;
@@ -74,46 +66,6 @@ impl DirectoryCapability {
 
         Ok(Self {
             root: canonical,
-            directory: Arc::new(cap_std::fs::Dir::from_std_file(opened)),
-        })
-    }
-
-    /// Open one ordinary child directory inside a volume whose GUID path was
-    /// returned by the broker's mounted HCS VHD owner. This narrow constructor
-    /// deliberately accepts the volume namespace only after that owner has
-    /// established the disk-to-volume relationship; callers must not pass a
-    /// mount point or an arbitrary device path.
-    #[cfg(windows)]
-    pub(crate) fn open_hcs_volume_child(volume_root: &Path, child_name: &str) -> io::Result<Self> {
-        if !is_canonical_hcs_volume_root(volume_root)
-            || child_name.is_empty()
-            || child_name.chars().any(char::is_control)
-            || child_name.contains(['\\', '/', ':'])
-            || matches!(child_name, "." | "..")
-            || child_name.ends_with(['.', ' '])
-        {
-            return Err(permission_denied(
-                "HCS transport directory is not a direct child of its mounted volume",
-            ));
-        }
-
-        let path = volume_root.join(child_name);
-        let opened = open_directory_capability(&path)?;
-        let opened_metadata = opened.metadata()?;
-        if !opened_metadata.is_dir() || is_link_or_reparse_point(&opened_metadata) {
-            return Err(permission_denied(
-                "HCS transport directory is not a regular directory",
-            ));
-        }
-        let resolved = open_for_metadata(&path)?;
-        if !same_file_identity(&opened, &resolved)? {
-            return Err(permission_denied(
-                "HCS transport directory changed while opening",
-            ));
-        }
-
-        Ok(Self {
-            root: path,
             directory: Arc::new(cap_std::fs::Dir::from_std_file(opened)),
         })
     }
@@ -265,19 +217,6 @@ impl DirectoryCapability {
         self.entries_from(&self.directory, maximum)
     }
 
-    /// List one directory beneath this pinned root without following any
-    /// reparse point in the relative path.
-    pub(crate) fn entries_at(
-        &self,
-        relative: &Path,
-        maximum: usize,
-    ) -> io::Result<Vec<DirectoryEntryInfo>> {
-        let relative = validate_relative_path(relative)?;
-        reject_relative_reparse_components(&self.directory, &relative, true)?;
-        let directory = self.directory.open_dir(&relative)?;
-        self.entries_from(&directory, maximum)
-    }
-
     fn entries_from(
         &self,
         directory: &cap_std::fs::Dir,
@@ -348,18 +287,6 @@ impl DirectoryCapability {
         write_contents: impl FnOnce(&mut cap_std::fs::File) -> io::Result<()>,
     ) -> io::Result<()> {
         self.atomic_write_with(relative, true, true, None, write_contents)
-    }
-
-    /// Atomically create a new file below an already existing parent. Existing
-    /// destinations are rejected, including a destination created after the
-    /// initial check. This is used when promoting reviewed sandbox output so a
-    /// concurrent edit is never overwritten.
-    pub(crate) fn atomic_create_with_existing_parent(
-        &self,
-        relative: &Path,
-        write_contents: impl FnOnce(&mut cap_std::fs::File) -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.atomic_write_with(relative, false, false, None, write_contents)
     }
 
     fn atomic_write_with(
@@ -831,27 +758,6 @@ fn reject_reparse_components(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(windows)]
-pub(crate) fn is_canonical_hcs_volume_root(path: &Path) -> bool {
-    let Some(value) = path.to_str() else {
-        return false;
-    };
-    let Some(guid) = value
-        .strip_prefix(r"\\?\Volume{")
-        .and_then(|value| value.strip_suffix("}\\"))
-    else {
-        return false;
-    };
-    guid.len() == 36
-        && guid.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
-}
-
 fn reject_relative_reparse_components(
     directory: &cap_std::fs::Dir,
     path: &Path,
@@ -917,30 +823,6 @@ mod directory_capability_tests {
     use super::{DirectoryCapability, DirectoryEntryKind};
     use std::io::Write;
     use std::path::Path;
-
-    #[cfg(windows)]
-    #[test]
-    fn hcs_volume_child_accepts_only_a_canonical_volume_guid_root() {
-        assert!(DirectoryCapability::open_hcs_volume_child(Path::new(r"C:\"), "export").is_err());
-        assert!(
-            DirectoryCapability::open_hcs_volume_child(
-                Path::new(r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\"),
-                ".."
-            )
-            .is_err()
-        );
-        assert!(super::is_canonical_hcs_volume_root(Path::new(
-            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\"
-        )));
-        for path in [
-            r"C:\\Volume{01234567-89ab-cdef-0123-456789abcdef}\",
-            r"\\?\Volume{not-a-guid}\",
-            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}",
-            r"\\?\Volume{01234567-89ab-cdef-0123-456789abcde!}\",
-        ] {
-            assert!(!super::is_canonical_hcs_volume_root(Path::new(path)));
-        }
-    }
 
     fn symlink_directory(target: &Path, link: &Path) -> std::io::Result<()> {
         #[cfg(unix)]

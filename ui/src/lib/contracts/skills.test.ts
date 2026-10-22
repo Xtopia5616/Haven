@@ -65,24 +65,21 @@ describe('Skills command response contracts', () => {
 
 	it('validates the fixed execution envelope and preserves dynamic JSON output', () => {
 		const output = { summary: 'ready', references: ['one', 'two'] };
-		expect(parseSkillExecutionResponse({ success: true, output, error: null, stepId: null })).toEqual({
+		expect(parseSkillExecutionResponse({ success: true, output, error: null })).toEqual({
 			success: true,
 			output,
 			error: null,
-			stepId: null,
 		});
 		expect(
 			parseSkillExecutionResponse({
 				success: false,
 				output: null,
 				error: 'failed',
-				stepId: 'step-00000000000000000000000000000001',
 			}),
 		).toEqual({
 			success: false,
 			output: null,
 			error: 'failed',
-			stepId: 'step-00000000000000000000000000000001',
 		});
 	});
 
@@ -90,8 +87,6 @@ describe('Skills command response contracts', () => {
 		{ success: 'true', output: {}, error: null },
 		{ success: true, error: null },
 		{ success: true, output: {}, error: 1 },
-		{ success: true, output: {}, error: null, stepId: false },
-		{ success: true, output: {}, error: null, stepId: 'step-not-canonical' },
 	])('rejects malformed execution envelopes', (response) => {
 		expect(() => parseSkillExecutionResponse(response)).toThrow(
 			'Invalid Skill execution response',

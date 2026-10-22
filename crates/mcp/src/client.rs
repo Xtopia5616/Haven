@@ -3,8 +3,8 @@ mod subscriptions;
 
 use crate::features::{McpPromptList, McpResourceList, McpResourceRead, McpServerCapabilities};
 use crate::protocol::{
-    MODERN_PROTOCOL_VERSION, McpCallOutput, McpClientStatus, McpManagedCallOutput, McpRpcError,
-    McpServerSnapshot, McpStatusChangeEvent, McpToolInfo, McpToolListPage, extract_mcp_content,
+    MODERN_PROTOCOL_VERSION, McpCallOutput, McpClientStatus, McpRpcError, McpServerSnapshot,
+    McpStatusChangeEvent, McpToolInfo, McpToolListPage, extract_mcp_content,
     http_parameter_headers,
 };
 use crate::transport::{
@@ -13,9 +13,7 @@ use crate::transport::{
 };
 use crate::{McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher};
 use futures_util::future::BoxFuture;
-use haven_common::config::McpStdioExecution;
 use haven_common::{mcp::McpServerTransport, types::NetworkPolicy};
-use haven_platform::windows_container::execution::WindowsContainerWorkspaceInput;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -107,34 +105,6 @@ mod stdio_launcher_tests {
         alive: Arc<std::sync::atomic::AtomicBool>,
     }
 
-    #[test]
-    fn launch_spec_debug_redacts_workspace_capability_path() {
-        let workspace = std::env::temp_dir().join(haven_common::types::new_id("file"));
-        std::fs::create_dir(&workspace).unwrap();
-        let workspace_path = workspace.to_string_lossy().into_owned();
-        let input = WindowsContainerWorkspaceInput::new(
-            haven_platform::filesystem::DirectoryCapability::open(&workspace).unwrap(),
-        );
-        let spec = McpStdioLaunchSpec::new(
-            "managed-test".into(),
-            McpStdioExecution::ManagedPackage {
-                package_id: "managed-test".into(),
-            },
-            "ignored.exe".into(),
-            Vec::new(),
-            Vec::new(),
-            None,
-        )
-        .with_workspace_input(Some(input));
-
-        let debug = format!("{spec:?}");
-        assert!(debug.contains("<bounded capability>"));
-        assert!(!debug.contains(&workspace_path));
-
-        drop(spec);
-        std::fs::remove_dir(&workspace).unwrap();
-    }
-
     impl McpStdioProcessLauncher for StreamLauncher {
         fn launch<'a>(
             &'a self,
@@ -224,309 +194,6 @@ mod stdio_launcher_tests {
         server.await.unwrap();
         drop(stdio);
         assert!(!launcher.alive.load(Ordering::Acquire));
-    }
-
-    #[derive(Default)]
-    struct OneShotStats {
-        launch_count: std::sync::atomic::AtomicUsize,
-        call_count: std::sync::atomic::AtomicUsize,
-        generations: StdMutex<Vec<Vec<String>>>,
-        workspace_inputs: StdMutex<Vec<bool>>,
-    }
-
-    struct OneShotLauncher {
-        stats: Arc<OneShotStats>,
-    }
-
-    struct OneShotProcess {
-        stdin: Option<McpStdioWriter>,
-        stdout: Option<McpStdioReader>,
-        cancellation: CancellationToken,
-        server: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
-    }
-
-    impl McpStdioProcess for OneShotProcess {
-        fn take_stdin(&mut self) -> std::io::Result<McpStdioWriter> {
-            self.stdin
-                .take()
-                .ok_or_else(|| std::io::Error::other("stdin already taken"))
-        }
-
-        fn take_stdout(&mut self) -> std::io::Result<McpStdioReader> {
-            self.stdout
-                .take()
-                .ok_or_else(|| std::io::Error::other("stdout already taken"))
-        }
-
-        fn take_stderr(&mut self) -> std::io::Result<Option<McpStdioReader>> {
-            Ok(None)
-        }
-
-        fn is_alive(&mut self) -> std::io::Result<bool> {
-            Ok(self.server.is_some())
-        }
-
-        fn start_kill(&mut self) -> std::io::Result<()> {
-            self.cancellation.cancel();
-            Ok(())
-        }
-
-        fn wait(&mut self) -> BoxFuture<'_, std::io::Result<()>> {
-            Box::pin(async move {
-                let result = match self.server.as_mut() {
-                    Some(server) => server.await,
-                    None => return Ok(()),
-                };
-                self.server.take();
-                result.map_err(|error| std::io::Error::other(error.to_string()))?
-            })
-        }
-    }
-
-    impl Drop for OneShotProcess {
-        fn drop(&mut self) {
-            self.cancellation.cancel();
-        }
-    }
-
-    impl McpStdioProcessLauncher for OneShotLauncher {
-        fn launch<'a>(
-            &'a self,
-            spec: &'a McpStdioLaunchSpec,
-            permit: Box<dyn crate::McpStdioProcessStartPermit>,
-        ) -> BoxFuture<'a, anyhow::Result<Box<dyn McpStdioProcess>>> {
-            Box::pin(async move {
-                if !matches!(
-                    spec.stdio_execution(),
-                    McpStdioExecution::ManagedPackage { .. }
-                ) {
-                    anyhow::bail!("one-shot test expects a managed package");
-                }
-                let generation = self.stats.launch_count.fetch_add(1, Ordering::SeqCst);
-                self.stats.generations.lock().unwrap().push(Vec::new());
-                self.stats
-                    .workspace_inputs
-                    .lock()
-                    .unwrap()
-                    .push(spec.workspace_input().is_some());
-                let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-                let (stdout, stdin) = tokio::io::split(client_stream);
-                let cancellation = CancellationToken::new();
-                let server_cancel = cancellation.clone();
-                let stats = self.stats.clone();
-                let server = tokio::spawn(async move {
-                    let result = async {
-                        let (server_read, mut server_write) = tokio::io::split(server_stream);
-                        let mut reader = BufReader::new(server_read);
-                        loop {
-                            let mut line = String::new();
-                            let count = tokio::select! {
-                                _ = server_cancel.cancelled() => break,
-                                count = reader.read_line(&mut line) => count?,
-                            };
-                            if count == 0 {
-                                break;
-                            }
-                            let request: Value =
-                                serde_json::from_str(&line).map_err(std::io::Error::other)?;
-                            let Some(id) = request.get("id").cloned() else {
-                                continue;
-                            };
-                            let method = request
-                                .get("method")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned();
-                            stats.generations.lock().unwrap()[generation].push(method.clone());
-                            let result = match method.as_str() {
-                                "server/discover" => serde_json::json!({
-                                    "resultType": "complete",
-                                    "supportedVersions": [MODERN_PROTOCOL_VERSION],
-                                    "capabilities": {"tools": {}},
-                                    "_meta": {
-                                        "io.modelcontextprotocol/serverInfo": {
-                                            "name": "one-shot-test",
-                                            "version": "1"
-                                        }
-                                    }
-                                }),
-                                "tools/list" => serde_json::json!({
-                                    "tools": [{
-                                        "name": "read_once",
-                                        "description": "test one-shot call",
-                                        "inputSchema": {"type": "object"}
-                                    }],
-                                    "ttlMs": 60000,
-                                    "cacheScope": "private"
-                                }),
-                                "tools/call" => {
-                                    stats.call_count.fetch_add(1, Ordering::SeqCst);
-                                    serde_json::json!({
-                                        "content": [{"type": "text", "text": "called"}]
-                                    })
-                                }
-                                _ => serde_json::json!({}),
-                            };
-                            let response = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": result
-                            });
-                            server_write
-                                .write_all(serde_json::to_string(&response).unwrap().as_bytes())
-                                .await?;
-                            server_write.write_all(b"\n").await?;
-                        }
-                        Ok(())
-                    }
-                    .await;
-                    result
-                });
-                drop(permit);
-                Ok(Box::new(OneShotProcess {
-                    stdin: Some(Box::new(stdin)),
-                    stdout: Some(Box::new(stdout)),
-                    cancellation,
-                    server: Some(server),
-                }) as Box<dyn McpStdioProcess>)
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn managed_one_shot_calls_use_a_fresh_protocol_generation_and_confirm_stop() {
-        let stats = Arc::new(OneShotStats::default());
-        let launcher = Arc::new(OneShotLauncher {
-            stats: stats.clone(),
-        });
-        let config = haven_common::config::McpServerConfig {
-            name: "one-shot-test".into(),
-            transport: McpServerTransport::Stdio,
-            stdio_execution: McpStdioExecution::ManagedPackage {
-                package_id: "one-shot-test".into(),
-            },
-            ..Default::default()
-        };
-        let template = McpClient::new_managed_with_launcher(
-            &config,
-            1024,
-            1024,
-            Some(Arc::new(TestMcpStdioProcessStartAuthorization)),
-            launcher,
-        );
-        template.set_network_policy(NetworkPolicy::Open).await;
-
-        let workspace = std::env::temp_dir().join(haven_common::types::new_id("file"));
-        std::fs::create_dir(&workspace).unwrap();
-        let workspace_input = WindowsContainerWorkspaceInput::new(
-            haven_platform::filesystem::DirectoryCapability::open(&workspace).unwrap(),
-        );
-        for workspace_input in [Some(workspace_input), None] {
-            let output = template
-                .call_tool_in_fresh_managed_generation(
-                    "read_once",
-                    serde_json::json!({}),
-                    workspace_input,
-                    CancellationToken::new(),
-                )
-                .await
-                .unwrap();
-            assert!(output.call_output.success);
-            assert_eq!(output.call_output.output["text"], "called");
-        }
-
-        assert_eq!(stats.launch_count.load(Ordering::SeqCst), 2);
-        assert_eq!(stats.call_count.load(Ordering::SeqCst), 2);
-        assert_eq!(*stats.workspace_inputs.lock().unwrap(), [true, false]);
-        std::fs::remove_dir(&workspace).unwrap();
-        let generations = stats.generations.lock().unwrap();
-        assert_eq!(generations.len(), 2);
-        for methods in generations.iter() {
-            assert_eq!(methods, &["server/discover", "tools/list", "tools/call"]);
-        }
-    }
-
-    #[tokio::test]
-    async fn manager_one_shot_call_uses_the_authorized_managed_package_binding() {
-        let stats = Arc::new(OneShotStats::default());
-        let launcher = Arc::new(OneShotLauncher {
-            stats: stats.clone(),
-        });
-        let manager = crate::McpManager::new();
-        manager.set_network_policy(NetworkPolicy::Open).await;
-        manager
-            .set_stdio_process_start_authorization(Some(Arc::new(
-                TestMcpStdioProcessStartAuthorization,
-            )))
-            .await;
-        manager.set_stdio_process_launcher(launcher).await;
-        let config = haven_common::config::McpServerConfig {
-            name: "one-shot-manager".into(),
-            transport: McpServerTransport::Stdio,
-            stdio_execution: McpStdioExecution::ManagedPackage {
-                package_id: "one-shot-manager".into(),
-            },
-            ..Default::default()
-        };
-        manager.connect_server(&config).await.unwrap();
-        let binding = manager
-            .client_target_binding_for_transport(&config.name, &config.transport)
-            .await
-            .unwrap();
-        let stale = manager
-            .call_tool_once_at_target_binding(
-                &config.name,
-                "stale-target-binding",
-                "read_once",
-                serde_json::json!({}),
-                None,
-                CancellationToken::new(),
-            )
-            .await
-            .expect_err("a stale target binding must not launch a guest");
-        assert!(stale.downcast_ref::<crate::McpTargetChanged>().is_some());
-        assert_eq!(stats.launch_count.load(Ordering::SeqCst), 1);
-        let stale_cancel = CancellationToken::new();
-        stale_cancel.cancel();
-        let cancelled = manager
-            .call_tool_once_at_target_binding(
-                &config.name,
-                &binding,
-                "read_once",
-                serde_json::json!({}),
-                None,
-                stale_cancel,
-            )
-            .await
-            .expect_err("cancelled calls must not launch a one-shot guest");
-        assert!(cancelled.to_string().contains("cancelled before admission"));
-        assert_eq!(stats.launch_count.load(Ordering::SeqCst), 1);
-
-        let output = manager
-            .call_tool_once_at_target_binding(
-                &config.name,
-                &binding,
-                "read_once",
-                serde_json::json!({}),
-                None,
-                CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-        assert!(output.call_output.success);
-        assert_eq!(output.call_output.output["text"], "called");
-
-        let generations = stats.generations.lock().unwrap();
-        assert_eq!(stats.launch_count.load(Ordering::SeqCst), 2);
-        assert_eq!(stats.call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(generations.len(), 2);
-        assert_eq!(generations[0], ["server/discover", "tools/list"]);
-        assert_eq!(
-            generations[1],
-            ["server/discover", "tools/list", "tools/call"]
-        );
-        drop(generations);
-        manager.shutdown_all().await;
     }
 
     struct FailingWaitProcess {
@@ -660,7 +327,6 @@ pub struct McpClient {
     /// pending confirmation to a different endpoint.
     manager_generation: AtomicU64,
     pub(crate) transport: McpServerTransport,
-    pub(crate) stdio_execution: McpStdioExecution,
     pub(crate) command: String,
     pub(crate) args: Vec<String>,
     pub(crate) env: Vec<String>,
@@ -876,47 +542,6 @@ pub(crate) fn local_stdio_process_launcher() -> Arc<dyn McpStdioProcessLauncher>
     Arc::new(LocalMcpStdioProcessLauncher)
 }
 
-pub(crate) fn default_stdio_process_launcher() -> Arc<dyn McpStdioProcessLauncher> {
-    Arc::new(ProfileAwareMcpStdioProcessLauncher {
-        local: local_stdio_process_launcher(),
-        #[cfg(windows)]
-        brokered: crate::stdio_broker::BrokeredMcpStdioProcessLauncher::new(
-            haven_platform::windows_container::execution::new_brokered_mcp_session_port(),
-        ),
-    })
-}
-
-struct ProfileAwareMcpStdioProcessLauncher {
-    local: Arc<dyn McpStdioProcessLauncher>,
-    #[cfg(windows)]
-    brokered: crate::stdio_broker::BrokeredMcpStdioProcessLauncher,
-}
-
-impl McpStdioProcessLauncher for ProfileAwareMcpStdioProcessLauncher {
-    fn launch<'a>(
-        &'a self,
-        spec: &'a McpStdioLaunchSpec,
-        permit: Box<dyn crate::McpStdioProcessStartPermit>,
-    ) -> BoxFuture<'a, anyhow::Result<Box<dyn McpStdioProcess>>> {
-        Box::pin(async move {
-            match spec.stdio_execution() {
-                McpStdioExecution::HostProcess => self.local.launch(spec, permit).await,
-                McpStdioExecution::ManagedPackage { .. } => {
-                    #[cfg(windows)]
-                    {
-                        self.brokered.launch(spec, permit).await
-                    }
-                    #[cfg(not(windows))]
-                    {
-                        drop(permit);
-                        anyhow::bail!("managed MCP packages require the Windows container broker")
-                    }
-                }
-            }
-        })
-    }
-}
-
 struct LocalMcpStdioProcessLauncher;
 
 struct LocalMcpStdioProcess {
@@ -969,13 +594,6 @@ impl McpStdioProcessLauncher for LocalMcpStdioProcessLauncher {
         permit: Box<dyn crate::McpStdioProcessStartPermit>,
     ) -> BoxFuture<'a, anyhow::Result<Box<dyn McpStdioProcess>>> {
         Box::pin(async move {
-            if let McpStdioExecution::ManagedPackage { package_id } = spec.stdio_execution() {
-                anyhow::bail!(
-                    "MCP server '{}' uses managed package '{}', but the brokered package launcher is unavailable",
-                    spec.server_name(),
-                    package_id
-                );
-            }
             // MCP servers may use relative command/cwd paths from trusted
             // configuration; this local launcher preserves that behavior.
             let build = |program: &str, args: &[String]| {
@@ -1022,8 +640,7 @@ impl McpStdioProcessLauncher for LocalMcpStdioProcessLauncher {
             })?;
 
             // `spawn_mcp_child` returns only after OS containment has attached
-            // and the process has resumed. An HCS launcher will return only
-            // after its broker acknowledges the analogous start boundary.
+            // and the process has resumed.
             drop(permit);
             let mut process = LocalMcpStdioProcess {
                 child,
@@ -1045,10 +662,7 @@ struct TestMcpStdioProcessStartAuthorization;
 
 #[cfg(any(test, feature = "test-support"))]
 impl crate::McpStdioProcessStartAuthorization for TestMcpStdioProcessStartAuthorization {
-    fn acquire_process_start_permit(
-        &self,
-        _execution: McpStdioExecution,
-    ) -> crate::McpStdioProcessStartPermitFuture<'_> {
+    fn acquire_process_start_permit(&self) -> crate::McpStdioProcessStartPermitFuture<'_> {
         Box::pin(async { Ok(Box::new(()) as Box<dyn crate::McpStdioProcessStartPermit>) })
     }
 }
@@ -1096,7 +710,6 @@ impl McpClient {
             name: config.name.clone(),
             manager_generation: AtomicU64::new(0),
             transport: config.transport.clone(),
-            stdio_execution: config.stdio_execution.clone(),
             command: config.command.clone(),
             args: config.args.clone(),
             env: config.env.clone(),
@@ -1135,7 +748,6 @@ impl McpClient {
             stdio_process_authorization,
             stdio_launch_spec: McpStdioLaunchSpec::new(
                 config.name.clone(),
-                config.stdio_execution.clone(),
                 config.command.clone(),
                 config.args.clone(),
                 config.env.clone(),
@@ -1177,7 +789,6 @@ impl McpClient {
     /// credentials or an outdated invocation).
     pub fn matches_config(&self, cfg: &haven_common::config::McpServerConfig) -> bool {
         self.transport == cfg.transport
-            && self.stdio_execution == cfg.stdio_execution
             && self.command == cfg.command
             && self.args == cfg.args
             && self.env == cfg.env
@@ -1291,7 +902,6 @@ impl McpClient {
         McpServerSnapshot {
             name: self.name.clone(),
             transport: self.transport.clone(),
-            stdio_execution: self.stdio_execution.clone(),
             command: self.command.clone(),
             args: self.args.clone(),
             env: self.env.clone(),
@@ -1322,7 +932,7 @@ impl McpClient {
             )
         })?;
         let spawn_permit = authorization
-            .acquire_process_start_permit(self.stdio_launch_spec.stdio_execution().clone())
+            .acquire_process_start_permit()
             .await
             .map_err(|error| {
                 anyhow::anyhow!(
@@ -1599,109 +1209,11 @@ impl McpClient {
         Ok(())
     }
 
-    pub(crate) async fn call_tool_in_fresh_managed_generation(
-        &self,
-        tool_name: &str,
-        input: Value,
-        workspace_input: Option<WindowsContainerWorkspaceInput>,
-        cancel: CancellationToken,
-    ) -> anyhow::Result<McpManagedCallOutput> {
-        let invocation = Arc::new(self.fresh_managed_call_client(workspace_input)?);
-        invocation
-            .set_network_policy(*self.network_policy.read().await)
-            .await;
-
-        if let Err(connect_error) = invocation
-            .connect_with_cancellation(Some(cancel.child_token()))
-            .await
-        {
-            let stop_result = invocation.shutdown().await;
-            return match stop_result {
-                Ok(()) => Err(connect_error),
-                Err(stop_error) => Err(anyhow::anyhow!(
-                    "MCP invocation setup failed and its managed guest stop was not confirmed (connect: {}; stop: {})",
-                    haven_common::error::sanitize_error_text(&connect_error.to_string()),
-                    haven_common::error::sanitize_error_text(&stop_error.to_string())
-                )),
-            };
-        }
-        let call_result = invocation
-            .call_tool(tool_name, input, cancel.child_token())
-            .await;
-        let stop_result = invocation.shutdown_inner_with_output_review(false).await;
-
-        match (call_result, stop_result) {
-            (Ok(call_output), Ok(sandbox_output_review)) => Ok(McpManagedCallOutput {
-                call_output,
-                sandbox_output_review,
-            }),
-            (Ok(_), Err(stop_error)) => Err(anyhow::anyhow!(
-                "MCP call completed but its managed guest stop was not confirmed: {}",
-                haven_common::error::sanitize_error_text(&stop_error.to_string())
-            )),
-            (Err(call_error), Ok(_sandbox_output_review)) => Err(call_error),
-            (Err(call_error), Err(stop_error)) => Err(anyhow::anyhow!(
-                "MCP call failed and its managed guest stop was not confirmed (call: {}; stop: {})",
-                haven_common::error::sanitize_error_text(&call_error.to_string()),
-                haven_common::error::sanitize_error_text(&stop_error.to_string())
-            )),
-        }
-    }
-
-    fn fresh_managed_call_client(
-        &self,
-        workspace_input: Option<WindowsContainerWorkspaceInput>,
-    ) -> anyhow::Result<Self> {
-        if !matches!(self.transport, McpServerTransport::Stdio)
-            || !matches!(
-                self.stdio_execution,
-                McpStdioExecution::ManagedPackage { .. }
-            )
-        {
-            anyhow::bail!("one-shot MCP calls require a managed stdio package");
-        }
-
-        let config = haven_common::config::McpServerConfig {
-            name: self.name.clone(),
-            transport: self.transport.clone(),
-            stdio_execution: self.stdio_execution.clone(),
-            command: self.command.clone(),
-            args: self.args.clone(),
-            env: self.env.clone(),
-            cwd: self.cwd.clone(),
-            url: self.url.clone(),
-            enabled: self.enabled(),
-            ..Default::default()
-        };
-        let mut client = Self::new_managed_with_launcher(
-            &config,
-            self.max_binary_base64_bytes,
-            self.max_sse_buffer,
-            self.stdio_process_authorization.clone(),
-            self.stdio_process_launcher.clone(),
-        );
-        client.stdio_launch_spec = client
-            .stdio_launch_spec
-            .clone()
-            .with_workspace_input(workspace_input);
-        client.rate_limiter = self.rate_limiter.clone();
-        Ok(client)
-    }
-
     pub async fn shutdown(&self) -> anyhow::Result<()> {
         self.shutdown_inner(true).await
     }
 
     async fn shutdown_inner(&self, stop_notification_listener: bool) -> anyhow::Result<()> {
-        self.shutdown_inner_with_output_review(stop_notification_listener)
-            .await
-            .map(|_| ())
-    }
-
-    async fn shutdown_inner_with_output_review(
-        &self,
-        stop_notification_listener: bool,
-    ) -> anyhow::Result<Option<haven_platform::SandboxOutputReview>> {
         // Cancel the client's own token first so any in-flight `call_tool`
         // (which selects on this token) aborts and releases the `inner` lock.
         self.cancel_token.lock().await.cancel();
@@ -1737,7 +1249,6 @@ impl McpClient {
 
         let mut guard = self.inner.lock().await;
         let mut stop_failure = None;
-        let mut output_review = None;
         if matches!(guard.as_ref(), Some(McpClientInner::Stdio(_)))
             && let Some(McpClientInner::Stdio(stdio)) = guard.as_mut()
         {
@@ -1791,9 +1302,6 @@ impl McpClient {
                     }
                 }
             }
-            if stop_failure.is_none() {
-                output_review = stdio.take_output_review().await;
-            }
         }
         if let Some(error) = stop_failure {
             *self.status.lock().await = McpClientStatus::Offline {
@@ -1808,7 +1316,7 @@ impl McpClient {
         self.resource_read_cache.lock().await.clear();
         *self.prompt_list_cache.lock().await = None;
         *self.status.lock().await = McpClientStatus::Disconnected;
-        Ok(output_review)
+        Ok(())
     }
 
     async fn list_tool_snapshot(&self) -> anyhow::Result<McpToolListSnapshot> {
@@ -2486,33 +1994,6 @@ mod stdio_poison_tests {
         loop {
             thread::sleep(Duration::from_secs(1));
         }
-    }
-}
-
-#[cfg(test)]
-mod managed_package_launcher_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn local_launcher_refuses_managed_package_before_host_spawn() {
-        let config = haven_common::config::McpServerConfig {
-            name: "managed-package-test".into(),
-            stdio_execution: McpStdioExecution::ManagedPackage {
-                package_id: "calendar".into(),
-            },
-            command: "host-command-must-not-run".into(),
-            ..Default::default()
-        };
-        let client = McpClient::new(&config, 1024, 1024);
-        let (notification_tx, _notification_rx) =
-            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
-
-        let error = match client.spawn_stdio(notification_tx).await {
-            Ok(_) => panic!("the local launcher must refuse a managed package"),
-            Err(error) => error.to_string(),
-        };
-        assert!(error.contains("brokered package launcher is unavailable"));
-        assert!(!error.contains("host-command-must-not-run"));
     }
 }
 

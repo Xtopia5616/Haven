@@ -14,7 +14,7 @@ Windows `ProcessContainment` 已用 Job Object 在取消、断开和应用退出
 - Job Object 在子进程第一条指令执行前完成配置和分配；达到上限后，进程树内创建的后续进程会失败。无法创建或配置 Job Object 时，启动仍 fail closed。
 - 该上限应用于所有通过 `ProcessContainment` 启动的子进程，含 Shell 前台/后台、Skill runner/bootstrap 与 MCP stdio。
 - 固定 256 为 Cargo/常见构建工具和多进程 MCP server 留出运行空间，同时为单次受管调用设置可解释的进程数上限；设置页完整权限说明此限制。
-- 此限制只界定受管 Job 内同时活动的进程数，不限制 CPU、内存、文件系统或网络访问，也不提供 AppContainer 隔离。对进程外系统 broker 的请求不由此限额约束。
+- 此限制只界定受管 Job 内同时活动的进程数，不限制 CPU、内存、文件系统或网络访问。
 
 ## 替代方案
 

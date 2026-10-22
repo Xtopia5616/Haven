@@ -1,5 +1,3 @@
-#[cfg(test)]
-use super::contract::SecurityBoundarySnapshot;
 use super::contract::{
     AuthorizationCheck, AuthorizationDecision, AuthorizationExecutionBinding,
     AuthorizationExecutionProof, AuthorizationPort, AuthorizationReasonCode, AuthorizationRequest,
@@ -254,14 +252,6 @@ impl AuthorizationEngine {
 
     pub(crate) async fn sandbox_mode(&self) -> SandboxMode {
         self.config.read().await.sandbox_mode
-    }
-
-    pub async fn security_boundary_snapshot(&self) -> super::SecurityBoundarySnapshot {
-        let config = self.config.read().await;
-        super::SecurityBoundarySnapshot {
-            sandbox_mode: config.sandbox_mode,
-            network_policy: config.network_policy,
-        }
     }
 
     pub async fn execution_workspace_snapshot(&self) -> ExecutionWorkspaceSnapshot {
@@ -961,10 +951,6 @@ impl AuthorizationPort for AuthorizationEngine {
             .await;
     }
 
-    async fn security_boundary_snapshot(&self) -> super::SecurityBoundarySnapshot {
-        AuthorizationEngine::security_boundary_snapshot(self).await
-    }
-
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {
         AuthorizationEngine::authorize(self, request).await
     }
@@ -1139,8 +1125,7 @@ fn workspace_host_process_block(
 ) -> Option<String> {
     // WorkspaceWrite protects the host filesystem from local child
     // processes. In-process network adapters remain subject to the separate
-    // network policy, while an isolated process is allowed only when its
-    // backend supplies the OS-enforced execution-workspace boundary.
+    // network policy.
     (matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
         && matches!(
             operation.execution_boundary,
@@ -1395,26 +1380,6 @@ mod tests {
 
     type ConfirmationResult = AuthorizationDecision;
 
-    #[tokio::test]
-    async fn security_boundary_snapshot_reports_the_active_policy() {
-        let engine = AuthorizationEngine::new();
-        engine
-            .set_boundaries(
-                SandboxMode::FullAccess,
-                Vec::new(),
-                NetworkPolicy::Restricted,
-            )
-            .await;
-
-        assert_eq!(
-            engine.security_boundary_snapshot().await,
-            SecurityBoundarySnapshot {
-                sandbox_mode: SandboxMode::FullAccess,
-                network_policy: NetworkPolicy::Restricted,
-            }
-        );
-    }
-
     fn fixture_policy(tool_name: &str, params: &Value, risk_level: RiskLevel) -> OperationPolicy {
         let capability_key = permission_key(tool_name, params);
         let capability_key = if tool_name.starts_with("mcp::") || tool_name.starts_with("skill::") {
@@ -1436,7 +1401,7 @@ mod tests {
         };
         let execution_boundary = if tool_name == "shell" {
             if cfg!(windows) {
-                crate::ExecutionBoundary::WorkspaceIsolated
+                crate::ExecutionBoundary::HostProcess
             } else {
                 crate::ExecutionBoundary::HostProcess
             }
@@ -1986,9 +1951,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mcp_stdio_process_authorization_is_bound_to_execution_profile_and_network() {
-        use haven_common::config::McpStdioExecution;
-
+    async fn mcp_stdio_process_authorization_is_bound_to_network_policy() {
         let engine = Arc::new(AuthorizationEngine::new());
         engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
@@ -1998,7 +1961,7 @@ mod tests {
             .await
             .expect("explicitly open network policy permits an MCP stdio snapshot");
         let permit = authorization
-            .acquire(&McpStdioExecution::HostProcess)
+            .acquire()
             .await
             .expect("the current open policy permits process creation");
         drop(permit);
@@ -2008,10 +1971,7 @@ mod tests {
             .await;
 
         assert!(
-            authorization
-                .acquire(&McpStdioExecution::HostProcess)
-                .await
-                .is_err(),
+            authorization.acquire().await.is_err(),
             "a captured stdio start authorization must be rejected after policy revision changes"
         );
         assert!(
@@ -2033,10 +1993,7 @@ mod tests {
             .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
             .await;
         assert!(
-            authorization
-                .acquire(&McpStdioExecution::HostProcess)
-                .await
-                .is_err(),
+            authorization.acquire().await.is_err(),
             "changing to WorkspaceWrite must revoke an existing stdio start permit"
         );
         let workspace_authorization = engine
@@ -2044,19 +2001,9 @@ mod tests {
             .await
             .expect("Open network permits a scoped MCP authorization snapshot");
         assert!(
-            workspace_authorization
-                .acquire(&McpStdioExecution::HostProcess)
-                .await
-                .is_err(),
+            workspace_authorization.acquire().await.is_err(),
             "WorkspaceWrite must reject host-process MCP stdio"
         );
-        let permit = workspace_authorization
-            .acquire(&McpStdioExecution::ManagedPackage {
-                package_id: "filesystem".into(),
-            })
-            .await
-            .expect("WorkspaceWrite may start a fixed managed package");
-        drop(permit);
     }
 
     #[tokio::test]
@@ -2073,19 +2020,13 @@ mod tests {
 
         engine.set_permission_mode(PermissionMode::Plan).await;
         assert!(
-            authorization
-                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
-                .await
-                .is_ok(),
+            authorization.acquire().await.is_ok(),
             "permission mode changes affect tool calls, not the lifetime of an already-open stdio server"
         );
 
         engine.set_tool_settings(HashMap::new()).await;
         assert!(
-            authorization
-                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
-                .await
-                .is_ok(),
+            authorization.acquire().await.is_ok(),
             "tool settings changes must not revoke an unrelated server process"
         );
 
@@ -2104,10 +2045,7 @@ mod tests {
                 .await
         );
         assert!(
-            authorization
-                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
-                .await
-                .is_ok(),
+            authorization.acquire().await.is_ok(),
             "revoking a session-scoped shell grant must not disconnect MCP servers"
         );
 
@@ -2119,10 +2057,7 @@ mod tests {
         };
         engine.apply_security(&security).await.unwrap();
         assert!(
-            authorization
-                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
-                .await
-                .is_ok(),
+            authorization.acquire().await.is_ok(),
             "applying unrelated security settings without changing process boundaries must preserve the server generation"
         );
         assert!(
@@ -2143,10 +2078,7 @@ mod tests {
             .expect("network boundary changes must notify the MCP process owner")
             .expect("MCP process boundary signal remains available");
         assert!(
-            authorization
-                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
-                .await
-                .is_err(),
+            authorization.acquire().await.is_err(),
             "a network boundary change must still invalidate the captured server authorization"
         );
 
@@ -2163,10 +2095,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            workspace_authorization
-                .acquire(&haven_common::config::McpStdioExecution::HostProcess)
-                .await
-                .is_err(),
+            workspace_authorization.acquire().await.is_err(),
             "workspace changes must continue to revoke captured MCP server generations"
         );
     }
@@ -2777,21 +2706,15 @@ mod tests {
             NetworkAccess::Opaque,
         );
         #[cfg(windows)]
-        let policy = policy.with_execution_boundary(crate::ExecutionBoundary::WorkspaceIsolated);
+        let policy = policy.with_execution_boundary(crate::ExecutionBoundary::HostProcess);
         let skill_policy =
             OperationPolicy::external(capability_scope!("skill__echo"), RiskLevel::High);
         let http_mcp_policy =
             OperationPolicy::external(capability_scope!("mcp__remote__search"), RiskLevel::High)
                 .with_execution_boundary(crate::ExecutionBoundary::InProcess);
-        #[cfg(not(windows))]
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
             ConfirmationResult::Blocked { .. }
-        ));
-        #[cfg(windows)]
-        assert!(matches!(
-            authorize(&gateway, None, "shell", &json!({}), &policy).await,
-            ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
             authorize(&gateway, None, "skill__echo", &json!({}), &skill_policy).await,
@@ -2811,15 +2734,9 @@ mod tests {
         gateway
             .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Ask)
             .await;
-        #[cfg(not(windows))]
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
             ConfirmationResult::Blocked { .. }
-        ));
-        #[cfg(windows)]
-        assert!(matches!(
-            authorize(&gateway, None, "shell", &json!({}), &policy).await,
-            ConfirmationResult::RequiresConfirmation { .. }
         ));
         gateway
             .set_boundaries(
@@ -3795,7 +3712,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_autonomous_mode_skips_prompt_except_critical() {
+    async fn autonomous_mode_still_blocks_workspace_host_processes() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         let security = SecurityConfig {
             permission_mode: PermissionMode::Autonomous,
@@ -3806,7 +3723,7 @@ mod tests {
             .expect("valid security workspace applies");
         assert!(matches!(
             gw.check(None, "shell", &json!({}), RiskLevel::High).await,
-            ConfirmationResult::RequiresConfirmation { .. }
+            ConfirmationResult::Blocked { .. }
         ));
         assert!(matches!(
             gw.check(

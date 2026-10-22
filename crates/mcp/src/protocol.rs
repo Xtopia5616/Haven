@@ -1,6 +1,5 @@
-use haven_common::config::{McpExposureConfig, McpStdioExecution};
+use haven_common::config::McpExposureConfig;
 use haven_common::mcp::McpServerTransport;
-use haven_platform::SandboxOutputReview;
 use serde_json::Value;
 use std::error::Error;
 use std::fmt;
@@ -276,26 +275,6 @@ pub struct McpCallOutput {
     pub error: Option<String>,
 }
 
-/// Result of an isolated managed MCP call and its private, bounded workspace
-/// review. The review remains opaque to the MCP protocol client.
-pub struct McpManagedCallOutput {
-    pub call_output: McpCallOutput,
-    pub sandbox_output_review: Option<SandboxOutputReview>,
-}
-
-impl fmt::Debug for McpManagedCallOutput {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("McpManagedCallOutput")
-            .field("call_output", &self.call_output)
-            .field(
-                "sandbox_output_review_available",
-                &self.sandbox_output_review.is_some(),
-            )
-            .finish()
-    }
-}
-
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 helpers
 // ---------------------------------------------------------------------------
@@ -555,7 +534,6 @@ pub enum McpClientStatus {
 pub struct McpServerSnapshot {
     pub name: String,
     pub transport: McpServerTransport,
-    pub stdio_execution: McpStdioExecution,
     pub command: String,
     pub args: Vec<String>,
     pub env: Vec<String>,

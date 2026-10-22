@@ -741,49 +741,13 @@ mod tests {
     use crate::app_state::AppState;
     use crate::commands::confirmation::{
         AppConfirmationResolution, UiConfirmationAction, UiConfirmationPending,
-        accept_ui_confirmation, arbitrate_app_confirmation, validate_app_confirmation_decision,
+        accept_ui_confirmation, arbitrate_app_confirmation,
     };
     use crate::commands::{RuntimeSessionDto, RuntimeSessionListResponse};
     use haven_agent::{InteractionOwner, InteractionRequest, SessionInfo, StepInfo};
     use haven_common::lifecycle::SessionStatus;
     use haven_common::types::{PermissionEffect, PermissionScope, PermissionTarget, RiskLevel};
     use haven_tools::ConfirmationReceipt;
-
-    #[test]
-    fn sandbox_promotion_confirmation_is_once_and_operation_scoped() {
-        let action = UiConfirmationAction::SandboxOutputPromotion;
-        assert!(
-            validate_app_confirmation_decision(
-                &action,
-                PermissionScope::Once,
-                PermissionTarget::Operation,
-            )
-            .is_ok()
-        );
-        for scope in [PermissionScope::Session, PermissionScope::Always] {
-            assert!(
-                validate_app_confirmation_decision(&action, scope, PermissionTarget::Operation,)
-                    .is_err()
-            );
-        }
-        for target in [PermissionTarget::Group, PermissionTarget::Tool] {
-            assert!(
-                validate_app_confirmation_decision(&action, PermissionScope::Once, target,)
-                    .is_err()
-            );
-        }
-        assert!(
-            validate_app_confirmation_decision(
-                &UiConfirmationAction::Skill {
-                    name: "test".into(),
-                    params: serde_json::Value::Null,
-                },
-                PermissionScope::Always,
-                PermissionTarget::Tool,
-            )
-            .is_ok()
-        );
-    }
 
     async fn test_state_and_ui_confirmation(
         expires_at: u64,

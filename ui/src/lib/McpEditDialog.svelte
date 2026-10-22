@@ -4,7 +4,6 @@
 	import MaterialField from '$lib/MaterialField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import { isValidMcpServerName } from '$lib/mcpServerName.ts';
-	import { isValidMcpPackageId } from '$lib/mcpPackageId.ts';
 	import { withStringValue } from '$lib/typedCallbacks.ts';
 	import type { McpServerTransportInput } from '$lib/contracts/generatedCommands.ts';
 	import type { McpServerConfigInput } from '$lib/contracts/tools.ts';
@@ -17,7 +16,6 @@
 	interface EditorConfig extends McpServerConfigInput {
 		name: string;
 		transport: McpServerTransportInput;
-		stdio_execution: NonNullable<McpServerConfigInput['stdio_execution']>;
 		command: string;
 		cwd: string | null;
 		args: string[];
@@ -39,8 +37,6 @@
 	let isEdit = $derived(server !== null);
 	let name = $state('');
 	let transport = $state<McpServerTransportInput>('stdio');
-	let executionMode = $state<'host_process' | 'managed_package'>('host_process');
-	let packageId = $state('');
 	let command = $state('');
 	let cwd = $state('');
 	let argsText = $state('');
@@ -51,7 +47,6 @@
 	let fieldErrors = $state({
 		name: '',
 		command: '',
-		packageId: '',
 		url: '',
 		env: '',
 		exposure: '',
@@ -61,10 +56,6 @@
 	const TRANSPORT_OPTIONS = [
 		{ value: 'stdio', label: 'Stdio (local process)' },
 		{ value: 'http', label: 'Streamable HTTP' },
-	];
-	const EXECUTION_OPTIONS = [
-		{ value: 'host_process', label: 'Host process' },
-		{ value: 'managed_package', label: 'Managed Windows container package' },
 	];
 	const EXPOSURE_OPTIONS = [
 		{ value: 'direct', label: 'Legacy · direct — send schemas with every request' },
@@ -81,19 +72,9 @@
 		return transport === 'http';
 	}
 
-	function isManagedPackage() {
-		return !isHttp() && executionMode === 'managed_package';
-	}
-
 	$effect(() => {
 		name = server?.name || '';
 		transport = server?.transport === 'http' ? 'http' : 'stdio';
-		executionMode =
-			server?.stdioExecution?.mode === 'managed_package' ? 'managed_package' : 'host_process';
-		packageId =
-			server?.stdioExecution?.mode === 'managed_package'
-				? server.stdioExecution.package_id
-				: '';
 		command = server?.command || '';
 		cwd = server?.cwd || '';
 		argsText = (server?.args || []).join('\n');
@@ -103,11 +84,11 @@
 		exposureOverridesText = Object.entries(server?.exposure.tools || {})
 			.map(([pattern, mode]) => `${pattern}=${mode}`)
 			.join('\n');
-		fieldErrors = { name: '', command: '', packageId: '', url: '', env: '', exposure: '' };
+		fieldErrors = { name: '', command: '', url: '', env: '', exposure: '' };
 	});
 
 	function validate() {
-		const errors = { name: '', command: '', packageId: '', url: '', env: '', exposure: '' };
+		const errors = { name: '', command: '', url: '', env: '', exposure: '' };
 		const trimmedName = name.trim();
 		if (!trimmedName) {
 			errors.name = 'Name is required';
@@ -123,16 +104,11 @@
 			} else if (!/^https?:\/\/.+/i.test(url.trim())) {
 				errors.url = 'URL must start with http:// or https://';
 			}
-		} else if (isManagedPackage()) {
-			if (!isValidMcpPackageId(packageId.trim())) {
-				errors.packageId =
-					'Use 1-64 lowercase letters, digits, or hyphens; start with a letter';
-			}
 		} else if (!command.trim()) {
 			errors.command = 'Command is required';
 		}
 
-		const envLines = (isManagedPackage() ? '' : envText)
+		const envLines = envText
 			.split('\n')
 			.map((l) => l.trim())
 			.filter(Boolean);
@@ -198,7 +174,6 @@
 		if (
 			errors.name ||
 			errors.command ||
-			errors.packageId ||
 			errors.url ||
 			errors.env ||
 			errors.exposure
@@ -208,23 +183,16 @@
 		const config = {
 			name: name.trim(),
 			transport,
-			stdio_execution: isManagedPackage()
-				? { mode: 'managed_package' as const, package_id: packageId.trim() }
-				: { mode: 'host_process' as const },
-			command: isManagedPackage() ? '' : command.trim(),
-			cwd: isManagedPackage() ? null : cwd.trim() || null,
-			args: isManagedPackage()
-				? []
-				: argsText
-						.split('\n')
-						.map((l) => l.trim())
-						.filter(Boolean),
-			env: isManagedPackage()
-				? []
-				: envText
-						.split('\n')
-						.map((l) => l.trim())
-						.filter(Boolean),
+			command: command.trim(),
+			cwd: cwd.trim() || null,
+			args: argsText
+				.split('\n')
+				.map((l) => l.trim())
+				.filter(Boolean),
+			env: envText
+				.split('\n')
+				.map((l) => l.trim())
+				.filter(Boolean),
 			url: isHttp() ? url.trim() : '',
 			exposure: { default: defaultExposure, tools: parseExposureOverrides() },
 			// No enable toggle in the dialog: new servers are added enabled,
@@ -254,7 +222,6 @@
 	function handleTransportChange(value: string) {
 		if (value === 'stdio' || value === 'http') {
 			transport = value;
-			if (value === 'http') executionMode = 'host_process';
 		}
 	}
 </script>
@@ -293,23 +260,6 @@
 				/>
 			{/snippet}
 		</MaterialField>
-		{#if !isHttp()}
-			<MaterialField
-				label="Execution profile"
-				hint="Managed packages resolve by administrator-pinned package ID, never as a command. They remain disconnected until brokered MCP startup is wired."
-			>
-				{#snippet children()}
-					<MaterialSelect
-						value={executionMode}
-						options={EXECUTION_OPTIONS}
-						onChange={withStringValue((value) => {
-							if (value === 'host_process' || value === 'managed_package')
-								executionMode = value;
-						})}
-					/>
-				{/snippet}
-			</MaterialField>
-		{/if}
 		<MaterialField
 			label="Assistant exposure"
 			hint="Legacy uses ordinary tool calls. Model-only tools are callable only as top-level model calls, never as nested CodeMode calls. CodeMode composes only listed tools in a bounded script; each call is authorized separately. Calls requiring confirmation must use Legacy. Hidden tools cannot be called."
@@ -380,25 +330,6 @@
 						placeholder="AUTHORIZATION=Bearer abc123"
 						autocomplete="off"
 						class:input-error={fieldErrors.env}></textarea>
-				{/snippet}
-			</MaterialField>
-		{:else if isManagedPackage()}
-			<MaterialField
-				label="Managed package ID"
-				forId="mcp-package-id"
-				hint="Must match a package ID in the administrator-managed container image catalog."
-				error={fieldErrors.packageId}
-			>
-				{#snippet children()}
-					<input
-						id="mcp-package-id"
-						type="text"
-						class="md-input"
-						bind:value={packageId}
-						placeholder="calendar"
-						autocomplete="off"
-						class:input-error={fieldErrors.packageId}
-					/>
 				{/snippet}
 			</MaterialField>
 		{:else}

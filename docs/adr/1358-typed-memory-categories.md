@@ -46,8 +46,6 @@ Memory 已保存 SPO facts 和 episodic items，但 fact 只有 `source=user|inf
 `haven-tools` 926 passed / 2 ignored、`haven-app-binary` 266 passed）、UI 类型检查、
 记忆边界 UI 测试（17 passed）、生产构建、IPC contract/event 检查和 ADR 索引检查均通过。
 
-全 workspace `cargo test --workspace --locked` 在未修改的
-`haven-platform::windows_container::hcs_process::tests::quota_probe_checks_bounded_catalog_package_trees_with_fixed_module_roots`
-失败：HCS guest command line 超过 Windows 长度上限。UI 全量测试为 1391 passed、4 failed；
+UI 全量测试为 1391 passed、4 failed；
 失败都在未修改的 `SessionHeader.test.ts` / `SessionToolbar.test.ts`，其断言与当前按钮
 样式和工作区选择器的可访问名称不一致。记忆相关定向测试全部通过。

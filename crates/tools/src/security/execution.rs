@@ -138,10 +138,6 @@ pub(crate) fn execution_policy_denied(reason: String) -> anyhow::Error {
 }
 
 impl ExecutionPolicyAuthorization {
-    pub(crate) fn policy_stamp(&self) -> (u64, u64) {
-        (self.policy_revision, self.execution_workspace_generation)
-    }
-
     pub(crate) fn execution_boundary(&self) -> crate::ExecutionBoundary {
         self.execution_boundary
     }
@@ -307,10 +303,7 @@ impl ExecutionPolicyAuthorization {
 }
 
 impl McpStdioProcessStartAuthorization {
-    pub(super) async fn acquire(
-        &self,
-        execution: &haven_common::config::McpStdioExecution,
-    ) -> Result<ExecutionPolicyPermit, String> {
+    pub(super) async fn acquire(&self) -> Result<ExecutionPolicyPermit, String> {
         let config = Arc::clone(&self.authorization.config).read_owned().await;
         if config.process_boundary_revision != self.process_boundary_revision
             || !Arc::ptr_eq(
@@ -323,13 +316,10 @@ impl McpStdioProcessStartAuthorization {
         if config.execution_workspace.generation() != self.execution_workspace_generation {
             return Err("execution workspace changed before the MCP process start".into());
         }
-        if config.sandbox_mode == SandboxMode::WorkspaceWrite
-            && matches!(
-                execution,
-                haven_common::config::McpStdioExecution::HostProcess
-            )
-        {
-            return Err("host-process MCP stdio is blocked by the workspace-write sandbox".into());
+        if config.sandbox_mode == SandboxMode::WorkspaceWrite {
+            return Err(
+                "MCP stdio child processes are blocked by the workspace-write sandbox".into(),
+            );
         }
         if config.network_policy != NetworkPolicy::Open {
             return Err("MCP stdio requires the network policy to be Open".into());
@@ -339,15 +329,9 @@ impl McpStdioProcessStartAuthorization {
 }
 
 impl haven_mcp::McpStdioProcessStartAuthorization for McpStdioProcessStartAuthorization {
-    fn acquire_process_start_permit(
-        &self,
-        execution: haven_common::config::McpStdioExecution,
-    ) -> haven_mcp::McpStdioProcessStartPermitFuture<'_> {
+    fn acquire_process_start_permit(&self) -> haven_mcp::McpStdioProcessStartPermitFuture<'_> {
         Box::pin(async move {
-            let permit = self
-                .acquire(&execution)
-                .await
-                .map_err(execution_policy_denied)?;
+            let permit = self.acquire().await.map_err(execution_policy_denied)?;
             Ok(Box::new(permit) as Box<dyn haven_mcp::McpStdioProcessStartPermit>)
         })
     }

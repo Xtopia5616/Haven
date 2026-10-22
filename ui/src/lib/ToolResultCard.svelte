@@ -32,7 +32,7 @@
 	import ToolShellResult from '$lib/ToolShellResult.svelte';
 	import ToolSkillResult from '$lib/ToolSkillResult.svelte';
 	import ToolMcpResult from '$lib/ToolMcpResult.svelte';
-	import ToolNestedReviewResult from '$lib/ToolNestedReviewResult.svelte';
+	import ToolNestedResult from '$lib/ToolNestedResult.svelte';
 
 	type TerminalToolRunStatus = Extract<ToolRunStatus, 'completed' | 'failed' | 'cancelled'>;
 
@@ -43,7 +43,6 @@
 	}
 
 	interface Props {
-		sessionId?: string;
 		type?: 'tool' | 'ask';
 		embedded?: boolean;
 		className?: string;
@@ -75,7 +74,6 @@
 	}
 
 	let {
-		sessionId,
 		type = 'tool',
 		embedded = false,
 		className = '',
@@ -590,8 +588,6 @@
 							{data}
 							{shellText}
 							{liveStreaming}
-							sessionId={sessionId ?? null}
-							sourceStepId={messageId}
 							failed={failedWithoutOutput}
 						/>
 					{:else if toolName.startsWith('skill__')}
@@ -600,8 +596,6 @@
 							{rawText}
 							{kind}
 							{liveStreaming}
-							sessionId={sessionId ?? null}
-							sourceStepId={messageId}
 							failed={failedWithoutOutput}
 						/>
 					{:else if toolName.startsWith('mcp__')}
@@ -610,18 +604,14 @@
 							{rawText}
 							{kind}
 							{liveStreaming}
-							sessionId={sessionId ?? null}
-							sourceStepId={result?.sandboxOutputReviewStepIds?.[0] ?? messageId}
 							failed={failedWithoutOutput}
 						/>
 					{:else if toolName === 'codemode_run'}
-						<ToolNestedReviewResult
+						<ToolNestedResult
 							{data}
 							{rawText}
 							{kind}
 							{liveStreaming}
-							sessionId={sessionId ?? null}
-							reviewStepIds={result?.sandboxOutputReviewStepIds ?? []}
 							failed={failedWithoutOutput}
 						/>
 					{:else if failedWithoutOutput}

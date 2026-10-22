@@ -28,13 +28,6 @@ pub(crate) struct ShellTool {
     pub default_shell: String,
     /// Shared backend root used when the model omits `cwd`.
     pub(crate) execution_workspace: ExecutionWorkspace,
-    /// Pending output review owner for Windows WorkspaceWrite executions.
-    #[cfg(windows)]
-    pub(crate) sandbox_output_reviews: crate::SandboxOutputReviewOwner,
-    /// Quota-gated broker port for Windows WorkspaceWrite executions.
-    #[cfg(windows)]
-    pub(crate) windows_container_execution:
-        Arc<dyn haven_platform::windows_container::execution::WindowsContainerExecutionPort>,
     /// Isolated output-log root for shell tests.
     #[cfg(test)]
     pub(crate) test_output_log_root: Option<PathBuf>,
@@ -50,11 +43,6 @@ impl Default for ShellTool {
             #[cfg(not(windows))]
             default_shell: "sh".into(),
             execution_workspace: ExecutionWorkspace::discover(),
-            #[cfg(windows)]
-            sandbox_output_reviews: crate::SandboxOutputReviewOwner::default(),
-            #[cfg(windows)]
-            windows_container_execution:
-                haven_platform::windows_container::execution::new_brokered_execution_port(),
             #[cfg(test)]
             test_output_log_root: None,
         }
@@ -119,257 +107,7 @@ impl ShellTool {
         }
     }
 
-    #[cfg(windows)]
-    #[allow(clippy::too_many_arguments)]
-    async fn run_workspace_write_container(
-        &self,
-        command: &str,
-        shell_name: &str,
-        cwd: Option<&str>,
-        silent: bool,
-        session_id: Option<&str>,
-        source_step_id: Option<&str>,
-        context: &crate::ToolExecutionContext,
-        cancel: CancellationToken,
-        max_chars: usize,
-    ) -> anyhow::Result<ToolResult> {
-        use crate::SandboxOutputReviewPort;
-        use haven_platform::windows_container::execution::{
-            WORKSPACE_WRITE_STORAGE_QUOTA_BYTES, WindowsContainerExecutionLimits,
-            WindowsContainerExecutionRequest, WindowsContainerOutputStream, WindowsContainerShell,
-            WindowsContainerWorkspaceInput,
-        };
-        use std::io;
-        use std::time::Duration;
-
-        const REVIEW_CHARGE_BYTES: u64 = 384 * 1024 * 1024;
-        const WORKSPACE_BYTES: u64 = 128 * 1024 * 1024;
-        const WORKSPACE_FILE_BYTES: u64 = 64 * 1024 * 1024;
-        const MAX_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
-
-        let authorization = context
-            .clone_execution_authorization()
-            .ok_or_else(|| anyhow::anyhow!("workspace-write Shell has no live authorization"))?;
-        let (policy_revision, workspace_generation) = authorization.policy_stamp();
-        let directory = context
-            .execution_workspace
-            .as_ref()
-            .and_then(ExecutionWorkspace::directory)
-            .ok_or_else(|| {
-                crate::security::execution_policy_denied(
-                    "workspace-write Shell has no authorized execution workspace".into(),
-                )
-            })?;
-        let working_directory = workspace_relative_cwd(&directory, cwd)?;
-        let shell = match shell_name.to_ascii_lowercase().as_str() {
-            "cmd" => WindowsContainerShell::Cmd,
-            "powershell" => WindowsContainerShell::PowerShell,
-            _ => {
-                return Err(crate::security::execution_policy_denied(
-                    "workspace-write Shell supports only cmd and powershell in the guest".into(),
-                ));
-            }
-        };
-
-        let copy_limits = haven_platform::filesystem::DirectoryTreeCopyLimits::new(
-            10_000,
-            32,
-            WORKSPACE_FILE_BYTES,
-            WORKSPACE_BYTES,
-        )?;
-        let diff_limits = haven_platform::filesystem::DirectoryTreeDiffLimits::new(
-            copy_limits,
-            4_096,
-            WORKSPACE_FILE_BYTES,
-            WORKSPACE_BYTES,
-        )?;
-        let output_bytes = collect_byte_cap(max_chars).clamp(8 * 1024, MAX_CAPTURE_BYTES);
-        let limits = WindowsContainerExecutionLimits::new(
-            WORKSPACE_WRITE_STORAGE_QUOTA_BYTES,
-            Duration::from_secs(300),
-            output_bytes,
-            output_bytes,
-            copy_limits,
-            diff_limits,
-        )?;
-        let request = WindowsContainerExecutionRequest::new(
-            shell,
-            command,
-            working_directory,
-            workspace_generation,
-            policy_revision,
-            limits,
-        )?;
-
-        let session_id = session_id.ok_or_else(|| {
-            crate::security::execution_policy_denied(
-                "workspace-write Shell requires a canonical session id".into(),
-            )
-        })?;
-        let source_step_id = source_step_id.ok_or_else(|| {
-            crate::security::execution_policy_denied(
-                "workspace-write Shell requires a canonical source step id".into(),
-            )
-        })?;
-        let reservation = self
-            .sandbox_output_reviews
-            .reserve(session_id, source_step_id, REVIEW_CHARGE_BYTES)
-            .await
-            .map_err(anyhow::Error::msg)?;
-
-        if cancel.is_cancelled() {
-            return Ok(ToolResult::cancelled("shell command cancelled"));
-        }
-
-        let live = !silent;
-        let (tail, running) = if live {
-            let tail = self.live_outputs.new_tail().await;
-            let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
-            let emit_interval = self.live_outputs.emit_interval().await;
-            self.live_outputs.spawn_tail_emitter(
-                session_id.to_owned(),
-                source_step_id.to_owned(),
-                tail.clone(),
-                Arc::clone(&running),
-                emit_interval,
-            );
-            (Some(tail), Some(running))
-        } else {
-            (None, None)
-        };
-
-        let port = Arc::clone(&self.windows_container_execution);
-        let workspace = WindowsContainerWorkspaceInput::new(directory);
-        let execution_cancel = cancel.child_token();
-        let worker_cancel = execution_cancel.clone();
-        let runtime = tokio::runtime::Handle::current();
-        let start_authorization = authorization.clone();
-        let live_tail = tail;
-        let spawn_permit = Arc::new(std::sync::Mutex::new(None));
-        let permit_for_start = Arc::clone(&spawn_permit);
-        let mut before_shell_start = move || {
-            if permit_for_start
-                .lock()
-                .map_err(|_| io::Error::other("Shell start permit is unavailable"))?
-                .is_some()
-            {
-                return Err(io::Error::other("Shell start permit was already acquired"));
-            }
-            let permit = runtime
-                .block_on(start_authorization.acquire())
-                .map_err(|reason| io::Error::new(io::ErrorKind::PermissionDenied, reason))?;
-            let mut slot = permit_for_start
-                .lock()
-                .map_err(|_| io::Error::other("Shell start permit is unavailable"))?;
-            if slot.is_some() {
-                return Err(io::Error::other("Shell start permit was already acquired"));
-            }
-            *slot = Some(permit);
-            Ok(())
-        };
-        let permit_for_started = Arc::clone(&spawn_permit);
-        let mut shell_started = move || {
-            if let Ok(mut permit) = permit_for_started.lock() {
-                drop(permit.take());
-            }
-        };
-        let mut is_cancelled = move || worker_cancel.is_cancelled();
-        let mut task = tokio::task::spawn_blocking(move || {
-            let mut on_output = move |_stream: WindowsContainerOutputStream, bytes: &[u8]| {
-                if let Some(tail) = &live_tail {
-                    tail.append_bytes(bytes);
-                }
-            };
-            let mut callbacks =
-                haven_platform::windows_container::execution::WindowsContainerExecutionCallbacks::new(
-                &mut before_shell_start,
-                &mut shell_started,
-                &mut is_cancelled,
-                &mut on_output,
-            );
-            port.execute(&request, &workspace, &mut callbacks)
-        });
-
-        let revoke_authorization = authorization.clone();
-        let policy_revoked = revoke_authorization.wait_for_policy_revocation();
-        tokio::pin!(policy_revoked);
-        let completed = tokio::select! {
-            result = &mut task => Some(result),
-            _ = cancel.cancelled() => {
-                execution_cancel.cancel();
-                let _ = task.await;
-                if let Some(running) = &running {
-                    running.store(false, std::sync::atomic::Ordering::Relaxed);
-                }
-                return Ok(ToolResult::cancelled("shell command cancelled"));
-            }
-            _ = &mut policy_revoked => {
-                execution_cancel.cancel();
-                let _ = task.await;
-                if let Some(running) = &running {
-                    running.store(false, std::sync::atomic::Ordering::Relaxed);
-                }
-                return Ok(ToolResult::cancelled("execution policy changed; shell command cancelled"));
-            }
-        };
-        if let Some(running) = &running {
-            running.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
-        let result = completed
-            .ok_or_else(|| anyhow::anyhow!("container Shell worker did not complete"))?
-            .map_err(|_| anyhow::anyhow!("container Shell worker failed"))?;
-        let result = result.map_err(|error| {
-            if error.kind() == io::ErrorKind::PermissionDenied {
-                crate::security::execution_policy_denied(error.to_string())
-            } else {
-                anyhow::anyhow!(haven_common::error::sanitize_error_text(&error.to_string()))
-            }
-        })?;
-        let stdout = haven_common::encoding::decode_lossy(result.stdout());
-        let stderr = haven_common::encoding::decode_lossy(result.stderr());
-        let exit_code = result.exit_code();
-        let truncated = result.stdout_truncated() || result.stderr_truncated();
-        let mut raw_combined = String::new();
-        if !stdout.is_empty() {
-            raw_combined.push_str(&stdout);
-        }
-        if !stderr.is_empty() {
-            if !raw_combined.is_empty() {
-                raw_combined.push('\n');
-            }
-            raw_combined.push_str(&stderr);
-        }
-        let combined = sanitize_shell_output(&raw_combined, shell_name);
-        let text = haven_common::encoding::truncate_output(&combined, max_chars).text;
-        reservation
-            .retain(result.into_output_review())
-            .map_err(anyhow::Error::msg)?;
-        let output =
-            serde_json::json!({"output": text, "shell": shell_name, "exit_code": exit_code});
-        if exit_code == 0 {
-            Ok(ToolResult::from_output(output, truncated))
-        } else {
-            let sanitized_stderr = sanitize_shell_output(&stderr, shell_name);
-            let err_source = if !sanitized_stderr.trim().is_empty() {
-                sanitized_stderr.as_str()
-            } else {
-                text.as_str()
-            };
-            let mut result = ToolResult::from_output(output, truncated);
-            result.success = false;
-            result.error = Some(format!(
-                "exit code {exit_code}:\n{}",
-                summarize_error(err_source, 2000)
-            ));
-            result.error_class = Some(crate::ToolErrorClass::Other);
-            result.retryability = crate::ToolRetryability::NotRetryable;
-            result.outcome = ToolExecutionOutcome::Failed;
-            Ok(result)
-        }
-    }
-
-    /// Entry ①: structured native interface (internal code calls — zero
-    /// serialization overhead). Entry ② deserializes JSON and delegates here.
+    /// Run a shell command through the normal host-process execution path.
     pub async fn run(
         &self,
         params: ShellParams,
@@ -427,33 +165,9 @@ impl ShellTool {
             ));
         }
         if sandbox_mode == haven_common::types::SandboxMode::WorkspaceWrite {
-            #[cfg(windows)]
-            {
-                let context = execution_context.ok_or_else(|| {
-                    crate::security::execution_policy_denied(
-                        "workspace-write Shell requires live policy authorization".into(),
-                    )
-                })?;
-                return self
-                    .run_workspace_write_container(
-                        &cmd,
-                        &shell_context.shell,
-                        params.cwd.as_deref(),
-                        silent,
-                        params.session_id.as_deref(),
-                        params.step_id.as_deref(),
-                        context,
-                        cancel,
-                        max_chars,
-                    )
-                    .await;
-            }
-            #[cfg(not(windows))]
-            {
-                return Err(crate::security::execution_policy_denied(
-                    "workspace-write Shell requires the Windows container backend".into(),
-                ));
-            }
+            return Err(crate::security::execution_policy_denied(
+                "Shell child processes are unavailable in Workspace Write mode".into(),
+            ));
         }
 
         if cancel.is_cancelled() {
@@ -677,11 +391,7 @@ impl Tool for ShellTool {
             ToolCatalogGroup::Shell,
             None,
         );
-        spec.policy.execution_boundary = if cfg!(windows) {
-            crate::ExecutionBoundary::WorkspaceIsolated
-        } else {
-            crate::ExecutionBoundary::HostProcess
-        };
+        spec.policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
         Some(spec)
     }
 
@@ -740,45 +450,6 @@ impl Tool for ShellTool {
         self.run_with_execution_context(params, cancel, Some(context))
             .await
     }
-}
-
-#[cfg(windows)]
-fn workspace_relative_cwd(
-    workspace: &haven_platform::filesystem::DirectoryCapability,
-    cwd: Option<&str>,
-) -> anyhow::Result<PathBuf> {
-    let Some(cwd) = cwd.filter(|value| !value.is_empty()) else {
-        return Ok(PathBuf::new());
-    };
-    let path = PathBuf::from(cwd);
-    if path.is_absolute() {
-        if same_absolute_path(&path, workspace.root()) {
-            return Ok(PathBuf::new());
-        }
-        return workspace.relative_path(&path).ok_or_else(|| {
-            anyhow::anyhow!("Shell working directory must stay inside the execution workspace")
-        });
-    }
-    let mut relative = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::Normal(part) => relative.push(part),
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir
-            | std::path::Component::RootDir
-            | std::path::Component::Prefix(_) => {
-                anyhow::bail!("Shell working directory must be workspace relative")
-            }
-        }
-    }
-    Ok(relative)
-}
-
-#[cfg(windows)]
-fn same_absolute_path(left: &std::path::Path, right: &std::path::Path) -> bool {
-    left.to_string_lossy()
-        .trim_end_matches(['\\', '/'])
-        .eq_ignore_ascii_case(right.to_string_lossy().trim_end_matches(['\\', '/']))
 }
 
 fn validate_shell_command(shell: &str, command: &str) -> anyhow::Result<()> {
@@ -933,12 +604,6 @@ mod tests {
     #[test]
     fn workspace_isolation_is_declared_by_the_shell_owner_not_its_name() {
         let policy = ShellTool::default().operation_policy(&json!({}));
-        #[cfg(windows)]
-        assert_eq!(
-            policy.execution_boundary,
-            crate::ExecutionBoundary::WorkspaceIsolated
-        );
-        #[cfg(not(windows))]
         assert_eq!(
             policy.execution_boundary,
             crate::ExecutionBoundary::HostProcess
@@ -983,32 +648,6 @@ mod tests {
         let selected =
             tool.resolve_shell_context(None, explicit.to_str(), Some(&replacement_snapshot));
         assert_eq!(selected.working_directory, Some(explicit));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn workspace_write_shell_cwd_stays_beneath_the_authorized_capability() {
-        let root = tempdir().unwrap();
-        let workspace = haven_platform::filesystem::DirectoryCapability::open(root.path()).unwrap();
-        assert_eq!(
-            workspace_relative_cwd(&workspace, None).unwrap(),
-            PathBuf::new()
-        );
-        assert_eq!(
-            workspace_relative_cwd(&workspace, Some("src\\nested")).unwrap(),
-            PathBuf::from("src\\nested")
-        );
-        assert_eq!(
-            workspace_relative_cwd(&workspace, Some(root.path().join("src").to_str().unwrap()))
-                .unwrap(),
-            PathBuf::from("src")
-        );
-        assert!(workspace_relative_cwd(&workspace, Some("..\\outside")).is_err());
-
-        let outside = tempdir().unwrap();
-        assert!(
-            workspace_relative_cwd(&workspace, Some(outside.path().to_str().unwrap())).is_err()
-        );
     }
 
     #[test]

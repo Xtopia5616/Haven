@@ -192,7 +192,7 @@ pub struct FilesParams {
 
 impl FilesTool {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         summarizer: Option<Arc<LlmRouter>>,
         max_output_chars: usize,
         max_full_file_bytes: u64,

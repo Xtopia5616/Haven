@@ -6,33 +6,28 @@
 
 use crate::McpStdioProcessStartPermit;
 use futures_util::future::BoxFuture;
-use haven_common::config::McpStdioExecution;
-use haven_platform::windows_container::execution::WindowsContainerWorkspaceInput;
 use std::fmt;
 use std::io;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-pub type McpStdioReader = Box<dyn AsyncRead + Send + Unpin>;
-pub type McpStdioWriter = Box<dyn AsyncWrite + Send + Unpin>;
+pub(crate) type McpStdioReader = Box<dyn AsyncRead + Send + Unpin>;
+pub(crate) type McpStdioWriter = Box<dyn AsyncWrite + Send + Unpin>;
 
 /// Immutable, trusted server configuration passed from the MCP manager to a
 /// process launcher. Environment values and arguments may contain secrets or
 /// user data, so the Debug implementation deliberately redacts them.
 #[derive(Clone)]
-pub struct McpStdioLaunchSpec {
+pub(crate) struct McpStdioLaunchSpec {
     server_name: String,
-    stdio_execution: McpStdioExecution,
     command: String,
     args: Vec<String>,
     environment: Vec<String>,
     working_directory: Option<String>,
-    workspace_input: Option<WindowsContainerWorkspaceInput>,
 }
 
 impl McpStdioLaunchSpec {
     pub(crate) fn new(
         server_name: String,
-        stdio_execution: McpStdioExecution,
         command: String,
         args: Vec<String>,
         environment: Vec<String>,
@@ -40,35 +35,18 @@ impl McpStdioLaunchSpec {
     ) -> Self {
         Self {
             server_name,
-            stdio_execution,
             command,
             args,
             environment,
             working_directory,
-            workspace_input: None,
         }
-    }
-
-    pub(crate) fn with_workspace_input(
-        mut self,
-        workspace_input: Option<WindowsContainerWorkspaceInput>,
-    ) -> Self {
-        self.workspace_input = workspace_input;
-        self
     }
 
     pub fn server_name(&self) -> &str {
         &self.server_name
     }
 
-    pub fn stdio_execution(&self) -> &McpStdioExecution {
-        &self.stdio_execution
-    }
-
-    /// Configured host command, meaningful only for `HostProcess`. A managed
-    /// package launcher must ignore this field and resolve the typed package
-    /// ID only through its pinned catalog; it must never forward a host
-    /// command or package ID as a guest executable path or shell command.
+    /// Configured host command.
     pub fn command(&self) -> &str {
         &self.command
     }
@@ -84,10 +62,6 @@ impl McpStdioLaunchSpec {
     pub fn working_directory(&self) -> Option<&str> {
         self.working_directory.as_deref()
     }
-
-    pub fn workspace_input(&self) -> Option<&WindowsContainerWorkspaceInput> {
-        self.workspace_input.as_ref()
-    }
 }
 
 impl fmt::Debug for McpStdioLaunchSpec {
@@ -95,20 +69,12 @@ impl fmt::Debug for McpStdioLaunchSpec {
         formatter
             .debug_struct("McpStdioLaunchSpec")
             .field("server_name", &self.server_name)
-            .field("stdio_execution", &self.stdio_execution)
             .field("command", &"<configured>")
             .field("argument_count", &self.args.len())
             .field("environment_count", &self.environment.len())
             .field(
                 "working_directory",
                 &self.working_directory.as_ref().map(|_| "<configured>"),
-            )
-            .field(
-                "workspace_input",
-                &self
-                    .workspace_input
-                    .as_ref()
-                    .map(|_| "<bounded capability>"),
             )
             .finish()
     }
@@ -117,7 +83,7 @@ impl fmt::Debug for McpStdioLaunchSpec {
 /// One live MCP server generation with its bidirectional stdio-compatible
 /// stream and process lifecycle. The reader/writer are each taken exactly
 /// once by `McpClient`; `stderr` is optional and is drained independently.
-pub trait McpStdioProcess: Send {
+pub(crate) trait McpStdioProcess: Send {
     fn take_stdin(&mut self) -> io::Result<McpStdioWriter>;
     fn take_stdout(&mut self) -> io::Result<McpStdioReader>;
     fn take_stderr(&mut self) -> io::Result<Option<McpStdioReader>>;
@@ -129,20 +95,14 @@ pub trait McpStdioProcess: Send {
     /// Wait for exit. The returned future must be cancellation-safe: callers
     /// may stop polling at a deadline and poll a fresh wait future later.
     fn wait(&mut self) -> BoxFuture<'_, io::Result<()>>;
-
-    /// Return the bounded sandbox output review produced by a completed
-    /// brokered one-shot invocation, if the process boundary provides one.
-    fn take_output_review(&mut self) -> Option<haven_platform::SandboxOutputReview> {
-        None
-    }
 }
 
 /// Creates a server process generation after receiving the opaque live start
 /// permit. The implementation must retain the permit until the process is
-/// attached to containment or the broker confirms process start. If the
+/// attached to containment. If the
 /// returned future is cancelled before yielding a process, the launcher must
 /// stop any partially created generation before releasing its resources.
-pub trait McpStdioProcessLauncher: Send + Sync {
+pub(crate) trait McpStdioProcessLauncher: Send + Sync {
     fn launch<'a>(
         &'a self,
         spec: &'a McpStdioLaunchSpec,

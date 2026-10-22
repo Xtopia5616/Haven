@@ -109,7 +109,6 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     }
     super::validate_mcp_server_names(&config.mcp_servers)?;
     super::validate_mcp_server_exposure(&config.mcp_servers)?;
-    super::validate_mcp_server_execution(&config.mcp_servers)?;
     super::validate_lsp_servers(&config.lsp_servers)?;
     config.everything.validate()?;
     super::validate_lifecycle_hooks(&config.hooks)?;

@@ -1,6 +1,4 @@
 <script lang="ts">
-	import SandboxOutputReviewPanel from './SandboxOutputReviewPanel.svelte';
-
 	interface Props {
 		data?: {
 			truncated?: boolean | null;
@@ -8,8 +6,6 @@
 		};
 		shellText?: string;
 		liveStreaming?: boolean;
-		sessionId?: string | null;
-		sourceStepId?: string | null;
 		failed?: boolean;
 	}
 
@@ -17,15 +13,8 @@
 		data = {},
 		shellText = '',
 		liveStreaming = false,
-		sessionId = null,
-		sourceStepId = null,
 		failed = false,
 	}: Props = $props();
-	let showReview = $derived(
-		!!sessionId &&
-			!!sourceStepId &&
-			!liveStreaming,
-	);
 </script>
 
 {#if data.truncated}
@@ -43,10 +32,6 @@
 {:else}
 	<p class="tool-result-message">（无输出）</p>
 {/if}
-{#if showReview && sessionId && sourceStepId}
-	<SandboxOutputReviewPanel {sessionId} {sourceStepId} />
-{/if}
-
 <style>
 	.tool-result-preview.streaming {
 		max-height: 280px;
