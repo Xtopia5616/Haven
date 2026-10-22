@@ -16,6 +16,7 @@ mod memory_runtime;
 mod memory_service;
 mod memory_trigger;
 mod memory_worker;
+mod model_runtime;
 mod partial;
 mod prompt;
 mod prompt_context;

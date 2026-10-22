@@ -113,6 +113,11 @@ pub(crate) struct MemoryWorker {
 
 impl MemoryWorker {
     #[cfg(test)]
+    pub(crate) async fn fast_chat_for_test(&self) -> anyhow::Result<String> {
+        self.inference.fast_chat("test", "test").await
+    }
+
+    #[cfg(test)]
     pub(crate) fn uses_memory_service_for_test(&self, memory: &Arc<MemoryService>) -> bool {
         Arc::ptr_eq(&self.memory, memory)
     }

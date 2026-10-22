@@ -48,6 +48,7 @@ struct PromptMemoryCacheKey {
     query: String,
     embedding_model: String,
     memory_revision: u64,
+    model_revision: u64,
     exclude_session_id: Option<String>,
 }
 
@@ -100,7 +101,7 @@ pub struct MemoryService {
     maintenance_store: MemoryMaintenanceStore,
     outbox_store: MemoryOutboxStore,
     recall_store: MemoryRecallStore,
-    router: Option<Arc<LlmRouter>>,
+    router: Option<crate::model_runtime::ModelRuntime>,
     embedding_index: Option<MemoryEmbeddingIndex>,
     prompt_cache: Mutex<PromptMemoryCache>,
 }
@@ -121,8 +122,9 @@ impl MemoryService {
         let maintenance_store = stores.maintenance_store();
         let recall_store = stores.recall_store();
         let embeddings = stores.embedding_store();
+        let router = router.map(crate::model_runtime::ModelRuntime::new);
         let embedding_index = router.as_ref().map(|router| {
-            MemoryEmbeddingIndex::new(
+            MemoryEmbeddingIndex::with_runtime(
                 embeddings,
                 recall_store.clone(),
                 router.clone(),
@@ -142,6 +144,11 @@ impl MemoryService {
             embedding_index,
             prompt_cache: Mutex::new(PromptMemoryCache::new()),
         }
+    }
+
+    /// Composition-only wiring; consumers use the memory operations below.
+    pub(crate) fn model_runtime(&self) -> Option<crate::model_runtime::ModelRuntime> {
+        self.router.clone()
     }
 
     #[cfg(test)]
@@ -184,6 +191,7 @@ impl MemoryService {
         self.recall_store.memory_revision()
     }
 
+    #[cfg(test)]
     pub(crate) async fn current_embedding_model(&self) -> String {
         match &self.embedding_index {
             Some(index) => index.current_vector_space_identity().await,
@@ -202,11 +210,25 @@ impl MemoryService {
             .collect::<Vec<_>>()
             .join(" ");
         let query_text: String = query_text.chars().take(MAX_MEMORY_QUERY_CHARS).collect();
-        let embedding_model = self.current_embedding_model().await;
+        let snapshot = self
+            .router
+            .as_ref()
+            .map(|runtime| runtime.versioned_snapshot());
+        let model_revision = snapshot.as_ref().map_or(0, |snapshot| snapshot.0);
+        let router = snapshot.map(|snapshot| snapshot.1);
+        let embedding_model = match &router {
+            Some(router) => router
+                .embedding_route_identity()
+                .await
+                .map(|identity| identity.vector_space_id)
+                .unwrap_or_default(),
+            None => String::new(),
+        };
         let key = PromptMemoryCacheKey {
             query: query_text.clone(),
             embedding_model: embedding_model.clone(),
             memory_revision: self.memory_revision(),
+            model_revision,
             exclude_session_id: exclude_session_id
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
@@ -221,7 +243,7 @@ impl MemoryService {
         let (vector, cacheable) =
             if embedding_model.is_empty() || haven_memory::is_sensitive_text(&query_text) {
                 (None, true)
-            } else if let Some(router) = &self.router {
+            } else if let Some(router) = &router {
                 match router.embed_text(&query_text).await {
                     Ok(vector) if !vector.is_empty() => (Some(vector), true),
                     Ok(_) => (None, true),
@@ -352,11 +374,24 @@ impl MemoryService {
             .chars()
             .take(MAX_MEMORY_QUERY_CHARS)
             .collect();
-        let embedding_model = self.current_embedding_model().await;
+        let snapshot = self
+            .router
+            .as_ref()
+            .map(|runtime| runtime.versioned_snapshot());
+        let model_revision = snapshot.as_ref().map_or(0, |snapshot| snapshot.0);
+        let embedding_model = match snapshot {
+            Some((_, router)) => router
+                .embedding_route_identity()
+                .await
+                .map(|identity| identity.vector_space_id)
+                .unwrap_or_default(),
+            None => String::new(),
+        };
         let key = PromptMemoryCacheKey {
             query: query_text,
             embedding_model,
             memory_revision: self.memory_revision(),
+            model_revision,
             exclude_session_id: exclude_session_id
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
@@ -443,6 +478,7 @@ mod tests {
                 query: index.to_string(),
                 embedding_model: String::new(),
                 memory_revision: 0,
+                model_revision: 0,
                 exclude_session_id: None,
             };
             cache.insert(key, PromptMemoryCandidates::default());
@@ -451,6 +487,7 @@ mod tests {
             query: "0".into(),
             embedding_model: String::new(),
             memory_revision: 0,
+            model_revision: 0,
             exclude_session_id: None,
         };
         assert!(cache.get(&first).is_some());
@@ -459,6 +496,7 @@ mod tests {
                 query: "overflow".into(),
                 embedding_model: String::new(),
                 memory_revision: 0,
+                model_revision: 0,
                 exclude_session_id: None,
             },
             PromptMemoryCandidates::default(),
@@ -467,6 +505,7 @@ mod tests {
             query: "1".into(),
             embedding_model: String::new(),
             memory_revision: 0,
+            model_revision: 0,
             exclude_session_id: None,
         };
         assert!(cache.get(&first).is_some());

@@ -430,6 +430,7 @@ AgentLayer 从同一 service 派生 stores、共享的 `MemoryWorker` 与 `Syste
 `MemoryStartup` 持有唯一 `MemoryRuntime`，并由 ApplicationRuntime 接管长期所有权。Prompt-memory
 cache、embedding index 与 worker memory capability 仍属于同一服务实例（ADR 0364、0367）。
 Memory 的查询缓存、缓存 generation 与数据 revision 仅供 crate 内 repository 协作；下游通过 typed stores 消费记忆能力，不接触缓存维护 API（ADR 0891）。
+Agent 内部的聊天、标题、记忆推断及已启用的 embedding 消费者共享私有 `ModelRuntime` 发布点；热切换只发布一次。每次逻辑请求捕获 router 快照，向量空间身份与 embedding 调用使用同一快照，旧在途请求可完成；prompt-memory 缓存同时按发布代次失效，避免同一向量空间的凭据切换继续命中旧缓存（ADR 1370）。该边界不涵盖 App 的 router/媒体组合发布。
 `SystemPromptBuilder::with_memory_service`
 是唯一公开 builder 构造入口；它不从 Database 创建额外的 MemoryService，因此不产生独立的
 prompt-memory cache 或 embedding index（ADR 0365）。`MemoryService` 构造并持有共享的

@@ -24,6 +24,8 @@ mod react;
 mod resume;
 #[path = "integration_tests/rollback.rs"]
 mod rollback;
+#[path = "integration_tests/router_reload.rs"]
+mod router_reload;
 #[path = "integration_tests/support.rs"]
 mod support;
 #[path = "integration_tests/tool_batch.rs"]

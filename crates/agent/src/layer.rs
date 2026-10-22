@@ -212,6 +212,12 @@ impl AgentLayer {
         session_prompt_history_limit: usize,
         context_limits: ContextLimitsConfig,
     ) -> AgentStartup {
+        let model_runtime = memory_service
+            .model_runtime()
+            .unwrap_or_else(|| crate::model_runtime::ModelRuntime::new(router.clone()));
+        model_runtime
+            .replace(router.clone())
+            .expect("model runtime publication during Agent construction");
         let events = Arc::new(EventDispatcher::new());
         let outbox_store = memory_service.outbox_store();
         let prompt_builder = Arc::new(SystemPromptBuilder::with_memory_service(
@@ -220,7 +226,9 @@ impl AgentLayer {
         ));
         let tool_catalog = tools.catalog_port();
         let lifecycle_hooks = tools.lifecycle_hooks_port();
-        let memory_inference = Arc::new(RouterMemoryInferencePort::new(router.clone()));
+        let memory_inference = Arc::new(RouterMemoryInferencePort::with_runtime(
+            model_runtime.clone(),
+        ));
         let memory_worker = Arc::new(MemoryWorker::new_with_inference(
             memory_service.clone(),
             memory_service.memory_fact_store(),
@@ -245,6 +253,7 @@ impl AgentLayer {
                 max_steps_per_run,
                 context_limits.clone(),
             )
+            .with_model_runtime(model_runtime.clone())
             .with_lifecycle_hooks(lifecycle_hooks)
             .with_turn_preparation(crate::react::default_turn_preparation_with_patch(
                 memory_patch,
@@ -255,7 +264,7 @@ impl AgentLayer {
         // LlmRouter, which uses the fast_chat request policy. If that policy
         // isn't configured the router will simply surface the error
         // and `generate` returns None.
-        let title = Some(TitleGenerator::new(router));
+        let title = Some(TitleGenerator::with_runtime(model_runtime));
 
         let agent = Self {
             #[cfg(test)]

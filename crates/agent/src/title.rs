@@ -1,17 +1,27 @@
 use haven_common::config::RequestKind;
 use haven_common::prompts::TITLE_SYSTEM_PROMPT;
-use haven_llm::{LlmRouter, PromptRequest};
+#[cfg(test)]
+use haven_llm::LlmRouter;
+use haven_llm::PromptRequest;
+#[cfg(test)]
 use std::sync::Arc;
 
 /// Generates concise session titles from user messages using the small_model endpoint.
 #[derive(Clone)]
 pub struct TitleGenerator {
-    router: Arc<LlmRouter>,
+    router: crate::model_runtime::ModelRuntime,
 }
 
 impl TitleGenerator {
-    pub fn new(router: Arc<LlmRouter>) -> Self {
+    pub(crate) fn with_runtime(router: crate::model_runtime::ModelRuntime) -> Self {
         Self { router }
+    }
+
+    #[cfg(test)]
+    pub fn new(router: Arc<LlmRouter>) -> Self {
+        Self {
+            router: crate::model_runtime::ModelRuntime::new(router),
+        }
     }
 
     /// Generate a short session title from the session's user messages.
@@ -20,19 +30,15 @@ impl TitleGenerator {
         if user_messages.is_empty() {
             return None;
         }
+        let router = self.router.snapshot();
         // No-op without an outbound call when the small_model endpoint is not
         // configured (mirrors the guard in the file tool's `summarize`).
-        if !self
-            .router
-            .is_request_configured(RequestKind::FastChat)
-            .await
-        {
+        if !router.is_request_configured(RequestKind::FastChat).await {
             return None;
         }
         let user_message_text = user_messages.join("\n");
 
-        match self
-            .router
+        match router
             .chat_with_prompt_request(PromptRequest::new(
                 RequestKind::FastChat,
                 TITLE_SYSTEM_PROMPT,

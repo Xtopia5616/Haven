@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active / Next** | 暂无 Active/Next 结构切片。 |
+| **Next** | 新一轮 R02：提供已保存配置的显式 reapply；模型/媒体组合发布与会话工作绑定的后续顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
 | **Candidate** | 会话级执行上下文与权限分层设计已提出，尚未实施；见 [ADR 1367](adr/1367-session-scoped-execution-policy-design.md) 与[设计提案](execution-context-redesign.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 

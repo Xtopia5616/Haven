@@ -6,6 +6,7 @@
 //! coordinates writes/rebuilds around that call. Fact extraction and rule
 //! based maintenance stay in `memory_worker.rs`.
 
+#[cfg(test)]
 use std::sync::Arc;
 
 use haven_common::config::{MAX_EMBEDDING_CHUNK_SIZE, MIN_EMBEDDING_CHUNK_SIZE};
@@ -30,7 +31,7 @@ struct EmbeddingIdentity {
 pub(crate) struct MemoryEmbeddingIndex {
     store: MemoryEmbeddingStore,
     recall_store: MemoryRecallStore,
-    router: Arc<LlmRouter>,
+    router: crate::model_runtime::ModelRuntime,
     embed_chunk_size: usize,
     /// Serializes maintenance passes so two schedulers cannot embed the same
     /// missing rows concurrently and race their derived-index updates.
@@ -38,10 +39,25 @@ pub(crate) struct MemoryEmbeddingIndex {
 }
 
 impl MemoryEmbeddingIndex {
+    #[cfg(test)]
     pub(crate) fn new(
         store: MemoryEmbeddingStore,
         recall_store: MemoryRecallStore,
         router: Arc<LlmRouter>,
+        embed_chunk_size: usize,
+    ) -> Self {
+        Self::with_runtime(
+            store,
+            recall_store,
+            crate::model_runtime::ModelRuntime::new(router),
+            embed_chunk_size,
+        )
+    }
+
+    pub(crate) fn with_runtime(
+        store: MemoryEmbeddingStore,
+        recall_store: MemoryRecallStore,
+        router: crate::model_runtime::ModelRuntime,
         embed_chunk_size: usize,
     ) -> Self {
         Self {
@@ -55,8 +71,8 @@ impl MemoryEmbeddingIndex {
 
     /// Resolve the configured vector-space identity once per operation rather
     /// than inferring it from persisted rows.
-    async fn configured_identity(&self) -> Option<EmbeddingIdentity> {
-        self.router
+    async fn configured_identity(router: &LlmRouter) -> Option<EmbeddingIdentity> {
+        router
             .embedding_route_identity()
             .await
             .map(|identity| EmbeddingIdentity {
@@ -68,8 +84,9 @@ impl MemoryEmbeddingIndex {
     /// Return the identity used to scope persisted vectors and prompt-memory
     /// cache entries. An empty identity means vector recall is unavailable and
     /// callers should retain the keyword path.
+    #[cfg(test)]
     pub(crate) async fn current_vector_space_identity(&self) -> String {
-        self.configured_identity()
+        Self::configured_identity(&self.router.snapshot())
             .await
             .map(|identity| identity.storage_model)
             .unwrap_or_default()
@@ -90,7 +107,8 @@ impl MemoryEmbeddingIndex {
     /// the provider-safe request chunk size.
     pub(crate) async fn embed_new_memory(&self) {
         let _maintenance_guard = self.maintenance_gate.lock().await;
-        let Some(identity) = self.configured_identity().await else {
+        let router = self.router.snapshot();
+        let Some(identity) = Self::configured_identity(&router).await else {
             tracing::debug!("embedding_model unconfigured; skipping vector indexing");
             return;
         };
@@ -137,7 +155,7 @@ impl MemoryEmbeddingIndex {
 
         for chunk in pending.chunks(self.embed_chunk_size) {
             let texts: Vec<String> = chunk.iter().map(|item| item.text.clone()).collect();
-            let embedding = match self.router.embed(EmbeddingRequest { input: texts }).await {
+            let embedding = match router.embed(EmbeddingRequest { input: texts }).await {
                 Ok(embedding) => embedding,
                 Err(error) => {
                     tracing::warn!(
@@ -264,7 +282,8 @@ impl MemoryEmbeddingIndex {
     /// hot path.
     pub(crate) async fn rebuild_lsh_if_lagging(&self) {
         let _maintenance_guard = self.maintenance_gate.lock().await;
-        let Some(identity) = self.configured_identity().await else {
+        let router = self.router.snapshot();
+        let Some(identity) = Self::configured_identity(&router).await else {
             return;
         };
         if let Err(error) = self
@@ -291,13 +310,14 @@ impl MemoryEmbeddingIndex {
         &self,
         query: &MemoryQuery,
     ) -> anyhow::Result<Option<Vec<MemoryHit>>> {
-        let Some(identity) = self.configured_identity().await else {
+        let router = self.router.snapshot();
+        let Some(identity) = Self::configured_identity(&router).await else {
             return Ok(None);
         };
         if self.model_changed(&identity.storage_model).await? {
             return Ok(None);
         }
-        let vector = match self.router.embed_text(query.text()).await {
+        let vector = match router.embed_text(query.text()).await {
             Ok(vector) => vector,
             Err(error) => {
                 tracing::warn!(
@@ -445,6 +465,44 @@ mod tests {
         let current = index.current_vector_space_identity().await;
 
         assert!(index.model_changed(&current).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn router_reload_keeps_old_vectors_out_of_the_new_space() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let runtime = crate::model_runtime::ModelRuntime::new(embedding_router(
+            "text-embedding-3-small",
+            "https://gateway-a.example/v1",
+        ));
+        let index = MemoryEmbeddingIndex::with_runtime(
+            MemoryEmbeddingStore::new(db.clone()),
+            recall_store(db.clone()),
+            runtime.clone(),
+            1,
+        );
+        let old_space = index.current_vector_space_identity().await;
+        let fact = db
+            .insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
+            .unwrap();
+        db.persist_embedding(
+            haven_memory::MemoryEntityKind::Fact.entity_type(),
+            &fact.fact_id,
+            &old_space,
+            &[1.0, 0.0],
+            "user likes Rust",
+        )
+        .unwrap();
+        runtime
+            .replace(embedding_router(
+                "text-embedding-3-small",
+                "https://gateway-b.example/v1",
+            ))
+            .unwrap();
+        let new_space = index.current_vector_space_identity().await;
+        assert_ne!(old_space, new_space);
+        let query = MemoryQuery::new("Rust", haven_memory::MemoryRecallKind::Semantic, 5).unwrap();
+        // Existing vectors mismatch, so this returns before any provider call.
+        assert!(index.search(&query).await.unwrap().is_none());
     }
 
     #[tokio::test]

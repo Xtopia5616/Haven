@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -366,7 +365,7 @@ pub(crate) struct ParsedAgentResponse {
 }
 
 pub(crate) struct ReActEngine {
-    router: Arc<RwLock<Arc<LlmRouter>>>,
+    router: crate::model_runtime::ModelRuntime,
     executor: Arc<SessionSupervisor>,
     /// Agent-owned read boundary for immutable per-session tool catalogs.
     tool_catalog: Arc<dyn ToolCatalogPort>,
@@ -456,7 +455,7 @@ impl ReActEngine {
             ContextSource::new(executor.clone(), event_store.clone(), metrics.clone());
         let usage_runtime = UsageRuntime::new(event_store.clone());
         Self {
-            router: Arc::new(RwLock::new(router)),
+            router: crate::model_runtime::ModelRuntime::new(router),
             executor,
             tool_catalog,
             outbox_store,
@@ -522,6 +521,15 @@ impl ReActEngine {
         self
     }
 
+    /// Wire the composition root's single model publication point.
+    pub(crate) fn with_model_runtime(
+        mut self,
+        runtime: crate::model_runtime::ModelRuntime,
+    ) -> Self {
+        self.router = runtime;
+        self
+    }
+
     /// Attach the shared [`crate::MemoryWorker`] for M3 summary→facts.
     pub(crate) fn with_memory_worker(mut self, memory_worker: Arc<crate::MemoryWorker>) -> Self {
         self.memory_worker = Some(memory_worker);
@@ -529,11 +537,7 @@ impl ReActEngine {
     }
 
     pub fn replace_router(&self, new_router: Arc<LlmRouter>) -> anyhow::Result<()> {
-        *self
-            .router
-            .write()
-            .map_err(|_| anyhow::anyhow!("router runtime setting lock is poisoned"))? = new_router;
-        Ok(())
+        self.router.replace(new_router)
     }
 
     /// Snapshot of `[context_limits]` (cloned; safe across awaits).
@@ -594,7 +598,7 @@ impl ReActEngine {
     }
 
     pub(super) fn router(&self) -> Arc<LlmRouter> {
-        self.router.read().unwrap().clone()
+        self.router.snapshot()
     }
 
     /// Build the full tool-definition list for a session: global registry tools
