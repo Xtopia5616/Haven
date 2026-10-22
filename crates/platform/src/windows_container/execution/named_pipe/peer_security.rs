@@ -10,7 +10,11 @@ use super::{
 use std::io;
 use std::mem::{offset_of, size_of};
 use std::ptr::{null, null_mut};
-use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, GetLastError, HANDLE, LocalFree};
+use windows_sys::Wdk::Storage::FileSystem::RtlCreateServiceSid;
+use windows_sys::Win32::Foundation::{
+    ERROR_INSUFFICIENT_BUFFER, ERROR_NONE_MAPPED, GetLastError, HANDLE, LocalFree,
+    STATUS_BUFFER_TOO_SMALL, STATUS_SUCCESS, UNICODE_STRING,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
@@ -347,7 +351,7 @@ pub(super) fn broker_service_sid() -> io::Result<Vec<u8>> {
     let mut sid_length = 0;
     let mut domain_length = 0;
     let mut account_use: SID_NAME_USE = 0;
-    if unsafe {
+    let lookup_succeeded = unsafe {
         LookupAccountNameW(
             null(),
             account.as_ptr(),
@@ -357,13 +361,30 @@ pub(super) fn broker_service_sid() -> io::Result<Vec<u8>> {
             &mut domain_length,
             &mut account_use,
         )
-    } != 0
-        || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
-        || sid_length == 0
-        || sid_length as usize > MAX_SID_BYTES
-        || domain_length > 256
-    {
-        return Err(io::Error::last_os_error());
+    } != 0;
+    let lookup_error = if lookup_succeeded {
+        0
+    } else {
+        unsafe { GetLastError() }
+    };
+    if !lookup_succeeded {
+        if lookup_error == ERROR_NONE_MAPPED {
+            // Some Windows builds fail to resolve the documented NT SERVICE
+            // account name even after SCM has configured the service SID.
+            // Derive the same OS-owned SID directly rather than weakening the
+            // service ACL or falling back to LocalSystem/Administrators.
+            return broker_service_sid_from_service_name();
+        }
+        if lookup_error != ERROR_INSUFFICIENT_BUFFER {
+            return Err(io::Error::from_raw_os_error(lookup_error as i32));
+        }
+    } else {
+        return Err(invalid_data(
+            "service SID lookup succeeded without output buffers",
+        ));
+    }
+    if sid_length == 0 || sid_length as usize > MAX_SID_BYTES || domain_length > 256 {
+        return Err(invalid_data("service SID lookup returned an invalid size"));
     }
 
     let mut sid = vec![0_u8; sid_length as usize];
@@ -385,6 +406,54 @@ pub(super) fn broker_service_sid() -> io::Result<Vec<u8>> {
     sid.truncate(sid_length as usize);
     validate_sid_bytes(&sid)?;
     Ok(sid)
+}
+
+fn broker_service_sid_from_service_name() -> io::Result<Vec<u8>> {
+    let mut service_name = wide_null(BROKER_SERVICE_NAME);
+    let service_name_length = service_name
+        .len()
+        .checked_sub(1)
+        .and_then(|length| length.checked_mul(size_of::<u16>()))
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| invalid_input("broker service name is too long"))?;
+    let counted_service_name = UNICODE_STRING {
+        Length: service_name_length,
+        MaximumLength: service_name_length,
+        Buffer: service_name.as_mut_ptr(),
+    };
+
+    let mut sid_length = 0;
+    let status = unsafe { RtlCreateServiceSid(&counted_service_name, null_mut(), &mut sid_length) };
+    if status != STATUS_BUFFER_TOO_SMALL {
+        return Err(nt_status_error(status));
+    }
+    if !(8..=MAX_SID_BYTES).contains(&(sid_length as usize)) {
+        return Err(invalid_data(
+            "service SID size is outside the supported limit",
+        ));
+    }
+
+    let mut sid = vec![0_u8; sid_length as usize];
+    let status = unsafe {
+        RtlCreateServiceSid(
+            &counted_service_name,
+            sid.as_mut_ptr().cast(),
+            &mut sid_length,
+        )
+    };
+    if status != STATUS_SUCCESS {
+        return Err(nt_status_error(status));
+    }
+    sid.truncate(sid_length as usize);
+    validate_sid_bytes(&sid)?;
+    Ok(sid)
+}
+
+fn nt_status_error(status: i32) -> io::Error {
+    io::Error::other(format!(
+        "RtlCreateServiceSid failed with NTSTATUS 0x{:08X}",
+        status as u32
+    ))
 }
 
 pub(super) fn broker_service_sid_string() -> io::Result<String> {
@@ -483,4 +552,18 @@ fn scm_service_process_id() -> io::Result<u32> {
         return Err(permission_denied("broker service is not running"));
     }
     Ok(status.dwProcessId)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_sid_fallback_matches_the_scm_service_sid() {
+        let sid = broker_service_sid_from_service_name().expect("service SID should be derived");
+        assert_eq!(
+            sid_to_string(&sid).expect("service SID should stringify"),
+            "S-1-5-80-67550567-2145346782-217598459-3553917341-4058129405"
+        );
+    }
 }

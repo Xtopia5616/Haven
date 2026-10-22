@@ -2,7 +2,7 @@
 
 ## 状态
 
-实现已接入 broker 启动与 Shell 请求 gate。真实 HCS 执行、超额写入和目标 Windows build/镜像兼容性验收未运行；这些仍是开放的环境验收 Gate。
+实现已接入 broker 启动与 Shell 请求 gate。真实 HCS 配额证明仍是开放的环境验收 Gate。2026-10-22 本机尝试在 Windows 11 build 29683 和 Windows Server Core LTSC 2025 镜像上启动隔离 guest；HCS 创建并启动了 VM，但 containerd `runhcs` shim 在网络命名空间能力探测处 panic，guest 未能运行命令。镜像层部署到 broker catalog 也未完成（`HcsExportLayer` 返回 `0x80070002`），因此 broker 配额 probe 和实际超额写入都没有运行。该主机是 Windows Insider Experimental (Future Platforms) 预览版本，不能作为正式支持 build 的签核证据。
 
 ## 背景
 
@@ -33,9 +33,11 @@ HCS JSON 的 `StorageSandboxSize`、VHDX 的 `MaximumSize` 和格式化成功都
 ## 验证
 
 - 自动测试覆盖固定 probe 参数与 quota、单进程 probe 生命周期、缺失/意外 marker、写入计数边界、VHDX 增长、宿主空间 reserve、stdout/stderr 完整性和无证明请求 gate。
-- 已通过 `cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked`，以及本切片最终变更后的 `cargo test --locked -p haven-platform`（164 passed、1 ignored）和 `cargo clippy --locked -p haven-platform -- -D warnings`。
+- 已通过 `cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`、`cargo test --workspace --locked`；本次最终工作树的 `cargo test --locked -p haven-platform`（236 passed、1 ignored）、`cargo clippy --locked -p haven-platform -- -D warnings` 和 `cargo build --locked -p haven-container-broker --release` 也通过。
 - 已通过 `corepack pnpm --dir ui run check`、`corepack pnpm --dir ui run test:run`（1318 passed）和 `corepack pnpm --dir ui run build`，以及 `scripts/check-adr-index.ps1`、`scripts/check-crate-dependencies.ps1`。
-- 尚未运行真实 HCS guest、quota overrun、目标 Windows build/API、broker privilege token 或镜像兼容性验收；这些验证依赖受支持的 Windows Container/HCS 测试环境，按用户要求本轮不安排或运行。
+- 2026-10-22 本机环境：Windows 11 build 29683（Insider Experimental / Future Platforms）、Windows Server Core LTSC 2025 镜像、HNS 与 `vmcompute` 均可用。`ctr run --isolated` 的 HCS 日志显示 VM 创建和启动成功，但 `containerd-shim-runhcs-v1` 在 `UtilityVM.isNetworkNamespaceSupported` 处发生 nil 指针 panic，随后 VM 异常退出，没有 guest marker。该 smoke test 使用 containerd 默认网络 spec；Haven 自己的闭合 HCS schema 不请求网络，因此它不是 Haven quota probe 的结果。
+- broker 镜像层准备未完成：原生 `HcsExportLayer` 失败并返回 `0x80070002`，不完整目标层没有被用于启动服务。服务保持 `Stopped`，没有签发 runtime quota proof；未执行随机 guest 写入至 quota+1 MiB、磁盘满错误码、VHDX 增长/容量、stderr 与 marker 或宿主剩余空间验收。正式 gate 仍为 Open。Windows 11 build 29683.1000 属于预览通道；目标兼容性须在受支持 Windows build 上复验，见 [Microsoft Windows Insider build announcement](https://blogs.windows.com/windows-insider/2026/10/07/announcing-new-builds-for-7-october-2026/) 与 [Windows container version compatibility](https://learn.microsoft.com/en-us/virtualization/windowscontainers/deploy-containers/version-compatibility)。
+- 临时收尾：Haven broker 服务注册已通过 `uninstall` 移除。清理 `C:\Program Files\Haven` 临时目录时，Windows ACL 拒绝删除不完整层中的 `ContainerImages\layers\layer-update\Files\Boot\bg-BG\bootmgr.exe.mui`，因此该临时 staging 目录仍有残留，禁止复用；镜像与原始诊断日志保留在 `%TEMP%\haven-hcs-acceptance` 以便后续续验。
 
 ## 回滚
 

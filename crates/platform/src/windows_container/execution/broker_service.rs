@@ -7,6 +7,7 @@
 use super::BROKER_SERVICE_NAME;
 use super::broker_workspace::{BrokerWorkspaceAttempt, BrokerWorkspaceScratchRoot};
 use super::image_catalog::BrokerContainerImageCatalog;
+use crate::filesystem::DirectoryCapability;
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::os::windows::ffi::OsStringExt;
@@ -50,7 +51,6 @@ use super::named_pipe::{
 };
 use super::quota_attestation::QuotaRuntimeAttestation;
 
-const SERVICE_ACCOUNT: &str = r"NT AUTHORITY\LocalSystem";
 const SERVICE_STOP_TIMEOUT: Duration = Duration::from_secs(15);
 const SERVICE_START_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const SERVICE_START_WAIT_HINT_MS: u32 = 300_000;
@@ -103,8 +103,6 @@ pub fn install() -> io::Result<()> {
     let image_command = wide_null(&format!("\"{executable_text}\" --service"));
     let service_name = wide_null(BROKER_SERVICE_NAME);
     let display_name = wide_null(SERVICE_START_NAME);
-    let account = wide_null(SERVICE_ACCOUNT);
-
     let manager = open_manager(SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE)?;
     let service = unsafe {
         CreateServiceW(
@@ -123,7 +121,9 @@ pub fn install() -> io::Result<()> {
             null(),
             null_mut(),
             null(),
-            account.as_ptr(),
+            // A null start name selects LocalSystem in CreateServiceW. This
+            // avoids resolving a localized account alias on non-English hosts.
+            null(),
             null(),
         )
     };
@@ -1150,9 +1150,10 @@ fn program_files_directory() -> io::Result<PathBuf> {
         return Err(invalid_data("Program Files path is too long"));
     }
     let value = unsafe { std::slice::from_raw_parts(path, length) };
-    PathBuf::from(OsString::from_wide(value))
-        .canonicalize()
-        .map_err(|error| io::Error::new(error.kind(), "Program Files directory is unavailable"))
+    let known_folder = PathBuf::from(OsString::from_wide(value));
+    let capability = DirectoryCapability::open(&known_folder)
+        .map_err(|error| io::Error::new(error.kind(), "Program Files directory is unavailable"))?;
+    Ok(capability.root().to_path_buf())
 }
 
 fn validate_install_image(executable: &Path, program_files: &Path) -> io::Result<PathBuf> {
@@ -1224,6 +1225,18 @@ fn permission_denied(message: &str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn program_files_directory_returns_a_local_capability_path() {
+        let program_files = program_files_directory().unwrap();
+
+        assert!(program_files.is_absolute());
+        assert!(!program_files.to_string_lossy().starts_with(r"\\?\"));
+        assert_eq!(
+            DirectoryCapability::open(&program_files).unwrap().root(),
+            program_files
+        );
+    }
 
     #[test]
     fn shell_status_requires_a_running_service_and_attested_quota() {
