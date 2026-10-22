@@ -87,13 +87,21 @@ impl SessionStore {
             if latest_sequence == 0 {
                 return Ok(None);
             }
+            let active_events = Self::read_active_in_connection(&conn, session_id)?;
+            let transcript = active_events
+                .iter()
+                .filter(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
+                .cloned()
+                .collect::<Vec<_>>();
+            let branch_points = Self::active_branch_points_from_events(&active_events)?;
             Ok(Some(SessionReplayState {
-                transcript: Self::read_active_in_connection(&conn, session_id)?
-                    .into_iter()
-                    .filter(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
-                    .collect(),
-                branch_points: Self::read_active_branch_points_in_connection(&conn, session_id)?,
-                cursor: Self::cursor_in_connection(&conn, session_id)?,
+                cursor: Self::cursor_in_connection_with_event_cursor(
+                    &conn,
+                    session_id,
+                    transcript.len(),
+                )?,
+                transcript,
+                branch_points,
             }))
         })();
         match result {
@@ -124,8 +132,8 @@ impl SessionStore {
 
     /// Read the durable replay cursor used to verify an Agent event boundary.
     /// A session without an event log keeps the same default cursor as an
-    /// absent replay state. Agent owns the boundary policy; this port only
-    /// schedules the existing replay read and preserves optional cancellation.
+    /// absent replay state. This reads cursor fields and lightweight timeline
+    /// metadata without hydrating transcript events.
     pub async fn event_boundary_cursor(
         &self,
         session_id: &str,
@@ -134,12 +142,7 @@ impl SessionStore {
         ensure_session_id(session_id)?;
         let store = self.clone();
         let session_id = session_id.to_owned();
-        let read = move |_db: &Database| {
-            Ok(store
-                .load_replay_state(&session_id)?
-                .map(|replay| replay.cursor)
-                .unwrap_or_default())
-        };
+        let read = move |_db: &Database| store.event_boundary_cursor_sync(&session_id);
 
         match cancel {
             Some(cancel) => self.db.run_blocking_cancellable(cancel, read).await,
@@ -152,15 +155,21 @@ impl SessionStore {
         session_id: &str,
     ) -> anyhow::Result<SessionCursor> {
         ensure_session_id(session_id)?;
+        let event_cursor = Self::active_transcript_cursor_in_connection(conn, session_id)?;
+        Self::cursor_in_connection_with_event_cursor(conn, session_id, event_cursor)
+    }
+
+    fn cursor_in_connection_with_event_cursor(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        event_cursor: usize,
+    ) -> anyhow::Result<SessionCursor> {
+        ensure_session_id(session_id)?;
         let event_sequence = conn.query_row(
             "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
             rusqlite::params![session_id],
             |row| row.get(0),
         )?;
-        let event_cursor = Self::read_active_in_connection(conn, session_id)?
-            .into_iter()
-            .filter(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
-            .count();
         let message_ingress_seq = conn
             .query_row(
                 "SELECT COALESCE(last_ingress_seq, 0)
@@ -187,6 +196,105 @@ impl SessionStore {
             step_seq,
             last_msg_at,
         })
+    }
+
+    fn event_boundary_cursor_sync(&self, session_id: &str) -> anyhow::Result<SessionCursor> {
+        ensure_session_id(session_id)?;
+        let conn = self.db.try_conn()?;
+        conn.execute_batch("BEGIN DEFERRED")?;
+        let result = Self::cursor_in_connection(&conn, session_id);
+        match result {
+            Ok(cursor) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(cursor)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Count active transcript entries without constructing SessionEvent
+    /// values. The common no-rollback path is a SQL COUNT; if rollbacks exist,
+    /// replay only sequence/type metadata and rollback payloads.
+    fn active_transcript_cursor_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> anyhow::Result<usize> {
+        ensure_session_id(session_id)?;
+        let (after_sequence, scan_compaction_markers) =
+            Self::active_replay_boundary_details_in_connection(conn, session_id)?;
+
+        if !scan_compaction_markers {
+            let has_rollback: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM session_events
+                    WHERE session_id = ?1 AND sequence > ?2 AND event_type = ?3
+                )",
+                rusqlite::params![session_id, after_sequence, TIMELINE_ROLLBACK_EVENT_TYPE],
+                |row| row.get(0),
+            )?;
+            if !has_rollback {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM session_events
+                     WHERE session_id = ?1 AND sequence > ?2 AND event_type = ?3",
+                    rusqlite::params![session_id, after_sequence, TRANSCRIPT_EVENT_TYPE],
+                    |row| row.get(0),
+                )?;
+                return usize::try_from(count)
+                    .map_err(|_| anyhow::anyhow!("active transcript cursor is out of range"));
+            }
+        }
+
+        let mut statement = conn.prepare(
+            "SELECT sequence, event_type,
+                    CASE WHEN event_type = ?3 THEN payload END,
+                    CASE WHEN ?4 AND event_type = ?5
+                         THEN CAST(json_extract(payload, '$.type') AS TEXT) END
+             FROM session_events
+             WHERE session_id = ?1 AND sequence > ?2
+               AND event_type IN (?3, ?5)
+             ORDER BY sequence ASC",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![
+                session_id,
+                after_sequence,
+                TIMELINE_ROLLBACK_EVENT_TYPE,
+                scan_compaction_markers,
+                TRANSCRIPT_EVENT_TYPE,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )?;
+
+        let mut active_transcripts = Vec::<i64>::new();
+        for row in rows {
+            let (sequence, event_type, rollback_payload, transcript_type) = row?;
+            if event_type == TIMELINE_ROLLBACK_EVENT_TYPE {
+                let payload = rollback_payload
+                    .ok_or_else(|| anyhow::anyhow!("rollback event payload is missing"))?;
+                let target = serde_json::from_str::<serde_json::Value>(&payload)?
+                    .get("to_sequence")
+                    .and_then(serde_json::Value::as_i64)
+                    .ok_or_else(|| anyhow::anyhow!("rollback event has no to_sequence"))?;
+                let retained = active_transcripts.partition_point(|active| *active <= target);
+                active_transcripts.truncate(retained);
+            } else {
+                if transcript_type.as_deref() == Some("compact_summary") {
+                    active_transcripts.clear();
+                }
+                active_transcripts.push(sequence);
+            }
+        }
+        Ok(active_transcripts.len())
     }
 
     fn latest_sequence_sync(&self, session_id: &str) -> anyhow::Result<i64> {
@@ -402,6 +510,14 @@ impl SessionStore {
         conn: &rusqlite::Connection,
         session_id: &str,
     ) -> anyhow::Result<i64> {
+        Self::active_replay_boundary_details_in_connection(conn, session_id)
+            .map(|(boundary, _)| boundary)
+    }
+
+    fn active_replay_boundary_details_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> anyhow::Result<(i64, bool)> {
         let root = conn.query_row(
             "SELECT MAX(sequence) FROM session_events
                  WHERE session_id = ?1 AND event_type = ?2
@@ -410,7 +526,7 @@ impl SessionStore {
             |row| row.get::<_, Option<i64>>(0),
         )?;
         let Some(root) = root else {
-            return Ok(0);
+            return Ok((0, false));
         };
 
         let mut statement = conn.prepare(
@@ -429,10 +545,10 @@ impl SessionStore {
                 .and_then(serde_json::Value::as_i64)
                 .ok_or_else(|| anyhow::anyhow!("rollback event has no to_sequence"))?;
             if target < root {
-                return Ok(0);
+                return Ok((0, true));
             }
         }
-        Ok(root.saturating_sub(1))
+        Ok((root.saturating_sub(1), false))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -494,8 +610,14 @@ impl SessionStore {
         conn: &rusqlite::Connection,
         session_id: &str,
     ) -> anyhow::Result<Vec<ActiveBranchPoint>> {
+        Self::active_branch_points_from_events(&Self::read_active_in_connection(conn, session_id)?)
+    }
+
+    fn active_branch_points_from_events(
+        events: &[SessionEvent],
+    ) -> anyhow::Result<Vec<ActiveBranchPoint>> {
         let mut points = Vec::new();
-        for event in Self::read_active_in_connection(conn, session_id)? {
+        for event in events {
             if event.event_type != BRANCH_POINT_EVENT_TYPE {
                 continue;
             }

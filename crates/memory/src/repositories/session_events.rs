@@ -3139,6 +3139,65 @@ mod tests {
         assert_eq!(store.read_all(&session_id).unwrap().len(), 4);
     }
 
+    #[test]
+    fn event_cursor_matches_active_transcript_across_rollbacks_and_compaction() {
+        let (_db, store, session_id) = store();
+
+        let assert_cursor_matches_active = || {
+            let expected = store.read_active_transcript(&session_id).unwrap().len();
+            assert_eq!(store.cursor(&session_id).unwrap().event_cursor, expected);
+        };
+
+        store
+            .append_transcript(&session_id, r#"{"type":"first"}"#, 1, 1)
+            .unwrap();
+        store
+            .append_transcript(&session_id, r#"{"type":"second"}"#, 1, 2)
+            .unwrap();
+        assert_cursor_matches_active();
+
+        store
+            .append(
+                &session_id,
+                TIMELINE_ROLLBACK_EVENT_TYPE,
+                r#"{"to_sequence":1}"#,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_cursor_matches_active();
+
+        store
+            .append_transcript(&session_id, r#"{"type":"third"}"#, 1, 3)
+            .unwrap();
+        let compact_root = store
+            .append_transcript(
+                &session_id,
+                r#"{"type":"compact_summary","summary":"root"}"#,
+                1,
+                4,
+            )
+            .unwrap();
+        store
+            .append_transcript(&session_id, r#"{"type":"after_compaction"}"#, 1, 5)
+            .unwrap();
+        assert_cursor_matches_active();
+
+        // A late rollback before the compact root forces full replay. The
+        // cursor-only path must retain the same compaction and rollback rules.
+        let rollback_payload = format!(r#"{{"to_sequence":{}}}"#, compact_root.sequence - 1);
+        store
+            .append(
+                &session_id,
+                TIMELINE_ROLLBACK_EVENT_TYPE,
+                &rollback_payload,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_cursor_matches_active();
+    }
+
     /// Replay benchmark for the recovery boundary. Keep full-log and
     /// active-log reads on the same database so the samples expose the
     /// compaction boundary without including fixture setup or filesystem I/O.
