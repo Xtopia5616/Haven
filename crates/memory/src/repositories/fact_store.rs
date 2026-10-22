@@ -787,7 +787,7 @@ mod tests {
             .set_user_fact("user".into(), "city".into(), "Oslo".into(), vec![])
             .await
             .unwrap();
-        db.conn()
+        db.conn().expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET created_at = '2020-01-01T00:00:00Z', recorded_at = '2020-01-01T00:00:00.000Z' WHERE id = ?1",
                 rusqlite::params![old.fact_id],
@@ -858,6 +858,7 @@ mod tests {
         assert!(forgotten.facts.is_empty());
         assert_eq!(
             db.conn()
+                .expect("test database connection checkout failed")
                 .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
@@ -1069,6 +1070,7 @@ mod tests {
             .await
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET created_at = '2020-01-01T00:00:00Z' WHERE id = ?1",
                 rusqlite::params![old.fact_id],
@@ -1082,6 +1084,7 @@ mod tests {
         store.delete_fact(current.fact_id).await.unwrap();
         assert_eq!(
             db.conn()
+                .expect("test database connection checkout failed")
                 .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
@@ -1099,6 +1102,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             db.conn()
+                .expect("test database connection checkout failed")
                 .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
@@ -1108,6 +1112,7 @@ mod tests {
         store.clear_facts().await.unwrap();
         assert_eq!(
             db.conn()
+                .expect("test database connection checkout failed")
                 .query_row("SELECT COUNT(*) FROM fact_history", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),

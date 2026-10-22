@@ -215,6 +215,7 @@ mod tests {
         assert_eq!(store.cleanup_orphan_source_refs(None).await.unwrap(), 1);
         assert_eq!(
             db.conn()
+                .expect("test database connection checkout failed")
                 .query_row(
                     "SELECT COUNT(*) FROM fact_history WHERE predicate = 'api_key'",
                     [],
@@ -226,6 +227,7 @@ mod tests {
         );
         assert_eq!(
             db.conn()
+                .expect("test database connection checkout failed")
                 .query_row(
                     "SELECT COUNT(*) FROM fact_history WHERE object = 'Stale'",
                     [],

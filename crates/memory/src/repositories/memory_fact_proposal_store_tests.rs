@@ -47,6 +47,7 @@ async fn ordinary_extraction_queues_idempotently_and_accepts_once() {
     assert!(db.list_facts().unwrap().is_empty());
     assert_eq!(
         db.conn()
+            .expect("test database connection checkout failed")
             .query_row("SELECT COUNT(*) FROM fact_proposals", [], |row| row
                 .get::<_, i64>(0))
             .unwrap(),
@@ -189,6 +190,7 @@ async fn cursor_and_proposals_roll_back_together_and_queue_is_bounded() {
     let session_id = db.create_session("proposal rollback").unwrap().session_id;
     let message_id = new_id("msg");
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch(
             "CREATE TRIGGER reject_cursor BEFORE INSERT ON kv_store
                  WHEN NEW.key GLOB 'fact_extraction.*'
@@ -215,11 +217,13 @@ async fn cursor_and_proposals_roll_back_together_and_queue_is_bounded() {
             .is_none()
     );
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch("DROP TRIGGER reject_cursor")
         .unwrap();
 
     for index in 0..MAX_PENDING_FACT_PROPOSALS {
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO fact_proposals (
                         proposal_id, subject, predicate, object, confidence, durability, created_at
@@ -236,6 +240,7 @@ async fn cursor_and_proposals_roll_back_together_and_queue_is_bounded() {
     );
     assert_eq!(
         db.conn()
+            .expect("test database connection checkout failed")
             .query_row("SELECT COUNT(*) FROM fact_proposals", [], |row| row
                 .get::<_, i64>(0))
             .unwrap(),
@@ -267,6 +272,7 @@ async fn proposal_listing_is_keyset_bounded_and_filters_sensitive_values() {
             .unwrap();
     }
     db.conn()
+        .expect("test database connection checkout failed")
         .execute(
             "INSERT INTO fact_proposals (
                     proposal_id, subject, predicate, object, confidence, durability, created_at
@@ -572,6 +578,7 @@ async fn cursor_failure_rolls_back_verified_fact_write() {
     ));
     let marker_key = format!("fact_extraction.{session_id}");
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch(&format!(
             "CREATE TRIGGER fail_fact_marker BEFORE INSERT ON kv_store
                  WHEN NEW.key = '{marker_key}'
