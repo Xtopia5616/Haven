@@ -163,14 +163,14 @@ describe('SettingsSecurity', () => {
 
 	it.each([
 		{ networkPolicy: 'deny', explanation: /这不是 Windows 防火墙规则/ },
-		{ networkPolicy: 'ask', explanation: /子进程仍按当前 Windows 用户权限联网/ },
+		{ networkPolicy: 'ask', explanation: /获准的 Shell 命令由 MXC 按此网络策略限制/ },
 		{
 			networkPolicy: 'restricted',
 			explanation: /无法按目的地检查的 MCP、技能和命令子进程会被拒绝/,
 		},
 		{
 			networkPolicy: 'open',
-			explanation: /获准启动的子进程按当前 Windows 用户权限联网/,
+			explanation: /MXC Shell 按开放网络策略运行/,
 		},
 	] as const)(
 		'explains $networkPolicy as a Haven policy rather than an OS firewall rule',
@@ -190,8 +190,9 @@ describe('SettingsSecurity', () => {
 
 		expect(security.network_policy).toBe('ask');
 		expect(
-			screen.getByText(/工作区可写模式会拦截无法验证目的地的 MCP、技能和命令子进程/),
+			screen.getByText(/工作区可写模式下，获准的 Shell 命令由 MXC 按此网络策略限制/),
 		).toBeTruthy();
+		expect(screen.getAllByText(/Skill 与 MCP stdio 子进程仍会被拒绝/)).toHaveLength(2);
 	});
 
 	it('explains the user-level file access and independent network policy', () => {
@@ -205,12 +206,13 @@ describe('SettingsSecurity', () => {
 		expect(screen.getByText(/每棵受管进程树限制为最多 256 个活动进程/)).toBeTruthy();
 	});
 
-	it('describes file access modes as Haven authorization rather than an OS sandbox', () => {
+	it('describes the WorkspaceWrite MXC process boundary', () => {
 		render(SettingsSecurity, { security: createSecurity() });
 
 		expect(screen.getByText('文件访问模式')).toBeTruthy();
 		expect(screen.getByText(/不会替其它进程设置 Windows 文件或网络限制/)).toBeTruthy();
-		expect(screen.getByText(/无法由执行边界约束文件访问的子进程仍会被拒绝/)).toBeTruthy();
+		expect(screen.getByText(/Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写/)).toBeTruthy();
+		expect(screen.getByText(/Skill 与 MCP stdio 子进程仍会被拒绝/)).toBeTruthy();
 	});
 
 	it.each([
@@ -220,17 +222,16 @@ describe('SettingsSecurity', () => {
 		},
 		{
 			sandboxMode: 'workspace_write',
-			explanation: /不会仅因目标不在可写根内而拒绝其它外部效果/,
+			explanation: /Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写；网络按独立策略执行/,
 		},
 	] as const)(
-		'$sandboxMode keeps external effects on their own authorization path',
+		'describes network authorization alongside $sandboxMode filesystem policy',
 		({ sandboxMode, explanation }) => {
 			const security = createSecurity();
 			security.sandbox_mode = sandboxMode;
 			render(SettingsSecurity, { security });
 
-			expect(screen.getByText(explanation)).toBeTruthy();
-			expect(screen.getByText(/网络策略、操作风险与确认规则处理/)).toBeTruthy();
+			expect(screen.getAllByText(explanation).length).toBeGreaterThan(0);
 		},
 	);
 

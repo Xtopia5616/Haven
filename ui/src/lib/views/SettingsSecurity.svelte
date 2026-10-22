@@ -93,7 +93,7 @@
 		{
 			value: 'workspace_write',
 			label: '工作区可写',
-			detail: '本地文件写操作受工作区范围约束；不会仅因目标不在可写根内而拒绝其它外部效果，它们仍按网络策略、操作风险与确认规则处理。无法由执行边界约束文件访问的子进程仍会被拒绝。',
+			detail: 'Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写；网络按独立策略执行。Skill 与 MCP stdio 子进程仍会被拒绝。',
 		},
 		{
 			value: 'full_access',
@@ -111,7 +111,7 @@
 		{
 			value: 'ask',
 			label: '请求确认',
-			detail: '可验证的公网请求先询问；工作区可写模式会拦截无法验证目的地的 MCP、技能和命令子进程。完整访问模式下经确认启动的子进程仍按当前 Windows 用户权限联网。',
+			detail: '可验证的公网请求先询问；工作区可写模式下，获准的 Shell 命令由 MXC 按此网络策略限制。Skill 与 MCP stdio 子进程仍会被拒绝；完整访问模式下的子进程按当前 Windows 用户权限联网。',
 		},
 		{
 			value: 'restricted',
@@ -121,7 +121,7 @@
 		{
 			value: 'open',
 			label: '开放网络',
-			detail: 'Haven 不添加全局网络封锁或确认，工具自身授权仍会执行；获准启动的子进程按当前 Windows 用户权限联网。',
+			detail: 'Haven 不添加全局网络封锁或确认，工具自身授权仍会执行；工作区可写模式下，MXC Shell 按开放网络策略运行；完整访问模式下的子进程按当前 Windows 用户权限联网。',
 		},
 	] as const;
 

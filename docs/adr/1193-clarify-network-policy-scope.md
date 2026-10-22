@@ -1,5 +1,7 @@
 # ADR 1193：明确网络策略只约束 Haven 工具授权入口
 
+> `NetworkPolicy::Ask` 下通过确认后运行的 WorkspaceWrite Shell 由 MXC 强制网络策略，见 [ADR 1368](1368-mxc-processcontainer-for-workspace-shell.md)；其它 opaque 子进程仍按本文拒绝或要求 Open。
+
 ## 状态
 
 已采纳并实施。

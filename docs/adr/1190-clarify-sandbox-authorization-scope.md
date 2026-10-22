@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实施。
+已采纳并实施；关于 WorkspaceWrite 子进程的拒绝规则由 [ADR 1368](1368-mxc-processcontainer-for-workspace-shell.md) 部分取代。
 
 ## 背景
 

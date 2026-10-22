@@ -124,6 +124,22 @@ impl ExecutionPolicyPermit {
     pub(crate) fn sandbox_mode(&self) -> SandboxMode {
         self._config.sandbox_mode
     }
+
+    pub(crate) fn network_policy(&self) -> NetworkPolicy {
+        self._config.network_policy
+    }
+
+    /// Resolve the exact write roots that WorkspaceWrite grants to a
+    /// sandboxed host process. Paths are canonicalized again at the spawn
+    /// boundary and an unavailable root fails closed.
+    pub(crate) fn workspace_write_directories(
+        &self,
+    ) -> Result<Vec<haven_platform::filesystem::DirectoryCapability>, String> {
+        if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
+            return Err("MXC process roots require the Workspace Write sandbox".into());
+        }
+        self._config.workspace_write_directories()
+    }
 }
 
 pub(crate) fn execution_policy_denied(reason: String) -> anyhow::Error {
@@ -266,6 +282,25 @@ impl ExecutionPolicyAuthorization {
             .try_write()
             .expect("test authorization config must be idle")
             .sandbox_mode = sandbox_mode;
+        let proof = Self::for_test_with_engine_and_tool(Arc::clone(&authorization), "shell");
+        (proof, authorization)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_workspace_write_root(
+        root: &std::path::Path,
+        network_policy: NetworkPolicy,
+    ) -> (Self, Arc<AuthorizationEngine>) {
+        let authorization = Arc::new(AuthorizationEngine::new());
+        {
+            let mut config = authorization
+                .config
+                .try_write()
+                .expect("test authorization config must be idle");
+            config
+                .configure_test_workspace_write(root, network_policy)
+                .expect("test workspace root must be available");
+        }
         let proof = Self::for_test_with_engine_and_tool(Arc::clone(&authorization), "shell");
         (proof, authorization)
     }

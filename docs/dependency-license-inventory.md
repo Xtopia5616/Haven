@@ -4,7 +4,7 @@ Generated from `Cargo.lock`, `ui/pnpm-lock.yaml`, Cargo package metadata, and th
 
 Regenerate after installing the locked UI dependencies with `pwsh -NoProfile -File scripts/generate-third-party-license-inventory.ps1`. The versions below are resolved package versions, not version ranges.
 
-Cargo crates: 754. UI packages: 164.
+Cargo crates: 769. UI packages: 164.
 
 ## Cargo crates
 
@@ -64,6 +64,7 @@ Cargo crates: 754. UI packages: 164.
 | [bitflags](https://crates.io/crates/bitflags) | 2.13.1 | MIT OR Apache-2.0 |
 | [block](https://crates.io/crates/block) | 0.1.6 | MIT |
 | [block-buffer](https://crates.io/crates/block-buffer) | 0.10.4 | MIT OR Apache-2.0 |
+| [block-buffer](https://crates.io/crates/block-buffer) | 0.12.1 | MIT OR Apache-2.0 |
 | [block2](https://crates.io/crates/block2) | 0.6.2 | MIT |
 | [blocking](https://crates.io/crates/blocking) | 1.6.2 | Apache-2.0 OR MIT |
 | [boow](https://crates.io/crates/boow) | 0.1.3 | MIT |
@@ -98,6 +99,7 @@ Cargo crates: 754. UI packages: 164.
 | [cfg-if](https://crates.io/crates/cfg-if) | 1.0.4 | MIT OR Apache-2.0 |
 | [chacha20](https://crates.io/crates/chacha20) | 0.10.2 | MIT OR Apache-2.0 |
 | [chrono](https://crates.io/crates/chrono) | 0.4.45 | MIT OR Apache-2.0 |
+| [cidr](https://crates.io/crates/cidr) | 0.3.2 | MIT |
 | [clang-sys](https://crates.io/crates/clang-sys) | 1.9.1 | Apache-2.0 |
 | [clap](https://crates.io/crates/clap) | 4.6.6 | MIT OR Apache-2.0 |
 | [clap_builder](https://crates.io/crates/clap_builder) | 4.6.6 | MIT OR Apache-2.0 |
@@ -109,6 +111,7 @@ Cargo crates: 754. UI packages: 164.
 | [colorous](https://crates.io/crates/colorous) | 1.0.16 | Apache-2.0 |
 | [combine](https://crates.io/crates/combine) | 4.6.7 | MIT |
 | [concurrent-queue](https://crates.io/crates/concurrent-queue) | 2.5.0 | Apache-2.0 OR MIT |
+| [const-oid](https://crates.io/crates/const-oid) | 0.10.2 | Apache-2.0 OR MIT |
 | [cookie](https://crates.io/crates/cookie) | 0.18.1 | MIT OR Apache-2.0 |
 | [core-foundation](https://crates.io/crates/core-foundation) | 0.10.1 | MIT OR Apache-2.0 |
 | [core-foundation](https://crates.io/crates/core-foundation) | 0.9.4 | MIT OR Apache-2.0 |
@@ -127,6 +130,7 @@ Cargo crates: 754. UI packages: 164.
 | [crossbeam-utils](https://crates.io/crates/crossbeam-utils) | 0.8.22 | MIT OR Apache-2.0 |
 | [crunchy](https://crates.io/crates/crunchy) | 0.2.4 | MIT |
 | [crypto-common](https://crates.io/crates/crypto-common) | 0.1.7 | MIT OR Apache-2.0 |
+| [crypto-common](https://crates.io/crates/crypto-common) | 0.2.2 | MIT OR Apache-2.0 |
 | [cssparser](https://crates.io/crates/cssparser) | 0.37.0 | MPL-2.0 |
 | [cssparser-macros](https://crates.io/crates/cssparser-macros) | 0.7.0 | MPL-2.0 |
 | [ctor](https://crates.io/crates/ctor) | 1.0.13 | Apache-2.0 OR MIT |
@@ -144,6 +148,7 @@ Cargo crates: 754. UI packages: 164.
 | [derive-new](https://crates.io/crates/derive-new) | 0.7.0 | MIT |
 | [diffy](https://crates.io/crates/diffy) | 0.5.2 | MIT OR Apache-2.0 |
 | [digest](https://crates.io/crates/digest) | 0.10.7 | MIT OR Apache-2.0 |
+| [digest](https://crates.io/crates/digest) | 0.11.3 | MIT OR Apache-2.0 |
 | [dirs](https://crates.io/crates/dirs) | 7.0.0 | MIT OR Apache-2.0 |
 | [dirs-sys](https://crates.io/crates/dirs-sys) | 0.5.0 | MIT OR Apache-2.0 |
 | [dispatch2](https://crates.io/crates/dispatch2) | 0.3.1 | Zlib OR Apache-2.0 OR MIT |
@@ -183,6 +188,7 @@ Cargo crates: 754. UI packages: 164.
 | [field-offset](https://crates.io/crates/field-offset) | 0.3.6 | MIT OR Apache-2.0 |
 | [filetime](https://crates.io/crates/filetime) | 0.2.29 | MIT/Apache-2.0 |
 | [find-msvc-tools](https://crates.io/crates/find-msvc-tools) | 0.1.9 | MIT OR Apache-2.0 |
+| [flatbuffers](https://crates.io/crates/flatbuffers) | 25.12.19 | Apache-2.0 |
 | [flate2](https://crates.io/crates/flate2) | 1.1.9 | MIT OR Apache-2.0 |
 | [float-ord](https://crates.io/crates/float-ord) | 0.3.2 | MIT / Apache-2.0 |
 | [fluent-uri](https://crates.io/crates/fluent-uri) | 0.4.1 | MIT |
@@ -249,6 +255,7 @@ Cargo crates: 754. UI packages: 164.
 | [http-body](https://crates.io/crates/http-body) | 1.1.0 | MIT |
 | [http-body-util](https://crates.io/crates/http-body-util) | 0.1.4 | MIT |
 | [httparse](https://crates.io/crates/httparse) | 1.10.1 | MIT OR Apache-2.0 |
+| [hybrid-array](https://crates.io/crates/hybrid-array) | 0.4.15 | MIT OR Apache-2.0 |
 | [hyper](https://crates.io/crates/hyper) | 1.11.0 | MIT |
 | [hyper-rustls](https://crates.io/crates/hyper-rustls) | 0.27.9 | Apache-2.0 OR ISC OR MIT |
 | [hyper-util](https://crates.io/crates/hyper-util) | 0.1.20 | MIT |
@@ -335,6 +342,7 @@ Cargo crates: 754. UI packages: 164.
 | [mio](https://crates.io/crates/mio) | 1.2.2 | MIT |
 | [moxcms](https://crates.io/crates/moxcms) | 0.8.1 | BSD-3-Clause OR Apache-2.0 |
 | [muda](https://crates.io/crates/muda) | 0.20.0 | Apache-2.0 OR MIT |
+| [mxc-sdk](https://crates.io/crates/mxc-sdk) | 1.0.1 | MIT |
 | [ndarray](https://crates.io/crates/ndarray) | 0.17.2 | MIT OR Apache-2.0 |
 | [ndarray-npy](https://crates.io/crates/ndarray-npy) | 0.10.0 | MIT OR Apache-2.0 |
 | [ndk](https://crates.io/crates/ndk) | 0.8.0 | MIT OR Apache-2.0 |
@@ -343,6 +351,7 @@ Cargo crates: 754. UI packages: 164.
 | [ndk-sys](https://crates.io/crates/ndk-sys) | 0.5.0+25.2.9519653 | MIT OR Apache-2.0 |
 | [ndk-sys](https://crates.io/crates/ndk-sys) | 0.6.0+11769913 | MIT OR Apache-2.0 |
 | [new_debug_unreachable](https://crates.io/crates/new_debug_unreachable) | 1.0.6 | MIT |
+| [nix](https://crates.io/crates/nix) | 0.29.0 | MIT |
 | [nom](https://crates.io/crates/nom) | 7.1.3 | MIT |
 | [nom](https://crates.io/crates/nom) | 8.0.0 | MIT |
 | [nom-language](https://crates.io/crates/nom-language) | 0.1.0 | MIT |
@@ -500,6 +509,7 @@ Cargo crates: 754. UI packages: 164.
 | [serde_derive](https://crates.io/crates/serde_derive) | 1.0.229 | MIT OR Apache-2.0 |
 | [serde_derive_internals](https://crates.io/crates/serde_derive_internals) | 0.29.1 | MIT OR Apache-2.0 |
 | [serde_json](https://crates.io/crates/serde_json) | 1.0.154 | MIT OR Apache-2.0 |
+| [serde_path_to_error](https://crates.io/crates/serde_path_to_error) | 0.1.20 | MIT OR Apache-2.0 |
 | [serde_repr](https://crates.io/crates/serde_repr) | 0.1.21 | MIT OR Apache-2.0 |
 | [serde_spanned](https://crates.io/crates/serde_spanned) | 0.6.9 | MIT OR Apache-2.0 |
 | [serde_spanned](https://crates.io/crates/serde_spanned) | 1.1.1 | MIT OR Apache-2.0 |
@@ -512,6 +522,7 @@ Cargo crates: 754. UI packages: 164.
 | [serialize-to-javascript-impl](https://crates.io/crates/serialize-to-javascript-impl) | 0.1.2 | MIT OR Apache-2.0 |
 | [servo_arc](https://crates.io/crates/servo_arc) | 0.4.3 | MIT OR Apache-2.0 |
 | [sha2](https://crates.io/crates/sha2) | 0.10.9 | MIT OR Apache-2.0 |
+| [sha2](https://crates.io/crates/sha2) | 0.11.1 | MIT OR Apache-2.0 |
 | [sharded-slab](https://crates.io/crates/sharded-slab) | 0.1.7 | MIT |
 | [shlex](https://crates.io/crates/shlex) | 1.3.0 | MIT OR Apache-2.0 |
 | [shlex](https://crates.io/crates/shlex) | 2.0.1 | MIT OR Apache-2.0 |
@@ -598,6 +609,8 @@ Cargo crates: 754. UI packages: 164.
 | [tower-http](https://crates.io/crates/tower-http) | 0.6.11 | MIT |
 | [tower-layer](https://crates.io/crates/tower-layer) | 0.3.3 | MIT |
 | [tower-service](https://crates.io/crates/tower-service) | 0.3.3 | MIT |
+| [tracelogging](https://crates.io/crates/tracelogging) | 1.2.4 | MIT |
+| [tracelogging_macros](https://crates.io/crates/tracelogging_macros) | 1.2.3 | MIT |
 | [tracing](https://crates.io/crates/tracing) | 0.1.44 | MIT |
 | [tracing-appender](https://crates.io/crates/tracing-appender) | 0.2.5 | MIT |
 | [tracing-attributes](https://crates.io/crates/tracing-attributes) | 0.1.31 | MIT |
@@ -667,6 +680,7 @@ Cargo crates: 754. UI packages: 164.
 | [webview2-com-macros](https://crates.io/crates/webview2-com-macros) | 0.8.1 | MIT |
 | [webview2-com-sys](https://crates.io/crates/webview2-com-sys) | 0.39.1 | MIT |
 | [weezl](https://crates.io/crates/weezl) | 0.1.12 | MIT OR Apache-2.0 |
+| [widestring](https://crates.io/crates/widestring) | 1.2.1 | MIT OR Apache-2.0 |
 | [winapi](https://crates.io/crates/winapi) | 0.3.9 | MIT/Apache-2.0 |
 | [winapi-i686-pc-windows-gnu](https://crates.io/crates/winapi-i686-pc-windows-gnu) | 0.4.0 | MIT/Apache-2.0 |
 | [winapi-util](https://crates.io/crates/winapi-util) | 0.1.11 | Unlicense OR MIT |
@@ -732,6 +746,7 @@ Cargo crates: 754. UI packages: 164.
 | [winnow](https://crates.io/crates/winnow) | 1.0.4 | MIT |
 | [winreg](https://crates.io/crates/winreg) | 0.55.0 | MIT |
 | [winreg](https://crates.io/crates/winreg) | 0.56.0 | MIT |
+| [winresource](https://crates.io/crates/winresource) | 0.1.34 | MIT |
 | [winx](https://crates.io/crates/winx) | 0.36.4 | Apache-2.0 WITH LLVM-exception |
 | [wit-bindgen](https://crates.io/crates/wit-bindgen) | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | [writeable](https://crates.io/crates/writeable) | 0.6.3 | Unicode-3.0 |

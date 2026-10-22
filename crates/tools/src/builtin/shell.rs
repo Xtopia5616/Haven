@@ -164,12 +164,6 @@ impl ShellTool {
                 "Shell execution is blocked by read-only sandbox mode".into(),
             ));
         }
-        if sandbox_mode == haven_common::types::SandboxMode::WorkspaceWrite {
-            return Err(crate::security::execution_policy_denied(
-                "Shell child processes are unavailable in Workspace Write mode".into(),
-            ));
-        }
-
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
@@ -179,13 +173,6 @@ impl ShellTool {
             std_cmd.current_dir(working_directory);
         }
 
-        let containment = haven_platform::process_containment::ProcessContainment::new()?;
-        let mut child_cmd = tokio::process::Command::from(std_cmd);
-        #[cfg(windows)]
-        let windows_creation_flags = if silent { crate::CREATE_NO_WINDOW } else { 0 };
-        #[cfg(not(windows))]
-        let windows_creation_flags = 0;
-        containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
         let execution_authorization =
             execution_context.and_then(crate::ToolExecutionContext::clone_execution_authorization);
         let spawn_permit = match execution_context {
@@ -195,29 +182,76 @@ impl ShellTool {
                 .map_err(crate::security::execution_policy_denied)?,
             None => None,
         };
-        let child_spawn_result = {
-            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-            child_cmd.kill_on_drop(true).spawn()
-        };
-        let mut child = child_spawn_result?;
-        let pid = child
-            .id()
-            .ok_or_else(|| anyhow::anyhow!("shell child did not expose a process id"))?;
-        #[cfg(windows)]
-        let attach_result = child
-            .raw_handle()
-            .ok_or_else(|| std::io::Error::other("shell child process handle is unavailable"))
-            .and_then(|handle| containment.attach_and_resume(pid, handle));
-        #[cfg(not(windows))]
-        let attach_result = containment.attach_and_resume(pid, ());
-        if let Err(error) = attach_result {
-            drop(spawn_permit);
-            let _ = child.kill().await;
-            return Err(anyhow::anyhow!(
-                "failed to attach shell child to process containment: {}",
-                haven_common::error::sanitize_error_text(&error.to_string())
+        let spawn_mode = spawn_permit
+            .as_ref()
+            .map_or(haven_common::types::SandboxMode::FullAccess, |permit| {
+                permit.sandbox_mode()
+            });
+        if spawn_mode == haven_common::types::SandboxMode::ReadOnly {
+            return Err(crate::security::execution_policy_denied(
+                "Shell execution is blocked by read-only sandbox mode".into(),
             ));
         }
+        let mut child = match spawn_mode {
+            haven_common::types::SandboxMode::ReadOnly => {
+                return Err(crate::security::execution_policy_denied(
+                    "Shell execution is blocked by read-only sandbox mode".into(),
+                ));
+            }
+            haven_common::types::SandboxMode::FullAccess => {
+                spawn_shell_with_host_permissions(std_cmd, silent).await?
+            }
+            haven_common::types::SandboxMode::WorkspaceWrite => {
+                #[cfg(windows)]
+                {
+                    let permit = spawn_permit.as_ref().ok_or_else(|| {
+                        crate::security::execution_policy_denied(
+                            "Shell execution has no live policy authorization".into(),
+                        )
+                    })?;
+                    let write_root_capabilities = permit
+                        .workspace_write_directories()
+                        .map_err(crate::security::execution_policy_denied)?;
+                    let roots = write_root_capabilities
+                        .iter()
+                        .map(|directory| directory.root().to_path_buf())
+                        .collect();
+                    let request = sandboxed_shell_request(
+                        &std_cmd,
+                        roots,
+                        !matches!(
+                            permit.network_policy(),
+                            haven_common::types::NetworkPolicy::Deny
+                                | haven_common::types::NetworkPolicy::Restricted
+                        ),
+                    )?;
+                    let process = haven_platform::sandboxed_process::SandboxedProcess::spawn(
+                        request,
+                    )
+                    .await
+                    .map_err(|error| {
+                        tracing::warn!(
+                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                            "MXC rejected the Workspace Write shell process"
+                        );
+                        crate::security::execution_policy_denied(
+                            "MXC could not start the shell inside the Workspace Write boundary"
+                                .into(),
+                        )
+                    })?;
+                    ShellProcess {
+                        kind: ShellProcessKind::Sandboxed(process),
+                    }
+                }
+                #[cfg(not(windows))]
+                {
+                    let _ = std_cmd;
+                    return Err(crate::security::execution_policy_denied(
+                        "MXC Workspace Write process isolation requires Windows 11".into(),
+                    ));
+                }
+            }
+        };
         drop(spawn_permit);
 
         if cancel.is_cancelled() {
@@ -251,9 +285,9 @@ impl ShellTool {
             (None, None)
         };
         let stdout_fut =
-            read_stream_text_capped(child.stdout.take(), max_collect, tail.as_ref().cloned());
+            read_stream_text_capped(child.take_stdout(), max_collect, tail.as_ref().cloned());
         let stderr_fut =
-            read_stream_text_capped(child.stderr.take(), max_collect, tail.as_ref().cloned());
+            read_stream_text_capped(child.take_stderr(), max_collect, tail.as_ref().cloned());
         // Read both pipes concurrently: reading stdout to EOF first can
         // deadlock when the child fills the stderr pipe buffer meanwhile.
         // Keep the whole wait/read operation inside the cancellation race so
@@ -307,12 +341,12 @@ impl ShellTool {
         let combined = sanitize_shell_output(&raw_combined, &shell_context.shell);
 
         let text = haven_common::encoding::truncate_output(&combined, max_chars).text;
-        let exit_code = status.code();
+        let exit_code = status.code;
         let mut output = serde_json::json!({"output": text, "shell": shell_context.shell});
         if let Some(code) = exit_code {
             output["exit_code"] = serde_json::Value::from(code);
         }
-        if status.success() {
+        if status.success {
             Ok(ToolResult::from_output(output, truncated))
         } else {
             // Non-zero exit: report the failure. Prefer sanitized stderr; if
@@ -391,7 +425,7 @@ impl Tool for ShellTool {
             ToolCatalogGroup::Shell,
             None,
         );
-        spec.policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
+        spec.policy.execution_boundary = crate::ExecutionBoundary::SandboxedHost;
         Some(spec)
     }
 
@@ -450,6 +484,191 @@ impl Tool for ShellTool {
         self.run_with_execution_context(params, cancel, Some(context))
             .await
     }
+}
+
+type ShellAsyncReader = Box<dyn tokio::io::AsyncRead + Send + Unpin>;
+
+enum ShellProcessKind {
+    Host {
+        child: tokio::process::Child,
+        _containment: haven_platform::process_containment::ProcessContainment,
+    },
+    #[cfg(windows)]
+    Sandboxed(haven_platform::sandboxed_process::SandboxedProcess),
+}
+
+struct ShellProcess {
+    kind: ShellProcessKind,
+}
+
+struct ShellExitStatus {
+    code: Option<i32>,
+    success: bool,
+}
+
+impl ShellProcess {
+    fn take_stdout(&mut self) -> Option<ShellAsyncReader> {
+        match &mut self.kind {
+            ShellProcessKind::Host { child, .. } => child
+                .stdout
+                .take()
+                .map(|stream| Box::new(stream) as ShellAsyncReader),
+            #[cfg(windows)]
+            ShellProcessKind::Sandboxed(child) => child
+                .take_stdout()
+                .map(|stream| Box::new(stream) as ShellAsyncReader),
+        }
+    }
+
+    fn take_stderr(&mut self) -> Option<ShellAsyncReader> {
+        match &mut self.kind {
+            ShellProcessKind::Host { child, .. } => child
+                .stderr
+                .take()
+                .map(|stream| Box::new(stream) as ShellAsyncReader),
+            #[cfg(windows)]
+            ShellProcessKind::Sandboxed(child) => child
+                .take_stderr()
+                .map(|stream| Box::new(stream) as ShellAsyncReader),
+        }
+    }
+
+    async fn wait(&mut self) -> std::io::Result<ShellExitStatus> {
+        match &mut self.kind {
+            ShellProcessKind::Host { child, .. } => {
+                let status = child.wait().await?;
+                Ok(ShellExitStatus {
+                    code: status.code(),
+                    success: status.success(),
+                })
+            }
+            #[cfg(windows)]
+            ShellProcessKind::Sandboxed(child) => {
+                let code = child.wait().await?;
+                Ok(ShellExitStatus {
+                    code: Some(code),
+                    success: code == 0,
+                })
+            }
+        }
+    }
+
+    async fn kill(&mut self) -> std::io::Result<()> {
+        match &mut self.kind {
+            ShellProcessKind::Host { child, .. } => child.kill().await,
+            #[cfg(windows)]
+            ShellProcessKind::Sandboxed(child) => child.kill().await,
+        }
+    }
+}
+
+async fn spawn_shell_with_host_permissions(
+    std_cmd: std::process::Command,
+    silent: bool,
+) -> anyhow::Result<ShellProcess> {
+    let containment = haven_platform::process_containment::ProcessContainment::new()?;
+    let mut child_cmd = tokio::process::Command::from(std_cmd);
+    #[cfg(windows)]
+    let windows_creation_flags = if silent { crate::CREATE_NO_WINDOW } else { 0 };
+    #[cfg(not(windows))]
+    let windows_creation_flags = {
+        let _ = silent;
+        0
+    };
+    containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
+    let child_spawn_result = {
+        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+        child_cmd.kill_on_drop(true).spawn()
+    };
+    let mut child = child_spawn_result?;
+    let pid = child
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("shell child did not expose a process id"))?;
+    #[cfg(windows)]
+    let attach_result = child
+        .raw_handle()
+        .ok_or_else(|| std::io::Error::other("shell child process handle is unavailable"))
+        .and_then(|handle| containment.attach_and_resume(pid, handle));
+    #[cfg(not(windows))]
+    let attach_result = containment.attach_and_resume(pid, ());
+    if let Err(error) = attach_result {
+        let _ = child.kill().await;
+        return Err(anyhow::anyhow!(
+            "failed to attach shell child to process containment: {}",
+            haven_common::error::sanitize_error_text(&error.to_string())
+        ));
+    }
+    Ok(ShellProcess {
+        kind: ShellProcessKind::Host {
+            child,
+            _containment: containment,
+        },
+    })
+}
+
+#[cfg(windows)]
+fn sandboxed_shell_request(
+    std_cmd: &std::process::Command,
+    readwrite_paths: Vec<PathBuf>,
+    allow_network: bool,
+) -> anyhow::Result<haven_platform::sandboxed_process::SandboxedProcessRequest> {
+    use haven_platform::sandboxed_process::SandboxedProcessRequest;
+    use std::ffi::{OsStr, OsString};
+
+    let mut environment = std_cmd
+        .get_envs()
+        .filter_map(|(key, value)| value.map(|value| (key.to_os_string(), value.to_os_string())))
+        .collect::<Vec<_>>();
+    let temp_root = readwrite_paths
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Workspace Write has no MXC writable root"))?;
+    environment.retain(|(key, _)| {
+        !os_key_eq_ignore_ascii_case(key, "TEMP") && !os_key_eq_ignore_ascii_case(key, "TMP")
+    });
+    environment.push((OsString::from("TEMP"), temp_root.as_os_str().to_os_string()));
+    environment.push((OsString::from("TMP"), temp_root.as_os_str().to_os_string()));
+
+    let mut readonly_paths = Vec::new();
+    if let Some(system_root) = environment
+        .iter()
+        .find(|(key, _)| os_key_eq_ignore_ascii_case(key, "SYSTEMROOT"))
+        .map(|(_, value)| PathBuf::from(value))
+    {
+        readonly_paths.push(system_root.clone());
+        readonly_paths.push(system_root.join("System32"));
+        readonly_paths.push(system_root.join(r"System32\WindowsPowerShell\v1.0"));
+    }
+    for path in environment
+        .iter()
+        .find(|(key, _)| os_key_eq_ignore_ascii_case(key, "PATH"))
+        .map(|(_, value)| std::env::split_paths(value).collect::<Vec<_>>())
+        .unwrap_or_default()
+    {
+        if path.is_dir() {
+            readonly_paths.push(path);
+        }
+    }
+    readonly_paths.retain(|path| path.is_dir());
+
+    let working_directory = std_cmd
+        .get_current_dir()
+        .map(PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+    Ok(SandboxedProcessRequest {
+        program: std_cmd.get_program().to_os_string(),
+        arguments: std_cmd.get_args().map(OsStr::to_os_string).collect(),
+        working_directory,
+        readwrite_paths,
+        readonly_paths,
+        environment,
+        allow_network,
+    })
+}
+
+#[cfg(windows)]
+fn os_key_eq_ignore_ascii_case(key: &std::ffi::OsStr, expected: &str) -> bool {
+    key.to_str()
+        .is_some_and(|key| key.eq_ignore_ascii_case(expected))
 }
 
 fn validate_shell_command(shell: &str, command: &str) -> anyhow::Result<()> {
@@ -606,7 +825,7 @@ mod tests {
         let policy = ShellTool::default().operation_policy(&json!({}));
         assert_eq!(
             policy.execution_boundary,
-            crate::ExecutionBoundary::HostProcess
+            crate::ExecutionBoundary::SandboxedHost
         );
 
         assert_eq!(
@@ -614,6 +833,62 @@ mod tests {
                 .execution_boundary,
             crate::ExecutionBoundary::HostProcess,
             "a tool name alone must not receive the Windows workspace-isolation exemption"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer support"]
+    async fn workspace_write_shell_is_confined_to_configured_roots_by_mxc() {
+        use haven_common::types::NetworkPolicy;
+
+        let temp = tempdir().expect("create isolated MXC fixture");
+        let workspace_root = temp.path().join("workspace");
+        let outside_root = temp.path().join("outside");
+        std::fs::create_dir(&workspace_root).expect("create workspace root");
+        std::fs::create_dir(&outside_root).expect("create outside root");
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (execution_authorization, _) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Deny,
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let tool = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        };
+        let result = tool
+            .run_with_execution_context(
+                ShellParams {
+                    command: "echo inside>inside.txt & echo outside>..\\outside\\outside.txt"
+                        .into(),
+                    shell: Some("cmd".into()),
+                    silent: Some(true),
+                    cwd: None,
+                    step_id: None,
+                    session_id: None,
+                },
+                CancellationToken::new(),
+                Some(&context),
+            )
+            .await
+            .expect("MXC must launch the authorized Workspace Write shell");
+
+        assert!(result.output["exit_code"].as_i64().unwrap_or(1) != 0);
+        assert_eq!(
+            std::fs::read_to_string(workspace_root.join("inside.txt"))
+                .unwrap()
+                .trim(),
+            "inside"
+        );
+        assert!(
+            !outside_root.join("outside.txt").exists(),
+            "MXC must deny a write outside the configured workspace root"
         );
     }
 

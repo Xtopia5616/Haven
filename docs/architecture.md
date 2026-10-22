@@ -98,7 +98,7 @@ crate-private `ToolAuthorizationRequestResolver` 负责从 live session lookup �
 `AuthorizationRequest`；未命中工具的保守 fallback 也只有一份。它不作 allow/deny/confirm 决定，
 该决定仍由调用方在 `execute_tool` 之前交给唯一的授权 owner，不在工具 future 里阻塞；跨 crate 调用只依赖 `AuthorizationPort`，具体 `AuthorizationEngine` 不进入默认生产 API（ADR 0893）。
 生产工具执行必须携带 `AuthorizationPort` 为该请求签发的 opaque execution proof：auto-approval proof 绑定 session、tool、capability、canonical input、opaque target binding、operation policy、policy revision 与短期限；确认 receipt 经受信交互 owner 校验后才可换成执行 proof，receipt 本身不可直接执行。`AuthorizedExecutor` 在每次真实尝试（包括 retry）前由 AuthorizationEngine 复核 proof 与当前禁用项、deny、sandbox、network 边界。无 proof 的原始执行入口仅存在于测试/test-support 构建，不进入默认生产 API。MCP target binding 由 manager 实例和 live client 生命周期生成，不包含 server URL 或凭据；MCP manager 在路由前再次比较并固定所选 client，server/client 替换后旧 proof 不会被重定向。
-`ExecutionWorkspace` 是 Tools 授权 owner 持有的进程级执行根快照，不是 renderer 的导航 workspace。`SecurityConfig.execution_root` 持久化用户选择的可用本地目录；未设置时启动发现仓库根。设置应用时由授权 owner 规范化并打开 capability，再递增 workspace generation 与 policy revision，使旧 proof 失效；每个 attempt 从 proof 捕获同一 workspace snapshot，Files 相对路径解析、默认 Shell `cwd` 和 Agent prompt 都读该 owner 的状态（ADR 1170/1171）。配置根在启动时已失效会让 workspace 变为 unavailable，不悄悄回退到另一目录。`WorkspaceWrite` 未配置 `writable_roots` 时，以该执行根作为写入范围；根不可用时，相对文件路径失败，带路径的写操作失败关闭。显式 `writable_roots` 非空时继续作为写入范围；工具 `allowed_paths` 仍是独立限制。Files 的变更操作使用与授权 proof/policy revision 绑定的 `DirectoryCapability`，并以打开的目录句柄执行相对路径操作（ADR 1169）；这收敛 Files 路径竞态，但不是进程级 OS filesystem sandbox。WorkspaceWrite 会拒绝 NetworkAccess::Opaque 的 Shell、Skill 和 MCP capability；切到 FullAccess 后，这些子进程仍能访问系统授予的路径，cwd 只确定启动目录，不限制后续文件或网络访问，MCP server 的远端数据操作也不属于本机 workspace（ADR 1181）。
+`ExecutionWorkspace` 是 Tools 授权 owner 持有的进程级执行根快照，不是 renderer 的导航 workspace。`SecurityConfig.execution_root` 持久化用户选择的可用本地目录；未设置时启动发现仓库根。设置应用时由授权 owner 规范化并打开 capability，再递增 workspace generation 与 policy revision，使旧 proof 失效；每个 attempt 从 proof 捕获同一 workspace snapshot，Files 相对路径解析、默认 Shell `cwd` 和 Agent prompt 都读该 owner 的状态（ADR 1170/1171）。配置根在启动时已失效会让 workspace 变为 unavailable，不悄悄回退到另一目录。`WorkspaceWrite` 未配置 `writable_roots` 时，以该执行根作为写入范围；根不可用时，相对文件路径失败，带路径的写操作失败关闭。显式 `writable_roots` 非空时继续作为写入范围；工具 `allowed_paths` 仍是独立限制。Files 的变更操作使用与授权 proof/policy revision 绑定的 `DirectoryCapability`，并以打开的目录句柄执行相对路径操作（ADR 1169）。Shell 在 `WorkspaceWrite` 下通过 MXC ProcessContainer 启动：MXC 每次按请求探测 BaseContainer 能力，只将有效可写根授予读写，Windows 运行时与命令搜索目录设为只读，并按 NetworkPolicy 设置网络；不能验证完整策略时拒绝启动，不回退到宿主进程（ADR 1368）。Skill 与 MCP stdio 仍在 `WorkspaceWrite` 下拒绝。切到 `FullAccess` 后，获准的子进程以当前 Windows 用户权限运行，cwd 只确定启动目录；MCP server 的远端数据操作也不属于本机 workspace（ADR 1181、1368）。
 Skill venv/pip 准备进程与 MCP stdio server 在 spawn 时清空父进程环境，仅保留 `PATH`、`SYSTEMROOT`、`TEMP`、`TMP`（Windows 另有 `COMSPEC`、`PATHEXT`）；MCP profile 显式配置的运行时变量与凭据引用在此基线上追加。Shell 也先清空环境，仅保留运行基线、用户目录/终端/区域设置和显式代理变量，过滤其它应用凭据与运行时覆盖（ADR 1188）。这些环境 allowlist 减少无关凭据的直接传递，不改变子进程同用户身份的文件和网络权限，也不构成 OS sandbox（ADR 1175、1182、1188）。
 `OperationSpec` 是运行时
 策略和 manifest 的唯一定义，覆盖 builtin operation view、root tool，以及 MCP/Skill adapter；spec 没有
@@ -632,8 +632,7 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 的文件路径边界只作用于声明为 `OperationEffect::WorkspaceWrite` 的本地文件写操作；其它
 `ExternalEffect` 不会仅因只读模式或目标位于可写根之外而被拒绝，而是继续按执行边界、网络策略、
 操作风险、权限规则和确认流程处理；无法保证只读效果的工具仍可按各自执行边界被拒绝。
-WorkspaceWrite 仍会单独拒绝无法约束文件访问的宿主子进程，因为执行工作区与可写根不是 OS 文件沙箱；
-受管隔离执行则由其自身边界控制。`deny` / 不可验证
+WorkspaceWrite 仍会单独拒绝无法约束文件访问的宿主子进程；Shell 必须使用 MXC BaseContainer，受管隔离执行则由其自身边界控制。`deny` / 不可验证
 目的地的 `restricted` 仍直接拒绝对应网络能力；`ask` 将符合执行边界的网络操作交给确认流程，
 `open` 不添加全局网络限制。Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过
 SSRF/DNS 校验并固定地址的 HTTP/MCP 目的地，禁止跨源重定向。`ask` 与 `restricted` 共用可验证

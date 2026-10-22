@@ -1271,4 +1271,5 @@
 - [1365：为事实记录现实有效时间](1365-fact-valid-time.md)
 - [1366：自动关闭已完成的当前会话](1366-auto-close-completed-current-session.md)
 - [1367：会话级执行上下文与权限分层提案](1367-session-scoped-execution-policy-design.md)
+- [1368：用 MXC ProcessContainer 限定 WorkspaceWrite Shell](1368-mxc-processcontainer-for-workspace-shell.md)
 - [1370：Agent 模型消费者共享运行时发布点](1370-share-agent-model-runtime.md)

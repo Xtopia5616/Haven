@@ -6,7 +6,7 @@ Haven 是一个面向 Windows 的本机语音助手。后端使用 Rust/Tauri 2�
 
 ## 开发环境
 
-- Windows 10/11（桌面应用的运行与打包目标）
+- Windows 11 24H2 或更新版本；MXC ProcessContainer 需要受支持的 Windows 累积更新（24H2/25H2 安装 KB5124010 或更新版本，26H1 安装 KB5124006 或更新版本）。详见 [MXC Windows 版本支持表](https://github.com/microsoft/mxc/blob/main/docs/backends/process-container/os-version-support.md)
 - Rust 1.99.0，由 `rust-toolchain.toml` 固定；需包含 `clippy`、`rustfmt`
 - Node.js 24.21.0 与 pnpm 12.12.1；版本分别由 `.node-version` 和 `ui/package.json` 固定
 - UI 类型检查使用 TypeScript 7.0.2 原生编译器；Svelte 兼容层保留 TypeScript 6.0.3

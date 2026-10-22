@@ -1,5 +1,7 @@
 # ADR 1181：在 WorkspaceWrite 下拒绝 opaque capability
 
+> Shell 的 `WorkspaceWrite` 限制已由 [ADR 1368](1368-mxc-processcontainer-for-workspace-shell.md) 改为 MXC BaseContainer；Skill 与 MCP stdio 仍按本文拒绝。
+
 ## 状态
 
 已采纳并实施。

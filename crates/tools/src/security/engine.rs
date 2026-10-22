@@ -67,6 +67,35 @@ pub(super) struct SafetyConfig {
     tool_settings: HashMap<String, ToolConfig>,
 }
 
+impl SafetyConfig {
+    pub(super) fn workspace_write_directories(
+        &self,
+    ) -> Result<Vec<haven_platform::filesystem::DirectoryCapability>, String> {
+        let directories = if self.writable_roots.is_empty() {
+            self.execution_workspace.directory().into_iter().collect()
+        } else {
+            open_directory_roots(&self.writable_roots, "security.writable_roots")?
+        };
+        if directories.is_empty() {
+            return Err("Workspace Write has no execution root for MXC".into());
+        }
+        Ok(directories)
+    }
+
+    #[cfg(test)]
+    pub(super) fn configure_test_workspace_write(
+        &mut self,
+        root: &Path,
+        network_policy: NetworkPolicy,
+    ) -> anyhow::Result<()> {
+        self.sandbox_mode = SandboxMode::WorkspaceWrite;
+        self.writable_roots = vec![root.to_path_buf()];
+        self.execution_workspace = ExecutionWorkspace::open_root(root, 1)?;
+        self.network_policy = network_policy;
+        Ok(())
+    }
+}
+
 /// Central authorization engine for every foreground or background tool call.
 ///
 /// The engine owns policy evaluation; callers never decide based on a

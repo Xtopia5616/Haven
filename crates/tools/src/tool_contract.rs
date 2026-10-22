@@ -125,6 +125,9 @@ pub(crate) struct OperationAttributes {
 pub(crate) enum ExecutionBoundary {
     InProcess,
     HostProcess,
+    /// A host process whose adapter applies MXC filesystem and network
+    /// restrictions before it can execute.
+    SandboxedHost,
 }
 
 /// Single runtime policy returned by every tool implementation. The manifest

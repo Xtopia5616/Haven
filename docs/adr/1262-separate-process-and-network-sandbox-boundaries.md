@@ -1,5 +1,7 @@
 # ADR 1262：区分宿主进程与网络授权
 
+> WorkspaceWrite Shell 后续通过 MXC ProcessContainer 获得受限文件/网络 capability，见 [ADR 1368](1368-mxc-processcontainer-for-workspace-shell.md)；本文对 Skill 与 MCP stdio 的拒绝仍有效。
+
 ## 状态
 
 已采纳并实施。
