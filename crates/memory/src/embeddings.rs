@@ -1344,7 +1344,7 @@ mod tests {
     }
 
     fn insert_fact_with_id(db: &Database, id: &str) {
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
              VALUES (?1, 'user', 'test', ?1, 'inferred', 1.0, '2026-01-01T00:00:00Z')",
@@ -1568,6 +1568,7 @@ mod tests {
         insert_fact_with_id(&db, "fact-short");
         assert!(db.missing_embedding_ids(entity_kind::FACT, "m").is_err());
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO memory_embeddings (entity_type, entity_id, model, vector, text)
                  VALUES ('fact', 'fact-short', 'm', X'0000803F', 'text')",
@@ -1590,7 +1591,7 @@ mod tests {
         assert_eq!(missing, vec![fact.fact_id.clone()]);
 
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute(
                 "UPDATE facts SET object = 'Go' WHERE id = ?1",
                 rusqlite::params![fact.fact_id],
@@ -1963,7 +1964,7 @@ mod tests {
         );
         // SPO change drops the vector.
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute(
                 "UPDATE facts SET object = 'French' WHERE id = ?1",
                 rusqlite::params![fact.fact_id],
@@ -2028,7 +2029,7 @@ mod tests {
         db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0, 0.5], "a")
             .unwrap();
         let bucket: i64 = db
-            .conn()
+            .conn().expect("test database connection checkout failed")
             .query_row(
                 "SELECT bucket FROM embedding_lsh WHERE entity_type = ?1 AND entity_id = ?2 AND model = ?3",
                 rusqlite::params![entity_kind::FACT, FACT_ID_1, "m"],
@@ -2084,11 +2085,15 @@ mod tests {
         insert_fact_with_id(&db, FACT_ID_1);
         db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[0.25, 0.75], "x")
             .unwrap();
-        db.conn().execute("DELETE FROM embedding_lsh", []).unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute("DELETE FROM embedding_lsh", [])
+            .unwrap();
         let n = db.rebuild_embedding_lsh("m").unwrap();
         assert_eq!(n, 1);
         let bucket: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT bucket FROM embedding_lsh WHERE entity_id = ?1",
                 [FACT_ID_1],
@@ -2104,8 +2109,12 @@ mod tests {
         insert_fact_with_id(&db, FACT_ID_1);
         db.persist_embedding(entity_kind::FACT, FACT_ID_1, "m", &[1.0, 0.0], "x")
             .unwrap();
-        db.conn().execute("DELETE FROM embedding_lsh", []).unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
+            .execute("DELETE FROM embedding_lsh", [])
+            .unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO embedding_lsh (entity_type, entity_id, model, bucket)
                  VALUES (?1, ?2, ?3, ?4)",

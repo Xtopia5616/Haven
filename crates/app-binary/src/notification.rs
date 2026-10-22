@@ -403,7 +403,10 @@ mod tests {
             missing_id
         );
 
-        db.conn().execute_batch("DROP TABLE sessions").unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute_batch("DROP TABLE sessions")
+            .unwrap();
         let query_error_id = new_id("ses");
         assert_eq!(
             resolve_session_display_title_from_store(&session_store, &query_error_id).await,

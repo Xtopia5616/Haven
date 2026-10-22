@@ -308,6 +308,7 @@ impl SessionStore {
             title: None,
             status: SessionStatus::Pending,
             run_end_reason: None,
+            run_end_kind: None,
             created_at: now.clone(),
             updated_at: now,
             creation,

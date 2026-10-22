@@ -588,6 +588,7 @@ mod tests {
         let step_id = haven_common::types::new_id("step");
         db.create_thought_step(&session_id, 1, &step_id).unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE session_steps SET step_number = -1 WHERE id = ?1",
                 rusqlite::params![step_id],
@@ -658,7 +659,7 @@ mod tests {
         db.create_tool_step(&session_id, 0, "shell", "{}", false, false, None, None)
             .unwrap();
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute_batch("PRAGMA ignore_check_constraints = ON")
                 .unwrap();
             conn.execute(
@@ -878,7 +879,7 @@ mod tests {
             .unwrap();
 
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute_batch("PRAGMA ignore_check_constraints = ON")
                 .unwrap();
             conn.execute(

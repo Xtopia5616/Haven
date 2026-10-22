@@ -1463,6 +1463,7 @@ mod tests {
             .insert_fact("user", "likes", object, "inferred", 0.9, &[])
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET predicate = ?1 WHERE id = ?2",
                 [predicate, fact.fact_id.as_str()],
@@ -1472,7 +1473,7 @@ mod tests {
     }
 
     fn insert_orphan_embedding(db: &Database) {
-        db.conn()
+        db.conn().expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO memory_embeddings
                     (entity_type, entity_id, model, vector, text)
@@ -1481,6 +1482,7 @@ mod tests {
             )
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO embedding_lsh (entity_type, entity_id, model, bucket)
                  VALUES ('fact', 'fact-b0feb8de767b1ce11801f141ab9ec94a', 'model', 1)",
@@ -1502,6 +1504,7 @@ mod tests {
             .insert_fact("user", "likes", "Python", "inferred", 0.1, &[])
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET created_at = '2000-01-01T00:00:00Z',
                                   last_seen_at = '2000-01-01T00:00:00Z'
@@ -1524,6 +1527,7 @@ mod tests {
         let db = temp_db();
         let loser_id = insert_noncanonical_predicate(&db, "language", "Go");
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET confidence = 0.5 WHERE id = ?1",
                 [&loser_id],
@@ -1531,6 +1535,7 @@ mod tests {
             .unwrap();
         let keeper_id = insert_noncanonical_predicate(&db, "language", "Rust");
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET source = 'user', confidence = 1.0 WHERE id = ?1",
                 [&keeper_id],
@@ -1538,6 +1543,7 @@ mod tests {
             .unwrap();
         let thirty_six_hours_ago = (chrono::Utc::now() - chrono::Duration::hours(36)).to_rfc3339();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET created_at = ?1, last_seen_at = ?1 WHERE id IN (?2, ?3)",
                 [
@@ -1569,6 +1575,7 @@ mod tests {
             .insert_fact("user", "likes", "Go", "inferred", 0.8, &[])
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET provenance_record_id = '  ' WHERE id = ?1",
                 [&fact.fact_id],
@@ -1582,6 +1589,7 @@ mod tests {
         )
         .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TABLE memory_embeddings")
             .unwrap();
         let worker = make_engine(db.clone());
@@ -1998,6 +2006,7 @@ mod tests {
         ];
         for (message_id, timestamp) in message_times {
             db.conn()
+                .expect("test database connection checkout failed")
                 .execute(
                     "UPDATE messages SET created_at = ?1 WHERE id = ?2",
                     [timestamp, message_id],
@@ -2025,6 +2034,7 @@ mod tests {
         )
         .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE session_steps
                  SET created_at = ?1, started_at = ?2, completed_at = ?3
@@ -2541,6 +2551,7 @@ mod tests {
         db.enqueue_fact_extraction(&session.session_id, false, 1)
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TABLE marker_ack_attempts (kind TEXT NOT NULL);
                  CREATE TRIGGER reject_fact_marker_ack
@@ -2562,6 +2573,7 @@ mod tests {
             loop {
                 let attempts: i64 = db
                     .conn()
+                    .expect("test database connection checkout failed")
                     .query_row(
                         "SELECT COUNT(*) FROM marker_ack_attempts WHERE kind = 'fact'",
                         [],
@@ -2709,6 +2721,7 @@ mod tests {
         )
         .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TABLE marker_ack_attempts (kind TEXT NOT NULL);
                  CREATE TRIGGER reject_first_summary_marker_ack
@@ -2747,6 +2760,7 @@ mod tests {
             loop {
                 let attempts: i64 = db
                     .conn()
+                    .expect("test database connection checkout failed")
                     .query_row(
                         "SELECT COUNT(*) FROM marker_ack_attempts WHERE kind = 'summary'",
                         [],
@@ -2965,6 +2979,7 @@ mod tests {
         });
         let worker = make_engine_with_inference(db.clone(), inference.clone());
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(&format!(
                 "CREATE TRIGGER fail_ordinary_cursor
                  BEFORE INSERT ON kv_store
@@ -2986,6 +3001,7 @@ mod tests {
         );
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER fail_ordinary_cursor")
             .unwrap();
         assert!(worker.infer_facts(&session.session_id).await);
@@ -3141,6 +3157,7 @@ mod tests {
         db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER fail_summary_completion_marker
                  BEFORE INSERT ON kv_store
@@ -3182,6 +3199,7 @@ mod tests {
         );
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER fail_summary_completion_marker")
             .unwrap();
         assert_eq!(
@@ -3275,6 +3293,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("summary throttle stamp retry").unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER fail_summary_throttle_insert
                  BEFORE INSERT ON kv_store
@@ -3310,6 +3329,7 @@ mod tests {
         );
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER fail_summary_throttle_insert")
             .unwrap();
         assert_eq!(
@@ -3507,6 +3527,7 @@ mod tests {
             )
             .unwrap();
             db.conn()
+                .expect("test database connection checkout failed")
                 .execute_batch(&format!("DROP TABLE {missing_table}"))
                 .unwrap();
             let worker = MemoryWorker::new(db.clone(), mock_router("[]"), 4_000, 64, 40, 256, 0);

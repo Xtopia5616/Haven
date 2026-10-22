@@ -414,6 +414,10 @@
 				inputText: session.input_text,
 				title: session.title,
 				runEndStatus,
+				runEndOutcome:
+					result.session.run_end_kind === 'turn_completed'
+						? 'turn_completed'
+						: undefined,
 				runEndReason: result.session.run_end_reason || '',
 				wasError,
 				errorReason: wasError

@@ -342,6 +342,7 @@ mod tests {
 
         let (count, content): (i64, String) = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*), MIN(content) FROM memory_items WHERE id = ?1",
                 rusqlite::params![episode_id],
@@ -407,6 +408,7 @@ mod tests {
 
         let content: String = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT content FROM memory_items WHERE id = ?1",
                 rusqlite::params![episode_id],
@@ -516,7 +518,10 @@ mod tests {
             vec![(session.session_id.clone(), episode_id)]
         );
 
-        db.conn().execute_batch("DROP TABLE kv_store").unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute_batch("DROP TABLE kv_store")
+            .unwrap();
         assert!(
             pending_fact_rows(&store, &cancellation)
                 .await
@@ -563,7 +568,10 @@ mod tests {
                 .unwrap(),
             None
         );
-        db.conn().execute_batch("DROP TABLE memory_items").unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute_batch("DROP TABLE memory_items")
+            .unwrap();
         assert!(
             store
                 .episode_text_cancellable(&episode_id, &cancellation)
@@ -591,7 +599,7 @@ mod tests {
         let store = MemoryOutboxStore::new(db.clone());
         let cancellation = CancellationToken::new();
 
-        let lock = db.conn();
+        let lock = db.conn().expect("test database connection checkout failed");
         lock.execute_batch("BEGIN IMMEDIATE").unwrap();
         let clear = tokio::spawn({
             let store = store.clone();

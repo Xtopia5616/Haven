@@ -85,7 +85,10 @@ pub(crate) async fn set_status_and_emit_with_waiting_reason(
     run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
 ) -> anyhow::Result<()> {
     tracing::debug!("session {} status -> {}", session_id, status.as_str());
-    if executor.update_session_status(session_id, status).await? {
+    if executor
+        .update_session_status_with_run_end_kind(session_id, status, run_end_kind)
+        .await?
+    {
         let waiting_reason = if status == SessionStatus::Paused {
             let reason = explicit_reason.or(executor.waiting_reason(session_id).await);
             executor.set_waiting_reason(session_id, reason).await?;

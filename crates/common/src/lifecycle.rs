@@ -88,12 +88,27 @@ pub enum SessionWaitingReason {
     EndIncomplete,
 }
 
-/// Outcome attached to a live SessionRun end event. The session can remain
-/// `Paused` after this outcome so another user turn can continue the dialog.
+/// Outcome attached to a SessionRun end. The session can remain `Paused` after
+/// this outcome so another user turn can continue the dialog.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionRunEndKind {
     TurnCompleted,
+}
+
+impl SessionRunEndKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TurnCompleted => "turn_completed",
+        }
+    }
+
+    pub fn from_storage(value: &str) -> Option<Self> {
+        match value {
+            "turn_completed" => Some(Self::TurnCompleted),
+            _ => None,
+        }
+    }
 }
 
 impl SessionWaitingReason {

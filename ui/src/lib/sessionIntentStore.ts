@@ -7,6 +7,7 @@ export type SessionResumeTarget = {
 	inputText?: string;
 	title?: string | null;
 	runEndStatus?: SessionRunEndStatus;
+	runEndOutcome?: 'turn_completed';
 	runEndReason?: string;
 	wasError?: boolean;
 	errorReason?: string;

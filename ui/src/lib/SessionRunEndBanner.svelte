@@ -20,31 +20,31 @@
 		reason.trim() ||
 			(isError
 				? '本轮因错误停止，暂未收到更具体的原因。'
-				: isPaused
-					? '本轮已暂停，暂未收到更具体的原因。'
-					: isTurnCompleted
-						? '本轮已正常结束。'
+				: isTurnCompleted
+					? '本轮已完成。'
+					: isPaused
+						? '本轮已暂停，暂未收到更具体的原因。'
 						: '会话已结束。'),
 	);
 	let heading = $derived(
 		isError
 			? '本轮因错误停止'
 			: isTurnCompleted
-				? '本轮已正常结束'
+				? '本轮已完成'
 				: isPaused
 					? '本轮已暂停'
 					: '会话已结束',
 	);
 	let badge = $derived(
-		isError ? '错误' : isTurnCompleted ? '本轮完成' : isPaused ? '已暂停' : '已结束',
+		isError ? '错误' : isTurnCompleted ? '已完成' : isPaused ? '已暂停' : '已结束',
 	);
 	let hint = $derived(
 		isError
 			? '已提交的内容仍可恢复；失败的这一步可以使用下方“继续生成”重试。'
 			: isPaused
-				? '已保留当前输出，可以继续生成或发送新的消息。'
+				? '当前输出已保留，可以继续生成或发送新消息。'
 				: isTurnCompleted
-					? '回答已保留，可以继续发送消息。'
+					? '当前输出已保留，可以发送新消息继续对话。'
 					: '会话内容已保留，可以新建会话继续工作。',
 	);
 </script>

@@ -171,6 +171,7 @@ mod tests {
         assert!(id.starts_with("msg-"));
         let (content, session_id, kind): (String, String, String) = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT content, session_id, kind FROM memory_items WHERE id = ?1",
                 rusqlite::params![id],
@@ -191,6 +192,7 @@ mod tests {
             .unwrap();
         let got: String = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT id FROM memory_items WHERE content = ?1",
                 rusqlite::params!["shared id summary"],
@@ -239,6 +241,7 @@ mod tests {
 
         let item_count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM memory_items WHERE kind = 'episode_summary'",
                 [],
@@ -247,6 +250,7 @@ mod tests {
             .unwrap();
         let marker_count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM kv_store WHERE key LIKE 'fact_extraction_episode_pending.%'",
                 [],
@@ -272,6 +276,7 @@ mod tests {
         .unwrap();
         let (topics, entities): (String, String) = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT topics, entities FROM memory_items WHERE id = ?1",
                 rusqlite::params![id],

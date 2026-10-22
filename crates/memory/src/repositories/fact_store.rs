@@ -445,6 +445,7 @@ mod tests {
             }
         }
         db.conn()
+            .expect("test database connection checkout failed")
             .execute("UPDATE facts SET created_at = '2026-10-01T00:00:00Z'", [])
             .unwrap();
 
@@ -788,6 +789,7 @@ mod tests {
     async fn inferred_batch_failure_rolls_back_prior_writes() {
         let (db, store) = store();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER reject_selected_inferred_fact
                  BEFORE INSERT ON facts
@@ -817,6 +819,7 @@ mod tests {
         assert!(db.list_facts().unwrap().is_empty());
         let node_count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row("SELECT COUNT(*) FROM memory_nodes", [], |row| row.get(0))
             .unwrap();
         assert_eq!(node_count, 0, "node writes must roll back with the batch");
@@ -848,7 +851,7 @@ mod tests {
         )
         .unwrap();
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute(
                 "UPDATE facts SET provenance_snippet = 'password=hidden' WHERE object = 'safe value'",
                 [],

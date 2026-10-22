@@ -32,6 +32,7 @@ impl SessionSupervisor {
         store: &SessionStore,
         session_id: &str,
         status: SessionStatus,
+        run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
     ) -> anyhow::Result<()> {
         let retry_policy = RecoveryPolicy::new(
             Some(3),
@@ -40,7 +41,10 @@ impl SessionSupervisor {
         );
         let mut completed_attempts = 0u32;
         loop {
-            match store.update_session_status(session_id, status).await {
+            match store
+                .update_session_status_with_run_end_kind(session_id, status, run_end_kind)
+                .await
+            {
                 Ok(()) => return Ok(()),
                 Err(error) => {
                     completed_attempts = completed_attempts.saturating_add(1);
@@ -132,7 +136,7 @@ impl SessionSupervisor {
             if record.as_ref().is_some_and(|record| {
                 record.status != SessionStatus::Paused && record.status != SessionStatus::Completed
             }) {
-                Self::persist_status(&self.store, session_id, SessionStatus::Paused).await?;
+                Self::persist_status(&self.store, session_id, SessionStatus::Paused, None).await?;
             }
             if let Err(error) = self.cancel_session_tool_runs_checked(session_id).await {
                 if record
@@ -150,7 +154,8 @@ impl SessionSupervisor {
                 .as_ref()
                 .is_some_and(|record| record.status != SessionStatus::Completed)
                 && let Err(error) =
-                    Self::persist_status(&self.store, session_id, SessionStatus::Completed).await
+                    Self::persist_status(&self.store, session_id, SessionStatus::Completed, None)
+                        .await
             {
                 self.emit_event(SessionSupervisorEvent::SessionEndPaused {
                     session_id: session_id.to_string(),
@@ -733,7 +738,17 @@ impl SessionSupervisor {
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<bool> {
-        self.update_session_status_inner(session_id, None, status, true)
+        self.update_session_status_inner(session_id, None, status, true, None)
+            .await
+    }
+
+    pub async fn update_session_status_with_run_end_kind(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+        run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
+    ) -> anyhow::Result<bool> {
+        self.update_session_status_inner(session_id, None, status, true, run_end_kind)
             .await
     }
 
@@ -760,7 +775,7 @@ impl SessionSupervisor {
         expected: SessionStatus,
         status: SessionStatus,
     ) -> anyhow::Result<bool> {
-        self.update_session_status_inner(session_id, Some(expected), status, true)
+        self.update_session_status_inner(session_id, Some(expected), status, true, None)
             .await
     }
 
@@ -819,7 +834,7 @@ impl SessionSupervisor {
         if status.is_terminal() {
             anyhow::bail!("memory-only session updates cannot commit a terminal status");
         }
-        self.update_session_status_inner(session_id, None, status, false)
+        self.update_session_status_inner(session_id, None, status, false, None)
             .await
     }
 
@@ -829,13 +844,18 @@ impl SessionSupervisor {
         expected: Option<SessionStatus>,
         status: SessionStatus,
         persist: bool,
+        run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
     ) -> anyhow::Result<bool> {
         let Some(actor) = self.actor_for(session_id).await else {
             return Ok(false);
         };
         let transition = match expected {
             Some(expected) => actor.transition_if(expected, status, persist).await?,
-            None => actor.transition(status, persist).await?,
+            None => {
+                actor
+                    .transition_with_run_end_kind(status, persist, run_end_kind)
+                    .await?
+            }
         };
         if transition.pending {
             self.enqueue_pending(session_id).await;

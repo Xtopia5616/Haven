@@ -22,6 +22,7 @@ fn test_session_info() -> SessionInfo {
         summary: "my summary".into(),
         title: Some("My Title".into()),
         status: SessionStatus::Running,
+        run_end_kind: None,
         waiting_reason: None,
         steps: vec![],
         created_at: "2026-01-01T00:00:00Z".into(),

@@ -1065,7 +1065,7 @@ mod tests {
             haven_common::types::new_id("fact"),
             haven_common::types::new_id("fact"),
         ];
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
              VALUES (?1, 'user', 'fav_lang', 'Rust', 'inferred', 0.8, '2026-01-01T00:00:00Z'),
@@ -1099,7 +1099,7 @@ mod tests {
     /// list_facts would keep serving the fresh rows.
     fn age_facts(db: &Database, days: i64) {
         let old = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "UPDATE facts SET created_at = ?1, last_seen_at = ?1",
             rusqlite::params![old],
@@ -1498,6 +1498,7 @@ mod tests {
         assert_eq!(stored[0].source_ref.as_ref().unwrap().snippet, "[redacted]");
         let raw: String = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT provenance_snippet FROM facts WHERE id = ?1",
                 rusqlite::params![stored[0].fact_id],
@@ -1514,7 +1515,7 @@ mod tests {
             .insert_fact("user", "likes", "Go", "inferred", 0.8, &["preference"])
             .unwrap();
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute(
                 "UPDATE facts SET provenance_record_id = '   ' WHERE id = ?1",
                 rusqlite::params![fact.fact_id],
@@ -1623,7 +1624,7 @@ mod tests {
 
         // Age both facts by ~2 years.
         let old = "2024-01-01T00:00:00Z";
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "UPDATE facts SET created_at = ?1, last_seen_at = ?1",
             rusqlite::params![old],
@@ -1662,7 +1663,7 @@ mod tests {
             &["workspace"],
         )
         .unwrap();
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "UPDATE facts SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'",
             [],
@@ -1696,7 +1697,7 @@ mod tests {
             &["workspace"],
         )
         .unwrap();
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "UPDATE facts SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'
              WHERE predicate = 'project_path'",
@@ -2068,7 +2069,7 @@ mod tests {
             .unwrap();
         let stale = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute(
                 "UPDATE facts SET created_at = ?1, last_seen_at = ?1",
                 rusqlite::params![stale],

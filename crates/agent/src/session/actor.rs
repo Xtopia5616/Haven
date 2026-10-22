@@ -15,7 +15,7 @@ use super::{FollowUp, SessionInfo, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
 use crate::react::{LoopExit, ReActEngine, ReActRunInput, ReActRunReplay, ReActState};
 use futures_util::FutureExt;
-use haven_common::lifecycle::{SessionStatus, SessionWaitingReason};
+use haven_common::lifecycle::{SessionRunEndKind, SessionStatus, SessionWaitingReason};
 use haven_common::types::MessageAttachment;
 #[cfg(test)]
 use haven_memory::Database;
@@ -182,6 +182,7 @@ pub(crate) enum ActorCommand {
     Transition {
         expected: Option<SessionStatus>,
         status: SessionStatus,
+        run_end_kind: Option<SessionRunEndKind>,
         persist: bool,
         reply: oneshot::Sender<anyhow::Result<StatusTransition>>,
     },
@@ -350,10 +351,21 @@ impl SessionActorHandle {
         status: SessionStatus,
         persist: bool,
     ) -> anyhow::Result<StatusTransition> {
+        self.transition_with_run_end_kind(status, persist, None)
+            .await
+    }
+
+    pub(crate) async fn transition_with_run_end_kind(
+        &self,
+        status: SessionStatus,
+        persist: bool,
+        run_end_kind: Option<SessionRunEndKind>,
+    ) -> anyhow::Result<StatusTransition> {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::Transition {
             expected: None,
             status,
+            run_end_kind,
             persist,
             reply,
         })
@@ -373,6 +385,7 @@ impl SessionActorHandle {
         self.send(ActorCommand::Transition {
             expected: Some(expected),
             status,
+            run_end_kind: None,
             persist,
             reply,
         })
@@ -1202,11 +1215,12 @@ pub(crate) fn spawn(
                 ActorCommand::Transition {
                     expected,
                     status: next,
+                    run_end_kind,
                     persist,
                     reply,
                 } => {
                     let result = if expected.is_none_or(|expected| state.info.status == expected) {
-                        transition(&store, &mut state, &status, next, persist).await
+                        transition(&store, &mut state, &status, next, persist, run_end_kind).await
                     } else {
                         Ok(StatusTransition {
                             changed: false,
@@ -1257,7 +1271,7 @@ pub(crate) fn spawn(
                     let result = if next_status == state.info.status {
                         Ok(next_status)
                     } else {
-                        transition(&store, &mut state, &status, next_status, true)
+                        transition(&store, &mut state, &status, next_status, true, None)
                             .await
                             .map(|_| next_status)
                     };
@@ -1562,7 +1576,12 @@ async fn transition(
     status: &watch::Sender<SessionStatus>,
     next: SessionStatus,
     persist: bool,
+    run_end_kind: Option<SessionRunEndKind>,
 ) -> anyhow::Result<StatusTransition> {
+    anyhow::ensure!(
+        run_end_kind.is_none() || next == SessionStatus::Paused,
+        "session run-end kind is only valid for paused sessions"
+    );
     let old = state.info.status;
     if old == next {
         return Ok(StatusTransition {
@@ -1585,9 +1604,11 @@ async fn transition(
         );
     }
     if persist {
-        super::SessionSupervisor::persist_status(store, &state.info.session_id, next).await?;
+        super::SessionSupervisor::persist_status(store, &state.info.session_id, next, run_end_kind)
+            .await?;
     }
     state.info.status = next;
+    state.info.run_end_kind = run_end_kind;
     if next != SessionStatus::Paused {
         state.info.waiting_reason = None;
     }
@@ -1609,9 +1630,15 @@ async fn claim_session_run(
     if state.info.status != SessionStatus::Pending || state.running {
         return Ok(SessionRunClaim { accepted: false });
     }
-    super::SessionSupervisor::persist_status(store, &state.info.session_id, SessionStatus::Running)
-        .await?;
+    super::SessionSupervisor::persist_status(
+        store,
+        &state.info.session_id,
+        SessionStatus::Running,
+        None,
+    )
+    .await?;
     state.info.status = SessionStatus::Running;
+    state.info.run_end_kind = None;
     state.info.waiting_reason = None;
     state.info.updated_at = chrono::Utc::now().to_rfc3339();
     state.running = true;
@@ -2012,6 +2039,7 @@ mod queue_tests {
                 summary: "queue".into(),
                 title: None,
                 status: SessionStatus::Pending,
+                run_end_kind: None,
                 waiting_reason: None,
                 steps: Vec::new(),
                 created_at: String::new(),

@@ -1215,6 +1215,7 @@ mod tests {
         assert!(db.list_session_llm_usage("ses-short").is_err());
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE llm_usage SET id = 'usage-short' WHERE id = ?1",
                 [&record.usage_id],
@@ -1309,7 +1310,7 @@ mod tests {
         .unwrap();
 
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute_batch("PRAGMA ignore_check_constraints = ON")
                 .unwrap();
             conn.execute(
@@ -1350,7 +1351,7 @@ mod tests {
         .unwrap();
 
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute_batch("PRAGMA ignore_check_constraints = ON")
                 .unwrap();
             conn.execute(
@@ -1569,6 +1570,7 @@ mod tests {
         )
         .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE llm_usage SET step_number = -1 WHERE session_id = ?1",
                 rusqlite::params![session.session_id],
@@ -1775,7 +1777,7 @@ mod tests {
         .unwrap();
 
         let out_of_range_count = i64::from(u32::MAX) + 1;
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "UPDATE session_usage SET prompt_tokens = ?2, total_tokens = ?2 WHERE session_id = ?1",
             rusqlite::params![session.session_id, out_of_range_count],
@@ -1835,7 +1837,7 @@ mod tests {
 
         let old_created_at = "2000-01-01T00:00:00.000Z";
         let old_id = haven_common::types::new_id("usage");
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         Database::insert_llm_call_usage_conn(
             &conn,
             &old_id,

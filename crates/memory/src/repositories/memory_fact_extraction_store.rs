@@ -176,6 +176,7 @@ mod tests {
         let messages_session = messages_db.create_session("missing messages").unwrap();
         messages_db
             .conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TABLE messages")
             .unwrap();
         let error = MemoryFactExtractionStore::new(messages_db)
@@ -188,6 +189,7 @@ mod tests {
         let steps_session = steps_db.create_session("missing steps").unwrap();
         steps_db
             .conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TABLE session_steps")
             .unwrap();
         let error = MemoryFactExtractionStore::new(steps_db)
@@ -282,7 +284,10 @@ mod tests {
             None
         );
 
-        db.conn().execute_batch("DROP TABLE kv_store").unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute_batch("DROP TABLE kv_store")
+            .unwrap();
         assert!(
             store
                 .shared_extraction_last_attempt_timestamp(session_id)

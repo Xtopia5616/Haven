@@ -141,6 +141,7 @@ async fn background_terminal_race_publishes_only_the_database_cas_winner() {
 
     let outbox_count: i64 = db
         .conn()
+        .expect("test database connection checkout failed")
         .query_row(
             "SELECT COUNT(*) FROM tool_run_completion_outbox WHERE tool_run_id = ?1",
             [&tool_run_id],
@@ -208,6 +209,7 @@ async fn background_terminal_storage_error_stays_running_then_retries_once() {
     let events = capture_tool_run_events(&service);
     let mut rx = service.take_tool_run_receiver().unwrap();
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch(&format!(
             "CREATE TRIGGER block_background_completion
              BEFORE INSERT ON tool_run_completion_outbox
@@ -238,6 +240,7 @@ async fn background_terminal_storage_error_stays_running_then_retries_once() {
     assert_no_background_completion(&mut rx).await;
 
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch("DROP TRIGGER block_background_completion")
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -261,6 +264,7 @@ async fn background_terminal_storage_error_stays_running_then_retries_once() {
 
     let outbox_count: i64 = db
         .conn()
+        .expect("test database connection checkout failed")
         .query_row(
             "SELECT COUNT(*) FROM tool_run_completion_outbox WHERE tool_run_id = ?1",
             [&tool_run_id],
@@ -276,6 +280,7 @@ async fn background_cancel_storage_error_does_not_publish_before_retry_commit() 
     let events = capture_tool_run_events(&service);
     let mut rx = service.take_tool_run_receiver().unwrap();
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch(&format!(
             "CREATE TRIGGER block_background_cancel
              BEFORE UPDATE OF status ON tool_runs
@@ -295,6 +300,7 @@ async fn background_cancel_storage_error_does_not_publish_before_retry_commit() 
     assert_no_background_completion(&mut rx).await;
 
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch("DROP TRIGGER block_background_cancel")
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -439,6 +445,7 @@ async fn session_cleanup_keeps_running_tool_run_until_cancel_commit() {
     let events = capture_tool_run_events(&service);
     let mut rx = service.take_tool_run_receiver().unwrap();
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch(&format!(
             "CREATE TRIGGER block_cleanup_cancel
              BEFORE UPDATE OF status ON tool_runs
@@ -462,6 +469,7 @@ async fn session_cleanup_keeps_running_tool_run_until_cancel_commit() {
     assert_no_background_completion(&mut rx).await;
 
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch("DROP TRIGGER block_cleanup_cancel")
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -906,6 +914,7 @@ async fn terminal_history_delete_and_completion_ack_are_atomic() {
         assert!(db.get_tool_run(&tool_run_id).unwrap().is_some());
         let pending: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM tool_run_completion_outbox
                  WHERE tool_run_id = ?1 AND delivered_at IS NULL",
@@ -1186,7 +1195,7 @@ async fn delete_terminal_rejects_unknown_persisted_tool_run_kind() {
     db.persist_tool_run(&tool_run_id, None, "echo terminal-test", &now)
         .unwrap();
     assert!(db.cancel_background_tool_run(&tool_run_id, &now).unwrap());
-    let connection = db.conn();
+    let connection = db.conn().expect("test database connection checkout failed");
     connection
         .pragma_update(None, "ignore_check_constraints", true)
         .unwrap();

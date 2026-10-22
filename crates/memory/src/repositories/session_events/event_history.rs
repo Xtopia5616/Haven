@@ -661,7 +661,10 @@ mod tests {
         )
         .await;
 
-        let connection = store.db.conn();
+        let connection = store
+            .db
+            .conn()
+            .expect("test database connection checkout failed");
         let latest = latest_sequence_in_connection(&connection, &session.session_id).unwrap();
         let event_limit_error = active_transcript_sequences_with_limits(
             &connection,

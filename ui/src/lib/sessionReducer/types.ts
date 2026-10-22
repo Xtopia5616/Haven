@@ -27,6 +27,7 @@ export const DRAFT_SESSION_ID = '_draft';
 export interface SessionSummary {
 	sessionId: string;
 	status: SessionStatus;
+	runEndKind?: 'turn_completed' | null;
 	waitingReason?: SessionWaitingReason | null;
 	title?: string | null;
 	inputText?: string;
@@ -127,6 +128,7 @@ export type SessionAction =
 			type: 'session/status-updated';
 			sessionId: string;
 			status: SessionUpdateStatus;
+		runEndKind?: 'turn_completed' | null;
 			title?: string | null;
 			waitingReason?: SessionWaitingReason | null;
 	  }

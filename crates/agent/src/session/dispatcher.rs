@@ -978,9 +978,11 @@ mod storage_error_tests {
         let store = SessionStore::new(db.clone());
         let page_count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row("PRAGMA page_count", [], |row| row.get(0))
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .pragma_update(None, "max_page_count", page_count)
             .unwrap();
 

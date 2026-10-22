@@ -20,12 +20,14 @@ fn sqlite_sidecar(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
 
 fn pragma_i64(db: &Database, pragma: &str) -> i64 {
     db.conn()
+        .expect("test database connection checkout failed")
         .query_row(&format!("PRAGMA {pragma}"), [], |row| row.get(0))
         .unwrap()
 }
 
 fn truncate_wal(db: &Database) -> (i64, i64, i64) {
     db.conn()
+        .expect("test database connection checkout failed")
         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })
@@ -47,7 +49,7 @@ fn sqlite_full_transcript_commit_rolls_back_and_can_be_retried() {
 
     let page_count = pragma_i64(&db, "page_count");
     {
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.pragma_update(None, "max_page_count", page_count)
             .unwrap();
         assert_eq!(
@@ -75,6 +77,7 @@ fn sqlite_full_transcript_commit_rolls_back_and_can_be_retried() {
     assert!(store.read_all(&session.session_id).unwrap().is_empty());
     assert_eq!(
         db.conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
                 rusqlite::params![session.session_id],
@@ -89,7 +92,7 @@ fn sqlite_full_transcript_commit_rolls_back_and_can_be_retried() {
     ));
 
     {
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.pragma_update(None, "max_page_count", 2_147_483_647_i64)
             .unwrap();
     }
@@ -103,6 +106,7 @@ fn sqlite_full_transcript_commit_rolls_back_and_can_be_retried() {
     );
     assert_eq!(
         db.conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
                 rusqlite::params![session.session_id],
@@ -132,6 +136,7 @@ fn failed_transcript_commit_rolls_back_and_can_be_retried() {
     let mut live = store.subscribe();
 
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch(
             "CREATE TABLE commit_failure_guard (
                 session_id TEXT NOT NULL REFERENCES sessions(id) DEFERRABLE INITIALLY DEFERRED
@@ -155,10 +160,15 @@ fn failed_transcript_commit_rolls_back_and_can_be_retried() {
         .commit_transcript(&session.session_id, &committed)
         .unwrap_err();
     assert!(commit_error.to_string().contains("FOREIGN KEY"));
-    assert!(db.conn().is_autocommit());
+    assert!(
+        db.conn()
+            .expect("test database connection checkout failed")
+            .is_autocommit()
+    );
     assert!(store.read_all(&session.session_id).unwrap().is_empty());
     assert_eq!(
         db.conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
                 rusqlite::params![session.session_id],
@@ -173,6 +183,7 @@ fn failed_transcript_commit_rolls_back_and_can_be_retried() {
     ));
 
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch("DROP TRIGGER fail_session_event_commit; DROP TABLE commit_failure_guard;")
         .unwrap();
     let recovered = store
@@ -185,6 +196,7 @@ fn failed_transcript_commit_rolls_back_and_can_be_retried() {
     );
     assert_eq!(
         db.conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
                 rusqlite::params![session.session_id],
@@ -244,6 +256,7 @@ fn session_event_disk_capacity_profile() {
         assert_eq!(wal_after_append_checkpoint_bytes, 0);
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE sessions SET created_at = '2000-01-01T00:00:00+00:00' WHERE id = ?1",
                 rusqlite::params![session.session_id],
@@ -257,7 +270,10 @@ fn session_event_disk_capacity_profile() {
         let freelist_after_retention = pragma_i64(&db, "freelist_count");
         let wal_after_retention_checkpoint_bytes = file_len(&wal_path);
 
-        db.conn().execute_batch("VACUUM").unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute_batch("VACUUM")
+            .unwrap();
         let (vacuum_busy, vacuum_checkpointed, vacuum_wal_frames) = truncate_wal(&db);
         assert_eq!(vacuum_busy, 0);
         assert_eq!(vacuum_checkpointed, vacuum_wal_frames);
@@ -316,6 +332,7 @@ fn age_retention_deletes_whole_sessions_and_cascades_their_events() {
         )
         .unwrap();
     db.conn()
+        .expect("test database connection checkout failed")
         .execute(
             "UPDATE sessions SET created_at = '2000-01-01T00:00:00+00:00' WHERE id = ?1",
             rusqlite::params![expired.session_id],
@@ -325,6 +342,7 @@ fn age_retention_deletes_whole_sessions_and_cascades_their_events() {
     assert_eq!(db.delete_old_sessions(90).unwrap(), 1);
     let event_count = |session_id: &str| {
         db.conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM session_events WHERE session_id = ?1",
                 rusqlite::params![session_id],
@@ -465,6 +483,7 @@ fn session_event_representative_mixture_capacity_profile() {
     let page_count = pragma_i64(&db, "page_count");
 
     db.conn()
+        .expect("test database connection checkout failed")
         .execute(
             "UPDATE sessions SET created_at = '2000-01-01T00:00:00+00:00' WHERE id = ?1",
             rusqlite::params![session.session_id],

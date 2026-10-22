@@ -185,6 +185,7 @@ mod tests {
             .insert_fact("user", "likes", "Stale", "inferred", 0.1, &[])
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET created_at = '2000-01-01T00:00:00Z',
                                   last_seen_at = '2000-01-01T00:00:00Z'
@@ -200,6 +201,7 @@ mod tests {
             .insert_fact("user", "likes", "Go", "inferred", 0.8, &[])
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE facts SET provenance_record_id = '  ' WHERE id = ?1",
                 rusqlite::params![source_ref_fact.fact_id],
@@ -216,7 +218,7 @@ mod tests {
     #[tokio::test]
     async fn embedding_and_cursor_cleanup_return_deleted_counts() {
         let (db, store) = fixture();
-        db.conn()
+        db.conn().expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO memory_embeddings
                     (entity_type, entity_id, model, vector, text)
@@ -225,6 +227,7 @@ mod tests {
             )
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO embedding_lsh (entity_type, entity_id, model, bucket)
                  VALUES ('fact', 'fact-b0feb8de767b1ce11801f141ab9ec94a', 'model', 1)",
@@ -252,7 +255,10 @@ mod tests {
             "msg-73ec6073b4d79d45955f35b5cd94a393",
         )
         .unwrap();
-        db.conn().execute_batch("DROP TABLE facts").unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute_batch("DROP TABLE facts")
+            .unwrap();
 
         let error = store.dedup_facts(None).await.unwrap_err();
         assert!(error.to_string().contains("no such table: facts"));
@@ -326,7 +332,10 @@ mod tests {
         let (db, store) = fixture();
         assert_eq!(store.demote_fact_ids(Vec::new()).await.unwrap(), 0);
 
-        db.conn().execute_batch("DROP TABLE facts").unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute_batch("DROP TABLE facts")
+            .unwrap();
         for error in [
             store.list_ambiguous_contradictions().await.unwrap_err(),
             store.list_predicate_counts().await.unwrap_err(),

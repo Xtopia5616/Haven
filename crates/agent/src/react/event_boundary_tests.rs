@@ -151,6 +151,7 @@ async fn event_boundary_cursor_read_failure_returns_false_and_records_failure() 
     let db = Arc::new(Database::open_in_memory().unwrap());
     let session = db.create_session("event boundary failure").unwrap();
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch("DROP TABLE session_events")
         .unwrap();
     let engine = test_engine(db);

@@ -1058,7 +1058,9 @@ mod tests {
         );
         db.clone()
             .run_blocking_for_test(move |db| {
-                db.conn().execute_batch(&trigger_sql)?;
+                db.conn()
+                    .expect("test database connection checkout failed")
+                    .execute_batch(&trigger_sql)?;
                 Ok(())
             })
             .await
@@ -1181,7 +1183,9 @@ mod tests {
         );
         db.clone()
             .run_blocking_for_test(move |db| {
-                db.conn().execute_batch(&trigger_sql)?;
+                db.conn()
+                    .expect("test database connection checkout failed")
+                    .execute_batch(&trigger_sql)?;
                 Ok(())
             })
             .await
@@ -1219,7 +1223,9 @@ mod tests {
         );
         db.clone()
             .run_blocking_for_test(move |db| {
-                db.conn().execute_batch(&trigger_sql)?;
+                db.conn()
+                    .expect("test database connection checkout failed")
+                    .execute_batch(&trigger_sql)?;
                 Ok(())
             })
             .await

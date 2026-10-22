@@ -1,7 +1,7 @@
 use super::{SessionStore, ensure_message_or_step_id, ensure_session_id};
 use crate::repositories::kv_store::MAX_MEMORY_SESSION_ID_PAGE_SIZE;
 use crate::repositories::sessions::{Session, SessionCreation, SessionLink};
-use haven_common::lifecycle::SessionStatus;
+use haven_common::lifecycle::{SessionRunEndKind, SessionStatus};
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
@@ -54,6 +54,22 @@ impl SessionStore {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.update_session_status(&session_id, status))
+            .await
+    }
+
+    /// Persist a lifecycle status and its typed run-end outcome in one SQLite update.
+    pub async fn update_session_status_with_run_end_kind(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+        run_end_kind: Option<SessionRunEndKind>,
+    ) -> anyhow::Result<()> {
+        ensure_session_id(session_id)?;
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                db.update_session_status_with_run_end_kind(&session_id, status, run_end_kind)
+            })
             .await
     }
 

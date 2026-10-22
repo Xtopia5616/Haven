@@ -393,6 +393,7 @@ mod tests {
         let (store, db, _dir, session_id) = test_store();
         let trigger = format!("checkpoint_failure_{}", uuid::Uuid::new_v4().simple());
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(&format!(
                 "CREATE TRIGGER {trigger}
                  BEFORE INSERT ON partial_messages

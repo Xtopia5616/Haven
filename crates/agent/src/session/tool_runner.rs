@@ -1033,6 +1033,7 @@ mod scheduled_authorization_tests {
 
         database
             .conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER reject_confirmation_resolve_event
                  BEFORE INSERT ON session_events
@@ -1101,6 +1102,7 @@ mod scheduled_authorization_tests {
 
         database
             .conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER reject_confirmation_resolve_event;")
             .unwrap();
         assert!(
@@ -1205,6 +1207,7 @@ mod scheduled_authorization_tests {
 
         database
             .conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER reject_confirmation_resolve_event_after_actor_exit
                  BEFORE INSERT ON session_events
@@ -1259,6 +1262,7 @@ mod scheduled_authorization_tests {
 
         database
             .conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER reject_confirmation_resolve_event_after_actor_exit;")
             .unwrap();
 
@@ -1412,6 +1416,7 @@ mod scheduled_authorization_tests {
 
         database
             .conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER reject_confirmation_expiry_event_until_reopen
                  BEFORE INSERT ON session_events
@@ -1473,6 +1478,7 @@ mod scheduled_authorization_tests {
         );
         database
             .conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER reject_confirmation_expiry_event_until_reopen;")
             .unwrap();
 

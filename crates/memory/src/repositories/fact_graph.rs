@@ -775,6 +775,7 @@ mod tests {
         assert!(fact.fact_id.starts_with("fact-"));
         let node_count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM memory_nodes WHERE label IN ('user', 'Rust')",
                 [],
@@ -808,10 +809,12 @@ mod tests {
         assert!(error.to_string().contains("canonical msg-* ID"));
         let fact_count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row("SELECT COUNT(*) FROM facts", [], |row| row.get(0))
             .unwrap();
         let node_count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row("SELECT COUNT(*) FROM memory_nodes", [], |row| row.get(0))
             .unwrap();
         assert_eq!(fact_count, 0);
@@ -842,6 +845,7 @@ mod tests {
         assert!(error.to_string().contains("canonical msg-* ID"));
         let fact_count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row("SELECT COUNT(*) FROM facts", [], |row| row.get(0))
             .unwrap();
         assert_eq!(fact_count, 0);
@@ -871,6 +875,7 @@ mod tests {
         assert_eq!(outcome, UpsertOutcome::Skipped);
         let count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM facts WHERE predicate = 'project_path'",
                 [],

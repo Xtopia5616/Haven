@@ -111,7 +111,8 @@ impl SessionStore {
         let result = (|| {
             let changed = conn.execute(
                 "UPDATE sessions SET status = ?1, updated_at = ?2,
-                    run_end_reason = CASE WHEN ?1 IN ('pending', 'running') THEN NULL ELSE run_end_reason END
+                    run_end_reason = CASE WHEN ?1 IN ('pending', 'running') THEN NULL ELSE run_end_reason END,
+                    run_end_kind = NULL
                  WHERE id = ?3 AND status = ?4",
                 rusqlite::params![
                     next_status.as_str(),

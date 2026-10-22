@@ -715,7 +715,9 @@ mod tests {
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let lock_db = Arc::clone(&db);
         let lock_holder = std::thread::spawn(move || {
-            let conn = lock_db.conn();
+            let conn = lock_db
+                .conn()
+                .expect("test database connection checkout failed");
             conn.execute_batch("BEGIN IMMEDIATE").unwrap();
             locked_tx.send(()).unwrap();
             release_rx.recv().unwrap();

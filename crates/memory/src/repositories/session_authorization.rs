@@ -376,7 +376,7 @@ mod tests {
         )
         .unwrap();
 
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
         conn.execute(
             "UPDATE sessions SET id = ?1 WHERE id = ?2",

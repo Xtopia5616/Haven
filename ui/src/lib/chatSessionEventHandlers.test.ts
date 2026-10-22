@@ -174,7 +174,7 @@ describe('chat session lifecycle handler', () => {
 			sessionId,
 			status: 'paused',
 			outcome: 'turn_completed',
-			reason: '本轮已正常结束。',
+			reason: '本轮已完成。',
 		});
 		expect(scheduleLoadSessions).toHaveBeenCalledOnce();
 	});

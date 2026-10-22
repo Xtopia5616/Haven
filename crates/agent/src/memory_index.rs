@@ -452,6 +452,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
         db.conn()
+            .expect("test database connection checkout failed")
             .execute("DROP TABLE memory_embeddings", [])
             .unwrap();
         let router = Arc::new(LlmRouter::new(haven_common::config::RouterConfig::default()));

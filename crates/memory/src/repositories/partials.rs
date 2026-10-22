@@ -54,7 +54,9 @@ impl Database {
     /// Return the in-flight text checkpoint for a session, if any.
     #[cfg(any(test, feature = "test-support"))]
     pub fn get_partial_message(&self, session_id: &str) -> Option<PartialMessageCheckpoint> {
-        let conn = self.conn();
+        let conn = self
+            .conn()
+            .expect("test database connection checkout failed");
         conn.query_row(
             "SELECT content, updated_at, ingress_seq FROM partial_messages WHERE session_id = ?1",
             rusqlite::params![session_id],
@@ -216,7 +218,7 @@ mod tests {
         let db = test_db();
         let invalid_session_id = "ses-short";
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute(
                 "INSERT INTO sessions (id, input_text) VALUES (?1, 'invalid legacy row')",
                 [invalid_session_id],
@@ -245,6 +247,7 @@ mod tests {
         );
         let message_count: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
                 [invalid_session_id],
@@ -303,7 +306,7 @@ mod tests {
         db.upsert_partial_message(&session_id, "preserve this reply")
             .unwrap();
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute_batch(
                 "CREATE TRIGGER fail_partial_promotion
                  BEFORE INSERT ON messages
@@ -324,6 +327,7 @@ mod tests {
         assert_eq!(db.get_last_message_ingress_seq(&session_id), 0);
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER fail_partial_promotion")
             .unwrap();
         assert!(db.promote_partial_message(&session_id).unwrap());

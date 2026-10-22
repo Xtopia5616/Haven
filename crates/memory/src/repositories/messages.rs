@@ -858,7 +858,9 @@ impl Database {
         if ensure_session_id(session_id).is_err() {
             return 0;
         }
-        let conn = self.conn();
+        let conn = self
+            .conn()
+            .expect("test database connection checkout failed");
         conn.query_row(
             "SELECT COALESCE(last_ingress_seq, 0)
              FROM message_ingress_cursors WHERE session_id = ?1",
@@ -1043,7 +1045,7 @@ mod tests {
             .unwrap();
 
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute_batch("PRAGMA ignore_check_constraints = ON")
                 .unwrap();
             conn.execute(
@@ -1127,6 +1129,7 @@ mod tests {
         assert_eq!(assistant.message_id, step_id);
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE messages SET role = 'user' WHERE session_id = ?1 AND id = ?2",
                 rusqlite::params![session_id, step_id],
@@ -1170,7 +1173,7 @@ mod tests {
             .unwrap();
 
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute_batch("PRAGMA ignore_check_constraints = ON")
                 .unwrap();
             conn.execute(
@@ -1224,7 +1227,7 @@ mod tests {
         .unwrap();
 
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute_batch("PRAGMA ignore_check_constraints = ON")
                 .unwrap();
             conn.execute(
@@ -1423,7 +1426,7 @@ mod tests {
             .unwrap();
         let old =
             (Utc::now() - chrono::Duration::days(30)).to_rfc3339_opts(SecondsFormat::Millis, true);
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "UPDATE messages SET created_at = ?1 WHERE id = ?2",
             rusqlite::params![old, pending.message.message_id],
@@ -1477,6 +1480,7 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER reject_pending_marker
                  BEFORE INSERT ON pending_session_inputs
@@ -1577,16 +1581,19 @@ mod tests {
         )
         .unwrap();
 
-        let raw = db.conn().query_row(
-            "SELECT ui_metadata, media_inputs FROM messages WHERE session_id = ?1",
-            rusqlite::params![tid],
-            |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                ))
-            },
-        )?;
+        let raw = db
+            .conn()
+            .expect("test database connection checkout failed")
+            .query_row(
+                "SELECT ui_metadata, media_inputs FROM messages WHERE session_id = ?1",
+                rusqlite::params![tid],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )?;
         let ui_metadata = raw.0.unwrap_or_default();
         assert!(!ui_metadata.contains("aGVsbG8="));
         assert!(!ui_metadata.contains("representations"));
@@ -1835,7 +1842,7 @@ mod tests {
         )
         .unwrap();
         db.delete_session(&tid).unwrap();
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         let count: i32 = conn
             .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
             .unwrap();

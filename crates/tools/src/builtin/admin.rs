@@ -2312,6 +2312,7 @@ mod tests {
         db.update_session_status(&older_error.session_id, SessionStatus::Error)
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
                 [older_error.session_id.as_str()],
@@ -2345,6 +2346,7 @@ mod tests {
     async fn diagnostics_lists_keep_limit_order_and_error_filter_semantics() {
         fn set_created_at(db: &Database, session_id: &str, created_at: &str) {
             db.conn()
+                .expect("test database connection checkout failed")
                 .execute(
                     "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
                     [created_at, session_id],
@@ -2429,7 +2431,7 @@ mod tests {
             .unwrap();
         db.update_session_status(&session.session_id, SessionStatus::Error)
             .unwrap();
-        db.conn()
+        db.conn().expect("test database connection checkout failed")
             .execute(
                 "UPDATE sessions SET created_at = '2024-01-02T03:04:05Z', updated_at = '2024-01-03T04:05:06Z' WHERE id = ?1",
                 [session.session_id.as_str()],

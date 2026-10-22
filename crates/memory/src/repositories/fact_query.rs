@@ -614,7 +614,7 @@ mod tests {
             ),
         ] {
             let sql = format!("EXPLAIN QUERY PLAN {}", list_facts_page_sql(source_filter));
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             let mut statement = conn.prepare(&sql).unwrap();
             let plan = statement
                 .query_map(rusqlite::params_from_iter(params), |row| {
@@ -673,6 +673,7 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         let invalid_fact_id = "fact-invalid";
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
                  VALUES (?1, 'user', 'likes', 'Rust', 'user', 0.9, '2026-01-01T00:00:00Z')",
@@ -685,10 +686,11 @@ mod tests {
         for provenance_column in ["provenance_item_id", "provenance_record_id"] {
             let db = Database::open_in_memory().unwrap();
             db.conn()
+                .expect("test database connection checkout failed")
                 .execute_batch("PRAGMA foreign_keys = OFF")
                 .unwrap();
             let fact_id = new_id("fact");
-            db.conn()
+            db.conn().expect("test database connection checkout failed")
                 .execute(
                     &format!(
                         "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at, {provenance_column})

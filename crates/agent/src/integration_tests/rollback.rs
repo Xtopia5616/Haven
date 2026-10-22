@@ -1184,6 +1184,7 @@ async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchang
     agent
         .db
         .conn()
+        .expect("test database connection checkout failed")
         .execute_batch(
             r#"
             CREATE TRIGGER reject_rollback_marker

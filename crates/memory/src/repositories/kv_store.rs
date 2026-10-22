@@ -1549,7 +1549,7 @@ mod tests {
             next_attempt_at_ms: 0,
         });
         {
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             conn.execute(
                 "INSERT INTO kv_store (key, value) VALUES (?1, ?2)",
                 rusqlite::params![key, marker],
@@ -1677,6 +1677,7 @@ mod tests {
         let db = test_db();
         let existing = db.create_session("baseline existing").unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO session_events
                     (session_id, sequence, event_type, payload, created_at)

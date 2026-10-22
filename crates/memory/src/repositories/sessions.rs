@@ -1,7 +1,7 @@
 use crate::db::Database;
 use crate::repositories::kv_store::MAX_MEMORY_SESSION_ID_PAGE_SIZE;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
-use haven_common::lifecycle::SessionStatus;
+use haven_common::lifecycle::{SessionRunEndKind, SessionStatus};
 use haven_common::types::is_canonical_id;
 
 /// WHERE clause shared by every session search query (list, count, paginated).
@@ -31,7 +31,7 @@ fn session_id_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<String> {
     }
 }
 
-/// Map a row produced by a session-record query, including provenance and run-end reason.
+/// Map a row produced by a session-record query, including provenance and run-end metadata.
 fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     let id = session_id_from_row(row)?;
     let status = row.get::<_, String>(3)?;
@@ -43,12 +43,25 @@ fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         row.get::<_, Option<String>>(10)?,
         row.get::<_, Option<String>>(11)?,
     )?;
+    let run_end_kind = row
+        .get::<_, Option<String>>(13)?
+        .map(|value| {
+            SessionRunEndKind::from_storage(&value).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    13,
+                    rusqlite::types::Type::Text,
+                    format!("invalid persisted session run-end kind '{value}'").into(),
+                )
+            })
+        })
+        .transpose()?;
     Ok(Session {
         session_id: id,
         input_text: row.get(1)?,
         title: row.get(2)?,
         status: SessionStatus::from_status_str(&status),
         run_end_reason: row.get(12)?,
+        run_end_kind,
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
         creation,
@@ -87,6 +100,7 @@ pub struct Session {
     pub title: Option<String>,
     pub status: SessionStatus,
     pub run_end_reason: Option<String>,
+    pub run_end_kind: Option<SessionRunEndKind>,
     pub created_at: String,
     pub updated_at: String,
     pub creation: SessionCreation,
@@ -530,6 +544,7 @@ impl Database {
             title: None,
             status: SessionStatus::Pending,
             run_end_reason: None,
+            run_end_kind: None,
             created_at: now.clone(),
             updated_at: now,
             creation,
@@ -542,7 +557,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
             creator, creation_method, source_kind, source_session_id,
-            source_message_id, source_schedule_run_id, run_end_reason
+            source_message_id, source_schedule_run_id, run_end_reason, run_end_kind
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![session_id])?;
@@ -618,14 +633,36 @@ impl Database {
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<()> {
+        self.update_session_status_with_run_end_kind(session_id, status, None)
+    }
+
+    pub fn update_session_status_with_run_end_kind(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+        run_end_kind: Option<SessionRunEndKind>,
+    ) -> anyhow::Result<()> {
         validate_session_id(session_id)?;
+        anyhow::ensure!(
+            run_end_kind.is_none() || status == SessionStatus::Paused,
+            "session run-end kind is only valid for paused sessions"
+        );
         let now = Utc::now().to_rfc3339();
         let conn = self.try_conn()?;
         conn.execute(
             "UPDATE sessions SET status = ?1, updated_at = ?2,
-                run_end_reason = CASE WHEN ?1 IN ('pending', 'running') THEN NULL ELSE run_end_reason END
-             WHERE id = ?3",
-            rusqlite::params![status.as_str(), now, session_id],
+                run_end_reason = CASE
+                    WHEN ?1 IN ('pending', 'running') OR ?3 IS NOT NULL THEN NULL
+                    ELSE run_end_reason
+                END,
+                run_end_kind = ?3
+             WHERE id = ?4",
+            rusqlite::params![
+                status.as_str(),
+                now,
+                run_end_kind.map(SessionRunEndKind::as_str),
+                session_id
+            ],
         )?;
         self.cache_invalidate_session_history_page();
         Ok(())
@@ -682,7 +719,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
-                    source_message_id, source_schedule_run_id, run_end_reason
+                    source_message_id, source_schedule_run_id, run_end_reason, run_end_kind
              FROM sessions ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], map_session_list_row)?;
@@ -702,7 +739,7 @@ impl Database {
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
-                    source_message_id, source_schedule_run_id, run_end_reason
+                    source_message_id, source_schedule_run_id, run_end_reason, run_end_kind
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT 50",
         ))?;
@@ -741,7 +778,7 @@ impl Database {
         let mut stmt = conn.prepare(&format!(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
-                    source_message_id, source_schedule_run_id, run_end_reason
+                    source_message_id, source_schedule_run_id, run_end_reason, run_end_kind
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         ))?;
@@ -768,7 +805,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at,
                     creator, creation_method, source_kind, source_session_id,
-                    source_message_id, source_schedule_run_id, run_end_reason
+                    source_message_id, source_schedule_run_id, run_end_reason, run_end_kind
              FROM sessions
              WHERE source_session_id = ?1 AND creation_method IN ('agent_spawn', 'fork')
              ORDER BY created_at DESC, id ASC LIMIT ?2 OFFSET ?3",
@@ -1036,12 +1073,12 @@ impl Database {
         let conn = self.try_conn()?;
         let count = match cutoff {
             Some(threshold) => conn.execute(
-                "UPDATE sessions SET status = ?1, updated_at = ?2
+                "UPDATE sessions SET status = ?1, updated_at = ?2, run_end_kind = NULL
                  WHERE status = 'running' AND updated_at < ?3",
                 rusqlite::params![status.as_str(), now, threshold],
             )?,
             None => conn.execute(
-                "UPDATE sessions SET status = ?1, updated_at = ?2
+                "UPDATE sessions SET status = ?1, updated_at = ?2, run_end_kind = NULL
                  WHERE status = 'running'",
                 rusqlite::params![status.as_str(), now],
             )?,
@@ -1177,7 +1214,7 @@ impl Database {
         let sql = format!(
             "SELECT id, input_text, title, status, created_at, updated_at, \
                     creator, creation_method, source_kind, source_session_id, \
-                    source_message_id, source_schedule_run_id, run_end_reason \
+                    source_message_id, source_schedule_run_id, run_end_reason, run_end_kind \
              FROM sessions {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
@@ -1232,6 +1269,7 @@ mod tests {
 
         let has_transcript: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'transcript'",
                 [],
@@ -1390,6 +1428,7 @@ mod tests {
             .unwrap();
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE sessions SET source_session_id = 'session-invalid' WHERE id = ?1",
                 [&child.session_id],
@@ -1468,6 +1507,7 @@ mod tests {
         let high_water_session_id = db.session_id_high_water().unwrap().unwrap();
         let later_id = format!("ses-{}", "f".repeat(32));
         db.conn()
+            .expect("test database connection checkout failed")
             .execute("INSERT INTO sessions (id) VALUES (?1)", [&later_id])
             .unwrap();
 
@@ -1798,6 +1838,7 @@ mod tests {
         db.upsert_partial_message(&session.session_id, "crash-recovered text")
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER fail_partial_promotion
                  BEFORE INSERT ON messages
@@ -1817,6 +1858,7 @@ mod tests {
         );
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER fail_partial_promotion")
             .unwrap();
         assert_eq!(db.finalize_orphaned_running_sessions().unwrap(), 0);
@@ -2041,7 +2083,7 @@ mod tests {
         assert!(db.update_session_title("ses-short", "title").is_err());
         assert!(db.delete_session("ses-short").is_err());
 
-        db.conn()
+        db.conn().expect("test database connection checkout failed")
             .execute(
                 "UPDATE sessions SET id = 'ses-short', created_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
                 [&session.session_id],

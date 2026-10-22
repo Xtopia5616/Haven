@@ -73,6 +73,7 @@ mod tests {
     fn ensure_node_rejects_noncanonical_persisted_identity() {
         let db = Database::open_in_memory().unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO memory_nodes (id, kind, label, aliases, created_at, updated_at)
                  VALUES ('node-short', 'concept', 'corrupt', '[]', 'now', 'now')",

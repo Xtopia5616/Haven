@@ -71,7 +71,7 @@ export type TranscriptSubmissionResult = { 'SessionCreated': { session_id: strin
 export const BOOTSTRAP_STATUS_VALUES = ['loading', 'ready'] as const;
 export type BootstrapStatus = (typeof BOOTSTRAP_STATUS_VALUES)[number];
 export interface LoginStart { loginId: string; authorizationUrl: string; accountEmail: string | null; planUsageEnabled: boolean }
-export interface RuntimeSessionDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; waiting_reason?: SessionWaitingReason }
+export interface RuntimeSessionDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; run_end_kind?: SessionRunEndKind; waiting_reason?: SessionWaitingReason }
 export interface RuntimeSessionListResponse { sessions: RuntimeSessionDto[] }
 export const FRONTEND_FAILURE_KIND_INPUT_VALUES = ['operation_failure', 'unhandled_ui_error', 'unhandled_rejection'] as const;
 export type FrontendFailureKindInput = (typeof FRONTEND_FAILURE_KIND_INPUT_VALUES)[number];
@@ -96,7 +96,7 @@ export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'st
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
 export interface SessionLineageChildDto { session: SessionRecordDto; parent_session_id: string }
 export interface SessionLineageResponse { session_id: string; parent_session_id: string | null; parent: SessionRecordDto | null; children: SessionLineageChildDto[] }
-export interface SessionRecordDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; run_end_reason?: string; created_at: string; updated_at: string; creation: SessionCreation }
+export interface SessionRecordDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; run_end_kind?: SessionRunEndKind; run_end_reason?: string; created_at: string; updated_at: string; creation: SessionCreation }
 export interface SessionResumeMessageDto { message_id: string; session_id: string; role: CanonicalRole; content: string; message_type: TranscriptMessageKind | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: SessionResumeMessageDto[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[]; working_document: string | null; working_document_sequence: number | null; event_sequence_watermark: number }
 export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
@@ -1393,6 +1393,10 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 					'status': {
 						optional: false,
 						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+					},
+					'run_end_kind': {
+						optional: true,
+						shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
 					},
 					'run_end_reason': {
 						optional: true,
@@ -2834,6 +2838,10 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
 					},
+					'run_end_kind': {
+						optional: true,
+						shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
+					},
 					'run_end_reason': {
 						optional: true,
 						shape: { kind: 'string' },
@@ -3816,6 +3824,10 @@ export const GET_SESSION_LINEAGE_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
 					},
+					'run_end_kind': {
+						optional: true,
+						shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
+					},
 					'run_end_reason': {
 						optional: true,
 						shape: { kind: 'string' },
@@ -3929,6 +3941,10 @@ export const GET_SESSION_LINEAGE_RESPONSE_SHAPE = {
 								'status': {
 									optional: false,
 									shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+								},
+								'run_end_kind': {
+									optional: true,
+									shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
 								},
 								'run_end_reason': {
 									optional: true,
@@ -5981,6 +5997,10 @@ export const LIST_RUNTIME_SESSIONS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
 					},
+					'run_end_kind': {
+						optional: true,
+						shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
+					},
 					'waiting_reason': {
 						optional: true,
 						shape: { kind: 'enum', values: SESSION_WAITING_REASON_VALUES },
@@ -6069,6 +6089,10 @@ export const LIST_SESSION_HISTORY_RESPONSE_SHAPE = { kind: 'array', items: {
 		'status': {
 			optional: false,
 			shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+		},
+		'run_end_kind': {
+			optional: true,
+			shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
 		},
 		'run_end_reason': {
 			optional: true,
@@ -7211,6 +7235,10 @@ export const RUNTIME_SESSION_LIST_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
 					},
+					'run_end_kind': {
+						optional: true,
+						shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
+					},
 					'waiting_reason': {
 						optional: true,
 						shape: { kind: 'enum', values: SESSION_WAITING_REASON_VALUES },
@@ -7239,6 +7267,10 @@ export const SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE = { kind: 'array', i
 		'status': {
 			optional: false,
 			shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+		},
+		'run_end_kind': {
+			optional: true,
+			shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
 		},
 		'run_end_reason': {
 			optional: true,
@@ -7491,6 +7523,10 @@ export const SESSION_LINEAGE_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
 					},
+					'run_end_kind': {
+						optional: true,
+						shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
+					},
 					'run_end_reason': {
 						optional: true,
 						shape: { kind: 'string' },
@@ -7604,6 +7640,10 @@ export const SESSION_LINEAGE_RESPONSE_SHAPE = {
 								'status': {
 									optional: false,
 									shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+								},
+								'run_end_kind': {
+									optional: true,
+									shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
 								},
 								'run_end_reason': {
 									optional: true,
@@ -7746,6 +7786,10 @@ export const SESSION_RECORD_RESPONSE_SHAPE = {
 			optional: false,
 			shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
 		},
+		'run_end_kind': {
+			optional: true,
+			shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
+		},
 		'run_end_reason': {
 			optional: true,
 			shape: { kind: 'string' },
@@ -7856,6 +7900,10 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 					'status': {
 						optional: false,
 						shape: { kind: 'enum', values: SESSION_STATUS_VALUES },
+					},
+					'run_end_kind': {
+						optional: true,
+						shape: { kind: 'enum', values: SESSION_RUN_END_KIND_VALUES },
 					},
 					'run_end_reason': {
 						optional: true,

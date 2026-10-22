@@ -101,13 +101,16 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 					type: 'session/run-ended',
 					sessionId: resumeTarget.sessionId,
 					status: runEndStatus,
+					outcome: resumeTarget.runEndOutcome,
 					reason:
 						resumeTarget.runEndReason ||
 						resumeTarget.errorReason ||
 						dependencies.reducer.getSessionErrorReason(resumeTarget.sessionId) ||
-						(runEndStatus === 'error'
-							? '本次会话因错误停止，暂未收到更具体的原因。'
-							: ''),
+						(resumeTarget.runEndOutcome === 'turn_completed'
+							? '本轮已完成。'
+							: runEndStatus === 'error'
+								? '本次会话因错误停止，暂未收到更具体的原因。'
+								: ''),
 				});
 				if (runEndStatus === 'error') retainErroredSession(resumeTarget);
 			}
@@ -137,6 +140,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 					sessions: result.sessions.map((session) => ({
 						sessionId: session.sessionId,
 						status: session.status,
+						runEndKind: session.run_end_kind ?? null,
 						inputText: session.inputText,
 						title: session.title,
 						waitingReason: session.waitingReason ?? null,
@@ -253,10 +257,18 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 				type: 'session/run-ended',
 				sessionId: latestSession.session.sessionId,
 				status: runEndStatus,
+				outcome:
+					latestSession.session.run_end_kind === 'turn_completed'
+						? 'turn_completed'
+						: undefined,
 				reason:
 					latestSession.session.run_end_reason ||
 					dependencies.reducer.getSessionErrorReason(latestSession.session.sessionId) ||
-					(runEndStatus === 'error' ? '本次会话因错误停止，暂未收到更具体的原因。' : ''),
+					(latestSession.session.run_end_kind === 'turn_completed'
+						? '本轮已完成。'
+						: runEndStatus === 'error'
+							? '本次会话因错误停止，暂未收到更具体的原因。'
+							: ''),
 			});
 			if (runEndStatus === 'error') {
 				retainErroredSession({

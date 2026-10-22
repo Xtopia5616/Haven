@@ -1,4 +1,5 @@
 use crate::interaction::{InteractionEnvelope, InteractionRequest};
+use haven_common::lifecycle::SessionRunEndKind;
 use haven_common::lifecycle::SessionStatus;
 use haven_common::lifecycle::SessionStepStatus;
 use haven_common::lifecycle::SessionWaitingReason;
@@ -256,6 +257,9 @@ pub struct SessionInfo {
     /// first ReAct loop completes, or manually by the user.
     pub title: Option<String>,
     pub status: SessionStatus,
+    /// Durable typed outcome of the most recent completed ReAct turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_end_kind: Option<SessionRunEndKind>,
     /// Runtime/UI projection explaining why `status == Paused`. It is not
     /// persisted and is recomputed from interactions and live tool_runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -277,6 +281,7 @@ impl SessionInfo {
             summary: record.input_text.clone(),
             title: record.title.clone(),
             status: record.status,
+            run_end_kind: record.run_end_kind,
             waiting_reason: None,
             steps: Vec::new(),
             created_at: record.created_at.clone(),
@@ -2014,6 +2019,7 @@ mod tests {
             .register(&session.session_id, &[])
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(&format!(
                 "CREATE TRIGGER block_session_delete
                  BEFORE DELETE ON sessions WHEN OLD.id = '{}'
@@ -2040,6 +2046,7 @@ mod tests {
         );
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER block_session_delete")
             .unwrap();
         exec.delete_session(&session.session_id).await.unwrap();
@@ -2128,7 +2135,7 @@ mod tests {
             "application/pdf",
         ));
 
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "UPDATE sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
             [&session.session_id],
@@ -3717,6 +3724,7 @@ mod tests {
             .unwrap();
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TABLE status_update_attempts (attempt INTEGER NOT NULL);
                  CREATE TRIGGER fail_session_status_update
@@ -3744,6 +3752,7 @@ mod tests {
         );
         let attempts: i64 = db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row("SELECT COUNT(*) FROM status_update_attempts", [], |row| {
                 row.get(0)
             })
@@ -4112,6 +4121,7 @@ mod tests {
         assert!(!dispatch_wake.has_changed().unwrap());
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER fail_confirmation_resume_status
                  BEFORE UPDATE OF status ON sessions
@@ -4162,6 +4172,7 @@ mod tests {
         assert!(runtime_events.try_recv().is_err());
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER fail_confirmation_resume_status;")
             .unwrap();
         let retried = exec
@@ -4380,6 +4391,7 @@ mod tests {
         );
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER reject_confirmation_batch_event
                  BEFORE INSERT ON session_events
@@ -4399,6 +4411,7 @@ mod tests {
             .is_err()
         );
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER reject_confirmation_batch_event;")
             .unwrap();
         assert_eq!(
@@ -4489,6 +4502,7 @@ mod tests {
         };
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER reject_confirmation_plan
                  BEFORE INSERT ON session_events
@@ -4523,6 +4537,7 @@ mod tests {
         );
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER reject_confirmation_plan;")
             .unwrap();
         exec.request_confirm_batch_with_plan(&session.session_id, vec![request.clone()], plan)

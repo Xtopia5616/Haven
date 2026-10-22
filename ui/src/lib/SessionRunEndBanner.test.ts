@@ -7,13 +7,14 @@ describe('SessionRunEndBanner', () => {
 		render(SessionRunEndBanner, {
 			status: 'paused',
 			outcome: 'turn_completed',
-			reason: '本轮已正常结束。',
+			reason: '本轮已完成。',
 		});
 
 		expect(screen.getByRole('status').getAttribute('data-status')).toBe('paused');
-		expect(screen.getByText('本轮已正常结束')).toBeTruthy();
-		expect(screen.getByText('本轮完成')).toBeTruthy();
-		expect(screen.getByText('回答已保留，可以继续发送消息。')).toBeTruthy();
+		expect(screen.getByText('本轮已完成')).toBeTruthy();
+		expect(screen.getByText('已完成')).toBeTruthy();
+		expect(screen.getByText('本轮已完成。')).toBeTruthy();
+		expect(screen.getByText('当前输出已保留，可以发送新消息继续对话。')).toBeTruthy();
 	});
 
 	it('shows the error reason and distinguishes saved content from the failed part', () => {

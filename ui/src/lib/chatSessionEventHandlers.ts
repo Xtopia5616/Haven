@@ -92,7 +92,7 @@ export function createChatSessionEventHandler({
 						sessionId: data.sessionId,
 						status: data.status,
 						outcome: 'turn_completed',
-						reason: data.reason?.trim() || '本轮已正常结束。',
+						reason: data.reason?.trim() || '本轮已完成。',
 						title: data.title,
 						waitingReason: data.waitingReason,
 					});
@@ -110,6 +110,7 @@ export function createChatSessionEventHandler({
 						type: 'session/status-updated',
 						sessionId: data.sessionId,
 						status: data.status,
+						runEndKind: data.runEndKind,
 						title: data.title,
 						waitingReason: data.waitingReason,
 					});

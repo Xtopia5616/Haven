@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 53;
+pub const SCHEMA_VERSION: i32 = 54;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -18,6 +18,7 @@ const SCHEMA_SQL: &[&str] = &[
         status TEXT NOT NULL DEFAULT 'pending'
             CHECK(status IN ('pending','running','paused','completed','error')),
         run_end_reason TEXT,
+        run_end_kind TEXT CHECK(run_end_kind IS NULL OR run_end_kind IN ('turn_completed')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
         creator TEXT NOT NULL DEFAULT 'user'
@@ -29,6 +30,7 @@ const SCHEMA_SQL: &[&str] = &[
         source_session_id TEXT,
         source_message_id TEXT,
         source_schedule_run_id TEXT,
+        CHECK(run_end_kind IS NULL OR status = 'paused'),
         CHECK((creator = 'user' AND creation_method = 'new' AND source_kind = 'none'
                 AND source_session_id IS NULL AND source_message_id IS NULL AND source_schedule_run_id IS NULL)
             OR (creator = 'system' AND creation_method = 'new' AND source_kind = 'none'

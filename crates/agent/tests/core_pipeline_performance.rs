@@ -41,6 +41,7 @@ fn completion_payload(tool_run_id: &str, output: &str) -> ToolRunCompletionPaylo
 
 fn pending_tool_run_count(db: &Database) -> i64 {
     db.conn()
+        .expect("test database connection checkout failed")
         .query_row(
             "SELECT COUNT(*) FROM tool_run_completion_outbox WHERE delivered_at IS NULL",
             [],

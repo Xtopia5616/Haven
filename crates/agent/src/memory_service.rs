@@ -550,7 +550,10 @@ mod tests {
     #[tokio::test]
     async fn prompt_candidate_store_errors_keep_the_existing_context() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        db.conn().execute_batch("DROP TABLE facts").unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute_batch("DROP TABLE facts")
+            .unwrap();
         let service = MemoryService::new(db, None, 1);
 
         let error = match service.prompt_candidates("Rust", None).await {

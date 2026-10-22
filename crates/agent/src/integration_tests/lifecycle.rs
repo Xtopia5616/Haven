@@ -37,6 +37,7 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
     agent
         .db
         .conn()
+        .expect("test database connection checkout failed")
         .execute_batch(
             "CREATE TRIGGER block_memory_runtime_cursor BEFORE INSERT ON kv_store
              WHEN NEW.key GLOB 'memory_event_cursor.*'
@@ -72,6 +73,7 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
         .clone()
         .run_blocking_for_test(|db| {
             db.conn()
+                .expect("test database connection checkout failed")
                 .execute_batch("DROP TRIGGER block_memory_runtime_cursor")?;
             Ok(())
         })
@@ -150,6 +152,7 @@ async fn cancelling_memory_preparation_does_not_open_dispatcher() {
     agent
         .db
         .conn()
+        .expect("test database connection checkout failed")
         .execute_batch(
             "CREATE TRIGGER block_memory_runtime_cursor BEFORE INSERT ON kv_store
              WHEN NEW.key GLOB 'memory_event_cursor.*'
@@ -519,6 +522,7 @@ async fn queued_tool_run_result_is_reconciled_after_session_becomes_terminal() {
         let pending: i64 = agent
             .db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM tool_run_completion_outbox
                  WHERE tool_run_id = ?1 AND delivered_at IS NULL",
@@ -591,6 +595,7 @@ async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
         let delivered: i64 = agent
             .db
             .conn()
+            .expect("test database connection checkout failed")
             .query_row(
                 "SELECT COUNT(*) FROM tool_run_completion_outbox
                  WHERE tool_run_id = ?1 AND delivered_at IS NOT NULL",
@@ -828,6 +833,7 @@ async fn ingest_user_input_continues_when_terminal_ghost_delete_fails() {
     let terminal_status = db.get_session(&session.session_id).unwrap().unwrap().status;
     assert!(terminal_status.is_terminal());
     db.conn()
+        .expect("test database connection checkout failed")
         .execute_batch(
             r#"
             CREATE TRIGGER reject_ghost_message_delete

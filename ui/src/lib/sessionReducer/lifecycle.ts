@@ -122,9 +122,16 @@ export function reduceLifecycle(
 			if (!current) return base;
 			const waitingReason =
 				action.waitingReason !== undefined ? action.waitingReason : current.waitingReason;
+			const runEndKind =
+				action.runEndKind !== undefined
+					? action.runEndKind || undefined
+					: action.status === 'pending' || action.status === 'running'
+						? undefined
+						: current.runEndKind;
 			const title = action.title != null ? action.title : current.title;
 			const sessionChanged =
 				current.status !== action.status ||
+				current.runEndKind !== runEndKind ||
 				current.waitingReason !== waitingReason ||
 				current.title !== title;
 			const currentNotice =
@@ -142,6 +149,7 @@ export function reduceLifecycle(
 							? {
 									...session,
 									status: action.status,
+									runEndKind,
 									...(action.waitingReason !== undefined
 										? { waitingReason: action.waitingReason }
 										: {}),
@@ -189,6 +197,7 @@ export function reduceLifecycle(
 			const sessionChanged =
 				!!current &&
 				(current.status !== action.status ||
+					current.runEndKind !== action.outcome ||
 					current.waitingReason !== waitingReason ||
 					current.title !== title);
 			const noticeChanged =
@@ -204,6 +213,7 @@ export function reduceLifecycle(
 							? {
 									...session,
 									status: action.status,
+									runEndKind: action.outcome,
 									...(action.waitingReason !== undefined
 										? { waitingReason: action.waitingReason }
 										: {}),

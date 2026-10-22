@@ -180,6 +180,7 @@ describe('createChatSessionStartup', () => {
 				status: 'paused',
 				inputText: '运行时首条输入',
 				title: null,
+				runEndKind: null,
 				waitingReason: 'user_input',
 			},
 		]);

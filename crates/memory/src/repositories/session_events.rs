@@ -589,7 +589,7 @@ mod tests {
             Some(step_number)
         );
 
-        db.conn()
+        db.conn().expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO session_events
                     (session_id, sequence, event_type, payload, created_at, run_id, step_number)
@@ -605,6 +605,7 @@ mod tests {
     async fn session_event_run_id_rejects_negative_storage() {
         let (db, store, session_id) = store();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO session_events
                     (session_id, sequence, event_type, payload, created_at, run_id, step_number)
@@ -680,7 +681,7 @@ mod tests {
         let (db, store, session_id) = store();
         // In-memory databases have one pooled connection. Holding it keeps
         // the replay worker pending until the cancellable scheduler times out.
-        let connection = db.conn();
+        let connection = db.conn().expect("test database connection checkout failed");
         let cancel = CancellationToken::new();
         cancel.cancel();
 
@@ -1117,7 +1118,7 @@ mod tests {
         db.update_session_status(&completed.session_id, SessionStatus::Completed)
             .unwrap();
 
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         for (session_id, created_at) in [
             (&oldest_id, "2026-09-20T10:00:00.000Z"),
             (&middle.session_id, "2026-09-21T10:00:00.000Z"),
@@ -1582,7 +1583,7 @@ mod tests {
             .unwrap();
         let old_cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute(
             "UPDATE messages SET created_at = ?1 WHERE id = ?2",
             rusqlite::params![old_cutoff, old_pending.message.message_id],
@@ -2231,6 +2232,7 @@ mod tests {
 
         let malformed_session_id = "ses-invalid";
         db.conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "INSERT INTO sessions (id, input_text) VALUES (?1, 'fixture')",
                 rusqlite::params![malformed_session_id],
@@ -3578,6 +3580,7 @@ mod tests {
             "2099-03-04T05:06:07Z",
         ] {
             db.conn()
+                .expect("test database connection checkout failed")
                 .execute(
                     "UPDATE messages SET created_at = ?1 WHERE id = ?2",
                     rusqlite::params![timestamp, message.message_id],
@@ -3597,7 +3600,7 @@ mod tests {
         let (db, store, session_id) = store();
         let mut live = store.subscribe();
         let failed_message_id = haven_common::types::new_id("msg");
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute_batch(&format!(
             "CREATE TRIGGER fail_session_projection BEFORE INSERT ON messages
              WHEN NEW.id = '{failed_message_id}'
@@ -3624,7 +3627,7 @@ mod tests {
     #[test]
     fn session_commit_writes_event_before_assistant_projection() {
         let (db, store, session_id) = store();
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         conn.execute_batch(
             "CREATE TRIGGER assert_transcript_before_message BEFORE INSERT ON messages
              WHEN NOT EXISTS (
@@ -3806,6 +3809,7 @@ mod tests {
     fn trailing_interaction_clear_rolls_back_with_tool_result_event() {
         let (db, store, session_id) = store();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER reject_confirmation_clear
                  BEFORE INSERT ON session_events
@@ -3831,6 +3835,7 @@ mod tests {
         assert!(store.read_all(&session_id).unwrap().is_empty());
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch("DROP TRIGGER reject_confirmation_clear;")
             .unwrap();
         let result = store.commit_transcript(&session_id, &committed).unwrap();
@@ -3917,6 +3922,7 @@ mod tests {
             .unwrap();
         let error = db
             .conn()
+            .expect("test database connection checkout failed")
             .execute(
                 "UPDATE session_events SET payload = ?1
                  WHERE session_id = ?2 AND sequence = ?3",

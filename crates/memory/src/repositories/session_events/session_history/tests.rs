@@ -40,7 +40,7 @@ async fn session_store_latest_record_preserves_recent_history_order_and_empty_re
     let (db, store, first_id) = store();
     let second = db.create_session("second").unwrap();
     let third = db.create_session("third").unwrap();
-    let conn = db.conn();
+    let conn = db.conn().expect("test database connection checkout failed");
     for (session_id, created_at) in [
         (&first_id, "2026-09-20T10:00:00.000Z"),
         (&second.session_id, "2026-09-21T10:00:00.000Z"),
@@ -323,7 +323,7 @@ async fn session_store_history_ports_preserve_database_query_semantics() {
     db.update_session_title(&second.session_id, "named needle")
         .unwrap();
 
-    let conn = db.conn();
+    let conn = db.conn().expect("test database connection checkout failed");
     for (session_id, created_at) in [
         (&first_id, "2026-09-20T10:00:00.000Z"),
         (&second.session_id, "2026-09-21T10:00:00.000Z"),

@@ -91,6 +91,8 @@ pub struct SessionRecordDto {
     pub title: Option<String>,
     pub status: haven_common::lifecycle::SessionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run_end_reason: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -104,6 +106,7 @@ impl From<Session> for SessionRecordDto {
             input_text: session.input_text,
             title: session.title,
             status: session.status,
+            run_end_kind: session.run_end_kind,
             run_end_reason: session.run_end_reason,
             created_at: session.created_at,
             updated_at: session.updated_at,
@@ -870,6 +873,7 @@ mod tests {
                 summary: "private agent summary".into(),
                 title: Some("Visible title".into()),
                 status: SessionStatus::Running,
+                run_end_kind: None,
                 waiting_reason: None,
                 steps: vec![StepInfo {
                     step_id: "step-00000000000000000000000000000002".into(),
@@ -1225,7 +1229,10 @@ mod tests {
     async fn end_session_title_query_failure_falls_back_to_empty_title() {
         let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
         let session = db.create_session("persisted input").unwrap();
-        db.conn().execute_batch("DROP TABLE sessions").unwrap();
+        db.conn()
+            .expect("test database connection checkout failed")
+            .execute_batch("DROP TABLE sessions")
+            .unwrap();
         let session_store = haven_memory::SessionStore::new(db);
 
         assert_eq!(

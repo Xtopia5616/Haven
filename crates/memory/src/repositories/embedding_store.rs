@@ -253,6 +253,7 @@ mod tests {
         assert_eq!(store.list_dimensions("model-a".into()).await.unwrap(), [2]);
 
         db.conn()
+            .expect("test database connection checkout failed")
             .execute("DELETE FROM embedding_lsh WHERE model = 'model-a'", [])
             .unwrap();
         store
@@ -325,6 +326,7 @@ mod tests {
     async fn embedding_store_propagates_database_errors() {
         let (db, store) = store();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute("DROP TABLE memory_embeddings", [])
             .unwrap();
 

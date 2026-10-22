@@ -1984,7 +1984,7 @@ mod tests {
     }
 
     fn set_title_write_failure(db: &Database, fail: bool) {
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         if fail {
             conn.execute_batch(
                 r#"
@@ -2117,6 +2117,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let (agent, _) = make_agent(db.clone());
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 r#"
                 CREATE TRIGGER reject_first_user_message

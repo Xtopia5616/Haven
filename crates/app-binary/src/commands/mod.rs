@@ -84,6 +84,8 @@ pub struct RuntimeSessionDto {
     pub title: Option<String>,
     pub status: haven_common::lifecycle::SessionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_reason: Option<haven_common::lifecycle::SessionWaitingReason>,
 }
 
@@ -94,6 +96,7 @@ impl From<haven_agent::SessionInfo> for RuntimeSessionDto {
             input_text: session.input,
             title: session.title,
             status: session.status,
+            run_end_kind: session.run_end_kind,
             waiting_reason: session.waiting_reason,
         }
     }

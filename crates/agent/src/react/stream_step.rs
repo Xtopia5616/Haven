@@ -1894,6 +1894,7 @@ mod tests {
         let session = db.create_session("input").unwrap();
         let fault_trigger = format!("recovery_fault_{}", uuid::Uuid::new_v4().simple());
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(&format!(
                 "CREATE TRIGGER {fault_trigger}
                  BEFORE INSERT ON messages

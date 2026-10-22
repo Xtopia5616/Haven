@@ -1,4 +1,5 @@
 use crate::cache::{CacheGeneration, QueryResultCache};
+use anyhow::Context;
 use rusqlite::{Connection, InterruptHandle};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -85,6 +86,7 @@ fn unregister_interrupt_handle() {
 /// callers (tools, Tauri commands), so a busy step rarely blocks on
 /// checkout while other connections are still doing real work.
 const FILE_POOL_MAX_CONNECTIONS: usize = 16;
+const CONNECTION_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A tiny bounded pool of rusqlite connections. The previous design wrapped a
 /// SINGLE connection in a `Mutex`, which serialized every DB access across all
@@ -95,9 +97,8 @@ const FILE_POOL_MAX_CONNECTIONS: usize = 16;
 /// queueing on the mutex.
 ///
 /// `PooledConnection` hands a checked-out connection back to the pool on drop;
-/// `get()` blocks (condvar) when the pool is exhausted, which is fine because
-/// `Database::run_blocking` already moves DB work off the async runtime, and
-/// per-session DB use is short-lived.
+/// `get()` waits on a condvar when the pool is exhausted and returns a storage
+/// error after a bounded checkout timeout.
 struct ConnectionPool {
     state: Mutex<PoolState>,
     cv: Condvar,
@@ -135,6 +136,11 @@ impl ConnectionPool {
     }
 
     fn get(&self) -> anyhow::Result<PooledConnection<'_>> {
+        self.get_with_timeout(CONNECTION_CHECKOUT_TIMEOUT)
+    }
+
+    fn get_with_timeout(&self, timeout: Duration) -> anyhow::Result<PooledConnection<'_>> {
+        let deadline = std::time::Instant::now() + timeout;
         let mut st = self
             .state
             .lock()
@@ -176,25 +182,34 @@ impl ConnectionPool {
                 return Ok(pooled);
             }
             // All connections are checked out. Poll cancellable waits so they
-            // can exit without a connection being returned. Direct callers on
-            // runtime threads retain the 30s warning for an exhausted pool.
+            // can exit without a connection being returned; all callers have
+            // the same bounded total wait.
             let cancellable = ACTIVE_DB_INTERRUPTS.with(|active| active.borrow().is_some());
-            let wait = if cancellable {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                tracing::warn!(
+                    "database pool exhausted ({} connections in use) until checkout timeout",
+                    self.max
+                );
+                anyhow::bail!("timed out waiting for database connection (pool exhausted)");
+            }
+            let poll_interval = if cancellable {
                 Duration::from_millis(25)
             } else {
-                Duration::from_secs(30)
+                remaining
             };
+            let wait = poll_interval.min(remaining);
             let (new_st, timeout) = self
                 .cv
                 .wait_timeout(st, wait)
                 .map_err(|_| anyhow::anyhow!("database pool lock poisoned"))?;
             st = new_st;
-            if timeout.timed_out() && !cancellable {
+            if timeout.timed_out() && std::time::Instant::now() >= deadline {
                 tracing::warn!(
-                    "database pool exhausted ({} connections in use) for 30s; \
-                     the waiting caller is stalled on a runtime thread",
+                    "database pool exhausted ({} connections in use) until checkout timeout",
                     self.max
                 );
+                anyhow::bail!("timed out waiting for database connection (pool exhausted)");
             }
         }
     }
@@ -362,23 +377,19 @@ impl Database {
     }
 
     #[cfg(feature = "test-support")]
-    pub fn conn(&self) -> PooledConnection<'_> {
-        self.checkout_connection()
+    pub fn conn(&self) -> anyhow::Result<PooledConnection<'_>> {
+        self.try_conn()
     }
 
     #[cfg(all(test, not(feature = "test-support")))]
-    pub(crate) fn conn(&self) -> PooledConnection<'_> {
-        self.checkout_connection()
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn checkout_connection(&self) -> PooledConnection<'_> {
+    pub(crate) fn conn(&self) -> anyhow::Result<PooledConnection<'_>> {
         self.try_conn()
-            .expect("database connection checkout failed")
     }
 
     pub(crate) fn try_conn(&self) -> anyhow::Result<PooledConnection<'_>> {
-        self.pool.get()
+        self.pool
+            .get()
+            .context("failed to acquire database connection")
     }
 
     /// Run one fact-graph mutation while excluding other fact mutations issued
@@ -702,6 +713,16 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    fn database_with_pool(pool: ConnectionPool) -> Database {
+        Database {
+            pool,
+            cache: QueryResultCache::new(),
+            memory_revision: AtomicU64::new(0),
+            pending_embedding_models: Mutex::new(HashMap::new()),
+            fact_write_gate: Mutex::new(()),
+        }
+    }
+
     fn make_msg(id: &str, session_id: &str) -> crate::repositories::messages::Message {
         crate::repositories::messages::Message {
             message_id: id.into(),
@@ -725,6 +746,7 @@ mod tests {
             title: None,
             status: haven_common::lifecycle::SessionStatus::Pending,
             run_end_reason: None,
+            run_end_kind: None,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
             creation: crate::repositories::sessions::SessionCreation::user_new(),
@@ -780,16 +802,71 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.db");
         let db = Database::open(&path).unwrap();
-        let _guard = db.conn();
+        let _guard = db.conn().expect("test database connection checkout failed");
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn test_conn_returns_lock_guard() {
         let db = Database::open_in_memory().unwrap();
-        let conn = db.conn();
+        let conn = db.conn().expect("test database connection checkout failed");
         let count: i32 = conn.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn blocking_connection_open_failure_preserves_sqlite_error_source() {
+        let dir =
+            std::env::temp_dir().join(format!("haven-db-open-error-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let open_path = dir.clone();
+        let pool = ConnectionPool::with_initial(
+            1,
+            Box::new(move || Ok(Connection::open(&open_path)?)),
+            None,
+        );
+        let db = Arc::new(database_with_pool(pool));
+
+        let err = db
+            .run_blocking(|db| {
+                let _conn = db.try_conn()?;
+                Ok(())
+            })
+            .await
+            .expect_err("connection open failure must be returned from the blocking task");
+
+        assert!(
+            err.chain()
+                .any(|cause| cause.downcast_ref::<rusqlite::Error>().is_some()),
+            "the SQLite error must remain available in the error chain: {err:#}"
+        );
+        assert!(
+            format!("{err:#}").contains("database connection"),
+            "checkout context should explain where opening failed: {err:#}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pool_checkout_times_out_when_all_connections_are_held() {
+        let pool = ConnectionPool::with_initial(
+            1,
+            Box::new(|| Ok(Connection::open_in_memory()?)),
+            Some(Connection::open_in_memory().unwrap()),
+        );
+        let held = pool.get().unwrap();
+
+        let err = match pool.get_with_timeout(Duration::from_millis(10)) {
+            Ok(_) => panic!("exhausted pool checkout must time out"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("timed out"), "{err:#}");
+
+        drop(held);
+        assert!(
+            pool.get().is_ok(),
+            "pool should remain usable after timeout"
+        );
     }
 
     #[tokio::test]
@@ -822,7 +899,7 @@ mod tests {
                 })
                 .await;
             assert!(result.is_err(), "cancellation phase {phase} must fail");
-            let conn = db.conn();
+            let conn = db.conn().expect("test database connection checkout failed");
             assert!(conn.is_autocommit(), "cancelled transaction must be closed");
             let input: String = conn
                 .query_row("SELECT input_text FROM sessions", [], |row| row.get(0))
@@ -901,7 +978,7 @@ mod tests {
     async fn cancelled_pool_wait_cannot_write_checkpoint_after_connection_release() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("input").unwrap();
-        let held = db.conn();
+        let held = db.conn().expect("test database connection checkout failed");
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (finished_tx, mut finished_rx) = tokio::sync::oneshot::channel();
         let cancel = CancellationToken::new();
@@ -952,7 +1029,9 @@ mod tests {
         let holder_db = db.clone();
         let (lock_ready_tx, lock_ready_rx) = std::sync::mpsc::channel();
         let holder = std::thread::spawn(move || {
-            let conn = holder_db.conn();
+            let conn = holder_db
+                .conn()
+                .expect("test database connection checkout failed");
             conn.execute_batch("BEGIN IMMEDIATE").unwrap();
             lock_ready_tx.send(()).unwrap();
             std::thread::sleep(Duration::from_secs(5));
@@ -967,7 +1046,7 @@ mod tests {
             let cancel = cancel.clone();
             tokio::spawn(async move {
                 db.run_blocking_cancellable(cancel, move |db| {
-                    let conn = db.conn();
+                    let conn = db.conn().expect("test database connection checkout failed");
                     let _ = checkout_tx.send(());
                     conn.execute(
                         "UPDATE sessions SET input_text = 'blocked' WHERE id = ?1",

@@ -201,6 +201,7 @@ mod tests {
             .append(&session.session_id, "test_marker", "{}", None, None)
             .unwrap();
         db.conn()
+            .expect("test database connection checkout failed")
             .execute_batch(
                 "CREATE TRIGGER reject_memory_trigger BEFORE INSERT ON session_events
                  WHEN NEW.event_type = 'memory_trigger'
