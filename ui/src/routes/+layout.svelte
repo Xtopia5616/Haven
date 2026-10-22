@@ -44,6 +44,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { syncStore } from '$lib/syncStore.ts';
+	import { workspaceStatusHintStore } from '$lib/workspaceStatusHintStore.ts';
 	import {
 		isBusyStatus,
 		isPausedStatus,
@@ -338,6 +339,8 @@
 	let overlay = $state<RecordingOverlayState>(recordingOverlayController.snapshot());
 	let duration = $state(recordingOverlayController.durationSeconds());
 	let reactExecutionPhase = $state<ReActExecutionPhase>('idle'); // synced from reactExecutionPhaseStore
+	let inputDeliveryHint = $state<string | null>(null);
+	$effect(() => syncStore(workspaceStatusHintStore, (value) => (inputDeliveryHint = value)));
 	// Runtime mode is intentionally separate from backend bootstrap state:
 	// browser Vite preview has no Tauri backend at all, while a Tauri webview
 	// can still be waiting for Rust startup.
@@ -1269,6 +1272,7 @@
 			executionPhase={reactExecutionPhase}
 			{busySessions}
 			{activeSessionStatusLabel}
+			{inputDeliveryHint}
 			{runtime}
 			{bootstrapReady}
 			{llmConnected}

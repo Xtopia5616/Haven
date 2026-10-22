@@ -62,14 +62,14 @@ describe('Composer context menu', () => {
 		);
 	});
 
-	it('explains queue timing before a pending session starts', () => {
+	it('keeps queue timing guidance out of the composer', () => {
 		render(Composer, {
 			sessionRunning: true,
 			sessionStatus: 'pending',
 			executionPhase: 'queued',
 			onsubmit: vi.fn(),
 		});
-		expect(screen.getByText('会话排队中；本条消息会在会话启动后的安全边界接入。')).toBeTruthy();
+		expect(screen.queryByText('会话排队中；本条消息会在会话启动后的安全边界接入。')).toBeNull();
 	});
 
 	it('shows answer and follow-up routing while Ask is waiting', async () => {
@@ -82,8 +82,8 @@ describe('Composer context menu', () => {
 			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
 		).toContain('输入答案或补充');
 		expect(
-			screen.getByText('正在等待你的回答；发送内容和已选选项会作为当前问题的答案。'),
-		).toBeTruthy();
+			screen.queryByText('正在等待你的回答；发送内容和已选选项会作为当前问题的答案。'),
+		).toBeNull();
 		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
 			target: { value: 'the answer' },
 		});
@@ -99,10 +99,10 @@ describe('Composer context menu', () => {
 		await fireEvent.click(screen.getByRole('combobox', { name: '问题回复方式' }));
 		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
 		expect(
-			screen.getByText(
+			screen.queryByText(
 				'此消息会排队，不会回答或唤醒当前问题；当前所选答案选项也不会提交。请先回答问题，后续消息才会处理。',
 			),
-		).toBeTruthy();
+		).toBeNull();
 		expect(
 			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
 		).toContain('输入后续消息');
@@ -129,7 +129,7 @@ describe('Composer context menu', () => {
 		expect(onsubmit).not.toHaveBeenCalled();
 	});
 
-	it('explains that steering waits for a tool boundary and never interrupts it', async () => {
+	it('keeps tool-boundary guidance out of the composer', async () => {
 		render(Composer, {
 			sessionRunning: true,
 			executionPhase: 'waiting_result',
@@ -137,13 +137,13 @@ describe('Composer context menu', () => {
 		});
 
 		expect(
-			screen.getByText('工具仍在执行；安全边界调整会等工具返回后接入，不会中断工具。'),
-		).toBeTruthy();
+			screen.queryByText('工具仍在执行；安全边界调整会等工具返回后接入，不会中断工具。'),
+		).toBeNull();
 		await fireEvent.click(screen.getByRole('combobox', { name: '消息投递方式' }));
 		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
 		expect(
-			screen.getByText('工具仍在执行；完成后追加会等整个工作自然结束，不会中断工具。'),
-		).toBeTruthy();
+			screen.queryByText('工具仍在执行；完成后追加会等整个工作自然结束，不会中断工具。'),
+		).toBeNull();
 	});
 
 	it('shows pause and confirmation waiting states and queues their submissions', async () => {
@@ -155,8 +155,8 @@ describe('Composer context menu', () => {
 			onsubmit: pausedSubmit,
 		});
 		expect(
-			screen.getByText('本轮步骤预算已耗尽；发送普通消息会排入后续并恢复会话。'),
-		).toBeTruthy();
+			screen.queryByText('本轮步骤预算已耗尽；发送普通消息会排入后续并恢复会话。'),
+		).toBeNull();
 		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
 			target: { value: 'resume with this' },
 		});
@@ -173,8 +173,10 @@ describe('Composer context menu', () => {
 			onsubmit: confirmationSubmit,
 		});
 		expect(
-			screen.getByText('工具正在等待权限确认；此处发送的消息只会排队，确认前不会开始处理。'),
-		).toBeTruthy();
+			screen.queryByText(
+				'工具正在等待权限确认；此处发送的消息只会排队，确认前不会开始处理。',
+			),
+		).toBeNull();
 		expect(screen.queryByRole('combobox', { name: '消息投递方式' })).toBeNull();
 		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
 			target: { value: 'after confirmation' },
@@ -193,11 +195,11 @@ describe('Composer context menu', () => {
 			onsubmit: vi.fn(),
 		});
 		expect(
-			screen.getByText('当前工作已自然完成；发送消息会作为下一轮追加并继续会话。'),
-		).toBeTruthy();
+			screen.queryByText('当前工作已自然完成；发送消息会作为下一轮追加并继续会话。'),
+		).toBeNull();
 		expect(
 			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
-		).toBe('本轮已完成；输入消息开始下一轮');
+		).toContain('追加指令');
 	});
 
 	it('shows stop progress and disables delivery changes while interruption is pending', () => {
@@ -207,7 +209,7 @@ describe('Composer context menu', () => {
 			interrupting: true,
 			onsubmit: vi.fn(),
 		});
-		expect(screen.getByText('正在停止当前输出；停止完成后再发送新消息。')).toBeTruthy();
+		expect(screen.queryByText('正在停止当前输出；停止完成后再发送新消息。')).toBeNull();
 		expect(screen.getByRole('combobox', { name: '消息投递方式' })).toHaveProperty(
 			'disabled',
 			true,
@@ -215,14 +217,17 @@ describe('Composer context menu', () => {
 		expect(screen.getByRole('button', { name: '中断输出' })).toHaveProperty('disabled', true);
 	});
 
-	it.each(['completed', 'error'] as const)('explains the %s terminal state', (sessionStatus) => {
-		render(Composer, {
-			activeSessionId: 'ses-00000000000000000000000000000001',
-			sessionStatus,
-			onsubmit: vi.fn(),
-		});
-		expect(screen.getByText('此会话已结束；发送新消息会开始新的会话。')).toBeTruthy();
-	});
+	it.each(['completed', 'error'] as const)(
+		'keeps the %s state guidance out of the composer',
+		(sessionStatus) => {
+			render(Composer, {
+				activeSessionId: 'ses-00000000000000000000000000000001',
+				sessionStatus,
+				onsubmit: vi.fn(),
+			});
+			expect(screen.queryByText('此会话已结束；发送新消息会开始新的会话。')).toBeNull();
+		},
+	);
 
 	it('uses the shared toolbar control for attachment, recording, and send actions', () => {
 		render(Composer, { onsubmit: vi.fn() });

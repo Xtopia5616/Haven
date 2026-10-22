@@ -6,7 +6,7 @@
 		SessionStatus,
 		SessionWaitingReason,
 	} from '$lib/contracts/generatedCommands.ts';
-	import { tick, untrack } from 'svelte';
+	import { onDestroy, tick, untrack } from 'svelte';
 	import type { Snippet } from 'svelte';
 	import logger from '$lib/logger.ts';
 	import { browser } from '$app/environment';
@@ -25,6 +25,7 @@
 	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import type { ChatAttachmentPayload, ChatFileAttachment } from '$lib/chatAttachmentTypes.ts';
 	import { DRAFT_SESSION_ID } from '$lib/sessionReducer.ts';
+	import { publishWorkspaceStatusHint } from '$lib/workspaceStatusHintStore.ts';
 
 	const DELIVERY_MODE_OPTIONS: SelectOption[] = [
 		{ value: 'steering', label: '安全边界调整' },
@@ -220,6 +221,10 @@
 		}
 		return '将在下一个安全边界接入当前工作；不会中断正在执行的请求或工具。';
 	});
+	$effect(() => {
+		publishWorkspaceStatusHint(deliveryHint || null);
+	});
+	onDestroy(() => publishWorkspaceStatusHint(null));
 	let transcriptInput = $state('');
 	let transcriptDraftSessionId = DRAFT_SESSION_ID;
 	const cachedDrafts = new Map<string, string>();
@@ -279,12 +284,6 @@
 		}
 		if (interrupting) return '当前正在停止；稍后可继续发送消息';
 		if (confirmationAwaiting) return '工具等待权限确认；消息会排队至确认完成';
-		if (sessionStatus === 'paused') {
-			if (sessionStatusLabel === '本轮已完成') return '本轮已完成；输入消息开始下一轮';
-			if (sessionWaitingReason === 'step_budget') return '步骤预算已耗尽；输入消息后继续会话';
-			if (sessionWaitingReason === 'user_interrupt') return '会话已中断；输入消息后继续会话';
-			return '会话已暂停；输入后将排队并尝试恢复';
-		}
 		if (sessionStatus === 'completed' || sessionStatus === 'error') {
 			return '输入指令以开始新的会话';
 		}
@@ -801,9 +800,6 @@
 			class="md-input chat-input"
 			autocomplete="off"></textarea>
 	</div>
-	{#if deliveryHint}
-		<p class="delivery-hint" role="status" aria-live="polite">{deliveryHint}</p>
-	{/if}
 	<div class="toolbar-row md-toolbar">
 		<div class="toolbar-left">
 			{@render toolbarLeft?.()}
@@ -1064,14 +1060,6 @@
 		padding-inline: 0;
 		padding-top: var(--md-sys-space-xs);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
-	}
-	.delivery-hint {
-		margin: 0;
-		padding-inline: var(--md-sys-space-xs);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-		text-wrap: pretty;
 	}
 	.toolbar-left {
 		flex: 0 0 auto;

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import MaterialIconButton from './MaterialIconButton.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 	import type { SessionSummary } from './sessionReducer/types.ts';
 
@@ -8,6 +9,7 @@
 		activeSessionId?: string | null;
 		statusLabel?: (session: SessionSummary) => string;
 		onNew?: () => void;
+		onCollapse?: () => void;
 		onSelect?: (sessionId: string) => void;
 	}
 
@@ -16,6 +18,7 @@
 		activeSessionId = null,
 		statusLabel = (session) => session.status,
 		onNew = () => {},
+		onCollapse,
 		onSelect = () => {},
 	}: Props = $props();
 
@@ -45,6 +48,16 @@
 			<p class="session-rail__eyebrow">会话空间</p>
 			<h2>会话</h2>
 		</div>
+		{#if onCollapse}
+			<MaterialIconButton
+				label="折叠会话栏"
+				title="折叠会话栏"
+				icon="chevronLeft"
+				variant="ghost"
+				ariaExpanded={true}
+				onclick={onCollapse}
+			/>
+		{/if}
 	</div>
 	<p class="session-rail__description">
 		这里列出可继续的会话；已完成记录可在“历史”中查看。
@@ -69,10 +82,12 @@
 						<button
 							type="button"
 							class="session-rail__item"
-						class:selected={activeSessionId === session.sessionId}
-						aria-current={activeSessionId === session.sessionId ? 'page' : undefined}
+							class:selected={activeSessionId === session.sessionId}
+							aria-current={activeSessionId === session.sessionId
+								? 'page'
+								: undefined}
 							title={sessionTitle(session)}
-						onclick={() => onSelect?.(session.sessionId)}
+							onclick={() => onSelect?.(session.sessionId)}
 						>
 							<span
 								class="session-rail__item-mark"

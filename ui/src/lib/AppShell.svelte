@@ -54,6 +54,8 @@
 		content,
 	}: Props = $props();
 
+	let navigationExpanded = $state(false);
+
 	const isDevelopmentBuild = import.meta.env.DEV;
 </script>
 
@@ -80,7 +82,7 @@
 	{@render themeControl()}
 {/snippet}
 
-<div class="app-shell responsive-layout-transition">
+<div class="app-shell responsive-layout-transition" class:navigation-expanded={navigationExpanded}>
 	<header class="titlebar md-toolbar">
 		<div class="titlebar-left">
 			<MaterialButton
@@ -113,6 +115,14 @@
 		>
 			<Logo size={30} withText={true} />
 		</button>
+		<MaterialIconButton
+			label={navigationExpanded ? '收起主导航' : '展开主导航'}
+			title={navigationExpanded ? '收起主导航' : '展开主导航'}
+			ariaExpanded={navigationExpanded}
+			icon={navigationExpanded ? 'chevronLeft' : 'chevronRight'}
+			variant="ghost"
+			onclick={() => (navigationExpanded = !navigationExpanded)}
+		/>
 		<div class="rail-section-label">工作区</div>
 		<LandscapeWorkspaceNav
 			tabs={navigationTabs ?? tabs}
@@ -361,7 +371,7 @@
 
 	@media screen and (min-width: 600px) {
 		.app-shell {
-			--workspace-rail-width: 76px;
+			--workspace-rail-width: 80px;
 			--md-comp-titlebar-height: var(--md-sys-space-4xl);
 			display: grid;
 			grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
@@ -429,13 +439,21 @@
 		.workspace-rail :global(.workspace-link) {
 			justify-content: center;
 			width: var(--rail-control-size);
-			min-height: var(--rail-control-size);
-			padding: 0;
+			min-height: 64px;
+			flex-direction: column;
+			gap: 0;
+			padding: var(--md-sys-space-xs) 0;
 			border-radius: var(--md-sys-shape-medium);
 		}
 		.workspace-rail :global(.workspace-link__copy) {
-			/* A zero-width flex item still leaves the button gap behind, which
-			 * nudges the icon off center in the compact landscape rail. */
+			display: flex;
+			flex: 0;
+			text-align: center;
+		}
+		.workspace-rail :global(.workspace-link__label) {
+			font-size: var(--md-sys-typescale-label-small-size);
+		}
+		.workspace-rail :global(.workspace-link__hint) {
 			display: none;
 		}
 		.workspace-rail :global(.workspace-link.active) {
@@ -535,47 +553,56 @@
 		}
 	}
 
-	@media screen and (min-width: 1200px) {
-		.app-shell {
+	@media screen and (min-width: 600px) {
+		.app-shell.navigation-expanded {
 			--workspace-rail-width: 200px;
 			grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
 		}
-		.workspace-rail {
+		.navigation-expanded .workspace-rail {
 			align-items: stretch;
 			gap: var(--md-sys-space-md);
 			padding: var(--md-sys-space-lg) var(--md-sys-space-md);
 		}
-		.rail-brand {
+		.navigation-expanded .rail-brand {
 			justify-content: flex-start;
 			width: 100%;
 			padding-inline: var(--md-sys-space-sm);
 		}
-		.rail-brand :global(.wordmark),
-		.rail-section-label {
+		.navigation-expanded .rail-brand :global(.wordmark),
+		.navigation-expanded .rail-section-label {
 			display: initial;
 		}
-		.rail-section-label {
+		.navigation-expanded .rail-section-label {
 			display: block;
 			padding: var(--md-sys-space-sm) var(--md-sys-space-sm) 0;
 		}
-		.workspace-rail :global(.landscape-workspace-nav) {
+		.navigation-expanded .workspace-rail :global(.landscape-workspace-nav) {
 			align-items: stretch;
 		}
-		.workspace-rail :global(.workspace-link) {
+		.navigation-expanded .workspace-rail :global(.workspace-link) {
 			justify-content: flex-start;
+			flex-direction: row;
+			gap: var(--md-sys-space-md);
 			width: 100%;
 			min-height: 56px;
 			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		}
-		.workspace-rail :global(.workspace-link__copy) {
+		.navigation-expanded .workspace-rail :global(.workspace-link__copy) {
 			display: flex;
 			flex: 1 1 auto;
+			text-align: left;
 			max-width: 14rem;
 			opacity: 1;
 			transform: none;
 			pointer-events: auto;
 		}
-		.rail-footer {
+		.navigation-expanded .workspace-rail :global(.workspace-link__hint) {
+			display: block;
+		}
+		.navigation-expanded .workspace-rail :global(.workspace-link__label) {
+			font-size: var(--md-sys-typescale-body-medium-size);
+		}
+		.navigation-expanded .rail-footer {
 			--rail-footer-control-height: var(--md-comp-status-height);
 			display: flex;
 			flex-direction: row;
@@ -583,7 +610,7 @@
 			width: 100%;
 			padding-inline: var(--md-sys-space-sm);
 		}
-		.rail-footer :global(.status-switch) {
+		.navigation-expanded .rail-footer :global(.status-switch) {
 			display: inline-flex;
 			flex-direction: row;
 			align-items: center;
@@ -591,7 +618,7 @@
 			width: calc(100% - var(--md-comp-icon-button-size) - var(--md-sys-space-xs));
 			min-width: 0;
 		}
-		.rail-footer :global(.status-chip) {
+		.navigation-expanded .rail-footer :global(.status-chip) {
 			justify-content: flex-start;
 			width: auto;
 			min-width: 0;
@@ -601,14 +628,14 @@
 			max-width: 100%;
 			padding-inline: var(--md-sys-space-sm);
 		}
-		.rail-footer :global(.status-text) {
+		.navigation-expanded .rail-footer :global(.status-text) {
 			display: inline;
 			min-width: 0;
 			overflow: hidden;
 			text-overflow: ellipsis;
 			white-space: nowrap;
 		}
-		.rail-footer :global(.rail-theme-button) {
+		.navigation-expanded .rail-footer :global(.rail-theme-button) {
 			align-self: center;
 			margin-inline-start: auto;
 			width: var(--rail-footer-control-height);
@@ -616,7 +643,7 @@
 			height: var(--rail-footer-control-height);
 			min-height: var(--rail-footer-control-height);
 		}
-		.rail-footer :global(.task-action .md-icon-btn[data-size='toolbar']) {
+		.navigation-expanded .rail-footer :global(.task-action .md-icon-btn[data-size='toolbar']) {
 			width: var(--rail-footer-control-height);
 			min-width: var(--rail-footer-control-height);
 			height: var(--rail-footer-control-height);

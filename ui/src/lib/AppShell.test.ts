@@ -3,6 +3,19 @@ import { fireEvent, render, screen } from '@testing-library/svelte';
 import AppShell from './AppShell.svelte';
 
 describe('AppShell', () => {
+	it('defaults to compact navigation and lets the user expand and collapse it', async () => {
+		const view = render(AppShell, { tabs: [] });
+		const shell = view.container.querySelector('.app-shell')!;
+		expect(shell.classList.contains('navigation-expanded')).toBe(false);
+		await fireEvent.click(screen.getByRole('button', { name: '展开主导航' }));
+		expect(shell.classList.contains('navigation-expanded')).toBe(true);
+		expect(
+			screen.getByRole('button', { name: '收起主导航' }).getAttribute('aria-expanded'),
+		).toBe('true');
+		await fireEvent.click(screen.getByRole('button', { name: '收起主导航' }));
+		expect(shell.classList.contains('navigation-expanded')).toBe(false);
+	});
+
 	it('shows a dev badge in the window chrome for development builds', () => {
 		render(AppShell, { activeTab: 'memory', tabs: [] } as any);
 

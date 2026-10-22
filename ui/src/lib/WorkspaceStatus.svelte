@@ -10,6 +10,7 @@
 		executionPhase?: ReActExecutionPhase;
 		busySessions?: ReadonlySet<string>;
 		activeSessionStatusLabel?: string;
+		inputDeliveryHint?: string | null;
 		runtime?: 'unknown' | 'tauri' | 'browser';
 		bootstrapReady?: boolean;
 		llmConnected?: LlmConnectionStatus | null;
@@ -24,6 +25,7 @@
 		executionPhase = 'idle',
 		busySessions = new Set(),
 		activeSessionStatusLabel = '空闲',
+		inputDeliveryHint = null,
 		runtime = 'tauri',
 		bootstrapReady = true,
 		llmConnected = null,
@@ -129,7 +131,9 @@
 
 	const statusTitle = $derived.by(() => {
 		if (runtime === 'browser') {
-			return '当前是浏览器预览，Rust/Tauri 后端未启动；运行 cargo tauri dev 启动桌面应用';
+			const previewHint =
+				'当前是浏览器预览，Rust/Tauri 后端未启动；运行 cargo tauri dev 启动桌面应用';
+			return inputDeliveryHint ? `${previewHint}；${inputDeliveryHint}` : previewHint;
 		}
 		const parts = [];
 		if (executionStatusLabel !== statusLabel) {
@@ -142,6 +146,9 @@
 		}
 		if (runningBackgroundToolRunCount > 0) {
 			parts.push(`${runningBackgroundToolRunCount} 个后台任务运行中`);
+		}
+		if (inputDeliveryHint) {
+			parts.push(inputDeliveryHint);
 		}
 		return parts.length > 0
 			? `状态：${statusLabel}；${parts.join('；')}`

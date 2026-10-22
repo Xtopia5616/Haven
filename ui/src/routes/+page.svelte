@@ -87,7 +87,7 @@
 	} from '$lib/contextMenuStore.ts';
 	import type { ContextMenuItem } from '$lib/contextMenuStore.ts';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
-	import SessionRail from '$lib/SessionRail.svelte';
+	import SessionSidebar from '$lib/SessionSidebar.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import SessionHeader from '$lib/SessionHeader.svelte';
@@ -386,6 +386,7 @@
 		return {
 			sessionId: session.sessionId,
 			status: session.status,
+			runEndKind: session.run_end_kind ?? null,
 			title: session.title || session.input_text,
 			inputText: session.input_text,
 		};
@@ -1101,12 +1102,15 @@
 				type: 'session/run-ended',
 				sessionId,
 				status: historicalRunEndStatus,
+				outcome: historical.run_end_kind === 'turn_completed' ? 'turn_completed' : undefined,
 				reason:
 					historical.run_end_reason ||
 					sessionReducer.getSessionErrorReason(sessionId) ||
-					(historicalRunEndStatus === 'error'
-						? '本次会话因错误停止，暂未收到更具体的原因。'
-						: ''),
+					(historical.run_end_kind === 'turn_completed'
+						? '本轮已完成。'
+						: historicalRunEndStatus === 'error'
+							? '本次会话因错误停止，暂未收到更具体的原因。'
+							: ''),
 			});
 		}
 	}
@@ -1324,7 +1328,7 @@
 	</MaterialDialog>
 
 	<div class="desktop-session-rail responsive-layout-panel">
-		<SessionRail
+		<SessionSidebar
 			{sessions}
 			{activeSessionId}
 			statusLabel={sessionStatusLabel}
@@ -1568,7 +1572,7 @@
 
 	@media screen and (min-width: 840px) {
 		.chat-page {
-			grid-template-columns: 272px minmax(0, 1fr);
+			grid-template-columns: auto minmax(0, 1fr);
 			--md-sys-chat-max-width: 960px;
 		}
 		.desktop-session-rail {
@@ -1614,7 +1618,7 @@
 
 	@media screen and (orientation: landscape) and (max-height: 560px) and (min-width: 840px) {
 		.chat-page {
-			grid-template-columns: minmax(200px, min(24vw, 240px)) minmax(0, 1fr);
+			grid-template-columns: auto minmax(0, 1fr);
 		}
 		.messages-area {
 			padding-top: var(--md-sys-space-sm);

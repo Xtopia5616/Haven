@@ -114,9 +114,13 @@ describe('WorkspaceStatus', () => {
 			bootstrapReady: true,
 			llmConnected: 'ready',
 			activeSessionStatusLabel: '已暂停',
+			inputDeliveryHint: '会话已暂停；发送普通消息会排入后续，并尝试恢复会话。',
 		});
 
-		expect(screen.getByRole('status', { name: '状态：已暂停' })).toBeTruthy();
+		const status = screen.getByRole('status', { name: '状态：已暂停' });
+		expect(status.getAttribute('title')).toContain(
+			'会话已暂停；发送普通消息会排入后续，并尝试恢复会话。',
+		);
 		expect(document.querySelector('.status-dot.animate')).toBeNull();
 	});
 
