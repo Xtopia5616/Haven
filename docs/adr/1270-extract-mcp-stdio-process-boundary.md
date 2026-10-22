@@ -21,7 +21,7 @@
 ## 替代方案
 
 - 缓冲或保留完整 `stderr`：拒绝，日志长度不受 server 信任，可能造成内存增长；当前没有稳定的诊断消费契约。
-- 在 `WorkspaceWrite` 下回退到本机 launcher：拒绝，会绕过进程启动前的策略拒绝；当前边界见 [ADR 1367](1367-simplify-workspace-write-process-boundaries.md)。
+- 在 `WorkspaceWrite` 下回退到本机 launcher：拒绝，会绕过进程启动前的策略拒绝；当前进程边界见 [ADR 1262](1262-separate-process-and-network-sandbox-boundaries.md)。
 
 ## 影响与回滚
 
