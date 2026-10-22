@@ -202,8 +202,27 @@ impl EverythingSearch {
             parse_entries(&stdout)?
         };
         let provider_result_count = response.len();
+        let index_coverage_unknown = provider_result_count == 0;
         let mut results = Vec::new();
         let mut rejected = 0usize;
+        let mut walker = ignore::WalkBuilder::new(&root);
+        walker
+            .max_depth(if request.max_depth == 0 {
+                None
+            } else {
+                Some(request.max_depth)
+            })
+            .require_git(false)
+            .hidden(request.ignore_hidden)
+            .ignore(true)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true);
+        let mut ignore_matcher = walker
+            .build_matchers()
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("native search filters are unavailable"))?;
         for entry in response {
             let path = entry.path.or(entry.filename).unwrap_or_default();
             if path.is_empty() {
@@ -215,25 +234,34 @@ impl EverythingSearch {
                 rejected += 1;
                 continue;
             }
+            let Ok(relative_path) = path.strip_prefix(&root) else {
+                rejected += 1;
+                continue;
+            };
+            let metadata = match policy.open_metadata(&path) {
+                Ok(file) => file.metadata()?,
+                Err(_) => {
+                    rejected += 1;
+                    continue;
+                }
+            };
+            let is_dir = metadata.is_dir();
+            if ignore_matcher.matched(relative_path, is_dir).is_ignore() {
+                continue;
+            }
             // Validate current metadata under the same file-read allowlist as
             // native search. Everything's index is not an authorization source.
-            match policy.open_metadata(&path) {
-                Ok(file) => {
-                    let is_dir = file.metadata()?.is_dir();
-                    results.push(serde_json::json!({
-                        "path": path,
-                        "match_reason": "filename",
-                        "kind": if is_dir { "directory" } else { "file" },
-                    }));
-                }
-                Err(_) => rejected += 1,
-            }
+            results.push(serde_json::json!({
+                "path": path,
+                "match_reason": "filename",
+                "kind": if is_dir { "directory" } else { "file" },
+            }));
         }
         results.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
         results.dedup_by(|a, b| a["path"] == b["path"]);
         let has_more = provider_result_count > max_results;
         results.truncate(max_results);
-        let complete = !has_more && rejected == 0;
+        let complete = !has_more && rejected == 0 && !index_coverage_unknown;
         let output = serde_json::json!({
             "results": results,
             "count": results.len(),
@@ -244,7 +272,8 @@ impl EverythingSearch {
             "search_complete": complete,
             "io_error_count": rejected,
             "search_backend": "everything",
-            "hint": if !complete { Some("Everything results may be incomplete because paths were rejected by the active file policy or the result cap was reached." ) } else { None },
+            "index_coverage": if index_coverage_unknown { "unknown" } else { "matches_returned" },
+            "hint": if index_coverage_unknown { Some("Everything returned no matches, but its index may still be loading or may not include this directory. Check Everything's indexing settings and wait for initial indexing to finish." ) } else if !complete { Some("Everything results may be incomplete because paths were rejected by the active file policy or the result cap was reached." ) } else { None },
         });
         Ok(ToolResult::from_output(output, has_more))
     }
@@ -303,6 +332,7 @@ fn parse_entries(bytes: &[u8]) -> anyhow::Result<Vec<EverythingEntry>> {
 #[cfg(test)]
 mod tests {
     use super::{MAX_STDOUT_BYTES, parse_entries, path_is_within_root, read_bounded};
+    use std::path::Path;
 
     #[test]
     fn path_scope_uses_components_instead_of_prefixes() {
@@ -324,6 +354,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn empty_provider_result_is_not_a_complete_search() {
+        let result_count = parse_entries(b"[]").unwrap().len();
+        let index_coverage_unknown = result_count == 0;
+        let complete = result_count <= 50 && !index_coverage_unknown;
+        assert!(index_coverage_unknown);
+        assert!(!complete);
+    }
+
+    #[test]
+    fn incremental_native_filters_match_depth_hidden_and_gitignore() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join("nested/deep")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".git/info")).unwrap();
+        std::fs::write(temp.path().join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(temp.path().join("ignored.txt"), "ignored").unwrap();
+        std::fs::write(temp.path().join(".hidden.txt"), "hidden").unwrap();
+        std::fs::write(temp.path().join("nested/deep/visible.txt"), "visible").unwrap();
+        let mut builder = ignore::WalkBuilder::new(temp.path());
+        builder
+            .max_depth(Some(2))
+            .hidden(true)
+            .ignore(true)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true);
+        let mut matcher = builder.build_matchers().remove(0);
+        assert!(matcher.matched(Path::new("ignored.txt"), false).is_ignore());
+        assert!(matcher.matched(Path::new(".hidden.txt"), false).is_ignore());
+        assert!(
+            matcher
+                .matched(Path::new("nested/deep/visible.txt"), false)
+                .is_ignore()
+        );
     }
 
     #[tokio::test]
