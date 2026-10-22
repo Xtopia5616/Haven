@@ -8,7 +8,7 @@
 //!
 //! **Consumption** — the ring is mutex-protected and shared with the
 //! recording loop, which drains currently buffered samples directly
-//! (`CaptureEngineHandle::drain_buffered`)
+//! (`CaptureEngineHandle::drain_buffered_into`)
 //! with no engine round-trip. The capture engine thread handles start/stop
 //! commands and runs the silent-capture check on its poll cadence while recording.
 //!
@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 
-use backend::{CaptureSignals, CpalBackend};
+use backend::{CaptureMetrics, CaptureSignals, CpalBackend};
 use ring::RingBuffer;
 
 mod backend;
@@ -98,18 +98,11 @@ impl CaptureEngineHandle {
         }
     }
 
-    /// Drain the ring directly. No engine round-trip: the ring is
-    /// mutex-protected, so the recording loop consumes audio without waiting
-    /// for the engine's command poll. Only the mutex is contended, and only
-    /// for the duration of one copy.
-    pub fn drain_buffered(&self) -> Vec<f32> {
-        self.ring
-            .lock()
-            .unwrap_or_else(|poisoned| {
-                tracing::error!("capture ring lock poisoned; recovering state");
-                poisoned.into_inner()
-            })
-            .drain()
+    /// Drain directly into reusable caller-owned storage. Capacity growth
+    /// happens before the final ring lock is acquired, keeping allocation
+    /// and sample copying out of the callback's critical section.
+    pub fn drain_buffered_into(&self, out: &mut Vec<f32>) {
+        drain_ring_into(&self.ring, out);
     }
 
     /// Stop the capture stream (releasing the device), drain the ring and
@@ -164,6 +157,37 @@ impl CaptureEngineHandle {
     }
 }
 
+/// Drain the ring into reusable storage. The short first lock snapshots the
+/// required capacity; if the producer fills more before the second lock,
+/// retry after reserving outside the mutex. The final copy is at most two
+/// contiguous slices and cannot allocate while holding the ring lock.
+fn drain_ring_into(ring: &Arc<StdMutex<RingBuffer>>, out: &mut Vec<f32>) {
+    out.clear();
+    loop {
+        let needed = ring
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                tracing::error!("capture ring lock poisoned; recovering state");
+                poisoned.into_inner()
+            })
+            .buffered_len();
+        if out.capacity() < needed {
+            out.reserve(needed);
+        }
+
+        let mut ring = ring.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("capture ring lock poisoned; recovering state");
+            poisoned.into_inner()
+        });
+        if out.capacity() < ring.buffered_len() {
+            drop(ring);
+            continue;
+        }
+        ring.drain_into(out);
+        return;
+    }
+}
+
 /// Spawn the capture engine thread. `ring_capacity_secs` (from
 /// `context_limits.input_ring_buffer_secs`) sets the audio ring size.
 pub fn spawn_engine(ring_capacity_secs: usize) -> Result<CaptureEngineHandle> {
@@ -173,11 +197,13 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<CaptureEngineHandle> {
         TARGET_SAMPLE_RATE as usize * ring_capacity_secs
     };
     let ring = Arc::new(StdMutex::new(RingBuffer::new(capacity)));
+    let metrics = Arc::new(CaptureMetrics::default());
     let stream_failed = Arc::new(AtomicBool::new(false));
     let silent_abort = Arc::new(AtomicBool::new(false));
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<CaptureEngineCommand>();
     let engine_ring = ring.clone();
+    let engine_metrics = metrics.clone();
     let engine_stream_failed = stream_failed.clone();
     let engine_silent_abort = silent_abort.clone();
     let thread = std::thread::Builder::new()
@@ -186,12 +212,17 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<CaptureEngineHandle> {
             let mut engine = CaptureEngine {
                 ring: engine_ring,
                 backend: None,
-                signals: CaptureSignals::new(),
+                signals: CaptureSignals::with_metrics(
+                    engine_metrics.clone(),
+                    engine_stream_failed.clone(),
+                ),
+                metrics: engine_metrics,
                 out_failed: engine_stream_failed,
                 out_silent_abort: engine_silent_abort,
                 recording: false,
                 started_at: None,
                 silent_checked: false,
+                diagnostics_logged: false,
             };
             loop {
                 // Sleep only while the silent-capture check is still
@@ -260,6 +291,7 @@ pub fn spawn_engine(ring_capacity_secs: usize) -> Result<CaptureEngineHandle> {
 
 struct CaptureEngine {
     ring: Arc<StdMutex<RingBuffer>>,
+    metrics: Arc<CaptureMetrics>,
     backend: Option<CpalBackend>,
     signals: CaptureSignals,
     /// Stable; exposed on the handle (L7).
@@ -269,6 +301,7 @@ struct CaptureEngine {
     recording: bool,
     started_at: Option<Instant>,
     silent_checked: bool,
+    diagnostics_logged: bool,
 }
 
 impl CaptureEngine {
@@ -276,8 +309,11 @@ impl CaptureEngine {
         // Release any leftover session before opening a new one.
         if let Some(mut backend) = self.backend.take() {
             let _ = backend.stop();
+            self.log_capture_diagnostics();
         }
-        self.signals = Self::new_signals(&self.out_failed);
+        self.metrics.reset();
+        self.diagnostics_logged = false;
+        self.signals = Self::new_signals(&self.out_failed, &self.metrics);
         self.ring
             .lock()
             .unwrap_or_else(|poisoned| {
@@ -318,19 +354,17 @@ impl CaptureEngine {
         self.recording = false;
         self.started_at = None;
         self.out_failed.store(false, Ordering::SeqCst);
-        self.ring
-            .lock()
-            .unwrap_or_else(|poisoned| {
-                tracing::error!("capture ring lock poisoned; recovering state");
-                poisoned.into_inner()
-            })
-            .drain()
+        let mut out = Vec::new();
+        drain_ring_into(&self.ring, &mut out);
+        self.log_capture_diagnostics();
+        out
     }
 
     fn cmd_stop_and_clear(&mut self) {
         if let Some(mut backend) = self.backend.take() {
             let _ = backend.stop();
         }
+        self.log_capture_diagnostics();
         self.recording = false;
         self.started_at = None;
         self.out_failed.store(false, Ordering::SeqCst);
@@ -363,6 +397,7 @@ impl CaptureEngine {
                 if let Some(mut backend) = self.backend.take() {
                     let _ = backend.stop();
                 }
+                self.log_capture_diagnostics();
             }
         }
     }
@@ -371,13 +406,39 @@ impl CaptureEngine {
         if let Some(mut backend) = self.backend.take() {
             let _ = backend.stop();
         }
+        self.log_capture_diagnostics();
     }
 
-    fn new_signals(out_failed: &Arc<AtomicBool>) -> CaptureSignals {
-        CaptureSignals {
-            has_signal: Arc::new(AtomicBool::new(false)),
-            stream_failed: out_failed.clone(),
+    fn new_signals(out_failed: &Arc<AtomicBool>, metrics: &Arc<CaptureMetrics>) -> CaptureSignals {
+        CaptureSignals::with_metrics(metrics.clone(), out_failed.clone())
+    }
+
+    fn log_capture_diagnostics(&mut self) {
+        if self.diagnostics_logged {
+            return;
         }
+        let snapshot = self.metrics.snapshot();
+        if snapshot.callback_count == 0 {
+            return;
+        }
+        self.diagnostics_logged = true;
+        let callback_avg_us = snapshot.callback_total_ns / snapshot.callback_count / 1000;
+        let lock_wait_avg_us = snapshot
+            .lock_wait_total_ns
+            .checked_div(snapshot.lock_wait_count)
+            .unwrap_or_default()
+            / 1000;
+        tracing::debug!(
+            callback_count = snapshot.callback_count,
+            callback_avg_duration_us = callback_avg_us,
+            callback_max_duration_us = snapshot.callback_max_ns / 1000,
+            callback_lock_wait_count = snapshot.lock_wait_count,
+            callback_lock_wait_avg_us = lock_wait_avg_us,
+            callback_lock_wait_max_us = snapshot.lock_wait_max_ns / 1000,
+            dropped_sample_count = snapshot.dropped_samples,
+            poisoned_lock_count = snapshot.poisoned_locks,
+            "capture diagnostics"
+        );
     }
 }
 

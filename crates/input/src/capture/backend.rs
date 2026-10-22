@@ -15,8 +15,9 @@
 //! negotiation is needed: CPAL picks a shared-mode format (usually the 48 kHz
 //! stereo mix format) and the callback converts.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -32,31 +33,77 @@ pub(crate) const TARGET_SAMPLE_RATE: u32 = 16000;
 /// Set below a quiet room's typical noise floor (≈ -60..-90 dBFS) so the
 /// silent-capture abort only fires on genuinely dead streams.
 const SIGNAL_FLOOR: f32 = 1e-5;
-/// Emit a debug-level callback count every N callbacks (~10 ms each).
-const DIAG_INTERVAL: u32 = 250;
-
-/// Per-stream callback counter. Diagnostics record stream activity without
-/// logging measurements derived from captured audio samples.
-struct CallbackDiag {
-    callbacks: u32,
-    poison_logged: bool,
+/// Fixed-memory aggregate metrics shared with the capture engine. Updates
+/// happen once per callback and never log or allocate on CPAL's audio thread.
+#[derive(Default)]
+pub(super) struct CaptureMetrics {
+    callback_count: AtomicU64,
+    callback_total_ns: AtomicU64,
+    callback_max_ns: AtomicU64,
+    lock_wait_count: AtomicU64,
+    lock_wait_total_ns: AtomicU64,
+    lock_wait_max_ns: AtomicU64,
+    dropped_samples: AtomicU64,
+    poisoned_locks: AtomicU64,
 }
 
-impl CallbackDiag {
-    fn new() -> Self {
-        Self {
-            callbacks: 0,
-            poison_logged: false,
-        }
+#[derive(Clone, Copy, Default)]
+pub(super) struct CaptureMetricsSnapshot {
+    pub(super) callback_count: u64,
+    pub(super) callback_total_ns: u64,
+    pub(super) callback_max_ns: u64,
+    pub(super) lock_wait_count: u64,
+    pub(super) lock_wait_total_ns: u64,
+    pub(super) lock_wait_max_ns: u64,
+    pub(super) dropped_samples: u64,
+    pub(super) poisoned_locks: u64,
+}
+
+impl CaptureMetrics {
+    pub(super) fn reset(&self) {
+        self.callback_count.store(0, Ordering::Relaxed);
+        self.callback_total_ns.store(0, Ordering::Relaxed);
+        self.callback_max_ns.store(0, Ordering::Relaxed);
+        self.lock_wait_count.store(0, Ordering::Relaxed);
+        self.lock_wait_total_ns.store(0, Ordering::Relaxed);
+        self.lock_wait_max_ns.store(0, Ordering::Relaxed);
+        self.dropped_samples.store(0, Ordering::Relaxed);
+        self.poisoned_locks.store(0, Ordering::Relaxed);
     }
 
-    fn observe(&mut self) {
-        self.callbacks += 1;
-        if self.callbacks.is_multiple_of(DIAG_INTERVAL) {
-            tracing::debug!(
-                callback_chunks = self.callbacks,
-                "capture callbacks observed"
-            );
+    fn observe_callback(&self, elapsed: Duration) {
+        let nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        self.callback_count.fetch_add(1, Ordering::Relaxed);
+        self.callback_total_ns.fetch_add(nanos, Ordering::Relaxed);
+        self.callback_max_ns.fetch_max(nanos, Ordering::Relaxed);
+    }
+
+    pub(super) fn observe_lock_wait(&self, elapsed: Duration) {
+        let nanos = elapsed.as_nanos().min(u64::MAX as u128) as u64;
+        self.lock_wait_count.fetch_add(1, Ordering::Relaxed);
+        self.lock_wait_total_ns.fetch_add(nanos, Ordering::Relaxed);
+        self.lock_wait_max_ns.fetch_max(nanos, Ordering::Relaxed);
+    }
+
+    fn observe_dropped_samples(&self, count: usize) {
+        self.dropped_samples
+            .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    fn observe_poisoned_lock(&self) {
+        self.poisoned_locks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn snapshot(&self) -> CaptureMetricsSnapshot {
+        CaptureMetricsSnapshot {
+            callback_count: self.callback_count.load(Ordering::Relaxed),
+            callback_total_ns: self.callback_total_ns.load(Ordering::Relaxed),
+            callback_max_ns: self.callback_max_ns.load(Ordering::Relaxed),
+            lock_wait_count: self.lock_wait_count.load(Ordering::Relaxed),
+            lock_wait_total_ns: self.lock_wait_total_ns.load(Ordering::Relaxed),
+            lock_wait_max_ns: self.lock_wait_max_ns.load(Ordering::Relaxed),
+            dropped_samples: self.dropped_samples.load(Ordering::Relaxed),
+            poisoned_locks: self.poisoned_locks.load(Ordering::Relaxed),
         }
     }
 }
@@ -70,13 +117,27 @@ pub struct CaptureSignals {
     /// Set by the stream error callback (device lost, etc.). Wired to the
     /// engine's `stream_failed` flag so the recording loop stops early.
     pub stream_failed: Arc<AtomicBool>,
+    pub(super) metrics: Arc<CaptureMetrics>,
 }
 
 impl CaptureSignals {
+    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             has_signal: Arc::new(AtomicBool::new(false)),
             stream_failed: Arc::new(AtomicBool::new(false)),
+            metrics: Arc::new(CaptureMetrics::default()),
+        }
+    }
+
+    pub(super) fn with_metrics(
+        metrics: Arc<CaptureMetrics>,
+        stream_failed: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            has_signal: Arc::new(AtomicBool::new(false)),
+            stream_failed,
+            metrics,
         }
     }
 }
@@ -215,13 +276,26 @@ where
 {
     let channels = config.channels;
     let sample_rate = config.sample_rate.0 as f64;
-    let mut resampler = Resampler::new(sample_rate, TARGET_SAMPLE_RATE as f64);
-    let mut diag = CallbackDiag::new();
-    // Scratch buffers owned by the callback closure: the real-time thread
-    // must not heap-allocate per 10 ms chunk, so both the mono mixdown and
-    // the resampled output are reused across callbacks.
-    let mut mono = Vec::new();
-    let mut resampled = Vec::new();
+    let frames_hint = match &config.buffer_size {
+        cpal::BufferSize::Fixed(frames) => *frames as usize,
+        // CPAL leaves the OS period unspecified for Default. Reserve for a
+        // 20 ms callback, which covers common shared-mode periods while
+        // retaining the grow-on-unexpected-oversize fallback.
+        cpal::BufferSize::Default => ((sample_rate as usize) / 50).max(1),
+    };
+    let output_hint = ((frames_hint as f64 * TARGET_SAMPLE_RATE as f64 / sample_rate).ceil()
+        as usize)
+        .saturating_add(2);
+    let mut resampler = Resampler::with_capacity(
+        sample_rate,
+        TARGET_SAMPLE_RATE as f64,
+        frames_hint.saturating_add(2),
+    );
+    // Reuse callback-owned scratch storage, initially sized from the
+    // negotiated callback period. Drivers that exceed the hint may still
+    // trigger a later capacity growth.
+    let mut mono = Vec::with_capacity(frames_hint);
+    let mut resampled = Vec::with_capacity(output_hint);
     let data_signals = signals.clone();
     let err_signals = signals;
     let stream = device.build_input_stream::<T, _, _>(
@@ -235,11 +309,11 @@ where
                 &mut resampled,
                 &ring,
                 &data_signals,
-                &mut diag,
             );
         },
         move |_err| {
-            tracing::error!(failure_kind = "capture_stream", "capture stream failed");
+            // Keep CPAL callbacks free of logging I/O. The recording loop
+            // reports the stable failure to the user-facing layer.
             err_signals.stream_failed.store(true, Ordering::SeqCst);
         },
         None,
@@ -253,7 +327,6 @@ where
 /// and `resampled` are caller-owned scratch buffers reused across callbacks.
 /// The chunk is scanned exactly once: peak and signal-floor detection fold
 /// into the mixdown loop instead of extra passes over the data.
-#[allow(clippy::too_many_arguments)]
 fn process_chunk<T: Sample>(
     data: &[T],
     channels: u16,
@@ -262,10 +335,10 @@ fn process_chunk<T: Sample>(
     resampled: &mut Vec<f32>,
     ring: &Arc<StdMutex<RingBuffer>>,
     signals: &CaptureSignals,
-    diag: &mut CallbackDiag,
 ) where
     f32: FromSample<T>,
 {
+    let callback_started = Instant::now();
     let ch = channels.max(1) as usize;
     let frames = data.len() / ch;
     mono.clear();
@@ -285,7 +358,6 @@ fn process_chunk<T: Sample>(
         }
         mono.push(sum / ch as f32);
     }
-    diag.observe();
     resampler.resample_into(mono, resampled);
     // Checked on the source mixdown: if any source sample exceeds the floor,
     // the resampled stream carries signal too (interpolation of the peak's
@@ -294,33 +366,40 @@ fn process_chunk<T: Sample>(
     if peak > SIGNAL_FLOOR {
         signals.has_signal.store(true, Ordering::SeqCst);
     }
-    match ring.lock() {
-        Ok(mut ring) => ring.push(resampled.as_slice()),
+    let lock_started = Instant::now();
+    let ring_guard = ring.lock();
+    let lock_wait = lock_started.elapsed();
+    match ring_guard {
+        Ok(mut ring) => {
+            let dropped = ring.push(resampled.as_slice());
+            drop(ring);
+            signals.metrics.observe_lock_wait(lock_wait);
+            signals.metrics.observe_dropped_samples(dropped);
+        }
         Err(poisoned) => {
             // The engine thread panicked and poisoned the ring. Recover the
             // guard for teardown, but also stop the recording instead of
             // silently continuing with a stream whose samples are discarded.
-            signals.stream_failed.store(true, Ordering::SeqCst);
-            if !diag.poison_logged {
-                diag.poison_logged = true;
-                tracing::error!("capture ring lock poisoned; stopping recording");
-            }
             drop(poisoned);
+            signals.metrics.observe_lock_wait(lock_wait);
+            signals.metrics.observe_poisoned_lock();
+            signals.metrics.observe_dropped_samples(resampled.len());
+            signals.stream_failed.store(true, Ordering::SeqCst);
         }
     }
+    signals.metrics.observe_callback(callback_started.elapsed());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Fixture for `process_chunk` tests: ring, signals, resampler, diag and
-    /// the output buffers, all freshly constructed.
+    /// Fixture for `process_chunk` tests: ring, signals, resampler, and the
+    /// output buffers, all freshly constructed.
     struct ChunkFixture {
         ring: Arc<StdMutex<RingBuffer>>,
         signals: CaptureSignals,
         resampler: Resampler,
-        diag: CallbackDiag,
         mono: Vec<f32>,
         resampled: Vec<f32>,
     }
@@ -331,7 +410,6 @@ mod tests {
                 ring: Arc::new(StdMutex::new(RingBuffer::new(1024))),
                 signals: CaptureSignals::new(),
                 resampler: Resampler::new(16000.0, 16000.0),
-                diag: CallbackDiag::new(),
                 mono: Vec::new(),
                 resampled: Vec::new(),
             }
@@ -383,7 +461,6 @@ mod tests {
             &mut f.resampled,
             &f.ring,
             &f.signals,
-            &mut f.diag,
         );
         let mono = f.ring.lock().unwrap().drain();
         assert_eq!(mono.len(), 2);
@@ -403,7 +480,6 @@ mod tests {
             &mut f.resampled,
             &f.ring,
             &f.signals,
-            &mut f.diag,
         );
         let mono = f.ring.lock().unwrap().drain();
         assert_eq!(mono.len(), 2);
@@ -423,17 +499,16 @@ mod tests {
             &mut f.resampled,
             &f.ring,
             &f.signals,
-            &mut f.diag,
         );
         assert!(!f.signals.has_signal.load(Ordering::SeqCst));
         assert_eq!(f.ring.lock().unwrap().len(), 2);
     }
 
     #[test]
-    fn diag_tracks_callback_count_without_sample_values() {
-        let mut diag = CallbackDiag::new();
-        diag.observe();
-        diag.observe();
-        assert_eq!(diag.callbacks, 2);
+    fn metrics_track_callback_count_without_sample_values() {
+        let metrics = CaptureMetrics::default();
+        metrics.observe_callback(Duration::from_micros(2));
+        metrics.observe_callback(Duration::from_micros(3));
+        assert_eq!(metrics.snapshot().callback_count, 2);
     }
 }

@@ -93,6 +93,8 @@ checkpoint pending 计数。延迟快照可计算 p50/p95，更新不等待消�
 本阶段的 `event_append`、`projection` 与 `event_boundary_check` 是数据库边界的 wall-clock 指标，包含 blocking 调度与
 SQLite 等待，但不伪装成 SQLite 内部 lock wait；队列长度与 UI frame 计数留待拥有对应队列/渲染生命周期的后续批次。
 
+录音采集后端用固定内存原子计数汇总每次录音的回调次数、回调总/最大耗时、回调等待 ring 锁的总/最大耗时、丢弃样本数与 poisoned lock 次数。CPAL 回调不写日志；采集结束后由引擎线程输出一条 debug 摘要。样本计数不暴露音频内容；耗时字段以微秒命名。丢弃样本包括 ring 覆盖的旧样本、超容量输入中未保留的样本，以及 ring 已 poisoned 时拒收的样本。
+
 **格式与内容约定**：
 
 - 事件消息优先 `模块::方法: 描述`（与 `TauriEmitter::trace_event` 一致）。

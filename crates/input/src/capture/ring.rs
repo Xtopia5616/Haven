@@ -26,6 +26,10 @@ impl RingBuffer {
         self.len
     }
 
+    pub(super) fn buffered_len(&self) -> usize {
+        self.len
+    }
+
     #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.len == 0
@@ -36,10 +40,16 @@ impl RingBuffer {
         self.cap
     }
 
-    pub(super) fn push(&mut self, samples: &[f32]) {
-        if samples.is_empty() || self.cap == 0 {
-            return;
+    /// Push samples and return how many samples were discarded, including
+    /// incoming samples that cannot fit in a zero-capacity ring.
+    pub(super) fn push(&mut self, samples: &[f32]) -> usize {
+        if samples.is_empty() {
+            return 0;
         }
+        if self.cap == 0 {
+            return samples.len();
+        }
+        let dropped = samples.len().saturating_sub(self.cap - self.len);
         // The queue keeps the last `cap` samples of the combined stream: if
         // the incoming chunk is longer than the ring, only its tail survives
         // (matching the per-sample overwrite semantics exactly).
@@ -57,24 +67,36 @@ impl RingBuffer {
         } else {
             self.head = (self.head + first_len) % self.cap;
         }
-        self.len = (self.len + samples.len()).min(self.cap);
+        self.len = self.len.saturating_add(samples.len()).min(self.cap);
+        dropped
     }
 
-    /// Take everything, oldest first. The buffer is left empty.
-    pub(super) fn drain(&mut self) -> Vec<f32> {
-        let mut out = Vec::with_capacity(self.len);
+    /// Copy everything into a caller-owned buffer, oldest first. The caller
+    /// must ensure `out.capacity() >= self.len`; capture consumers reserve
+    /// outside the mutex before calling this method.
+    pub(super) fn drain_into(&mut self, out: &mut Vec<f32>) {
+        debug_assert!(out.capacity() >= self.len);
+        out.clear();
         if self.len == 0 {
-            return out;
+            return;
         }
         // The oldest sample sits at `head - len` (circularly). Using the
         // plain `head - len` window is wrong once the writer has wrapped
         // around the buffer at least once: `len < cap` no longer implies the
         // data starts at index 0.
         let tail_start = (self.head + self.cap - self.len) % self.cap;
-        for i in 0..self.len {
-            out.push(self.buf[(tail_start + i) % self.cap]);
+        let first_len = self.len.min(self.cap - tail_start);
+        out.extend_from_slice(&self.buf[tail_start..tail_start + first_len]);
+        if first_len < self.len {
+            out.extend_from_slice(&self.buf[..self.len - first_len]);
         }
         self.len = 0;
+    }
+
+    #[cfg(test)]
+    pub(super) fn drain(&mut self) -> Vec<f32> {
+        let mut out = Vec::with_capacity(self.len);
+        self.drain_into(&mut out);
         out
     }
 

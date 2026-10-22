@@ -390,6 +390,7 @@ impl InputPipeline {
         // size over the recording.
         let mut accumulated_pcm: Vec<f32> =
             Vec::with_capacity(max_duration.as_secs() as usize * TARGET_SAMPLE_RATE as usize);
+        let mut new_data = Vec::new();
         let mut vad_partial: Vec<f32> = Vec::new();
         let mut last_vad_status = std::time::Instant::now();
 
@@ -466,7 +467,7 @@ impl InputPipeline {
                 };
             }
 
-            let new_data = data.engine.drain_buffered();
+            data.engine.drain_buffered_into(&mut new_data);
 
             if !new_data.is_empty() {
                 if accumulated_pcm.is_empty() && vad_partial.is_empty() {

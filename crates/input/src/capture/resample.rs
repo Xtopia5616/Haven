@@ -10,9 +10,16 @@ pub(super) struct Resampler {
 }
 
 impl Resampler {
+    #[cfg(test)]
     pub(super) fn new(src_sr: f64, target_sr: f64) -> Self {
+        Self::with_capacity(src_sr, target_sr, 0)
+    }
+
+    /// Construct with room for the input callback period so the first
+    /// resample call does not need to grow the leftover queue.
+    pub(super) fn with_capacity(src_sr: f64, target_sr: f64, input_capacity: usize) -> Self {
         Self {
-            leftover: VecDeque::new(),
+            leftover: VecDeque::with_capacity(input_capacity),
             position: 0.0,
             ratio: src_sr / target_sr,
         }
