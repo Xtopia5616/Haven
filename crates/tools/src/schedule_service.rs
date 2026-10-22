@@ -71,9 +71,16 @@ pub struct ScheduleService {
     store: RwLock<Option<ScheduleStore>>,
     fired_tx: mpsc::Sender<ScheduleRunTriggered>,
     fired_rx: Mutex<Option<mpsc::Receiver<ScheduleRunTriggered>>>,
-    task: AsyncMutex<Option<JoinHandle<()>>>,
+    lifecycle: AsyncMutex<ScheduleLifecycle>,
     cancellation: CancellationToken,
     wake: Notify,
+}
+
+#[derive(Default)]
+struct ScheduleLifecycle {
+    restore_complete: bool,
+    shutdown: bool,
+    task: Option<JoinHandle<()>>,
 }
 
 impl Default for ScheduleService {
@@ -89,7 +96,7 @@ impl ScheduleService {
             store: RwLock::new(None),
             fired_tx,
             fired_rx: Mutex::new(Some(fired_rx)),
-            task: AsyncMutex::new(None),
+            lifecycle: AsyncMutex::new(ScheduleLifecycle::default()),
             cancellation: CancellationToken::new(),
             wake: Notify::new(),
         }
@@ -191,17 +198,23 @@ impl ScheduleService {
     }
 
     /// Fail prior-process running occurrences and start the one Schedule
-    /// trigger worker. It is safe to call more than once.
+    /// trigger worker. Repeated callers wait for the initial recovery and then
+    /// return an empty summary without touching current-process occurrences.
     pub async fn restore(self: &Arc<Self>) -> anyhow::Result<ScheduleRestoreSummary> {
+        let mut lifecycle = self.lifecycle.lock().await;
+        anyhow::ensure!(!lifecycle.shutdown, "Schedule service has been shut down");
+        if lifecycle.restore_complete {
+            return Ok(ScheduleRestoreSummary::default());
+        }
+
         let store = self.require_store().await?;
         let interrupted_runs_marked_failed = store.fail_interrupted(timestamp_now()).await?;
-        let mut task = self.task.lock().await;
-        if task.is_none() {
-            let service = Arc::clone(self);
-            *task = Some(tokio::spawn(async move {
-                service.run_scheduler(store).await;
-            }));
-        }
+        let service = Arc::clone(self);
+        lifecycle.task = Some(tokio::spawn(async move {
+            service.run_scheduler(store).await;
+        }));
+        lifecycle.restore_complete = true;
+
         Ok(ScheduleRestoreSummary {
             interrupted_runs_marked_failed,
         })
@@ -218,7 +231,12 @@ impl ScheduleService {
     /// capability is closed by the application runtime.
     pub async fn shutdown(&self) {
         self.cancellation.cancel();
-        if let Some(task) = self.task.lock().await.take()
+        let task = {
+            let mut lifecycle = self.lifecycle.lock().await;
+            lifecycle.shutdown = true;
+            lifecycle.task.take()
+        };
+        if let Some(task) = task
             && let Err(error) = task.await
         {
             tracing::warn!(error = %error, "Schedule trigger worker did not join cleanly");
@@ -264,6 +282,111 @@ impl ScheduleService {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::{SecondsFormat, TimeZone, Utc};
+    use haven_common::schedule::ScheduleMode;
+    use haven_memory::{Database, SchedulePlanInput, ScheduleStore, ScheduleType};
+    use tokio::sync::Barrier;
+
+    use super::ScheduleService;
+
+    fn timestamp(seconds: i64) -> String {
+        Utc.timestamp_opt(seconds, 0)
+            .single()
+            .unwrap()
+            .to_rfc3339_opts(SecondsFormat::Millis, true)
+    }
+
+    async fn service_with_current_run() -> (Arc<ScheduleService>, ScheduleStore, String) {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let owner = db.create_session("schedule restore owner").unwrap();
+        let store = ScheduleStore::new(db);
+        store
+            .create(SchedulePlanInput {
+                owner_session_id: owner.session_id,
+                schedule_type: ScheduleType::Once,
+                title: "Future schedule".into(),
+                body: "Run later".into(),
+                mode: ScheduleMode::Tool,
+                due_at: Some(timestamp(1_900_000_000)),
+                watch_tool_run_id: None,
+                tool_name: Some("notify".into()),
+                tool_args: Some(serde_json::json!({"title": "done"})),
+                prompt: None,
+                interval_seconds: None,
+            })
+            .await
+            .unwrap();
+
+        let service = Arc::new(ScheduleService::new());
+        service.set_store(Some(store.clone())).await;
+        service.restore().await.unwrap();
+
+        let fired = store.claim_due(timestamp(1_900_000_001), 1).await.unwrap();
+        assert_eq!(fired.len(), 1);
+        let schedule_run_id = fired[0].run.schedule_run_id.clone();
+        (service, store, schedule_run_id)
+    }
+
+    #[tokio::test]
+    async fn repeated_restore_does_not_fail_a_current_process_occurrence() {
+        let (service, store, schedule_run_id) = service_with_current_run().await;
+
+        let summary = service.restore().await.unwrap();
+
+        assert_eq!(summary.interrupted_runs_marked_failed, 0);
+        assert_eq!(
+            store
+                .get_run(schedule_run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            haven_common::lifecycle::ScheduleRunStatus::Running
+        );
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_restore_calls_do_not_fail_a_current_process_occurrence() {
+        let (service, store, schedule_run_id) = service_with_current_run().await;
+        let barrier = Arc::new(Barrier::new(3));
+        let first_service = Arc::clone(&service);
+        let first_barrier = Arc::clone(&barrier);
+        let first = async move {
+            first_barrier.wait().await;
+            first_service.restore().await.unwrap()
+        };
+        let second_service = Arc::clone(&service);
+        let second_barrier = Arc::clone(&barrier);
+        let second = async move {
+            second_barrier.wait().await;
+            second_service.restore().await.unwrap()
+        };
+        let release = async move {
+            barrier.wait().await;
+        };
+
+        let (first_summary, second_summary, ()) = tokio::join!(first, second, release);
+
+        assert_eq!(first_summary.interrupted_runs_marked_failed, 0);
+        assert_eq!(second_summary.interrupted_runs_marked_failed, 0);
+        assert_eq!(
+            store
+                .get_run(schedule_run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            haven_common::lifecycle::ScheduleRunStatus::Running
+        );
+        service.shutdown().await;
     }
 }
 
