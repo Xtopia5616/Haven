@@ -58,10 +58,9 @@
 		class="overlay"
 		class:speaking
 		class:processing
-		role="status"
-		aria-live="assertive"
-		aria-label={processing ? 'transcribing' : 'recording'}
-		title={isRecording && !processing && onCancel ? 'Esc 取消' : undefined}
+		role="group"
+		aria-label={processing ? '正在转写语音' : '正在录音'}
+		title={onCancel ? '按 Esc 或点击取消按钮，可取消录音或转写' : undefined}
 		in:dropIn
 	>
 		<div class="mic-badge" class:speaking class:processing aria-hidden="true">
@@ -80,7 +79,12 @@
 		/>
 		<div class="content">
 			<div class="top-row">
-				<span class="state-label">
+				<span
+					class="state-label"
+					role="status"
+					aria-live="assertive"
+					aria-label={processing ? '正在转写语音' : '正在录音'}
+				>
 					{#if processing}
 						转写中…
 					{:else}
@@ -90,6 +94,17 @@
 				<span class="timer">{display}</span>
 			</div>
 		</div>
+		{#if onCancel}
+			<button
+				type="button"
+				class="cancel-button"
+				aria-label="取消录音或转写"
+				title="取消录音或转写（Esc）"
+				onclick={() => void onCancel?.()}
+			>
+				<Icon name="close" size={15} />
+			</button>
+		{/if}
 	</div>
 {/if}
 
@@ -187,6 +202,26 @@
 		justify-content: space-between;
 		gap: var(--md-sys-space-sm);
 		min-width: 0;
+	}
+	.cancel-button {
+		display: grid;
+		place-items: center;
+		width: 32px;
+		height: 32px;
+		flex: none;
+		border: 0;
+		border-radius: var(--md-sys-shape-full);
+		background: transparent;
+		color: var(--md-sys-color-on-surface-variant);
+		cursor: pointer;
+	}
+	.cancel-button:hover {
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
+	}
+	.cancel-button:focus-visible {
+		outline: 2px solid var(--md-sys-color-primary);
+		outline-offset: 2px;
 	}
 	.state-label {
 		flex-shrink: 0;

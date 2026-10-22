@@ -25,7 +25,7 @@ describe('SessionActivityGroup', () => {
 		await rerender({ entries: [entry(false)], streaming: false, stepCount: 1 });
 
 		expect(header.getAttribute('aria-expanded')).toBe('false');
-		expect(container.textContent).toContain('已完成思考');
+		expect(container.textContent).toContain('思考已完成');
 	});
 
 	it('preserves a manual expansion after completion', async () => {
@@ -40,6 +40,32 @@ describe('SessionActivityGroup', () => {
 		await rerender({ entries: [entry(false)], streaming: false, stepCount: 1 });
 		expect(header.getAttribute('aria-expanded')).toBe('true');
 		expect(container.textContent).toContain('已检查完成');
+	});
+
+	it('reports failed tool outcomes instead of counting them as completed operations', () => {
+		const failed = {
+			message: {
+				id: 'tool-failed',
+				role: 'assistant' as const,
+				content: 'permission denied',
+				type: 'tool' as const,
+				toolName: 'shell',
+				outcome: 'failed' as const,
+				streaming: false,
+			},
+			index: 0,
+		};
+		const { container } = render(SessionActivityGroup, {
+			entries: [failed],
+			streaming: false,
+			toolCount: 1,
+			stepCount: 1,
+		});
+
+		expect(container.querySelector('.activity-group')?.classList.contains('has-outcome-issue')).toBe(
+			true,
+		);
+		expect(container.querySelector('.activity-summary')?.textContent).toContain('1 项工具操作失败');
 	});
 
 	it('preserves each nested disclosure when the activity summary is toggled', async () => {

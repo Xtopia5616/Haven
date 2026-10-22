@@ -45,7 +45,8 @@
 			<MaterialButton
 				variant="outlined"
 				className="save-action-btn save-btn--dirty"
-				label={saveState === 'saving' ? '保存中…' : '保存'}
+				label={saveState === 'saving' ? '保存中…' : dirty ? '保存更改' : '保存'}
+				ariaLabel={saveState === 'saving' ? '正在保存设置' : '保存设置更改'}
 				onclick={onSave}
 				disabled={!dirty || saveState === 'saving'}
 			/>

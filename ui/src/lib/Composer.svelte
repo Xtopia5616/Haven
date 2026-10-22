@@ -297,6 +297,7 @@
 	// restoring a message after rollback) via `bind:this`.
 	export function setDraft(text: string) {
 		transcriptInput = text ?? '';
+		tick().then(() => transcriptTextarea?.focus());
 	}
 
 	/** Append approved host-provided text while keeping the existing draft intact. */

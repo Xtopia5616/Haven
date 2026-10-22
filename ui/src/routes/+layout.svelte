@@ -1229,15 +1229,36 @@
 		{ id: 'memory', label: '历史', icon: 'history' },
 		{ id: 'settings', label: '设置', icon: 'settings' },
 	];
+	const navigationTabs = $derived([
+		...tabs.slice(0, 3),
+		{ id: 'tasks', label: '任务', icon: 'calendar' as const },
+		{ id: 'long-term-memory', label: '长期记忆', icon: 'memory' as const },
+		...tabs.slice(3),
+	]);
+	const longTermMemoryVisible = $derived(
+		activeTab === 'memory' && $page.url.searchParams.get('section') === 'memory',
+	);
+	const navigationActiveTab = $derived(
+		longTermMemoryVisible ? 'long-term-memory' : taskCenterVisible ? 'tasks' : activeTab,
+	);
+
+	function navigateWorkspaceTab(id: string) {
+		if (id === 'tasks') return switchTab('memory', 'tasks');
+		if (id === 'long-term-memory') return switchTab('memory', 'memory');
+		if (id === 'memory') return switchTab('memory', 'sessions');
+		return switchTab(id);
+	}
 </script>
 
 <AppShell
 	{activeTab}
 	{tabs}
+	{navigationTabs}
+	{navigationActiveTab}
 	{theme}
 	onToggleTheme={toggleTheme}
 	onRefreshApp={refreshApplication}
-	onNavigate={switchTab}
+	onNavigate={navigateWorkspaceTab}
 	{overlay}
 	{duration}
 	onCancelRecording={cancelRecording}

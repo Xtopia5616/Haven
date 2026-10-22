@@ -4,14 +4,15 @@ import SettingsView from './SettingsView.svelte';
 import { createSettingsFixture } from '$lib/contracts/settingsFixture.ts';
 import { AGENT_METRICS_PHASE_COUNT } from '$lib/contracts/generatedCommands.ts';
 
-const { invoke, listen } = vi.hoisted(() => ({
+const { invoke, listen, isTauri } = vi.hoisted(() => ({
 	invoke: vi.fn(),
 	listen: vi.fn(),
+	isTauri: vi.fn(() => false),
 }));
 
 import { onNotificationSettingsChanged } from '$lib/notificationSettingsEvents.ts';
 
-vi.mock('$lib/tauri.ts', () => ({ invoke, listen }));
+vi.mock('$lib/tauri.ts', () => ({ invoke, listen, isTauri }));
 
 describe('SettingsView diagnostics export', () => {
 	beforeEach(() => {
@@ -68,6 +69,29 @@ describe('SettingsView diagnostics export', () => {
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
 
 		expect(screen.queryByText('模型尚未配置')).toBeNull();
+	});
+
+	it('searches across settings and opens the category containing a matching field', async () => {
+		const settings = createSettingsFixture();
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'get_settings') return settings;
+			if (command === 'get_api_key_status') {
+				return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
+			}
+			if (command === 'is_autostart_enabled') return false;
+			return [];
+		});
+		render(SettingsView);
+
+		const search = await screen.findByRole('searchbox', { name: '搜索设置' });
+		await fireEvent.input(search, { target: { value: '录音快捷键' } });
+		const result = await screen.findByRole('button', { name: /录音快捷键/ });
+		expect(result.textContent).toContain('对话与行为');
+		await fireEvent.click(result);
+
+		expect(
+			screen.getByRole('tab', { name: '对话与行为' }).getAttribute('aria-selected'),
+		).toBe('true');
 	});
 
 	it('syncs the selected chat model into the matching model settings card', async () => {
@@ -283,7 +307,7 @@ describe('SettingsView diagnostics export', () => {
 				await screen.findByRole('switch', { name: '会话开始 Windows 通知' }),
 			);
 
-			expect(screen.getByRole('button', { name: '保存' })).toHaveProperty('disabled', true);
+			expect(screen.getByRole('button', { name: /保存/ })).toHaveProperty('disabled', true);
 			expect(invoke).not.toHaveBeenCalledWith('update_settings', expect.anything());
 		},
 	);
@@ -322,13 +346,13 @@ describe('SettingsView diagnostics export', () => {
 			publishedNotification.value = notification;
 		});
 		await fireEvent.click(inApp);
-		await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeTruthy());
+		await waitFor(() => expect(screen.getByRole('button', { name: /保存/ })).toBeTruthy());
 		expect(container.querySelector('.save-bar')).toBeTruthy();
 		expect(container.querySelectorAll('.save-actions .save-action-btn')).toHaveLength(2);
 		expect((windows as HTMLInputElement).checked).toBe(true);
 		await fireEvent.click(windows);
 		expect((windows as HTMLInputElement).checked).toBe(false);
-		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+		await fireEvent.click(screen.getByRole('button', { name: /保存/ }));
 
 		await waitFor(() => {
 			expect(invoke).toHaveBeenCalledWith(
@@ -395,8 +419,8 @@ describe('SettingsView diagnostics export', () => {
 		expect((inApp as HTMLInputElement).checked).toBe(true);
 		await fireEvent.click(inApp);
 		expect((inApp as HTMLInputElement).checked).toBe(false);
-		await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeTruthy());
-		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+		await waitFor(() => expect(screen.getByRole('button', { name: /保存/ })).toBeTruthy());
+		await fireEvent.click(screen.getByRole('button', { name: /保存/ }));
 
 		await waitFor(() => {
 			expect(publishedNotification.value?.tool_run_completed).toEqual({
@@ -439,8 +463,8 @@ describe('SettingsView diagnostics export', () => {
 		expect((inApp as HTMLInputElement).checked).toBe(true);
 		await fireEvent.click(inApp);
 		expect((inApp as HTMLInputElement).checked).toBe(false);
-		await waitFor(() => expect(screen.getByRole('button', { name: '保存' })).toBeTruthy());
-		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+		await waitFor(() => expect(screen.getByRole('button', { name: /保存/ })).toBeTruthy());
+		await fireEvent.click(screen.getByRole('button', { name: /保存/ }));
 
 		await waitFor(() => expect(screen.getByText('disk write failed')).toBeTruthy());
 		expect(publishedNotification.value).toBeNull();
@@ -577,7 +601,7 @@ describe('SettingsView diagnostics export', () => {
 		expect(
 			(container.querySelector('#session-max-steps-per-session') as HTMLInputElement).value,
 		).toBe('750');
-		await fireEvent.click(await screen.findByRole('button', { name: '保存' }));
+		await fireEvent.click(await screen.findByRole('button', { name: /保存/ }));
 
 		await waitFor(() =>
 			expect(invoke).toHaveBeenCalledWith('update_settings', expect.anything()),
@@ -620,13 +644,13 @@ describe('SettingsView diagnostics export', () => {
 		});
 		await fireEvent.click(
 			within(screen.getByRole('dialog', { name: '添加 Provider' })).getByRole('button', {
-				name: '保存',
+				name: /保存/,
 			}),
 		);
 		await fireEvent.click(screen.getByRole('tab', { name: /对话与行为/ }));
 		expect(screen.queryByRole('dialog', { name: '未保存的更改' })).toBeNull();
 		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
-		await fireEvent.click(await screen.findByRole('button', { name: '保存' }));
+		await fireEvent.click(await screen.findByRole('button', { name: /保存/ }));
 
 		await waitFor(() =>
 			expect(invoke).toHaveBeenCalledWith('update_settings', expect.anything()),

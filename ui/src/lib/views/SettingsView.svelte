@@ -13,6 +13,7 @@
 		onAnimationEnd?: (event: AnimationEvent) => void;
 	} = $props();
 	import { onMount, onDestroy, tick } from 'svelte';
+	import { page } from '$app/stores';
 	import { appEventListeners, registerListeners } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -356,6 +357,14 @@
 		},
 	] as const;
 	type SettingsTabId = (typeof SETTINGS_SECTIONS)[number]['id'];
+	type SettingsSearchResult = {
+		id: string;
+		label: string;
+		section: SettingsTabId;
+		sectionLabel: string;
+		description: string;
+		targetId?: string;
+	};
 	let settingsTab = $state<SettingsTabId>('behavior');
 	let visitedSettingsTabs = $state<SettingsTabId[]>(['behavior']);
 	let modelSection = $state<Extract<SettingsTabId, 'models' | 'media'>>('models');
@@ -394,6 +403,12 @@
 	});
 	let mcpServerNames = $state<string[]>([]);
 	let settingsLoaded = $state(false);
+	let settingsSearchQuery = $state('');
+	let settingsSearchResults = $state<SettingsSearchResult[]>([]);
+	let settingsSearchLoading = $state(false);
+	let settingsSearchSequence = 0;
+	let highlightedSearchTarget: HTMLElement | null = null;
+	let settingsSearchHighlightTimer: ReturnType<typeof setTimeout> | null = null;
 	let savedSnapshot = $state('');
 	let leaveDialogOpen = $state(false);
 	let leaveDialogResolve: ((ok: boolean) => void) | null = null;
@@ -585,6 +600,117 @@
 		if (!visitedSettingsTabs.includes(id)) visitedSettingsTabs = [...visitedSettingsTabs, id];
 		settingsTab = id;
 	}
+
+	async function searchSettings(value: string) {
+		settingsSearchQuery = value;
+		const query = value.trim().toLocaleLowerCase();
+		const sequence = ++settingsSearchSequence;
+		settingsSearchResults = [];
+		settingsSearchLoading = Boolean(query);
+		if (!query) return;
+
+		// Search every category after the first query so a result can lead directly
+		// to a field in a category the user has never opened.
+		visitedSettingsTabs = SETTINGS_SECTIONS.map((section) => section.id);
+		await tick();
+		await tick();
+		if (sequence !== settingsSearchSequence) return;
+
+		const fieldResults: SettingsSearchResult[] = [];
+		const categoryResults: SettingsSearchResult[] = [];
+		let nextIndex = 0;
+		for (const section of SETTINGS_SECTIONS) {
+			const categoryText = `${section.label} ${section.description}`.toLocaleLowerCase();
+			if (categoryText.includes(query)) {
+				categoryResults.push({
+					id: `settings-search-${sequence}-section-${section.id}`,
+					label: section.label,
+					section: section.id,
+					sectionLabel: section.label,
+					description: section.description,
+				});
+			}
+		}
+
+		const fields = document.querySelectorAll<HTMLElement>(
+			'#settings-panel .settings-field, #settings-panel .limit-row, #settings-panel [data-setting-searchable]',
+		);
+		for (const field of fields) {
+			const sectionId = field.closest<HTMLElement>('[data-settings-section]')?.dataset
+				.settingsSection;
+			if (!sectionId || !isSettingsTabId(sectionId)) continue;
+			const section = SETTINGS_SECTIONS.find((item) => item.id === sectionId);
+			if (!section) continue;
+			const label =
+				field.querySelector<HTMLElement>(
+					'.settings-field__label label, .settings-field__label span, .limit-label label, .md-collapsible-header',
+				)?.textContent?.trim() || section.label;
+			const description =
+				field.querySelector<HTMLElement>('.settings-field__label small, .limit-hint')?.textContent?.trim() ||
+				'';
+			const searchable = `${label} ${description} ${section.label} ${field.textContent || ''}`
+				.toLocaleLowerCase();
+			if (!searchable.includes(query)) continue;
+			const targetId = `settings-search-${sequence}-hit-${nextIndex++}`;
+			field.dataset.settingsSearchId = targetId;
+			fieldResults.push({
+				id: targetId,
+				label,
+				section: section.id,
+				sectionLabel: section.label,
+				description,
+				targetId,
+			});
+		}
+		settingsSearchResults = [...fieldResults, ...categoryResults].slice(0, 12);
+		settingsSearchLoading = false;
+	}
+
+	async function openSettingsSearchResult(result: SettingsSearchResult) {
+		changeSettingsTab(result.section);
+		await tick();
+		if (!result.targetId) {
+			document.querySelector('#settings-panel')?.scrollIntoView?.({
+				behavior: 'smooth',
+				block: 'start',
+			});
+			return;
+		}
+		const field = document.querySelector<HTMLElement>(
+			`#settings-panel [data-settings-search-id="${result.targetId}"]`,
+		);
+		if (!field) return;
+		let collapsible = field.closest<HTMLElement>('.md-collapsible');
+		while (collapsible) {
+			const header = collapsible.querySelector<HTMLButtonElement>(':scope > .md-collapsible-header');
+			if (header?.getAttribute('aria-expanded') === 'false') header.click();
+			collapsible = collapsible.parentElement?.closest<HTMLElement>('.md-collapsible') ?? null;
+		}
+		await tick();
+		field.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+		field.classList.add('settings-search-target');
+		field.querySelector<HTMLElement>(
+			'input:not([type="hidden"]), select, textarea, button',
+		)?.focus();
+		if (highlightedSearchTarget && highlightedSearchTarget !== field) {
+			highlightedSearchTarget.classList.remove('settings-search-target');
+		}
+		highlightedSearchTarget = field;
+		if (settingsSearchHighlightTimer) clearTimeout(settingsSearchHighlightTimer);
+		settingsSearchHighlightTimer = setTimeout(() => {
+			field.classList.remove('settings-search-target');
+			highlightedSearchTarget = null;
+		}, 2200);
+	}
+
+	$effect(() => {
+		const url = $page?.url;
+		if (url?.searchParams.get('tab') !== 'settings') return;
+		const section = url.searchParams.get('section');
+		if (section && isSettingsTabId(section) && section !== settingsTab) {
+			changeSettingsTab(section);
+		}
+	});
 
 	function reBaselineAfterDiscovery(fills: DiscoveredModelMetadataFill[]) {
 		if (!mounted || !settingsLoaded || !savedSnapshot || fills.length === 0) return;
@@ -884,6 +1010,8 @@
 
 	onDestroy(() => {
 		mounted = false;
+		if (settingsSearchHighlightTimer) clearTimeout(settingsSearchHighlightTimer);
+		highlightedSearchTarget?.classList.remove('settings-search-target');
 		requestDiscardStagedCredentials();
 		eventRegistrations?.dispose();
 		eventRegistrations = null;
@@ -1404,6 +1532,68 @@
 						/>
 					{/snippet}
 				</WorkspacePageHeader>
+				<div class="settings-search-area">
+					<label class="settings-search__label" for="settings-search">搜索设置</label>
+					<div class="settings-search__control">
+						<input
+							id="settings-search"
+							class="md-input settings-search__input"
+							type="search"
+							value={settingsSearchQuery}
+							placeholder={settingsLoaded
+								? '例如：录音快捷键、API Key、上下文窗口'
+								: '设置加载完成后可搜索'}
+							aria-describedby="settings-search-help"
+							aria-controls="settings-search-results"
+						disabled={!settingsLoaded}
+							oninput={(event) => void searchSettings(event.currentTarget.value)}
+						/>
+						{#if settingsSearchQuery}
+							<MaterialButton
+								variant="text"
+								className="settings-search__clear"
+								label="清空搜索"
+								onclick={() => void searchSettings('')}
+							/>
+						{/if}
+					</div>
+					<p id="settings-search-help" class="settings-search__help">
+						搜索字段名称或用途；选择结果会切换分类并定位到对应设置。
+					</p>
+					{#if settingsSearchQuery.trim()}
+						<div
+							id="settings-search-results"
+							class="settings-search__results"
+							role="region"
+							aria-label="设置搜索结果"
+							aria-live="polite"
+						>
+							{#if settingsSearchLoading}
+								<p class="settings-search__empty">正在搜索设置…</p>
+							{:else if settingsSearchResults.length > 0}
+								{#each settingsSearchResults as result (result.id)}
+									<button
+										type="button"
+										class="settings-search__result"
+										onclick={() => void openSettingsSearchResult(result)}
+									>
+										<span class="settings-search__result-copy">
+											<strong>{result.label}</strong>
+											{#if result.description}
+												<small>{result.description}</small>
+											{/if}
+										</span>
+										<span class="settings-search__category">{result.sectionLabel}</span>
+									</button>
+								{/each}
+							{:else}
+								<p class="settings-search__empty">
+									没有找到匹配的设置，试试“录音”“安全”或“限制”。
+								</p>
+							{/if}
+						</div>
+					{/if}
+				</div>
 				<div
 					class="settings-layout workspace-secondary-layout responsive-layout-transition"
 				>
@@ -1437,7 +1627,7 @@
 								{/if}
 							</div>
 							{#if visitedSettingsTabs.includes('behavior')}
-								<div hidden={settingsTab !== 'behavior'}>
+								<div hidden={settingsTab !== 'behavior'} data-settings-section="behavior">
 									<SettingsBehavior
 										{hotkeyMode}
 										{hotkeyBinding}
@@ -1455,7 +1645,7 @@
 								</div>
 							{/if}
 							{#if visitedSettingsTabs.includes('appearance')}
-								<div hidden={settingsTab !== 'appearance'}>
+								<div hidden={settingsTab !== 'appearance'} data-settings-section="appearance">
 									<SettingsAppearance
 										{notification}
 										{autostartEnabled}
@@ -1464,12 +1654,15 @@
 								</div>
 							{/if}
 							{#if visitedSettingsTabs.includes('diagnostics')}
-								<div hidden={settingsTab !== 'diagnostics'}>
+								<div hidden={settingsTab !== 'diagnostics'} data-settings-section="diagnostics">
 									<SettingsDiagnostics {log} />
 								</div>
 							{/if}
 							{#if visitedSettingsTabs.includes('models') || visitedSettingsTabs.includes('media')}
-								<div hidden={settingsTab !== 'models' && settingsTab !== 'media'}>
+								<div
+									hidden={settingsTab !== 'models' && settingsTab !== 'media'}
+									data-settings-section={settingsTab}
+								>
 									{#if settingsLoaded}
 										<ModelSettings
 											section={modelSection}
@@ -1487,6 +1680,7 @@
 											{keyConfiguredProviders}
 											{mcpServerNames}
 											loaded={true}
+										searching={Boolean(settingsSearchQuery.trim())}
 											onDiscoverySettled={reBaselineAfterDiscovery}
 											onProviderDiscoveryFailure={(
 												/** @type {string} */ providerName,
@@ -1507,7 +1701,7 @@
 								</div>
 							{/if}
 							{#if visitedSettingsTabs.includes('security')}
-								<div hidden={settingsTab !== 'security'}>
+								<div hidden={settingsTab !== 'security'} data-settings-section="security">
 									<SettingsSecurity
 										{security}
 										{sessionPermissions}
@@ -1527,7 +1721,7 @@
 								</div>
 							{/if}
 							{#if visitedSettingsTabs.includes('limits')}
-								<div hidden={settingsTab !== 'limits'}>
+								<div hidden={settingsTab !== 'limits'} data-settings-section="limits">
 									<SettingsLimits
 										{contextLimits}
 										modelContextWindows={llmConfig.models.map(
@@ -1537,7 +1731,7 @@
 								</div>
 							{/if}
 							{#if visitedSettingsTabs.includes('about')}
-								<div hidden={settingsTab !== 'about'}>
+								<div hidden={settingsTab !== 'about'} data-settings-section="about">
 									<SettingsAbout />
 								</div>
 							{/if}
@@ -1654,6 +1848,114 @@
 		min-width: 0;
 		margin-left: auto;
 		justify-content: flex-end;
+	}
+	.settings-search-area {
+		position: relative;
+		z-index: 2;
+		width: min(100%, 42rem);
+		margin: 0 auto var(--md-sys-space-lg);
+	}
+	.settings-search__label {
+		display: block;
+		margin-bottom: var(--md-sys-space-xs);
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 650;
+	}
+	.settings-search__control {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		padding: var(--md-sys-space-2xs) var(--md-sys-space-xs);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-low);
+	}
+	.settings-search__input {
+		flex: 1 1 auto;
+		min-width: 0;
+		border: 0;
+		background: transparent;
+		box-shadow: none;
+	}
+	.settings-search__input:focus-visible {
+		outline: 2px solid var(--md-sys-color-primary);
+		outline-offset: 1px;
+	}
+	.settings-search__help,
+	.settings-search__empty {
+		margin: var(--md-sys-space-xs) 0 0;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.settings-search__results {
+		display: flex;
+		flex-direction: column;
+		max-height: min(280px, 38vh);
+		margin-top: var(--md-sys-space-xs);
+		overflow: auto;
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-low);
+		box-shadow: var(--md-sys-elevation-2);
+	}
+	.settings-search__result {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-md);
+		width: 100%;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: 0;
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+		background: transparent;
+		color: var(--md-sys-color-on-surface);
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+	.settings-search__result:last-child {
+		border-bottom: 0;
+	}
+	.settings-search__result:hover,
+	.settings-search__result:focus-visible {
+		background: var(--md-sys-color-surface-container-high);
+	}
+	.settings-search__result:focus-visible {
+		outline: 2px solid var(--md-sys-color-primary);
+		outline-offset: -2px;
+	}
+	.settings-search__result-copy {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-2xs);
+		min-width: 0;
+	}
+	.settings-search__result-copy strong,
+	.settings-search__result-copy small {
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.settings-search__result-copy strong {
+		font-size: var(--md-sys-typescale-body-small-size);
+	}
+	.settings-search__result-copy small {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		white-space: nowrap;
+	}
+	.settings-search__category {
+		flex: none;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+	}
+	:global(.settings-search-target) {
+		border-radius: var(--md-sys-shape-small);
+		outline: 2px solid var(--md-sys-color-primary);
+		outline-offset: 3px;
+		background-color: color-mix(in srgb, var(--md-sys-color-primary-container) 24%, transparent);
+		scroll-margin-block: 24px;
 	}
 	:global(.settings-page .md-btn[data-width='content']:not(.accent-swatch)) {
 		min-width: min(100%, var(--md-comp-control-compact-width));

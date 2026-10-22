@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import SessionTimeline from './SessionTimeline.svelte';
 import welcomeSource from './SessionWelcome.svelte?raw';
 
@@ -23,6 +23,27 @@ describe('SessionTimeline', () => {
 		expect(getComputedStyle(welcome!).minHeight).toBe('100%');
 	});
 
+	it('fills an example prompt without sending and offers model setup only when needed', async () => {
+		const onWelcomePrompt = vi.fn();
+		const onConfigureModel = vi.fn();
+		render(SessionTimeline, {
+			messages: [],
+			showModelSetup: true,
+			onWelcomePrompt,
+			onConfigureModel,
+		});
+
+		const prompt = '请把这段会议记录整理成摘要和待办清单。';
+		await fireEvent.click(screen.getByRole('button', { name: prompt }));
+		expect(onWelcomePrompt).toHaveBeenCalledTimes(1);
+		expect(onWelcomePrompt).toHaveBeenCalledWith(prompt);
+		expect(onConfigureModel).not.toHaveBeenCalled();
+		expect(screen.getByText('选择示例只会填入输入框，确认后再发送。')).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: '配置模型' }));
+		expect(onConfigureModel).toHaveBeenCalledTimes(1);
+	});
+
 	it('renders the message timeline immediately when the first message arrives', () => {
 		render(SessionTimeline, {
 			messages: [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: '你好' }],
@@ -30,6 +51,25 @@ describe('SessionTimeline', () => {
 
 		expect(document.querySelector('.message-list')).toBeTruthy();
 		expect(document.querySelector('.bubble.user')?.textContent).toContain('你好');
+	});
+
+	it('keeps a pending permission decision visible beside the active transcript', () => {
+		render(SessionTimeline, {
+			messages: [
+				{
+					id: 'step-f5ba153deb417361f0e17158c2c3924a',
+					role: 'assistant' as const,
+					content: '正在申请权限',
+					type: 'thought' as const,
+					stepNumber: 1,
+					streaming: false,
+				},
+			],
+			confirmationAwaiting: true,
+		});
+
+		expect(screen.getByRole('status').textContent).toContain('等待权限确认');
+		expect(screen.getByRole('status').textContent).toContain('选择允许或拒绝');
 	});
 
 	it('renders waiting background progress inside the toolrun.start card', () => {

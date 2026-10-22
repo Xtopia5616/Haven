@@ -46,6 +46,9 @@
 			<h2>会话</h2>
 		</div>
 	</div>
+	<p class="session-rail__description">
+		这里列出可继续的会话；已完成记录可在“历史”中查看。
+	</p>
 
 	<MaterialButton variant="filled" className="session-rail__new" onclick={() => onNew?.()}>
 		{#snippet children()}
@@ -116,6 +119,12 @@
 		gap: var(--md-sys-space-sm);
 		margin-bottom: var(--md-sys-space-lg);
 		padding-inline: var(--md-sys-space-xs);
+	}
+	.session-rail__description {
+		margin: calc(-1 * var(--md-sys-space-sm)) var(--md-sys-space-xs) var(--md-sys-space-md);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.session-rail__eyebrow {
 		margin: 0 0 var(--md-sys-space-xs);

@@ -68,6 +68,7 @@
 		keyConfiguredProviders?: Record<string, boolean>;
 		mcpServerNames?: string[];
 		loaded?: boolean;
+		searching?: boolean;
 		onDiscoverySettled?: (fills: DiscoveredModelMetadataFill[]) => void;
 		onProviderDiscoveryFailure?: (providerName: string, staticCatalog: boolean) => void;
 	}
@@ -100,6 +101,7 @@
 		keyConfiguredProviders = {},
 		mcpServerNames = [],
 		loaded = false,
+		searching = false,
 		onDiscoverySettled = () => {},
 		onProviderDiscoveryFailure = (_providerName, _staticCatalog) => {},
 	}: Props = $props();
@@ -251,6 +253,10 @@
 	$effect(() => {
 		if (section === 'models') visitedModels = true;
 		if (section === 'media') visitedMedia = true;
+		if (searching) {
+			visitedModels = true;
+			visitedMedia = true;
+		}
 		if (active && loaded && !autoRefreshed && (llmConfig.providers || []).length > 0) {
 			autoRefreshed = true;
 			discovery.refreshAllModels(true);
@@ -550,7 +556,7 @@
 </script>
 
 {#if visitedMedia}
-	<div hidden={section !== 'media'}>
+	<div hidden={section !== 'media'} data-settings-section="media">
 		<MediaSettings
 			{llmConfig}
 			{audio}
@@ -568,7 +574,7 @@
 {/if}
 
 {#if visitedModels}
-	<div hidden={section !== 'models'}>
+	<div hidden={section !== 'models'} data-settings-section="models">
 		<SettingsSection className="model-section" ariaLabel="模型配置">
 			<ProviderList
 				providers={llmConfig.providers || []}

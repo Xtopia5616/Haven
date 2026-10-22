@@ -504,7 +504,7 @@
 			</SettingsField>
 		</div>
 
-		<div class="advanced-boundary">
+		<div class="advanced-boundary" data-setting-searchable>
 			<MaterialCollapsible bind:open={advancedBoundaryOpen}>
 				{#snippet header()}
 					<span>高级：自定义可写目录</span>

@@ -15,6 +15,8 @@
 	import type { ThemeMode } from '$lib/themeStore.ts';
 
 	interface Props extends NavigationTabsProps {
+		navigationTabs?: NavigationTabsProps['tabs'];
+		navigationActiveTab?: NavigationTabsProps['activeTab'];
 		theme?: ThemeMode;
 		onToggleTheme?: () => void;
 		onRefreshApp?: () => void;
@@ -32,6 +34,8 @@
 	let {
 		activeTab = 'chat',
 		tabs = [],
+		navigationTabs = undefined,
+		navigationActiveTab = undefined,
 		theme = 'dark',
 		onToggleTheme = () => {},
 		onRefreshApp = () => {},
@@ -110,14 +114,22 @@
 			<Logo size={30} withText={true} />
 		</button>
 		<div class="rail-section-label">工作区</div>
-		<LandscapeWorkspaceNav {tabs} {activeTab} {onNavigate} />
+		<LandscapeWorkspaceNav
+			tabs={navigationTabs ?? tabs}
+			activeTab={navigationActiveTab ?? activeTab}
+			{onNavigate}
+		/>
 		<div class="rail-footer">
 			{@render shellControls()}
 		</div>
 	</aside>
 
 	<div class="compact-workspace-nav">
-		<WorkspaceNav {tabs} {activeTab} {onNavigate} />
+		<WorkspaceNav
+			tabs={navigationTabs ?? tabs}
+			activeTab={navigationActiveTab ?? activeTab}
+			{onNavigate}
+		/>
 	</div>
 
 	<main

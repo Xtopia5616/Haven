@@ -23,6 +23,10 @@
 		runEndStatus = null,
 		runEndOutcome = null,
 		runEndReason = '',
+		confirmationAwaiting = false,
+		onWelcomePrompt = () => {},
+		showModelSetup = false,
+		onConfigureModel = () => {},
 		...restProps
 	}: Props = $props();
 </script>
@@ -31,8 +35,13 @@
 	<LoadingState label="正在加载 Haven…" detail="正在准备你的工作区" />
 {:else if messages.length === 0 && runEndStatus}
 	<SessionRunEndBanner status={runEndStatus} outcome={runEndOutcome} reason={runEndReason} />
-{:else if messages.length === 0 && sessionToolRuns.length === 0 && !awaitingBackground}
-	<SessionWelcome hotkeyBinding={restProps.hotkeyBinding} />
+{:else if messages.length === 0 && sessionToolRuns.length === 0 && !awaitingBackground && !confirmationAwaiting}
+	<SessionWelcome
+		hotkeyBinding={restProps.hotkeyBinding}
+		onSelectPrompt={onWelcomePrompt}
+		showModelSetup={showModelSetup}
+		{onConfigureModel}
+	/>
 {:else}
 	<!-- Mount the populated timeline as soon as messages, ToolRuns, or a wait state exist. -->
 	<SessionMessageTimeline
@@ -42,6 +51,10 @@
 		{runEndStatus}
 		{runEndOutcome}
 		{runEndReason}
+		{confirmationAwaiting}
+		{onWelcomePrompt}
+		{showModelSetup}
+		{onConfigureModel}
 		{...restProps}
 	/>
 {/if}

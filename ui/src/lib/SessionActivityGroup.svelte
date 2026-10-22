@@ -74,22 +74,56 @@
 		}
 		return entries[entries.length - 1]?.message ?? null;
 	});
+	let failedToolCount = $derived(
+		entries.filter(
+			({ message }) => message.type === 'tool' && message.outcome === 'failed',
+		).length,
+	);
+	let stoppedTimeoutCount = $derived(
+		entries.filter(
+			({ message }) =>
+				message.type === 'tool' && message.outcome === 'timed_out_and_terminated',
+		).length,
+	);
+	let uncertainToolCount = $derived(
+		entries.filter(
+			({ message }) => message.type === 'tool' && message.outcome === 'timed_out_unknown',
+		).length,
+	);
+	let cancelledToolCount = $derived(
+		entries.filter(({ message }) => message.type === 'tool' && message.outcome === 'cancelled')
+			.length,
+	);
+	let outcomeSummary = $derived.by(() => {
+		const issues: string[] = [];
+		if (uncertainToolCount > 0) issues.push(`${uncertainToolCount} 项操作超时，结果未确认`);
+		if (stoppedTimeoutCount > 0) issues.push(`${stoppedTimeoutCount} 项操作超时并已停止`);
+		if (failedToolCount > 0) issues.push(`${failedToolCount} 项工具操作失败`);
+		if (cancelledToolCount > 0) issues.push(`${cancelledToolCount} 项工具操作已取消`);
+		return issues.join(' · ');
+	});
 
 	let summary = $derived.by(() => {
 		if (awaitingBackgroundToolRunId) {
-			return awaitingBackgroundCount > 1
+			const waiting = awaitingBackgroundCount > 1
 				? `等待 ${awaitingBackgroundCount} 个后台任务结果`
 				: '等待后台任务结果';
+			return outcomeSummary ? `${waiting} · ${outcomeSummary}` : waiting;
 		}
 		if (!currentEntry) return '思考';
 		if (streaming) {
+			let activeSummary = '';
 			if (currentEntry.type === 'tool') {
-				return `正在执行 ${toolDisplayName(String(currentEntry.toolName || '工具'))}`;
+				activeSummary = `正在执行 ${toolDisplayName(String(currentEntry.toolName || '工具'))}`;
+			} else if (currentEntry.type === 'reasoning') {
+				activeSummary = '正在思考';
+			} else {
+				activeSummary = '正在整理下一步';
 			}
-			if (currentEntry.type === 'reasoning') return '正在思考';
-			return '正在整理下一步';
+			return outcomeSummary ? `${activeSummary} · ${outcomeSummary}` : activeSummary;
 		}
-		return toolCount > 0 ? `已完成 ${toolCount} 个操作` : '已完成思考';
+		if (outcomeSummary) return outcomeSummary;
+		return toolCount > 0 ? `记录了 ${toolCount} 次工具调用` : '思考已完成';
 	});
 
 	let meta = $derived(
@@ -130,8 +164,9 @@
 <section
 	class="activity-group"
 	class:is-streaming={streaming}
+	class:has-outcome-issue={outcomeSummary !== ''}
 	data-surface="outlined"
-	aria-label="Agent 思考"
+	aria-label="执行摘要"
 >
 	<!-- Keep child disclosure components mounted. The outer summary is a
 	     second, independent disclosure; lazy-unmounting it reset the manual
@@ -143,6 +178,8 @@
 					<span class="activity-pulse"></span>
 				{:else if awaitingBackgroundToolRunId}
 					<Icon name="clock" size={13} strokeWidth={2.5} />
+				{:else if outcomeSummary}
+					<Icon name="alertTriangle" size={14} strokeWidth={2.5} />
 				{:else}
 					<Icon name="check" size={13} strokeWidth={2.5} />
 				{/if}
@@ -264,6 +301,9 @@
 	}
 	.activity-group.is-streaming .activity-status {
 		color: var(--md-sys-color-primary);
+	}
+	.activity-group.has-outcome-issue .activity-status {
+		color: var(--md-sys-color-error);
 	}
 	.activity-pulse {
 		width: 8px;

@@ -593,6 +593,7 @@
 					<div
 						class="form-row limit-row settings-field-layout"
 						class:danger-row={f.danger}
+						data-setting-searchable
 					>
 						<div class="limit-label">
 							<label for="limit-{f.key}">{f.label}</label>{#if f.danger}<span
@@ -623,7 +624,10 @@
 								>{/snippet}
 							<div class="limit-danger-items">
 								{#each group.danger as f}
-									<div class="form-row limit-row settings-field-layout">
+									<div
+									class="form-row limit-row settings-field-layout"
+									data-setting-searchable
+								>
 										<div class="limit-label">
 											<label for="limit-{f.key}">{f.label}</label
 											>{#if f.hint}<p class="limit-hint">{f.hint}</p>{/if}

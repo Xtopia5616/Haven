@@ -53,6 +53,7 @@
 		buildTokenUsageTooltip,
 	} from '$lib/sessionUsagePresentation.ts';
 	import { onMount, onDestroy, tick } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { browser } from '$app/environment';
 	import { get } from 'svelte/store';
 	import { invoke, isTauri } from '$lib/tauri.ts';
@@ -291,6 +292,7 @@
 	let modelMenuOpen = $state(false);
 	let sessionMenuOpen = $state(false);
 	let modelOptions = $state<ChatModelOption[]>([]);
+	let modelOptionsLoaded = $state(false);
 	let currentModelName = $state('');
 	let currentModelConfigId = $state('');
 	let currentEffort = $state('');
@@ -752,6 +754,7 @@
 		isDead: () => dead,
 		setModelOptions: (value) => {
 			modelOptions = value;
+			modelOptionsLoaded = true;
 		},
 		setCurrentModelConfigId: (value) => {
 			currentModelConfigId = value;
@@ -1386,11 +1389,16 @@
 					mediaPlans={activeSessionId ? mediaPlansBySession[activeSessionId] || [] : []}
 					loading={initialLoading}
 					{hotkeyBinding}
+					showModelSetup={modelOptionsLoaded && modelOptions.length === 0}
+					onWelcomePrompt={(prompt) => composerRef?.setDraft(prompt)}
+					onConfigureModel={() =>
+						void goto('/?tab=settings&section=models', { replaceState: true })}
 					{awaitingBackground}
 					{awaitingBackgroundCount}
 					runEndStatus={activeSessionRunEndNotice?.status || null}
 					runEndOutcome={activeSessionRunEndNotice?.outcome || null}
 					runEndReason={activeSessionRunEndNotice?.reason || ''}
+					{confirmationAwaiting}
 					{showContinueButton}
 					{continueDisabled}
 					continueBusy={continuePending}

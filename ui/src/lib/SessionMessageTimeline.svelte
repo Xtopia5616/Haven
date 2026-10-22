@@ -40,6 +40,10 @@
 		onAskDismiss?: AskMessageHandler;
 		onContinue?: () => void;
 		mediaPlans?: AgentMediaPlanPayload[];
+		confirmationAwaiting?: boolean;
+		showModelSetup?: boolean;
+		onWelcomePrompt?: (prompt: string) => void;
+		onConfigureModel?: () => void;
 	}
 
 	let {
@@ -63,6 +67,10 @@
 		onAskDismiss = () => {},
 		onContinue = () => {},
 		mediaPlans = [],
+		confirmationAwaiting = false,
+		showModelSetup = false,
+		onWelcomePrompt = () => {},
+		onConfigureModel = () => {},
 	}: Props = $props();
 
 	let timelineItems = $derived(
@@ -77,8 +85,14 @@
 	);
 </script>
 
-{#if timelineItems.length === 0}
-	<SessionWelcome {hotkeyBinding} animated />
+{#if timelineItems.length === 0 && !confirmationAwaiting}
+	<SessionWelcome
+		{hotkeyBinding}
+		animated
+		{showModelSetup}
+		onSelectPrompt={onWelcomePrompt}
+		{onConfigureModel}
+	/>
 {:else}
 	<div class="message-list" role="log" aria-label="会话消息">
 		{#each timelineItems as item (item.kind === 'message' ? renderedMessageKey(item.message) : item.id)}
@@ -158,6 +172,12 @@
 	{#if runEndStatus}
 		<SessionRunEndBanner status={runEndStatus} outcome={runEndOutcome} reason={runEndReason} />
 	{/if}
+	{#if confirmationAwaiting}
+		<div class="confirmation-wait-banner" role="status">
+			<strong>等待权限确认</strong>
+			<span>请在确认弹窗或“待处理”菜单中选择允许或拒绝，工具才会继续。</span>
+		</div>
+	{/if}
 	{#if showContinueButton && !continueDisabled}
 		<div class="continue-action" in:fly={{ y: 6, duration: 240 }}>
 			<MaterialButton
@@ -188,5 +208,24 @@
 		display: flex;
 		justify-content: flex-end;
 		padding-top: var(--md-sys-space-xs);
+	}
+	.confirmation-wait-banner {
+		display: flex;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		width: fit-content;
+		max-width: 100%;
+		margin: var(--md-sys-space-xs) auto 0;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-warning);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-warning-container);
+		color: var(--md-sys-color-on-warning-container);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+	.confirmation-wait-banner strong {
+		font-weight: 700;
 	}
 </style>
