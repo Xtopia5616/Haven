@@ -10,6 +10,7 @@ mod file_outline;
 pub mod file_search;
 pub mod files;
 pub mod http;
+mod http_content;
 pub mod input;
 pub(crate) mod load_mcp;
 pub(crate) mod load_skill;
@@ -184,6 +185,15 @@ pub(crate) async fn register_builtin_tools(
     let execution_workspace = authorization.execution_workspace().await;
     let settings = &settings;
     let limits = &limits;
+    let http_tool = Arc::new(http::HttpTool {
+        max_retries: limits.network_max_retries,
+        backoff_base_secs: limits.network_backoff_base_secs,
+        max_body_bytes: limits.network_max_body_bytes,
+        allowed_domains: settings
+            .get("http")
+            .map(|config| config.allowed_domains.clone())
+            .unwrap_or_default(),
+    });
     let mut admin_operations: Option<Arc<admin::AdminOperationSet>> = None;
     let audio_runtime = Arc::new(
         media_audio::AudioRuntime::with_tts(input_pipeline, tts_client)
@@ -209,7 +219,10 @@ pub(crate) async fn register_builtin_tools(
             .independent_web_search_available(haven_common::config::RequestKind::Chat)
             .await
     {
-        tools.push(Arc::new(web_search::typed_adapter(search_router.clone())));
+        tools.push(Arc::new(web_search::typed_adapter(
+            search_router.clone(),
+            http_tool.clone(),
+        )));
     }
     // One media runtime serves every producer/consumer boundary. `files` and
     // `window` only create assets; interpretation and generation always land
@@ -334,15 +347,7 @@ pub(crate) async fn register_builtin_tools(
         tool_prompts::operation_text("system.list_displays").when_to_use,
     );
     tools.push(OperationViewTool::new(system_tool, contract));
-    tools.push(Arc::new(http::HttpTool {
-        max_retries: limits.network_max_retries,
-        backoff_base_secs: limits.network_backoff_base_secs,
-        max_body_bytes: limits.network_max_body_bytes,
-        allowed_domains: settings
-            .get("http")
-            .map(|config| config.allowed_domains.clone())
-            .unwrap_or_default(),
-    }));
+    tools.push(http_tool);
     tools.push(Arc::new(notify::typed_adapter()));
     // Cross-session messaging / peer collab: one aggregate implementation over
     // the service-owned transport and session mailbox. Agents lazily register

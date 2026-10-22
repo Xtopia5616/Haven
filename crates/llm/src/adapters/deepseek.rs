@@ -27,6 +27,7 @@ pub(crate) async fn independent_search(
     endpoint: &ModelEndpoint,
     query: &str,
     original_question: Option<&str>,
+    filters: &crate::types::IndependentSearchFilters,
     cancel: CancellationToken,
 ) -> Result<Value, crate::types::LlmError> {
     let Some(IndependentSearchConfig::DeepseekSearch {
@@ -47,7 +48,7 @@ pub(crate) async fn independent_search(
     }
     let body = search_request_body(
         query,
-        *count,
+        filters.max_results.unwrap_or(*count),
         *need_content,
         *pass_original_question,
         original_question,

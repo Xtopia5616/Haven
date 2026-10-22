@@ -11,6 +11,7 @@ use crate::types::LlmError;
 pub(crate) async fn independent_search(
     endpoint: &ModelEndpoint,
     query: &str,
+    filters: &crate::types::IndependentSearchFilters,
     cancel: CancellationToken,
 ) -> Result<Value, LlmError> {
     let Some(config @ IndependentSearchConfig::PerplexitySearch { .. }) =
@@ -20,7 +21,7 @@ pub(crate) async fn independent_search(
             "Perplexity Search is not configured".into(),
         ));
     };
-    let body = search_request_body(query, config)?;
+    let body = search_request_body_with_filters(query, config, filters)?;
     let response = super::independent_search::post_json(
         endpoint,
         &search_api_url(&endpoint.base_url),
@@ -46,7 +47,20 @@ pub(crate) async fn independent_search(
     ))
 }
 
+#[cfg(test)]
 fn search_request_body(query: &str, config: &IndependentSearchConfig) -> Result<Value, LlmError> {
+    search_request_body_with_filters(
+        query,
+        config,
+        &crate::types::IndependentSearchFilters::default(),
+    )
+}
+
+fn search_request_body_with_filters(
+    query: &str,
+    config: &IndependentSearchConfig,
+    filters: &crate::types::IndependentSearchFilters,
+) -> Result<Value, LlmError> {
     let IndependentSearchConfig::PerplexitySearch {
         max_results,
         search_type,
@@ -68,14 +82,25 @@ fn search_request_body(query: &str, config: &IndependentSearchConfig) -> Result<
     };
     let mut body = json!({
         "query": query,
-        "max_results": max_results,
+        "max_results": filters.max_results.unwrap_or(*max_results),
         "search_type": search_type_value(*search_type),
     });
-    if let Some(recency) = recency_filter {
-        body["search_recency_filter"] = json!(recency_value(*recency));
+    let effective_recency = filters.recency.map_or(*recency_filter, |recency| {
+        Some(match recency {
+            crate::types::WebSearchRecency::Hour => PerplexitySearchRecency::Hour,
+            crate::types::WebSearchRecency::Day => PerplexitySearchRecency::Day,
+            crate::types::WebSearchRecency::Week => PerplexitySearchRecency::Week,
+            crate::types::WebSearchRecency::Month => PerplexitySearchRecency::Month,
+            crate::types::WebSearchRecency::Year => PerplexitySearchRecency::Year,
+        })
+    });
+    if let Some(recency) = effective_recency {
+        body["search_recency_filter"] = json!(recency_value(recency));
     }
-    if let Some(country) = country
+    if let Some(country) = filters
+        .country
         .as_deref()
+        .or(country.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
@@ -87,11 +112,21 @@ fn search_request_body(query: &str, config: &IndependentSearchConfig) -> Result<
     if let Some(max_tokens_per_page) = max_tokens_per_page {
         body["max_tokens_per_page"] = json!(max_tokens_per_page);
     }
-    if !search_language_filter.is_empty() {
-        body["search_language_filter"] = json!(search_language_filter);
+    let effective_languages = filters
+        .language
+        .as_deref()
+        .map(|language| vec![language.to_ascii_lowercase()])
+        .unwrap_or_else(|| search_language_filter.clone());
+    if !effective_languages.is_empty() {
+        body["search_language_filter"] = json!(effective_languages);
     }
-    if !search_domain_filter.is_empty() {
-        body["search_domain_filter"] = json!(search_domain_filter);
+    let effective_domains = if filters.domains.is_empty() {
+        search_domain_filter.clone()
+    } else {
+        filters.domains.clone()
+    };
+    if !effective_domains.is_empty() {
+        body["search_domain_filter"] = json!(effective_domains);
     }
     for (key, value) in [
         ("last_updated_after_filter", last_updated_after_filter),

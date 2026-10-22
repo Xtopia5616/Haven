@@ -54,8 +54,9 @@ pub use router::{
 pub use stt::{McpToolCaller, McpToolOutcome, SttClient, build_stt_client};
 pub use tts::{TtsClient, build_tts_client};
 pub use types::{
-    CompleteRequest, Embedding, EmbeddingRequest, FinishReason, HealthCheckRequest, LlmCallUsage,
-    LlmConnectionFailureReason, LlmConnectionReport, LlmConnectionStatus, LlmError, LlmResponse,
-    LlmToolDefinition, PromptRequest, StreamChunk, StreamRequest, StreamToolCallUpdate, SttResult,
-    ToolFunction, Usage, WebSearchPhase, WebSearchUpdate,
+    CompleteRequest, Embedding, EmbeddingRequest, FinishReason, HealthCheckRequest,
+    IndependentSearchFilters, LlmCallUsage, LlmConnectionFailureReason, LlmConnectionReport,
+    LlmConnectionStatus, LlmError, LlmResponse, LlmToolDefinition, PromptRequest, StreamChunk,
+    StreamRequest, StreamToolCallUpdate, SttResult, ToolFunction, Usage, WebSearchPhase,
+    WebSearchRecency, WebSearchUpdate,
 };

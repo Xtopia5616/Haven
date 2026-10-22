@@ -14,6 +14,7 @@ const SERVICE_ID: &str = "ops-web-search-001";
 pub(crate) async fn independent_search(
     endpoint: &ModelEndpoint,
     query: &str,
+    filters: &crate::types::IndependentSearchFilters,
     cancel: CancellationToken,
 ) -> Result<Value, LlmError> {
     let Some(IndependentSearchConfig::AliyunAiSearch {
@@ -39,15 +40,20 @@ pub(crate) async fn independent_search(
     }
 
     let url = search_url(search_endpoint, workspace_name);
+    let effective_top_k = filters.max_results.unwrap_or(*top_k);
+    let effective_time_range = filters
+        .recency
+        .and_then(recency_time_range)
+        .unwrap_or(*time_range);
     let mut body = json!({
         "query": query,
         "query_rewrite": query_rewrite,
-        "top_k": top_k,
+        "top_k": effective_top_k,
         "content_type": content_type_value(*content_type),
         "way": way_value(*way),
     });
-    if *time_range != AliyunSearchTimeRange::NoLimit {
-        body["time_range"] = json!(time_range_value(*time_range));
+    if effective_time_range != AliyunSearchTimeRange::NoLimit {
+        body["time_range"] = json!(time_range_value(effective_time_range));
     }
 
     let mut search_endpoint = endpoint.clone();
@@ -114,6 +120,16 @@ fn time_range_value(value: AliyunSearchTimeRange) -> &'static str {
         AliyunSearchTimeRange::Month => "month",
         AliyunSearchTimeRange::Year => "year",
         AliyunSearchTimeRange::NoLimit => "no_limit",
+    }
+}
+
+fn recency_time_range(value: crate::types::WebSearchRecency) -> Option<AliyunSearchTimeRange> {
+    match value {
+        crate::types::WebSearchRecency::Hour => None,
+        crate::types::WebSearchRecency::Day => Some(AliyunSearchTimeRange::Day),
+        crate::types::WebSearchRecency::Week => Some(AliyunSearchTimeRange::Week),
+        crate::types::WebSearchRecency::Month => Some(AliyunSearchTimeRange::Month),
+        crate::types::WebSearchRecency::Year => Some(AliyunSearchTimeRange::Year),
     }
 }
 

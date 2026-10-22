@@ -124,6 +124,27 @@ pub fn extract_document_page_from_bytes_with_cancel(
     )
 }
 
+/// Extract all logical pages from an already bounded remote document body.
+/// The caller has already read the bytes through its network destination and
+/// response-size policy; this function applies the same parser and byte cap as
+/// managed local documents.
+pub fn extract_document_from_bytes_with_cancel(
+    path: &Path,
+    bytes: &[u8],
+    max_chars: usize,
+    max_document_bytes: u64,
+    cancel: &CancellationToken,
+) -> anyhow::Result<DocumentExtraction> {
+    extract_document_bytes_inner(
+        path,
+        bytes,
+        max_chars,
+        max_document_bytes,
+        Some(cancel),
+        None,
+    )
+}
+
 #[cfg(test)]
 fn extract_document_inner(
     path: &Path,

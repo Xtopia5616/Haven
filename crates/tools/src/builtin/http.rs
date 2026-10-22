@@ -9,6 +9,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use super::http_content::extract_http_content;
+#[cfg(test)]
+use super::http_content::{html_to_text, looks_like_html};
+
 use crate::{
     OperationIdempotency, StructuredToolError, Tool, ToolConcurrency, ToolErrorMetadata,
     ToolExecutionOutcome, ToolResult,
@@ -117,7 +121,7 @@ impl HttpTool {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Ok(ToolResult::cancelled("HTTP request cancelled")),
-            result = execute_once(
+            result = execute_once_mode(
                 &url,
                 &method,
                 &headers,
@@ -126,8 +130,41 @@ impl HttpTool {
                 timeout_secs,
                 self.max_body_bytes,
                 &self.allowed_domains,
+                true,
+                cancel.clone(),
             ) => result,
         }
+    }
+
+    /// Fetch and extract a result page for the web-search workflow. This
+    /// deliberately shares the public destination resolver, DNS pinning,
+    /// redirect checks, body budget, timeout, and cancellation behavior with
+    /// the model-callable HTTP operation.
+    pub(crate) async fn fetch_for_research(
+        &self,
+        url: &str,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Value> {
+        if cancel.is_cancelled() {
+            anyhow::bail!("HTTP request cancelled");
+        }
+        if url.len() > MAX_HTTP_URL_BYTES {
+            anyhow::bail!("HTTP URL exceeds the {MAX_HTTP_URL_BYTES} byte limit");
+        }
+        let result = execute_once_mode(
+            url,
+            "GET",
+            &[],
+            None,
+            false,
+            15,
+            self.max_body_bytes,
+            &self.allowed_domains,
+            true,
+            cancel,
+        )
+        .await?;
+        Ok(result.output)
     }
 }
 
@@ -304,7 +341,7 @@ impl Tool for HttpTool {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_once(
+async fn execute_once_mode(
     url: &str,
     method: &str,
     headers: &[(String, String)],
@@ -313,6 +350,8 @@ async fn execute_once(
     timeout_secs: u64,
     max_body_bytes: usize,
     allowed_domains: &[String],
+    extract_known_content: bool,
+    cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
     let destination_policy = HttpDestinationPolicy {
         allowed_domains: allowed_domains.to_vec(),
@@ -334,7 +373,7 @@ async fn execute_once(
     }
     let client = builder.build()?;
 
-    execute_once_with(
+    execute_once_with_mode(
         &client,
         url,
         method,
@@ -343,6 +382,8 @@ async fn execute_once(
         as_html,
         max_body_bytes,
         &destination_policy,
+        extract_known_content,
+        cancel,
     )
     .await
 }
@@ -351,6 +392,7 @@ async fn execute_once(
 /// exercise the connection-error path with a proxy-free client: a system or
 /// environment proxy can answer loopback requests with its own error page
 /// (e.g. 502) instead of relaying the peer's reset, masking the failure.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 async fn execute_once_with(
     client: &reqwest::Client,
@@ -361,6 +403,34 @@ async fn execute_once_with(
     as_html: bool,
     max_body_bytes: usize,
     destination_policy: &HttpDestinationPolicy,
+) -> anyhow::Result<ToolResult> {
+    execute_once_with_mode(
+        client,
+        url,
+        method,
+        headers,
+        body,
+        as_html,
+        max_body_bytes,
+        destination_policy,
+        false,
+        CancellationToken::new(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_once_with_mode(
+    client: &reqwest::Client,
+    url: &str,
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&str>,
+    as_html: bool,
+    max_body_bytes: usize,
+    destination_policy: &HttpDestinationPolicy,
+    extract_known_content: bool,
+    cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
     let mut current_url = validate_http_destination(url, destination_policy).await?;
     let mut current_method = method.to_string();
@@ -416,6 +486,7 @@ async fn execute_once_with(
     };
 
     let status = response.status().as_u16();
+    let final_url = current_url.to_string();
     let resp_headers: Vec<Value> = response
         .headers()
         .iter()
@@ -436,43 +507,47 @@ async fn execute_once_with(
     let html_by_header = content_type.is_some_and(|ct| ct.to_ascii_lowercase().contains("html"));
     // HTML loses bulk when extracted to text, so read more raw bytes for it;
     // the final body is still truncated to `max_chars`.
-    let byte_cap = if html_by_header {
+    let byte_cap = if html_by_header || extract_known_content {
         max_body_bytes
     } else {
         max_chars * 4
     };
     let (response_bytes, byte_cap_truncated) =
         read_body_capped(response, byte_cap, max_body_bytes).await?;
-    let response_body = haven_common::encoding::decode_lossy(&response_bytes);
-
-    let is_html = html_by_header || looks_like_html(&response_body);
-
-    let (body_truncated, body_truncated_by_text, format) = if is_html && !as_html {
-        let output =
-            haven_common::encoding::truncate_output(&html_to_text(&response_body), max_chars);
-        (output.text, output.truncated, "text")
-    } else {
-        let output = haven_common::encoding::truncate_output(&response_body, max_chars);
-        (
-            output.text,
-            output.truncated,
-            if is_html { "html" } else { "raw" },
-        )
-    };
+    let extraction_content_type = content_type.unwrap_or_default().to_string();
+    let extraction_cancel = cancel.clone();
+    let (body_truncated, body_truncated_by_text, format, title) =
+        tokio::task::spawn_blocking(move || {
+            extract_http_content(
+                &response_bytes,
+                &extraction_content_type,
+                as_html,
+                extract_known_content,
+                max_chars,
+                byte_cap_truncated,
+                &extraction_cancel,
+            )
+        })
+        .await??;
 
     let truncated = byte_cap_truncated || body_truncated_by_text;
-    Ok(ToolResult::from_output(
-        serde_json::json!({
-            "operation": "request",
-            "method": method,
-            "status": status,
-            "headers": resp_headers,
-            "body": body_truncated,
-            "truncated": truncated,
-            "format": format,
-        }),
-        truncated,
-    ))
+    let mut output = serde_json::json!({
+        "operation": "request",
+        "method": method,
+        "url": final_url,
+        "status": status,
+        "headers": resp_headers,
+        "content_type": content_type,
+        "body": body_truncated,
+        "truncated": truncated,
+        "format": format,
+    });
+    if let Some(title) = title
+        && let Some(object) = output.as_object_mut()
+    {
+        object.insert("title".into(), Value::String(title));
+    }
+    Ok(ToolResult::from_output(output, truncated))
 }
 
 async fn validate_http_destination(
@@ -552,94 +627,6 @@ fn is_sensitive_response_header(name: &str) -> bool {
             | "www-authenticate"
             | "x-api-key"
     )
-}
-
-/// Cheap sniff for an HTML document when the server omitted (or mislabeled)
-/// the Content-Type. Only matches the very start of the body.
-fn looks_like_html(body: &str) -> bool {
-    let head = &body[..body.floor_char_boundary(body.len().min(512))];
-    let head = head.trim_start().to_ascii_lowercase();
-    head.starts_with("<!doctype html")
-        || head.starts_with("<html")
-        || head.starts_with("<head")
-        || head.starts_with("<body")
-}
-
-/// Extract readable plain text from an HTML document. Script/style/noscript
-/// content and whitespace noise are dropped, and block-level elements start a
-/// new line so the output reads like a document instead of a run-on blob.
-fn html_to_text(html: &str) -> String {
-    use scraper::node::Node;
-    use scraper::{Html, Selector};
-
-    const BLOCK_TAGS: &[&str] = &[
-        "article",
-        "aside",
-        "blockquote",
-        "body",
-        "br",
-        "div",
-        "footer",
-        "h1",
-        "h2",
-        "h3",
-        "h4",
-        "h5",
-        "h6",
-        "header",
-        "hr",
-        "li",
-        "main",
-        "nav",
-        "ol",
-        "p",
-        "pre",
-        "section",
-        "table",
-        "td",
-        "th",
-        "tr",
-        "ul",
-    ];
-    const HIDDEN_TAGS: &[&str] = &["head", "script", "style", "noscript", "template"];
-
-    let doc = Html::parse_document(html);
-    let root = Selector::parse("body")
-        .ok()
-        .and_then(|sel| doc.select(&sel).next())
-        .unwrap_or_else(|| doc.root_element());
-
-    let mut out = String::new();
-    // DFS over the tree, dropping hidden subtrees. Children are pushed in
-    // reverse so they are visited in document order.
-    let mut stack: Vec<_> = Vec::new();
-    for child in root.children().rev() {
-        stack.push(child);
-    }
-    while let Some(node) = stack.pop() {
-        match node.value() {
-            Node::Element(el) => {
-                let name = el.name();
-                if HIDDEN_TAGS.contains(&name) {
-                    continue;
-                }
-                if BLOCK_TAGS.contains(&name) {
-                    out.push('\n');
-                }
-                for child in node.children().rev() {
-                    stack.push(child);
-                }
-            }
-            Node::Text(text) => out.push_str(&text.text),
-            _ => {}
-        }
-    }
-
-    out.lines()
-        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn map_reqwest_error(e: reqwest::Error) -> anyhow::Error {
@@ -921,7 +908,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_network_execute_plain_body_format_raw() {
+    async fn test_network_execute_json_body_is_formatted() {
         let url = serve_once("200 OK", "application/json", "{\"ok\":true}").await;
         let result = HttpTool::default()
             .execute(
@@ -930,8 +917,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.output["format"], "raw");
-        assert_eq!(result.output["body"], "{\"ok\":true}");
+        assert_eq!(result.output["format"], "json");
+        assert_eq!(result.output["body"], "{\n  \"ok\": true\n}");
     }
 
     #[tokio::test]

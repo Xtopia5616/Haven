@@ -275,6 +275,13 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
         "files" => format!("文件操作：{operation}（目标详情已隐藏）"),
         "shell" => "将执行一条受保护的本机命令（命令内容不会显示在弹窗中）".into(),
         "http" => "将向外部网络发起请求（请求内容已隐藏）".into(),
+        "web_search_api" if params["fetch_top_results"].as_u64().unwrap_or_default() > 0 => {
+            format!(
+                "将联网搜索，并读取最多 {} 个公开来源网页（查询内容与网页正文不会显示在弹窗中）",
+                params["fetch_top_results"].as_u64().unwrap_or_default()
+            )
+        }
+        "web_search_api" => "将使用已配置的联网搜索服务（查询词已隐藏）".into(),
         "media" => format!("媒体操作：{operation}（参数详情已隐藏）"),
         "system" => format!("系统操作：{operation}（参数详情已隐藏）"),
         "haven" => format!("Haven 操作：{operation}（参数详情已隐藏）"),

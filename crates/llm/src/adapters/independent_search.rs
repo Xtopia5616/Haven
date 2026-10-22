@@ -7,7 +7,7 @@ use haven_common::config::{IndependentSearchConfig, ModelEndpoint};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::types::LlmError;
+use crate::types::{IndependentSearchFilters, LlmError, WebSearchRecency};
 
 const MAX_SEARCH_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_SEARCH_QUERY_CHARS: usize = 512;
@@ -41,6 +41,7 @@ pub(crate) async fn independent_search(
     endpoint: &ModelEndpoint,
     query: &str,
     original_question: Option<&str>,
+    filters: &IndependentSearchFilters,
     cancel: CancellationToken,
 ) -> Result<Value, LlmError> {
     let query = query.trim();
@@ -54,6 +55,7 @@ pub(crate) async fn independent_search(
             "web search query must be at most {MAX_SEARCH_QUERY_CHARS} characters"
         )));
     }
+    validate_filters(filters)?;
     if !independent_search_available(endpoint) {
         return Err(LlmError::UnsupportedCapability(
             "standalone web search is not configured for the selected model".into(),
@@ -64,15 +66,16 @@ pub(crate) async fn independent_search(
         .independent_search
         .as_ref()
         .expect("availability check requires standalone search config");
-    match search {
+    let mut result = match search {
         IndependentSearchConfig::DeepseekSearch { .. } => {
-            super::deepseek::independent_search(endpoint, query, original_question, cancel).await
+            super::deepseek::independent_search(endpoint, query, original_question, filters, cancel)
+                .await
         }
         IndependentSearchConfig::PerplexitySearch { .. } => {
-            super::perplexity::independent_search(endpoint, query, cancel).await
+            super::perplexity::independent_search(endpoint, query, filters, cancel).await
         }
         IndependentSearchConfig::AliyunAiSearch { .. } => {
-            super::aliyun_search::independent_search(endpoint, query, cancel).await
+            super::aliyun_search::independent_search(endpoint, query, filters, cancel).await
         }
         IndependentSearchConfig::MistralWebSearch { .. } => {
             super::mistral::independent_search(endpoint, query, cancel).await
@@ -80,7 +83,135 @@ pub(crate) async fn independent_search(
         IndependentSearchConfig::ZhipuWebSearch => {
             super::zhipu::independent_search(endpoint, query, cancel).await
         }
+    }?;
+
+    if let (Some(max_results), Some(results)) = (
+        filters.max_results,
+        result.get_mut("results").and_then(Value::as_array_mut),
+    ) {
+        results.truncate(max_results as usize);
     }
+
+    let applied = applied_filter_names(search, filters);
+    let requested = requested_filter_names(filters);
+    let ignored = requested
+        .into_iter()
+        .filter(|name| !applied.iter().any(|applied| applied == name))
+        .collect::<Vec<_>>();
+    if let Some(object) = result.as_object_mut() {
+        object.insert(
+            "filters".into(),
+            json!({"applied": applied, "ignored": ignored}),
+        );
+    }
+    Ok(result)
+}
+
+fn validate_filters(filters: &IndependentSearchFilters) -> Result<(), LlmError> {
+    if filters
+        .max_results
+        .is_some_and(|count| !(1..=10).contains(&count))
+    {
+        return Err(LlmError::Configuration(
+            "web search max_results must be within 1..=10".into(),
+        ));
+    }
+    for (field, value) in [
+        ("country", &filters.country),
+        ("language", &filters.language),
+    ] {
+        if value.as_deref().is_some_and(|value| {
+            value.len() != 2 || !value.bytes().all(|byte| byte.is_ascii_alphabetic())
+        }) {
+            return Err(LlmError::Configuration(format!(
+                "web search {field} must be a two-letter code"
+            )));
+        }
+    }
+    if filters.domains.len() > 10
+        || filters.domains.iter().any(|domain| {
+            let Ok(url) = url::Url::parse(&format!("https://{domain}")) else {
+                return true;
+            };
+            url.host_str().is_none_or(|host| {
+                host.parse::<std::net::IpAddr>().is_ok()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.port().is_some()
+                    || url.path() != "/"
+                    || url.query().is_some()
+                    || url.fragment().is_some()
+            })
+        })
+    {
+        return Err(LlmError::Configuration(
+            "web search domains must contain at most 10 host names".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn requested_filter_names(filters: &IndependentSearchFilters) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if filters.max_results.is_some() {
+        names.push("max_results");
+    }
+    if filters.recency.is_some() {
+        names.push("recency");
+    }
+    if filters.country.is_some() {
+        names.push("country");
+    }
+    if filters.language.is_some() {
+        names.push("language");
+    }
+    if !filters.domains.is_empty() {
+        names.push("domains");
+    }
+    names
+}
+
+fn applied_filter_names(
+    search: &IndependentSearchConfig,
+    filters: &IndependentSearchFilters,
+) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if filters.max_results.is_some() {
+        names.push("max_results");
+    }
+    match search {
+        IndependentSearchConfig::PerplexitySearch { .. } => {
+            if filters.recency.is_some() {
+                names.push("recency");
+            }
+            if filters.country.is_some() {
+                names.push("country");
+            }
+            if filters.language.is_some() {
+                names.push("language");
+            }
+            if !filters.domains.is_empty() {
+                names.push("domains");
+            }
+        }
+        IndependentSearchConfig::AliyunAiSearch { .. } => {
+            if matches!(
+                filters.recency,
+                Some(
+                    WebSearchRecency::Day
+                        | WebSearchRecency::Week
+                        | WebSearchRecency::Month
+                        | WebSearchRecency::Year
+                )
+            ) {
+                names.push("recency");
+            }
+        }
+        IndependentSearchConfig::DeepseekSearch { .. }
+        | IndependentSearchConfig::MistralWebSearch { .. }
+        | IndependentSearchConfig::ZhipuWebSearch => {}
+    }
+    names
 }
 
 pub(crate) async fn post_json(
