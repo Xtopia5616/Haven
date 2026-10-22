@@ -9,6 +9,7 @@ function handler(options: {
 	fresh?: boolean;
 	adoptedDraft?: boolean;
 	activeSessionId?: string | null;
+	closeCompletedSession?: (sessionId: string) => void;
 	dispatchSession: (action: import('./sessionReducer.ts').SessionAction) => void;
 	flushChunksNow?: () => void;
 	clearAskAwaiting?: (sessionId: string | null) => void;
@@ -20,6 +21,7 @@ function handler(options: {
 	return createChatSessionEventHandler({
 		getActiveSessionId: () => options.activeSessionId ?? null,
 		isFreshSessionIntent: () => options.fresh ?? false,
+		closeCompletedSession: options.closeCompletedSession ?? vi.fn(),
 		adoptDraftMessages: () => options.adoptedDraft ?? false,
 		dispatchSession: options.dispatchSession,
 		getErroredSessionId: () => null,
@@ -33,7 +35,7 @@ function handler(options: {
 }
 
 describe('chat session lifecycle handler', () => {
-	it('keeps media plans for the visible terminal session and clears inactive terminal plans', () => {
+	it('clears media plans after completed sessions close', () => {
 		const activeSessionId = 'ses-d186f90b4f33cc53ee287f9e8c401e6a';
 		const inactiveSessionId = 'ses-ffe697a25c453d07bf0c9571521df2b7';
 		mediaPlanStore.set({});
@@ -48,16 +50,53 @@ describe('chat session lifecycle handler', () => {
 		});
 		rememberMediaPlan(payload(activeSessionId));
 		rememberMediaPlan(payload(inactiveSessionId));
+		const closeCompletedSession = vi.fn();
 		const onLifecycle = handler({
 			activeSessionId,
+			closeCompletedSession,
 			dispatchSession: vi.fn(),
 		});
 
 		onLifecycle({ payload: { type: 'completed', sessionId: activeSessionId } } as never);
 		onLifecycle({ payload: { type: 'completed', sessionId: inactiveSessionId } } as never);
-		expect(get(mediaPlanStore)[activeSessionId]).toHaveLength(1);
+		expect(get(mediaPlanStore)[activeSessionId]).toBeUndefined();
 		expect(get(mediaPlanStore)[inactiveSessionId]).toBeUndefined();
+		expect(closeCompletedSession).toHaveBeenCalledOnce();
+		expect(closeCompletedSession).toHaveBeenCalledWith(activeSessionId);
 		clearMediaPlans(null);
+	});
+
+	it('does not close the current session when another session completes', () => {
+		const activeSessionId = 'ses-00000000000000000000000000000001';
+		const completedSessionId = 'ses-00000000000000000000000000000002';
+		const reducer = new SessionReducer({
+			...initialSessionState,
+			sessions: [
+				{ sessionId: activeSessionId, status: 'paused' },
+				{ sessionId: completedSessionId, status: 'running' },
+			],
+			activeSessionId,
+		});
+		const closeCompletedSession = vi.fn();
+		const onLifecycle = handler({
+			activeSessionId,
+			closeCompletedSession,
+			dispatchSession: (action) => reducer.dispatch(action),
+		});
+
+		onLifecycle({
+			payload: {
+				type: 'completed',
+				sessionId: completedSessionId,
+				title: '后台会话',
+			},
+		} as never);
+
+		expect(reducer.snapshot().activeSessionId).toBe(activeSessionId);
+		expect(reducer.snapshot().sessions).toContainEqual(
+			expect.objectContaining({ sessionId: completedSessionId, status: 'completed' }),
+		);
+		expect(closeCompletedSession).not.toHaveBeenCalled();
 	});
 
 	it('stops live bubbles when a session is paused without clearing its pending ask', () => {
@@ -143,6 +182,7 @@ describe('chat session lifecycle handler', () => {
 	it('shows a successful turn-end notice immediately when waiting for the next user input', () => {
 		const sessionId = 'ses-4672b4fe127c92b1420b7cc931b66f8e';
 		const scheduleLoadSessions = vi.fn();
+		const closeCompletedSession = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
 			sessions: [{ sessionId, status: 'running' }],
@@ -151,6 +191,7 @@ describe('chat session lifecycle handler', () => {
 		const onLifecycle = handler({
 			activeSessionId: sessionId,
 			scheduleLoadSessions,
+			closeCompletedSession,
 			dispatchSession: (action) => reducer.dispatch(action),
 		});
 
@@ -177,6 +218,7 @@ describe('chat session lifecycle handler', () => {
 			reason: '本轮已完成。',
 		});
 		expect(scheduleLoadSessions).toHaveBeenCalledOnce();
+		expect(closeCompletedSession).not.toHaveBeenCalled();
 	});
 
 	it('does not label an interaction pause as a normal turn completion', () => {
@@ -236,11 +278,11 @@ describe('chat session lifecycle handler', () => {
 
 	it('projects a completion and performs terminal cleanup once from the same event', () => {
 		const sessionId = 'ses-810b085358816d1bc83caf2eb4f45ff1';
-		const flushChunksNow = vi.fn();
-		const clearAskAwaiting = vi.fn();
-		const evictTerminalSessionMemory = vi.fn();
-		const clearStepBlockIds = vi.fn();
-		const scheduleLoadSessions = vi.fn();
+		const lifecycleOrder: string[] = [];
+		const flushChunksNow = vi.fn(() => lifecycleOrder.push('flush'));
+		const clearAskAwaiting = vi.fn(() => lifecycleOrder.push('clear-ask'));
+		const clearStepBlockIds = vi.fn(() => lifecycleOrder.push('clear-step-blocks'));
+		const scheduleLoadSessions = vi.fn(() => lifecycleOrder.push('refresh'));
 		const reducer = new SessionReducer({
 			...initialSessionState,
 			sessions: [{ sessionId, status: 'running', title: '旧标题' }],
@@ -256,6 +298,15 @@ describe('chat session lifecycle handler', () => {
 				],
 			},
 		});
+		const closeCompletedSession = vi.fn(() => {
+			lifecycleOrder.push('close');
+			reducer.dispatch({ type: 'session/cleared' });
+		});
+		const evictTerminalSessionMemory = vi.fn((id: string) => {
+			lifecycleOrder.push('evict');
+			expect(reducer.snapshot().activeSessionId).toBeNull();
+			reducer.dispatch({ type: 'session/memory-cleared', sessionId: id });
+		});
 		const onLifecycle = handler({
 			activeSessionId: sessionId,
 			flushChunksNow,
@@ -263,7 +314,11 @@ describe('chat session lifecycle handler', () => {
 			evictTerminalSessionMemory,
 			clearStepBlockIds,
 			scheduleLoadSessions,
-			dispatchSession: (action) => reducer.dispatch(action),
+			closeCompletedSession,
+			dispatchSession: (action) => {
+				if (action.type === 'session/messages/finalized') lifecycleOrder.push('finalize');
+				reducer.dispatch(action);
+			},
 		});
 		setToolOutputPreview('step-fa7d9da560291aec4d4fd57e8812de10', 'partial', sessionId);
 
@@ -281,17 +336,25 @@ describe('chat session lifecycle handler', () => {
 			status: 'completed',
 			title: '研究',
 		});
-		expect(reducer.snapshot().runEndNotice).toEqual({
-			sessionId,
-			status: 'completed',
-			reason: '用户主动结束会话',
-		});
-		expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
+		expect(reducer.snapshot().activeSessionId).toBeNull();
+		expect(reducer.snapshot().runEndNotice).toBeNull();
+		expect(reducer.getMessages(sessionId)).toEqual([]);
 		expect(flushChunksNow).toHaveBeenCalledOnce();
 		expect(clearAskAwaiting).toHaveBeenCalledOnce();
 		expect(evictTerminalSessionMemory).toHaveBeenCalledOnce();
 		expect(clearStepBlockIds).toHaveBeenCalledOnce();
 		expect(scheduleLoadSessions).toHaveBeenCalledOnce();
+		expect(closeCompletedSession).toHaveBeenCalledOnce();
+		expect(closeCompletedSession).toHaveBeenCalledWith(sessionId);
+		expect(lifecycleOrder).toEqual([
+			'clear-ask',
+			'flush',
+			'finalize',
+			'clear-step-blocks',
+			'close',
+			'evict',
+			'refresh',
+		]);
 		expect(
 			get(getToolOutputPreviewStore('step-fa7d9da560291aec4d4fd57e8812de10')),
 		).toBeUndefined();
@@ -302,6 +365,7 @@ describe('chat session lifecycle handler', () => {
 		const clearAskAwaiting = vi.fn();
 		const evictTerminalSessionMemory = vi.fn();
 		const flushChunksNow = vi.fn();
+		const closeCompletedSession = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
 			sessions: [{ sessionId, status: 'running', title: '旧标题' }],
@@ -312,6 +376,7 @@ describe('chat session lifecycle handler', () => {
 			clearAskAwaiting,
 			flushChunksNow,
 			evictTerminalSessionMemory,
+			closeCompletedSession,
 			dispatchSession: (action) => reducer.dispatch(action),
 		});
 
@@ -336,13 +401,16 @@ describe('chat session lifecycle handler', () => {
 		expect(reducer.getSessionErrorReason(sessionId)).toBe('网络请求超时');
 		expect(clearAskAwaiting).toHaveBeenCalledOnce();
 		expect(flushChunksNow).toHaveBeenCalledOnce();
-		expect(evictTerminalSessionMemory).toHaveBeenCalledOnce();
+		expect(evictTerminalSessionMemory).not.toHaveBeenCalled();
+		expect(closeCompletedSession).not.toHaveBeenCalled();
 	});
 
 	it('refreshes inactive terminal sessions after clearing their queued output', () => {
 		const cleanupOrder: string[] = [];
+		const closeCompletedSession = vi.fn();
 		const onLifecycle = handler({
 			activeSessionId: 'ses-d186f90b4f33cc53ee287f9e8c401e6a',
+			closeCompletedSession,
 			flushChunksNow: () => cleanupOrder.push('flush'),
 			evictTerminalSessionMemory: () => cleanupOrder.push('evict'),
 			dispatchSession: vi.fn(),
@@ -363,6 +431,7 @@ describe('chat session lifecycle handler', () => {
 		} as never);
 
 		expect(cleanupOrder).toEqual(['flush', 'evict']);
+		expect(closeCompletedSession).not.toHaveBeenCalled();
 		expect(
 			get(getToolOutputPreviewStore('step-f5ba153deb417361f0e17158c2c3924a')),
 		).toBeUndefined();

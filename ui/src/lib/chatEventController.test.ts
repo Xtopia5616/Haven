@@ -15,6 +15,7 @@ function makeDependencies(): ChatEventControllerDependencies {
 	return {
 		getActiveSessionId: () => null,
 		isFreshSessionIntent: () => false,
+		closeCompletedSession: vi.fn(),
 		adoptDraftMessages: () => false,
 		dispatchSession: vi.fn(),
 		getErroredSessionId: () => null,

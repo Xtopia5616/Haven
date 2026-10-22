@@ -847,6 +847,12 @@
 		const eventController = createChatEventController({
 			getActiveSessionId: () => activeSessionId,
 			isFreshSessionIntent: () => get(newSessionIntentStore),
+			closeCompletedSession: (sessionId) => {
+				if (sessionReducer.snapshot().activeSessionId !== sessionId) return;
+				newSessionIntentStore.set(true);
+				if (browser) localStorage.setItem(NEW_SESSION_INTENT_STORAGE_KEY, '1');
+				dispatchSession({ type: 'session/cleared' });
+			},
 			adoptDraftMessages: (sessionId) => {
 				const adopted = sessionReducer.getMessages(DRAFT_SESSION_ID).length > 0;
 				dispatchSession({ type: 'session/messages/adopt-draft', sessionId });

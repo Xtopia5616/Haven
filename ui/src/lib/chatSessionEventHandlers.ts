@@ -8,6 +8,7 @@ import { clearToolOutputPreviewsForSession } from './toolOutputPreviewStore.ts';
 export interface ChatSessionEventContext {
 	getActiveSessionId: () => string | null;
 	isFreshSessionIntent: () => boolean;
+	closeCompletedSession: (sessionId: string) => void;
 	adoptDraftMessages: (sessionId: string) => boolean;
 	dispatchSession: (action: SessionAction) => void;
 	getErroredSessionId: () => string | null;
@@ -27,6 +28,7 @@ type LifecycleEvent = TauriEvent<SessionLifecyclePayload>;
 export function createChatSessionEventHandler({
 	getActiveSessionId,
 	isFreshSessionIntent,
+	closeCompletedSession,
 	adoptDraftMessages,
 	dispatchSession,
 	getErroredSessionId,
@@ -42,17 +44,15 @@ export function createChatSessionEventHandler({
 	};
 
 	const cleanupTerminalSession = (sessionId: string) => {
+		const isActive = getActiveSessionId() === sessionId;
 		clearToolOutputPreviewsForSession(sessionId);
-		// Keep plans for the visible completed session so its cards remain
-		// renderable; inactive terminal sessions no longer need their projection.
-		if (getActiveSessionId() !== sessionId) clearMediaPlans(sessionId);
+		if (!isActive) clearMediaPlans(sessionId);
 		// Drain queued stream chunks before dropping the transcript. A later RAF
 		// must not recreate terminal messages after session memory is evicted.
 		flushChunksNow();
-		if (getActiveSessionId() === sessionId) finalizeLiveMessages(sessionId);
-		evictTerminalSessionMemory(sessionId);
+		if (isActive) finalizeLiveMessages(sessionId);
+		else evictTerminalSessionMemory(sessionId);
 		clearStepBlockIds(sessionId);
-		scheduleLoadSessions();
 	};
 
 	return (event) => {
@@ -141,6 +141,12 @@ export function createChatSessionEventHandler({
 				});
 				if (getActiveSessionId() === data.sessionId) clearAskAwaiting(data.sessionId);
 				cleanupTerminalSession(data.sessionId);
+				if (getActiveSessionId() === data.sessionId) {
+					closeCompletedSession(data.sessionId);
+					clearMediaPlans(data.sessionId);
+					evictTerminalSessionMemory(data.sessionId);
+				}
+				scheduleLoadSessions();
 				return;
 			}
 			case 'error': {
@@ -160,6 +166,7 @@ export function createChatSessionEventHandler({
 				});
 				if (getActiveSessionId() === data.sessionId) clearAskAwaiting(data.sessionId);
 				cleanupTerminalSession(data.sessionId);
+				scheduleLoadSessions();
 				return;
 			}
 			case 'title_updated':
