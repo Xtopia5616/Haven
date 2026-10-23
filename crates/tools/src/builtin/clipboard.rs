@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use haven_common::config::default_generated_media_root;
 use haven_common::config::{MAX_CLIPBOARD_ENTRY_OUTPUT_CHARS, MAX_CLIPBOARD_HISTORY_ENTRIES};
-use haven_common::types::{RiskLevel, new_id};
+use haven_common::types::{ClipboardAccess, RiskLevel, new_id};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::VecDeque;
@@ -269,6 +269,58 @@ impl Tool for ClipboardTool {
         }
     }
 
+    fn authorization_resources(
+        &self,
+        input: &Value,
+    ) -> Result<Vec<crate::security::DeclaredResource>, String> {
+        use crate::security::{DeclaredResource, LocalPathAccess};
+
+        let mut input = input.clone();
+        crate::tool_contract::strip_private_tool_fields(&mut input);
+        let params = crate::tool_contract::parse_tool_input::<ClipboardParams>(&self.name(), input)
+            .map_err(|error| error.to_string())?;
+        let operation = params.operation.unwrap_or(ClipboardOperation::Read);
+        let access = if operation == ClipboardOperation::Write {
+            ClipboardAccess::Write
+        } else {
+            ClipboardAccess::Read
+        };
+        let mut resources = vec![DeclaredResource::Clipboard { access }];
+
+        if operation == ClipboardOperation::Write {
+            let format = validate_write_params(&params).map_err(|error| error.to_string())?;
+            match format {
+                ClipboardFormat::Image => {
+                    let asset_id = params.asset_id.ok_or_else(|| {
+                        "asset_id is required for image clipboard writes".to_owned()
+                    })?;
+                    crate::tool_contract::validate_entity_id(&asset_id, "asset_id", "asset")
+                        .map_err(|error| error.to_string())?;
+                    resources.push(DeclaredResource::ManagedAsset { asset_id });
+                }
+                ClipboardFormat::Files => {
+                    let paths = params.files.ok_or_else(|| {
+                        "files are required for file-list clipboard writes".to_owned()
+                    })?;
+                    for path in paths {
+                        if path.trim().is_empty() {
+                            return Err("clipboard file paths must not be empty".into());
+                        }
+                        resources.push(DeclaredResource::LocalPath {
+                            path: PathBuf::from(path),
+                            access: LocalPathAccess::Read,
+                        });
+                    }
+                }
+                ClipboardFormat::Text | ClipboardFormat::Html => {}
+                ClipboardFormat::Auto => {
+                    return Err("auto format is not supported for clipboard writes".into());
+                }
+            }
+        }
+        Ok(resources)
+    }
+
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         if input["operation"].as_str() == Some("write") {
             ToolConcurrency::Resource("clipboard".into())
@@ -362,6 +414,74 @@ impl Tool for ClipboardTool {
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let params =
             crate::tool_contract::parse_tool_input::<ClipboardParams>(&self.name(), input)?;
+        self.run(params, cancel).await
+    }
+
+    async fn execute_with_authorization_context(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+        context: &crate::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        if target_binding.is_some() {
+            anyhow::bail!("clipboard operations do not accept a remote execution target binding");
+        }
+        let mut authorization_input = input.clone();
+        crate::tool_contract::strip_private_tool_fields(&mut authorization_input);
+        let mut params = crate::tool_contract::parse_tool_input::<ClipboardParams>(
+            &self.name(),
+            authorization_input.clone(),
+        )?;
+        let declared = self
+            .authorization_resources(&authorization_input)
+            .map_err(anyhow::Error::msg)?;
+        if declared != context.authorized_resources() {
+            anyhow::bail!("clipboard resources no longer match their authorization proof");
+        }
+        let _permit = context
+            .acquire_execution_policy_permit()
+            .await
+            .map_err(anyhow::Error::msg)?
+            .ok_or_else(|| {
+                anyhow::anyhow!("clipboard access requires proof-derived authorization")
+            })?;
+
+        if params.operation == Some(ClipboardOperation::Write)
+            && params.format == Some(ClipboardFormat::Files)
+        {
+            let file_policy = context.file_read_policy().ok_or_else(|| {
+                anyhow::anyhow!("clipboard file-list access has no proof-derived file policy")
+            })?;
+            let workspace = context.execution_workspace.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("clipboard file-list access has no execution workspace")
+            })?;
+            let files = params.files.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("files are required for file-list clipboard writes")
+            })?;
+            let mut resolved_paths = Vec::with_capacity(files.len());
+            for path in files {
+                let path = PathBuf::from(path);
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    workspace.resolve_relative(&path).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "relative clipboard file paths require an available execution workspace"
+                        )
+                    })?
+                };
+                let file = file_policy.open_metadata(&path)?;
+                if file.metadata()?.len() > MAX_CLIPBOARD_FILE_BYTES {
+                    anyhow::bail!(
+                        "clipboard file exceeds {} byte limit",
+                        MAX_CLIPBOARD_FILE_BYTES
+                    );
+                }
+                resolved_paths.push(path.to_string_lossy().into_owned());
+            }
+            params.files = Some(resolved_paths);
+        }
         self.run(params, cancel).await
     }
 }
@@ -1044,6 +1164,178 @@ mod tests {
                 .unwrap()
                 .contains("fallback")
         );
+    }
+
+    #[test]
+    fn clipboard_authorization_resources_bind_direction_and_payload_sources() {
+        use crate::security::{ClipboardAccess, DeclaredResource, LocalPathAccess};
+
+        let tool = test_tool();
+        assert_eq!(
+            tool.authorization_resources(&json!({"operation": "read", "format": "image"}))
+                .unwrap(),
+            vec![DeclaredResource::Clipboard {
+                access: ClipboardAccess::Read
+            }]
+        );
+        assert_eq!(
+            tool.authorization_resources(&json!({"operation": "history", "limit": 5}))
+                .unwrap(),
+            vec![DeclaredResource::Clipboard {
+                access: ClipboardAccess::Read
+            }]
+        );
+        assert_eq!(
+            tool.authorization_resources(&json!({
+                "operation": "write",
+                "format": "text",
+                "text": "secret"
+            }))
+            .unwrap(),
+            vec![DeclaredResource::Clipboard {
+                access: ClipboardAccess::Write
+            }]
+        );
+
+        let asset_id = new_id("asset");
+        assert_eq!(
+            tool.authorization_resources(&json!({
+                "operation": "write",
+                "format": "image",
+                "asset_id": asset_id
+            }))
+            .unwrap(),
+            vec![
+                DeclaredResource::Clipboard {
+                    access: ClipboardAccess::Write
+                },
+                DeclaredResource::ManagedAsset { asset_id }
+            ]
+        );
+
+        let paths = vec!["C:\\share\\one.txt", "C:\\share\\two.txt"];
+        assert_eq!(
+            tool.authorization_resources(&json!({
+                "operation": "write",
+                "format": "files",
+                "files": paths
+            }))
+            .unwrap(),
+            vec![
+                DeclaredResource::Clipboard {
+                    access: ClipboardAccess::Write
+                },
+                DeclaredResource::LocalPath {
+                    path: PathBuf::from("C:\\share\\one.txt"),
+                    access: LocalPathAccess::Read,
+                },
+                DeclaredResource::LocalPath {
+                    path: PathBuf::from("C:\\share\\two.txt"),
+                    access: LocalPathAccess::Read,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn clipboard_authorization_resources_reject_invalid_asset_id_and_ambiguous_write() {
+        let tool = test_tool();
+        assert!(
+            tool.authorization_resources(&json!({
+                "operation": "write",
+                "format": "image",
+                "asset_id": "asset-invalid"
+            }))
+            .is_err()
+        );
+        assert!(
+            tool.authorization_resources(&json!({
+                "operation": "write",
+                "format": "text",
+                "text": "first",
+                "html": "second"
+            }))
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn clipboard_execution_rejects_resources_that_do_not_match_the_proof() {
+        use crate::security::{ClipboardAccess, DeclaredResource};
+
+        let clipboard = Arc::new(Mutex::new(String::new()));
+        let writer_clipboard = Arc::clone(&clipboard);
+        let tool = test_tool().with_clipboard_text_writer(move |text| {
+            *writer_clipboard.lock().unwrap_or_else(|p| p.into_inner()) = text;
+            Ok(())
+        });
+        let context = crate::ToolExecutionContext {
+            authorized_resources: vec![DeclaredResource::Clipboard {
+                access: ClipboardAccess::Read,
+            }],
+            execution_authorization: Some(crate::security::ExecutionPolicyAuthorization::for_test()),
+            ..Default::default()
+        };
+        let error = tool
+            .execute_with_authorization_context(
+                json!({"operation": "write", "format": "text", "text": "must not write"}),
+                CancellationToken::new(),
+                None,
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no longer match"));
+        assert!(
+            clipboard
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn clipboard_file_list_uses_the_proof_bound_file_read_policy() {
+        use crate::security::{ClipboardAccess, DeclaredResource, FileReadPolicy, LocalPathAccess};
+
+        let directory = tempfile::tempdir().unwrap();
+        let workspace_root = directory.path().join("workspace");
+        let allowed_root = workspace_root.join("allowed");
+        std::fs::create_dir_all(&allowed_root).unwrap();
+        let outside_file = workspace_root.join("outside.txt");
+        std::fs::write(&outside_file, "private").unwrap();
+        let tool = test_tool();
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(
+                crate::execution_workspace::ExecutionWorkspace::from_root(&workspace_root).unwrap(),
+            ),
+            authorized_resources: vec![
+                DeclaredResource::Clipboard {
+                    access: ClipboardAccess::Write,
+                },
+                DeclaredResource::LocalPath {
+                    path: PathBuf::from("outside.txt"),
+                    access: LocalPathAccess::Read,
+                },
+            ],
+            file_read_policy: Some(FileReadPolicy::for_test_roots(&[allowed_root])),
+            execution_authorization: Some(crate::security::ExecutionPolicyAuthorization::for_test()),
+            ..Default::default()
+        };
+        let error = tool
+            .execute_with_authorization_context(
+                json!({
+                    "operation": "write",
+                    "format": "files",
+                    "files": ["outside.txt"]
+                }),
+                CancellationToken::new(),
+                None,
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "path is not allowed");
     }
 
     #[tokio::test]

@@ -358,6 +358,14 @@ pub enum LocalPathAccess {
     Write,
 }
 
+/// Access direction for the single system clipboard resource.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardAccess {
+    Read,
+    Write,
+}
+
 /// Persistent resource boundary attached to an allow or deny grant.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -371,6 +379,12 @@ pub enum PermissionResourceScope {
         scheme: String,
         host: String,
         port: Option<u16>,
+    },
+    Clipboard {
+        access: ClipboardAccess,
+    },
+    ManagedAsset {
+        asset_id: String,
     },
 }
 

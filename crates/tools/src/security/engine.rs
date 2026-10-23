@@ -30,6 +30,7 @@ use haven_common::config::{
 use haven_common::types::{
     ApprovalPolicy, CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect,
     PermissionResourceScope, PermissionResourceTarget, PermissionScope, RiskLevel, SandboxMode,
+    is_canonical_id,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -693,25 +694,7 @@ impl AuthorizationEngine {
 
     pub(crate) async fn file_read_policy(&self, tool_name: &str) -> FileReadPolicy {
         let cfg = self.config.read().await;
-        let mut allowed_roots = Vec::new();
-        if !cfg.global_file_roots.is_empty() {
-            allowed_roots.push(cfg.global_file_roots.clone());
-        }
-        allowed_roots.extend(
-            tool_setting_names(tool_name)
-                .filter_map(|name| cfg.tool_settings.get(name))
-                .filter(|setting| !setting.resource_policy.files.path_roots.is_empty())
-                .map(|setting| {
-                    setting
-                        .resource_policy
-                        .files
-                        .path_roots
-                        .iter()
-                        .map(PathBuf::from)
-                        .collect()
-                }),
-        );
-        FileReadPolicy { allowed_roots }
+        file_read_policy_for_config(&cfg, tool_name)
     }
 
     pub(crate) async fn network_domain_constraints(&self, tool_name: &str) -> Vec<Vec<String>> {
@@ -836,6 +819,19 @@ impl AuthorizationEngine {
         } else {
             None
         };
+        let file_read_policy = request
+            .resources
+            .iter()
+            .any(|resource| {
+                matches!(
+                    resource,
+                    super::DeclaredResource::LocalPath {
+                        access: super::LocalPathAccess::Read,
+                        ..
+                    }
+                )
+            })
+            .then(|| file_read_policy_for_config(&cfg, &request.tool_name));
         let network_destination_extension = if proof_resource_boundary_extension(proof) {
             match request.resources.as_slice() {
                 [resource @ super::DeclaredResource::NetworkDestination { .. }]
@@ -881,6 +877,8 @@ impl AuthorizationEngine {
 
         Ok(ToolExecutionContext {
             execution_workspace: Some(execution_workspace.clone()),
+            authorized_resources: request.resources.clone(),
+            file_read_policy,
             file_write_policy,
             network_domain_constraints,
             network_destination_extension,
@@ -1410,6 +1408,19 @@ impl AuthorizationEngine {
                         port: *port,
                     }
                 }
+                super::DeclaredResource::Clipboard { access } => {
+                    PermissionResourceScope::Clipboard { access: *access }
+                }
+                super::DeclaredResource::ManagedAsset { asset_id } => {
+                    if !is_canonical_id(asset_id, "asset") {
+                        return Err(
+                            "persistent managed asset grant requires a canonical asset id".into(),
+                        );
+                    }
+                    PermissionResourceScope::ManagedAsset {
+                        asset_id: asset_id.clone(),
+                    }
+                }
             };
             if !scopes.contains(&scope) {
                 scopes.push(scope);
@@ -1798,7 +1809,9 @@ fn network_resource_block(
         .iter()
         .filter_map(|resource| match resource {
             super::DeclaredResource::NetworkDestination { host, .. } => Some(host.as_str()),
-            super::DeclaredResource::LocalPath { .. } => None,
+            super::DeclaredResource::LocalPath { .. }
+            | super::DeclaredResource::Clipboard { .. }
+            | super::DeclaredResource::ManagedAsset { .. } => None,
         })
         .collect::<Vec<_>>();
     if destinations.is_empty()
@@ -1870,6 +1883,28 @@ fn network_domain_constraints_for_config(
             .filter(|domains| !domains.is_empty()),
     );
     constraints
+}
+
+fn file_read_policy_for_config(cfg: &SafetyConfig, tool_name: &str) -> FileReadPolicy {
+    let mut allowed_roots = Vec::new();
+    if !cfg.global_file_roots.is_empty() {
+        allowed_roots.push(cfg.global_file_roots.clone());
+    }
+    allowed_roots.extend(
+        tool_setting_names(tool_name)
+            .filter_map(|name| cfg.tool_settings.get(name))
+            .filter(|setting| !setting.resource_policy.files.path_roots.is_empty())
+            .map(|setting| {
+                setting
+                    .resource_policy
+                    .files
+                    .path_roots
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect()
+            }),
+    );
+    FileReadPolicy { allowed_roots }
 }
 
 fn proof_resource_boundary_extension(proof: &AuthorizationExecutionProof) -> bool {
@@ -1991,6 +2026,20 @@ fn permission_resource_scope_matches(
                 && granted_host.eq_ignore_ascii_case(host)
                 && granted_port == port
         }
+        (
+            PermissionResourceScope::Clipboard {
+                access: granted_access,
+            },
+            super::DeclaredResource::Clipboard {
+                access: requested_access,
+            },
+        ) => granted_access == requested_access,
+        (
+            PermissionResourceScope::ManagedAsset {
+                asset_id: granted_asset_id,
+            },
+            super::DeclaredResource::ManagedAsset { asset_id },
+        ) => granted_asset_id == asset_id,
         _ => false,
     }
 }
@@ -2119,7 +2168,9 @@ fn path_sandbox_block(
         .iter()
         .filter_map(|resource| match resource {
             super::DeclaredResource::LocalPath { path, access } => Some((path, access)),
-            super::DeclaredResource::NetworkDestination { .. } => None,
+            super::DeclaredResource::NetworkDestination { .. }
+            | super::DeclaredResource::Clipboard { .. }
+            | super::DeclaredResource::ManagedAsset { .. } => None,
         })
         .collect::<Vec<_>>();
     if matches!(policy.effect, OperationEffect::WorkspaceWrite)
@@ -2716,6 +2767,90 @@ mod tests {
         );
         assert!(matches!(
             engine.authorize(&different_origin).await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn persistent_clipboard_and_managed_asset_grants_match_exact_resources() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let capability = capability_scope!("clipboard.operation");
+        let read = resource_test_request(
+            &capability,
+            vec![DeclaredResource::Clipboard {
+                access: haven_common::types::ClipboardAccess::Read,
+            }],
+        );
+        let read_scope = engine
+            .resource_scope_for_request(&read, PermissionResourceTarget::Exact)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_scope,
+            vec![PermissionResourceScope::Clipboard {
+                access: haven_common::types::ClipboardAccess::Read,
+            }]
+        );
+        engine
+            .grant(
+                None,
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                read_scope,
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&read).await,
+            AuthorizationDecision::AutoApproved
+        ));
+        let write = resource_test_request(
+            &capability,
+            vec![DeclaredResource::Clipboard {
+                access: haven_common::types::ClipboardAccess::Write,
+            }],
+        );
+        assert!(matches!(
+            engine.authorize(&write).await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+
+        let asset_capability = capability_scope!("clipboard.asset");
+        let asset_id = haven_common::types::new_id("asset");
+        let asset_request = resource_test_request(
+            &asset_capability,
+            vec![DeclaredResource::ManagedAsset {
+                asset_id: asset_id.clone(),
+            }],
+        );
+        let asset_scope = engine
+            .resource_scope_for_request(&asset_request, PermissionResourceTarget::Exact)
+            .await
+            .unwrap();
+        engine
+            .grant(
+                None,
+                asset_capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                asset_scope,
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&asset_request).await,
+            AuthorizationDecision::AutoApproved
+        ));
+        let other_asset = resource_test_request(
+            &asset_capability,
+            vec![DeclaredResource::ManagedAsset {
+                asset_id: haven_common::types::new_id("asset"),
+            }],
+        );
+        assert!(matches!(
+            engine.authorize(&other_asset).await,
             AuthorizationDecision::RequiresConfirmation { .. }
         ));
     }

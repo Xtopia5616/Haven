@@ -1,6 +1,7 @@
 use super::engine::{canonical_authorization_hash, execution_proof_expiry};
 use crate::OperationPolicy;
 use haven_common::config::{SecurityConfig, StoredPermission};
+pub use haven_common::types::ClipboardAccess;
 pub use haven_common::types::LocalPathAccess;
 use haven_common::types::{
     CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect, PermissionScope, RiskLevel,
@@ -107,6 +108,12 @@ pub enum DeclaredResource {
         scheme: String,
         host: String,
         port: Option<u16>,
+    },
+    Clipboard {
+        access: ClipboardAccess,
+    },
+    ManagedAsset {
+        asset_id: String,
     },
 }
 

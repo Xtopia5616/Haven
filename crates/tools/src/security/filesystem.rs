@@ -159,6 +159,13 @@ fn extension_path_matches(left: &Path, right: &Path) -> bool {
 }
 
 impl FileReadPolicy {
+    #[cfg(test)]
+    pub(crate) fn for_test_roots(roots: &[PathBuf]) -> Self {
+        Self {
+            allowed_roots: vec![roots.to_vec()],
+        }
+    }
+
     pub(crate) fn open_read(&self, path: &Path) -> io::Result<File> {
         let opened = open_read_only(path)?;
         self.validate_opened(path, &opened, true)?;

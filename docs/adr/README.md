@@ -1281,3 +1281,4 @@
 - [1375：将可复用授权绑定到资源范围](1375-resource-scoped-persistent-permissions.md)
 - [1376：统一资源策略与本次边界扩展](1376-canonical-resource-policy-and-boundary-extension.md)
 - [1377：HTTP 全局域名边界的一次性扩展](1377-once-only-http-domain-boundary-extension.md)
+- [1378：剪贴板 typed 资源边界](1378-typed-clipboard-resource-boundary.md)

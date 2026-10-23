@@ -1740,6 +1740,8 @@ pub trait Tool: Send + Sync {
 #[derive(Clone, Default)]
 pub struct ToolExecutionContext {
     pub(crate) execution_workspace: Option<crate::execution_workspace::ExecutionWorkspace>,
+    pub(crate) authorized_resources: Vec<crate::security::DeclaredResource>,
+    pub(crate) file_read_policy: Option<crate::security::FileReadPolicy>,
     pub(crate) file_write_policy: Option<crate::security::FileWritePolicy>,
     pub(crate) network_domain_constraints: Option<Vec<Vec<String>>>,
     pub(crate) network_destination_extension: Option<crate::security::DeclaredResource>,
@@ -1749,6 +1751,14 @@ pub struct ToolExecutionContext {
 }
 
 impl ToolExecutionContext {
+    pub(crate) fn authorized_resources(&self) -> &[crate::security::DeclaredResource] {
+        &self.authorized_resources
+    }
+
+    pub(crate) fn file_read_policy(&self) -> Option<&crate::security::FileReadPolicy> {
+        self.file_read_policy.as_ref()
+    }
+
     pub(crate) async fn acquire_execution_policy_permit(
         &self,
     ) -> Result<Option<crate::security::ExecutionPolicyPermit>, String> {
