@@ -120,7 +120,7 @@
 
 	.tool-result-page-content summary {
 		cursor: pointer;
-		color: var(--color-text-secondary, #6b7280);
+		color: var(--md-sys-color-on-surface-variant);
 	}
 
 	.tool-result-page-content pre {
@@ -131,7 +131,7 @@
 		margin: 0.4rem 0 0;
 		padding: 0.65rem;
 		border-radius: 0.4rem;
-		background: var(--color-surface-subtle, rgba(127, 127, 127, 0.08));
+		background: var(--md-sys-color-surface-container-high);
 		font: inherit;
 	}
 </style>

@@ -696,16 +696,16 @@
 		margin: 0;
 	}
 	.limits-legend b {
-		color: var(--md-sys-color-error, #ba1a1a);
+		color: var(--md-sys-color-error);
 		font-weight: 600;
 	}
 	.limit-row {
 		min-width: 0;
 	}
 	.limit-danger-box {
-		border: 1px solid var(--md-sys-color-error, #ba1a1a);
+		border: 1px solid var(--md-sys-color-error);
 		border-radius: var(--md-sys-shape-small);
-		background: color-mix(in srgb, var(--md-sys-color-error, #ba1a1a) 6%, transparent);
+		background: color-mix(in srgb, var(--md-sys-color-error) 6%, transparent);
 		margin-top: var(--md-sys-space-sm);
 		padding: 8px;
 	}
@@ -718,7 +718,7 @@
 		align-items: center;
 		justify-content: center;
 		flex-shrink: 0;
-		color: var(--md-sys-color-error, #ba1a1a);
+		color: var(--md-sys-color-error);
 		transition: transform 0.15s ease;
 	}
 	:global(.limit-toggle-all) {

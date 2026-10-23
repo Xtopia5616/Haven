@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ExternalRef from '$lib/ExternalRef.svelte';
 	import JsonView from '$lib/JsonView.svelte';
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import { formatByteSize } from '$lib/toolResultFormatting.ts';
 	import type { ToolFileOperation, ToolFileSymbolKind } from './toolResultPresentation.ts';
@@ -68,21 +69,21 @@
 
 {#if data.written}
 	<div class="file-row">
-		<span class="file-op">已写入</span><ExternalRef
+		<MaterialBadge text="已写入" variant="secondary" size="compact" shape="pill" /><ExternalRef
 			class="file-path"
 			target={data.path ?? ''}
 		/>
 	</div>
 {:else if data.edited}
 	<div class="file-row">
-		<span class="file-op">已编辑</span><ExternalRef
+		<MaterialBadge text="已编辑" variant="secondary" size="compact" shape="pill" /><ExternalRef
 			class="file-path"
 			target={data.path ?? ''}
 		/>{#if data.line != null}<span class="file-line">L{data.line}</span>{/if}
 	</div>
 {:else if data.copied}
 	<div class="file-row">
-		<span class="file-op">已复制</span><ExternalRef
+		<MaterialBadge text="已复制" variant="secondary" size="compact" shape="pill" /><ExternalRef
 			class="file-path"
 			target={data.from ?? ''}
 		/>
@@ -92,7 +93,7 @@
 	</div>
 {:else if data.moved}
 	<div class="file-row">
-		<span class="file-op">已移动</span><ExternalRef
+		<MaterialBadge text="已移动" variant="secondary" size="compact" shape="pill" /><ExternalRef
 			class="file-path"
 			target={data.from ?? ''}
 		/>
@@ -102,34 +103,37 @@
 	</div>
 {:else if data.deleted}
 	<div class="file-row">
-		<span class="file-op">已删除</span><ExternalRef
+		<MaterialBadge text="已删除" variant="secondary" size="compact" shape="pill" /><ExternalRef
 			class="file-path"
 			target={data.path ?? ''}
 		/>
 	</div>
 {:else if data.created}
 	<div class="file-row">
-		<span class="file-op">已创建目录</span><ExternalRef
+		<MaterialBadge text="已创建目录" variant="secondary" size="compact" shape="pill" /><ExternalRef
 			class="file-path"
 			target={data.path ?? ''}
 		/>
 	</div>
 {:else if data.image}
 	<div class="file-row">
-		<span class="file-op"
-			>{data.understand_error
+		<MaterialBadge
+			text={data.understand_error
 				? '图像分析失败'
 				: data.understand_unavailable
 					? '图像分析不可用'
-					: '图像读取完成'}</span
-		>
+					: '图像读取完成'}
+			variant={data.understand_error ? 'error' : data.understand_unavailable ? 'warning' : 'secondary'}
+			size="compact"
+			shape="pill"
+		/>
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
 	{#if data.description}<pre class="tool-result-preview">{data.description}</pre>{/if}
 	{#if data.reason}<p class="tool-result-message">{data.reason}</p>{/if}
 {:else if data.binary}
 	<div class="file-row">
-		<span class="file-op">二进制文件</span>
+		<MaterialBadge text="二进制文件" size="compact" shape="pill" />
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
 	<div class="tool-result-meta tool-result-meta--compact">
@@ -139,16 +143,19 @@
 	</div>
 {:else if data.summary || data.summary_unavailable || data.summary_error}
 	<div class="file-row">
-		<span class="file-op"
-			>{data.summary ? '摘要完成' : data.summary_error ? '摘要失败' : '摘要不可用'}</span
-		>
+		<MaterialBadge
+			text={data.summary ? '摘要完成' : data.summary_error ? '摘要失败' : '摘要不可用'}
+			variant={data.summary_error ? 'error' : data.summary_unavailable ? 'warning' : 'secondary'}
+			size="compact"
+			shape="pill"
+		/>
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
 	{#if data.summary}<pre class="tool-result-preview">{data.summary}</pre>{/if}
 	{#if data.reason}<p class="tool-result-message">{data.reason}</p>{/if}
 {:else if data.too_large}
 	<div class="file-row">
-		<span class="file-op">文件过大</span><ExternalRef
+		<MaterialBadge text="文件过大" variant="warning" size="compact" shape="pill" /><ExternalRef
 			class="file-path"
 			target={data.path ?? ''}
 		/>
@@ -158,7 +165,12 @@
 	{/if}
 {:else if data.warning || data.error}
 	<div class="file-row">
-		<span class="file-op file-op--error">{data.warning ? '需要精确匹配' : '读取失败'}</span>
+		<MaterialBadge
+			text={data.warning ? '需要精确匹配' : '读取失败'}
+			variant={data.warning ? 'warning' : 'error'}
+			size="compact"
+			shape="pill"
+		/>
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
 	{#if data.warning}<p class="tool-result-message">{data.warning}</p>{/if}
@@ -231,16 +243,6 @@
 		line-height: var(--md-sys-typescale-code-line-height);
 		color: var(--md-sys-color-secondary);
 	}
-	.file-op {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-	}
 	.file-op-to {
 		flex: none;
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -248,10 +250,6 @@
 		color: var(--md-sys-color-on-surface-variant);
 		width: 34px;
 		text-align: center;
-	}
-	.file-op--error {
-		background: var(--md-sys-color-error-container);
-		color: var(--md-sys-color-on-error-container);
 	}
 	:global(.file-path) {
 		flex: 1;

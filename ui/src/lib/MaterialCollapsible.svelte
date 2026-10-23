@@ -99,7 +99,7 @@
 		border-radius: 4px;
 	}
 	.md-collapsible[data-variant='error'] .md-collapsible-header:hover {
-		color: var(--md-sys-color-error, #ba1a1a);
+		color: var(--md-sys-color-error);
 	}
 	.md-collapsible-caret {
 		display: inline-flex;
@@ -110,7 +110,7 @@
 		transition: transform 0.15s ease;
 	}
 	.md-collapsible[data-variant='error'] .md-collapsible-caret {
-		color: var(--md-sys-color-error, #ba1a1a);
+		color: var(--md-sys-color-error);
 	}
 	.md-collapsible-header[aria-expanded='false'] .md-collapsible-caret {
 		transform: rotate(-90deg);

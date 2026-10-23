@@ -2,6 +2,7 @@
 	import { reportError } from './errorHandling.ts';
 	import { addNotification } from './notificationStore.ts';
 	import JsonView from '$lib/JsonView.svelte';
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
@@ -286,7 +287,7 @@
 {/if}
 {#if data.deleted}
 	<div class="system-action-row">
-		<span class="system-action">已删除</span>
+		<MaterialBadge text="已删除" variant="error" size="compact" shape="pill" />
 		{#if data.path}<span class="info-value" title={data.path}>{data.path}</span>{/if}
 	</div>
 {/if}
@@ -627,16 +628,6 @@
 		align-items: baseline;
 		gap: var(--md-sys-space-xs);
 		margin-bottom: var(--md-sys-space-sm);
-	}
-	.system-action {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-error-container);
-		color: var(--md-sys-color-on-error-container);
 	}
 	:global(.md-icon-btn.env-copy) {
 		flex: none;

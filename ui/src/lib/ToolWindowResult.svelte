@@ -1,5 +1,6 @@
 <script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type {
 		ToolWindowControlType,
@@ -84,7 +85,7 @@
 	<p class="tool-result-message">{data.note || '此窗口能力当前不可用'}</p>
 {:else if data.operation === 'foreground'}
 	<div class="window-detail">
-		<span class="window-op">当前窗口</span>
+		<MaterialBadge text="当前窗口" variant="secondary" size="compact" shape="pill" />
 		<span class="tool-result-window-primary window-title" title={data.title}
 			>{data.title || '(无标题)'}</span
 		>
@@ -93,7 +94,12 @@
 	</div>
 {:else if data.operation === 'focus' || data.operation === 'close'}
 	<div class="window-detail">
-		<span class="window-op">{data.operation === 'focus' ? '已聚焦' : '已确认关闭'}</span>
+		<MaterialBadge
+			text={data.operation === 'focus' ? '已聚焦' : '已确认关闭'}
+			variant="success"
+			size="compact"
+			shape="pill"
+		/>
 		{#if data.focused || data.closed}<span class="tool-result-window-primary window-title"
 				>{data.focused || data.closed}</span
 			>{/if}
@@ -112,7 +118,7 @@
 	</div>
 {:else if data.operation === 'screenshot'}
 	<div class="window-detail">
-		<span class="window-op">截图已生成</span>
+		<MaterialBadge text="截图已生成" variant="success" size="compact" shape="pill" />
 		{#if data.asset_id}<span class="window-asset">{data.asset_id}</span>{/if}
 	</div>
 	{#if data.width != null && data.height != null}<div class="tool-result-meta">
@@ -120,8 +126,13 @@
 		</div>{/if}
 {:else if data.operation === 'ocr'}
 	<div class="window-detail">
-		<span class="window-op">{data.success === false ? 'OCR 失败' : 'OCR 完成'}</span
-		>{#if mediaAssetId}<span class="window-asset">{mediaAssetId}</span>{/if}
+		<MaterialBadge
+			text={data.success === false ? 'OCR 失败' : 'OCR 完成'}
+			variant={data.success === false ? 'error' : 'success'}
+			size="compact"
+			shape="pill"
+		/>
+		{#if mediaAssetId}<span class="window-asset">{mediaAssetId}</span>{/if}
 	</div>
 	{#if mediaText}<pre class="tool-result-preview">{mediaText}</pre>{:else if data.reason}<p
 			class="tool-result-message"
@@ -130,9 +141,12 @@
 		</p>{/if}
 {:else if data.operation === 'wait'}
 	<div class="window-detail">
-		<span class="window-op"
-			>{data.matched ? '已匹配' : data.timed_out ? '等待超时' : '等待结束'}</span
-		>
+		<MaterialBadge
+			text={data.matched ? '已匹配' : data.timed_out ? '等待超时' : '等待结束'}
+			variant={data.timed_out ? 'warning' : data.matched ? 'success' : 'secondary'}
+			size="compact"
+			shape="pill"
+		/>
 		{#if data.condition}<span class="tool-result-secondary-value window-meta"
 				>{data.condition}</span
 			>{/if}
@@ -170,16 +184,6 @@
 		display: flex;
 		align-items: baseline;
 		gap: var(--md-sys-space-xs);
-	}
-	.window-op {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
 	}
 	.window-asset {
 		min-width: 0;

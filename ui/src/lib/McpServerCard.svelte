@@ -319,10 +319,10 @@
 		padding: var(--md-sys-space-sm) 0;
 	}
 	.diag-msg {
-		color: var(--md-sys-color-warning, #b58900);
+		color: var(--md-sys-color-warning);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-		background: var(--md-sys-color-surface-container-high, rgba(0, 0, 0, 0.06));
+		background: var(--md-sys-color-surface-container-high);
 		border-radius: var(--md-sys-shape-small);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		white-space: pre-wrap;

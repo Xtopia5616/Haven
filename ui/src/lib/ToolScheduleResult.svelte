@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { scheduleModeLabel } from '$lib/toolRunTerminology.ts';
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type { ScheduleMode } from './contracts/schedule.ts';
 	import type { ToolScheduleResultOperation } from './toolResultPresentation.ts';
@@ -27,7 +28,7 @@
 
 {#if operation === 'cancel'}
 	<div class="tool-run-row">
-		<span class="scheduled-mode">已取消</span>
+		<MaterialBadge text="已取消" size="compact" shape="pill" />
 		{#if data.schedule_id}<span class="tool-run-id">#{data.schedule_id}</span>{/if}
 	</div>
 {:else if Array.isArray(data.schedules)}
@@ -39,7 +40,12 @@
 					{#each visibleSchedules as schedule (schedule.schedule_id)}
 						<div class="scheduled-row">
 							<span class="scheduled-title">{schedule.title}</span>
-							<span class="scheduled-mode">{scheduleModeLabel(schedule.mode)}</span>
+							<MaterialBadge
+								text={scheduleModeLabel(schedule.mode)}
+								variant="secondary"
+								size="compact"
+								shape="pill"
+							/>
 							{#if schedule.next_due_at || schedule.due_at}
 								<span class="scheduled-time">{schedule.next_due_at || schedule.due_at}</span>
 							{/if}
@@ -54,7 +60,12 @@
 {:else if operation === 'set' || (data.schedule_id && data.mode)}
 	<div class="tool-run-row">
 		<span class="tool-run-id">#{data.schedule_id}</span>
-		<span class="scheduled-mode">{scheduleModeLabel(data.mode)}</span>
+		<MaterialBadge
+			text={scheduleModeLabel(data.mode)}
+			variant="secondary"
+			size="compact"
+			shape="pill"
+		/>
 	</div>
 	{#if data.fires_at}
 		<div class="tool-result-meta tool-result-meta--compact">触发时间 {data.fires_at}</div>
@@ -85,16 +96,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	.scheduled-mode {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
 	}
 	.scheduled-time {
 		flex: none;
