@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1 已完成（ADR 1373）；Slice 2 的执行预设、Files/HTTP 核心 typed 资源合同及规范 `ResourcePolicy`/本次边界扩展已实施（ADR 1374、1376）。完整资源范围、MCP exposure 拆分和其它进程路径盘点仍待后续切片。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
+> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1 已完成（ADR 1373）；Slice 2 的执行预设、Files/HTTP 核心 typed 资源合同及规范 `ResourcePolicy`/本次边界扩展已实施（ADR 1374、1376）。其余资源类型与网络域名边界扩展属于 Slice 2 后续范围；MCP exposure 拆分属于 Slice 4，其他进程路径盘点属于 Slice 3。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
 > 更新日期：2026-10-23
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -75,7 +75,7 @@
 | 状态 | 当前项 |
 |---|---|
 | **Next** | 新一轮 R02：提供已保存配置的显式 reapply；模型/媒体组合发布与会话工作绑定的后续顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
-| **Active** | 无。ADR 1376 已实现全局/工具级规范 `ResourcePolicy`、统一设置入口和只对本次 typed 调用生效的 WorkspaceWrite 边界扩展；尚无可信声明的窗口、剪贴板、注册表、MCP 远程对象和其它进程能力仍不能保存可复用 Allow，作为后续资源合同工作跟踪。见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)、[ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1375](adr/1375-resource-scoped-persistent-permissions.md)、[ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md) 和[设计提案](execution-context-redesign.md)。 |
+| **Active** | 无。ADR 1376 已实现全局/工具级规范 `ResourcePolicy`、统一设置入口和只对本次 typed 调用生效的 WorkspaceWrite 边界扩展；Slice 2 剩余的资源合同包括网络域名扩展及窗口、剪贴板、注册表、MCP 远程对象等可信资源声明。MCP exposure 枚举拆分单独属于 Slice 4；其它进程路径盘点属于 Slice 3。见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)、[ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1375](adr/1375-resource-scoped-persistent-permissions.md)、[ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md) 和[设计提案](execution-context-redesign.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
