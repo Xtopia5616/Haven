@@ -274,7 +274,7 @@
 	//   2. Mouse wheel over a horizontally-scrollable block is translated to
 	//      horizontal scrolling (when the block itself cannot scroll
 	//      vertically), so mouse users don't need shift+wheel.
-	//   3. A thin visible scrollbar, because scrollbars are hidden globally.
+	//   3. A visible scrollbar with the shared app styling.
 	// The CSS vars are written to the fade-hosting wrapper (or the element
 	// itself for plain <pre> that never scrolls, e.g. streaming fences).
 	function hintTarget(el: HTMLElement): HTMLElement {
@@ -962,8 +962,6 @@
 		cursor: grab;
 		touch-action: pan-x;
 		margin: 0 0 0.75em;
-		scrollbar-width: thin;
-		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
 	}
 	.md-content :global(code) {
 		font-family: var(--md-sys-typescale-mono);
@@ -1142,8 +1140,6 @@
 		margin: 0 0 0.75em;
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-		scrollbar-width: thin;
-		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
 	}
 	.md-content :global(th),
 	.md-content :global(td) {
@@ -1155,26 +1151,11 @@
 		background: var(--md-sys-color-surface-container-high);
 		font-weight: 600;
 	}
-	/* Wide content affordances (scrollbars are hidden globally, so pre/table
-	 * re-enable a slim one and get edge fade hints driven by JS: --sh-l and
-	 * --sh-r are 1 while content is clipped on that side). The fades are
+	/* Wide content affordances get edge fade hints driven by JS: --sh-l and
+	 * --sh-r are 1 while content is clipped on that side. The fades are
 	 * pseudo-elements of the NON-scrolling wrappers (.md-code-wrap /
 	 * .md-table-wrap), so they stay pinned to the viewport edges while the
 	 * inner pre/table scrolls. */
-	.md-content :global(pre)::-webkit-scrollbar,
-	.md-content :global(table)::-webkit-scrollbar {
-		display: block;
-		height: 4px;
-	}
-	.md-content :global(pre)::-webkit-scrollbar-track,
-	.md-content :global(table)::-webkit-scrollbar-track {
-		background: transparent;
-	}
-	.md-content :global(pre)::-webkit-scrollbar-thumb,
-	.md-content :global(table)::-webkit-scrollbar-thumb {
-		background: var(--md-sys-color-outline-variant);
-		border-radius: 2px;
-	}
 	.md-content :global(pre.drag-scroll--active),
 	.md-content :global(table.drag-scroll--active) {
 		cursor: grabbing;

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
@@ -101,9 +102,9 @@
 		<div class="card-name">{skill.name}</div>
 		<div class="expandable-context-card-meta">
 			{#if skill.version}
-				<span class="meta-badge">{skill.version}</span>
+				<MaterialBadge text={skill.version} />
 			{/if}
-			<span class="meta-badge lang">{skill.language}</span>
+			<MaterialBadge text={skill.language} variant="secondary" />
 			<StatusBadge
 				label={skill.manifestError
 					? '清单无效'
@@ -115,11 +116,11 @@
 				tone={skill.executable ? 'success' : 'error'}
 			/>
 			{#if skill.manifestError}
-				<span class="script-badge script-badge--missing">清单无法解析</span>
+				<MaterialBadge text="清单无法解析" variant="error" />
 			{:else if skill.hasScript}
-				<span class="script-badge">含脚本</span>
+				<MaterialBadge text="含脚本" variant="primary" />
 			{:else}
-				<span class="script-badge script-badge--missing">缺少入口脚本，无法执行</span>
+				<MaterialBadge text="缺少入口脚本，无法执行" variant="error" />
 			{/if}
 		</div>
 	{/snippet}
@@ -171,28 +172,6 @@
 		line-height: var(--md-sys-typescale-body-large-line-height);
 		color: var(--md-sys-color-on-surface);
 		margin-bottom: var(--md-sys-space-xs);
-	}
-	.meta-badge {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		padding: 2px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-weight: 600;
-	}
-	.meta-badge.lang {
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-	}
-	.script-badge {
-		background: var(--md-sys-color-primary-container);
-		color: var(--md-sys-color-on-primary-container);
-		padding: 2px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-weight: 600;
-	}
-	.script-badge--missing {
-		background: var(--md-sys-color-error-container);
-		color: var(--md-sys-color-on-error-container);
 	}
 	.skill-unavailable-reason {
 		color: var(--md-sys-color-error);

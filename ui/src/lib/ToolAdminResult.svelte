@@ -1,4 +1,5 @@
 <script lang="ts">
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type { SessionStatus } from './contracts/generatedCommands.ts';
@@ -105,18 +106,27 @@
 	</ToolResultList>
 {:else if data.level && data.saved}
 	<div class="admin-action">
-		<span class="admin-badge">已保存</span><span>日志级别：{data.level}</span>
+		<MaterialBadge text="已保存" variant="secondary" size="compact" shape="pill" />
+		<span>日志级别：{data.level}</span>
 	</div>
 {:else if data.name && data.enabled != null}
 	<div class="admin-action">
-		<span class="admin-badge">{data.enabled ? '已启用' : '已停用'}</span><span>{data.name}</span
-		>
+		<MaterialBadge
+			text={data.enabled ? '已启用' : '已停用'}
+			variant="secondary"
+			size="compact"
+			shape="pill"
+		/>
+		<span>{data.name}</span>
 	</div>
 {:else if data.name && (data.connected != null || data.created || data.removed)}
 	<div class="admin-action">
-		<span class="admin-badge"
-			>{data.removed ? '已移除' : data.created ? '已创建' : statusLabel(data.connected)}</span
-		>
+		<MaterialBadge
+			text={data.removed ? '已移除' : data.created ? '已创建' : statusLabel(data.connected)}
+			variant="secondary"
+			size="compact"
+			shape="pill"
+		/>
 		<span>{data.name}</span>
 	</div>
 {:else}
@@ -166,14 +176,5 @@
 		align-items: baseline;
 		gap: var(--md-sys-space-xs);
 		color: var(--md-sys-color-on-surface);
-	}
-	.admin-badge {
-		flex: none;
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
 	}
 </style>

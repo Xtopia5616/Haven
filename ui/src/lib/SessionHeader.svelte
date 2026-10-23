@@ -87,11 +87,9 @@
 				<MaterialSelect
 					id="session-execution-workspace"
 					ariaLabel="执行工作区"
-					width="compact"
+					width="standard"
 					value={selectedWorkspaceValue}
 					options={executionWorkspaceOptions}
-					iconOnly
-					icon="folder"
 					title={`执行工作区：${selectedWorkspaceValue || '自动检测'}`}
 					disabled={executionWorkspaceSwitching}
 					onChange={(root) => onSelectExecutionWorkspace?.(root || null)}
@@ -212,10 +210,6 @@
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 		min-width: 0;
-	}
-	:global(.session-header__workspace-controls .md-select-container[data-icon-only='true']) {
-		flex: 0 0 auto;
-		width: auto;
 	}
 	.session-header__actions {
 		display: flex;

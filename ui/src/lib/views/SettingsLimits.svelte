@@ -1,6 +1,7 @@
 <script lang="ts">
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
@@ -596,11 +597,12 @@
 						data-setting-searchable
 					>
 						<div class="limit-label">
-							<label for="limit-{f.key}">{f.label}</label>{#if f.danger}<span
-									class="danger-badge"
+							<label for="limit-{f.key}">{f.label}</label>{#if f.danger}<MaterialBadge
+									text="⚠ 危险"
+									variant="error"
+									className="danger-badge"
 									title={f.hint || '调整此值存在内存 / 成本 / 安全风险'}
-									>⚠ 危险</span
-								>{/if}{#if f.hint}<p class="limit-hint">{f.hint}</p>{/if}
+								/>{/if}{#if f.hint}<p class="limit-hint">{f.hint}</p>{/if}
 						</div>
 						<MaterialNumberFieldWithUnit
 							width="standard"
@@ -619,7 +621,11 @@
 				{#if group.danger.length}
 					<div class="limit-danger-box">
 						<MaterialCollapsible variant="error" bind:open={limitDangerOpen[group.id]}>
-							{#snippet header()}<span class="danger-badge">高影响项目</span><span
+							{#snippet header()}<MaterialBadge
+									text="高影响项目"
+									variant="error"
+									className="danger-badge"
+								/><span
 									class="limit-danger-count">{group.danger.length} 项</span
 								>{/snippet}
 							<div class="limit-danger-items">
@@ -749,16 +755,8 @@
 		margin: var(--md-sys-space-2xs) 0 0;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	.danger-badge {
-		display: inline-block;
+	:global(.danger-badge) {
 		margin-left: var(--md-sys-space-xs);
-		padding: 1px 6px;
-		border-radius: 999px;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: #fff;
-		background: var(--md-sys-color-error, #ba1a1a);
 		vertical-align: 1px;
 	}
 	.model-hint {

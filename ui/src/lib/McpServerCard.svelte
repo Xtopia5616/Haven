@@ -4,6 +4,7 @@
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import { copyText } from '$lib/clipboard.ts';
@@ -118,16 +119,16 @@
 	{#snippet header()}
 		<div class="card-name">
 			<span class="card-name-text">{server.name}</span>
-			<span class="tool-count">
-				{#if (server.tools && server.tools.length > 0) || isConnected()}
-					{server.tools?.length || 0} 个工具
-				{:else}
-					工具未探测
-				{/if}
-			</span>
+			<MaterialBadge
+				text={(server.tools && server.tools.length > 0) || isConnected()
+					? `${server.tools?.length || 0} 个工具`
+					: '工具未探测'}
+				variant="default"
+				size="compact"
+			/>
 		</div>
 		<div class="expandable-context-card-meta">
-			<span class="transport-badge">{server.transport}</span>
+			<MaterialBadge text={server.transport} />
 			{#if server.url}
 				<span class="endpoint">{server.url}</span>
 			{/if}
@@ -138,7 +139,10 @@
 			/>
 			<StatusBadge label={`默认：${exposureLabel()}`} tone="neutral" />
 			{#if Object.keys(server.exposure.tools).length > 0}
-				<span class="tool-count">{Object.keys(server.exposure.tools).length} 条覆盖</span>
+				<MaterialBadge
+					text={`${Object.keys(server.exposure.tools).length} 条覆盖`}
+					size="compact"
+				/>
 			{/if}
 			<StatusBadge label={statusLabel(server.status)} tone={statusTone()} />
 			{#if server.lastSeenAt}
@@ -235,28 +239,11 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.transport-badge {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		padding: 2px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-weight: 600;
-	}
 	.endpoint {
 		color: var(--md-sys-color-primary);
 		font-family: var(--md-sys-typescale-mono);
 		font-size: var(--md-sys-typescale-code-size);
 		line-height: var(--md-sys-typescale-code-line-height);
-	}
-	.tool-count {
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		padding: 1px var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-small);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		white-space: nowrap;
 	}
 	.last-seen {
 		color: var(--md-sys-color-on-surface-variant);

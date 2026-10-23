@@ -175,8 +175,6 @@
 		min-height: 0;
 		overflow-y: auto;
 		overscroll-behavior: contain;
-		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
-		scrollbar-width: thin;
 	}
 	.session-rail__list {
 		display: flex;

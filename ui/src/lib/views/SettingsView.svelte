@@ -65,6 +65,7 @@
 	import SettingsSaveBar from './SettingsSaveBar.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import WorkspaceSearch from '$lib/WorkspaceSearch.svelte';
 	import WorkspaceSurface from '$lib/WorkspaceSurface.svelte';
 	import type {
@@ -1554,7 +1555,7 @@
 					>
 						{#snippet status()}
 							{#if dirtySettingsSectionIds.includes(settingsTab)}
-								<span class="settings-dirty-badge">有未保存修改</span>
+								<MaterialBadge text="有未保存修改" variant="tertiary" />
 							{/if}
 						{/snippet}
 					</WorkspaceSectionHeader>
@@ -1914,15 +1915,6 @@
 		margin-inline: auto;
 		container-name: settings-content;
 		container-type: inline-size;
-	}
-	.settings-dirty-badge {
-		flex: 0 0 auto;
-		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-tertiary-container);
-		color: var(--md-sys-color-on-tertiary-container);
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.provider-discovery-notice {
 		display: flex;

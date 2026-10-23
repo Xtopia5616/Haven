@@ -1,4 +1,5 @@
 <script lang="ts">
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import type {
@@ -111,13 +112,15 @@
 	{/if}
 {:else if data.operation === 'remember' && data.stored}
 	<div class="memory-action">
-		<span class="memory-badge">已记住</span><span
+		<MaterialBadge text="已记住" variant="secondary" size="compact" shape="pill" />
+		<span
 			>{data.stored.predicate}: {data.stored.object}</span
 		>
 	</div>
 {:else if data.operation === 'forget'}
 	<div class="memory-action">
-		<span class="memory-badge">已删除</span><span>{data.deleted ?? 0} 条事实</span>
+		<MaterialBadge text="已删除" variant="secondary" size="compact" shape="pill" />
+		<span>{data.deleted ?? 0} 条事实</span>
 	</div>
 {:else}
 	<div class="tool-result-meta tool-result-meta--memory">
@@ -187,14 +190,5 @@
 		align-items: baseline;
 		gap: var(--md-sys-space-xs);
 		color: var(--md-sys-color-on-surface);
-	}
-	.memory-badge {
-		flex: none;
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
 	}
 </style>

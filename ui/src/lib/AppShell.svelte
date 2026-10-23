@@ -6,6 +6,7 @@
 	import WorkspaceNav from './WorkspaceNav.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import MaterialBadge from './MaterialBadge.svelte';
 	import Icon from './Icon.svelte';
 	import GlobalContextMenu from './GlobalContextMenu.svelte';
 	import LandscapeWorkspaceNav from './LandscapeWorkspaceNav.svelte';
@@ -95,7 +96,7 @@
 				{/snippet}
 			</MaterialButton>
 			{#if isDevelopmentBuild}
-				<span class="development-badge" title="此窗口连接 Haven 开发环境">dev</span>
+				<MaterialBadge text="dev" variant="warning" title="此窗口连接 Haven 开发环境" />
 			{/if}
 		</div>
 		<div class="titlebar-right">
@@ -185,19 +186,7 @@
 	.titlebar-left {
 		gap: var(--md-sys-space-sm);
 	}
-	.development-badge {
-		display: inline-flex;
-		align-items: center;
-		min-height: 24px;
-		padding: 0 var(--md-sys-space-sm);
-		border: 1px solid color-mix(in srgb, var(--md-sys-color-tertiary) 45%, transparent);
-		border-radius: var(--md-sys-shape-full);
-		background: color-mix(in srgb, var(--md-sys-color-tertiary-container) 78%, transparent);
-		color: var(--md-sys-color-on-tertiary-container);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		letter-spacing: 0.04em;
-		line-height: 1;
+	.titlebar-left :global(.md-badge) {
 		-webkit-app-region: no-drag;
 	}
 	.workspace-rail {
@@ -385,6 +374,9 @@
 			border-bottom-color: var(--md-sys-color-outline-variant);
 		}
 		.titlebar-left {
+			display: flex;
+		}
+		:global(.md-btn.titlebar-logo) {
 			display: none;
 		}
 		.titlebar-right {
@@ -425,7 +417,6 @@
 			flex: 0 1 auto;
 			min-height: 0;
 			overflow-y: auto;
-			scrollbar-width: thin;
 		}
 		.workspace-rail :global(.workspace-link) {
 			flex-shrink: 0;

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import JsonView from '$lib/JsonView.svelte';
 	import type { ToolInputButton, ToolInputOperation } from './toolResultPresentation.ts';
 
@@ -34,12 +35,14 @@
 
 {#if data.operation === 'type'}
 	<div class="input-action">
-		<span class="input-badge">{label}</span><span>{data.chars ?? 0} 个字符</span>
+		<MaterialBadge text={label} variant="secondary" size="compact" shape="pill" />
+		<span>{data.chars ?? 0} 个字符</span>
 	</div>
 	{#if data.typed}<pre class="tool-result-preview">{data.typed}</pre>{/if}
 {:else if data.operation === 'key'}
 	<div class="input-action">
-		<span class="input-badge">按键已注入</span><code>{data.pressed || '—'}</code>
+		<MaterialBadge text="按键已注入" variant="secondary" size="compact" shape="pill" />
+		<code>{data.pressed || '—'}</code>
 	</div>
 	{#if data.verified_foreground === true}
 		<div class="tool-result-meta tool-result-meta--input">
@@ -50,19 +53,22 @@
 	{/if}
 {:else if data.operation === 'click'}
 	<div class="input-action">
-		<span class="input-badge">{label}</span><span
+		<MaterialBadge text={label} variant="secondary" size="compact" shape="pill" />
+		<span
 			>{Array.isArray(data.clicked) ? data.clicked.join(', ') : '—'}</span
 		><span class="tool-result-meta tool-result-meta--input">{data.button || 'left'}</span>
 	</div>
 {:else if data.operation === 'move'}
 	<div class="input-action">
-		<span class="input-badge">{label}</span><span
+		<MaterialBadge text={label} variant="secondary" size="compact" shape="pill" />
+		<span
 			>{Array.isArray(data.moved_to) ? data.moved_to.join(', ') : '—'}</span
 		>
 	</div>
 {:else if data.operation === 'scroll'}
 	<div class="input-action">
-		<span class="input-badge">{label}</span><span>{data.scrolled ?? 0}</span>
+		<MaterialBadge text={label} variant="secondary" size="compact" shape="pill" />
+		<span>{data.scrolled ?? 0}</span>
 	</div>
 {:else}
 	<div class="tool-result-meta tool-result-meta--input">输入操作</div>
@@ -80,15 +86,6 @@
 		align-items: baseline;
 		gap: var(--md-sys-space-xs);
 		color: var(--md-sys-color-on-surface);
-	}
-	.input-badge {
-		flex: none;
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
 	}
 	.tool-result-preview {
 		--tool-result-preview-max-height: 120px;

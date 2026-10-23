@@ -1,4 +1,5 @@
 <script lang="ts">
+	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import JsonView from '$lib/JsonView.svelte';
 	import type { MediaRepresentationKind } from './contracts/generatedCommands.ts';
 	import type {
@@ -62,14 +63,20 @@
 </script>
 
 <div class="media-detail">
-	<span class="media-op">{data.operation || '媒体操作'}</span>
+	<MaterialBadge
+		text={data.operation || '媒体操作'}
+		variant="secondary"
+		size="compact"
+		shape="pill"
+	/>
 	{#if assetId}<span class="media-asset">{assetId}</span>{/if}
 	{#if filename}<span class="media-name">{filename}</span>{/if}
 </div>
 
 {#if data.operation === 'record'}
 	<div class="media-action">
-		<span class="media-badge">{operationLabel}</span><span
+		<MaterialBadge text={operationLabel} variant="secondary" size="compact" shape="pill" />
+		<span
 			>{data.duration_ms != null ? `${data.duration_ms} ms` : ''}</span
 		>
 	</div>
@@ -96,24 +103,27 @@
 	{/if}
 {:else if data.operation === 'play'}
 	<div class="media-action">
-		<span class="media-badge">{operationLabel}</span>{#if data.played}<span>已发送到扬声器</span
-			>{/if}
+		<MaterialBadge text={operationLabel} variant="secondary" size="compact" shape="pill" />
+		{#if data.played}<span>已发送到扬声器</span>{/if}
 	</div>
 {:else if data.operation === 'speak'}
 	<div class="media-action">
-		<span class="media-badge">{operationLabel}</span><span
+		<MaterialBadge text={operationLabel} variant="secondary" size="compact" shape="pill" />
+		<span
 			>{data.characters != null ? `${data.characters} 字` : ''}</span
 		>
 	</div>
 {:else if data.operation === 'volume_get' || data.operation === 'volume_set'}
 	<div class="media-action">
-		<span class="media-badge">{operationLabel}</span><span
+		<MaterialBadge text={operationLabel} variant="secondary" size="compact" shape="pill" />
+		<span
 			>{Math.round(Number(data.volume ?? 0) * 100)}%</span
 		>
 	</div>
 {:else if data.operation === 'mute_get' || data.operation === 'mute_set'}
 	<div class="media-action">
-		<span class="media-badge">{operationLabel}</span><span
+		<MaterialBadge text={operationLabel} variant="secondary" size="compact" shape="pill" />
+		<span
 			>{data.muted ? '已静音' : '未静音'}</span
 		>
 	</div>
@@ -151,30 +161,12 @@
 		gap: var(--md-sys-space-xs);
 		min-width: 0;
 	}
-	.media-op {
-		flex: none;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-	}
 	.media-action {
 		display: flex;
 		align-items: baseline;
 		gap: var(--md-sys-space-xs);
 		min-width: 0;
 		color: var(--md-sys-color-on-surface);
-	}
-	.media-badge {
-		flex: none;
-		padding: 1px 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-secondary-container);
-		color: var(--md-sys-color-on-secondary-container);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
 	}
 	.media-asset,
 	.media-name {

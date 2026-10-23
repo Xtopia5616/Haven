@@ -261,16 +261,6 @@
 		max-height: 240px;
 		overflow: auto;
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm) var(--md-sys-space-sm);
-		scrollbar-width: thin;
-		scrollbar-color: var(--md-sys-color-outline-variant) transparent;
-	}
-	.jv-root-body::-webkit-scrollbar {
-		width: 4px;
-		height: 4px;
-	}
-	.jv-root-body::-webkit-scrollbar-thumb {
-		background: var(--md-sys-color-outline-variant);
-		border-radius: 2px;
 	}
 	.jv-row {
 		display: flex;
