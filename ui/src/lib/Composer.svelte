@@ -28,14 +28,17 @@
 	import { publishWorkspaceStatusHint } from '$lib/workspaceStatusHintStore.ts';
 
 	const DELIVERY_MODE_OPTIONS: SelectOption[] = [
-		{ value: 'steering', label: '安全边界调整' },
-		{ value: 'follow_up', label: '完成后追加' },
+		{
+			value: 'steering',
+			label: '安全边界调整',
+			description: '当前请求或工具结束后接入',
+		},
+		{
+			value: 'follow_up',
+			label: '完成后追加',
+			description: '当前工作结束后开始处理',
+		},
 	];
-	const ASK_DELIVERY_MODE_OPTIONS: SelectOption[] = [
-		{ value: 'auto', label: '回答当前问题' },
-		{ value: 'follow_up', label: '完成后追加' },
-	];
-
 	interface PendingChatImageAttachment extends ChatAttachmentPayload {
 		previewKey: string;
 	}
@@ -148,32 +151,14 @@
 	);
 
 	let deliveryMode = $state<Exclude<InputDeliveryModeInput, 'auto'>>('steering');
-	let askDeliveryMode = $state<'auto' | 'follow_up'>('auto');
-	let previousAskSessionId = $state<string | null>(null);
-	$effect(() => {
-		if (!askAwaiting) {
-			previousAskSessionId = null;
-			return;
-		}
-		if (previousAskSessionId !== activeSessionId) {
-			previousAskSessionId = activeSessionId;
-			askDeliveryMode = 'auto';
-		}
-	});
-	let deliveryModeAvailable = $derived(sessionRunning || isGenerating || askAwaiting);
-	let deliveryModeOptions = $derived(
-		askAwaiting ? ASK_DELIVERY_MODE_OPTIONS : DELIVERY_MODE_OPTIONS,
-	);
-	let selectedDeliveryMode = $derived(askAwaiting ? askDeliveryMode : deliveryMode);
+	let deliveryModeAvailable = $derived(sessionRunning || isGenerating);
 	let allowEmptyMessageSubmit = $derived(
-		allowEmptySubmit && (!askAwaiting || askDeliveryMode === 'auto'),
+		allowEmptySubmit && askAwaiting,
 	);
 	let deliveryHint = $derived.by(() => {
 		if (interrupting) return '正在停止当前输出；停止完成后再发送新消息。';
 		if (askAwaiting) {
-			return askDeliveryMode === 'follow_up'
-				? '此消息会排队，不会回答或唤醒当前问题；当前所选答案选项也不会提交。请先回答问题，后续消息才会处理。'
-				: '正在等待你的回答；发送内容和已选选项会作为当前问题的答案。';
+			return '正在等待你的回答；发送内容和已选选项会作为当前问题的答案。';
 		}
 		if (confirmationAwaiting) {
 			return '工具正在等待权限确认；此处发送的消息只会排队，确认前不会开始处理。';
@@ -262,8 +247,8 @@
 	const hasDraft = $derived(
 		transcriptInput.trim().length > 0 || pendingImages.length > 0 || pendingFiles.length > 0,
 	);
-	// Treat selected Ask chips as submit-ready only while the input is routed
-	// as an answer. A follow-up must contain its own content.
+	// Selected Ask chips are submit-ready while the current question is awaiting
+	// an answer; Ask input has no follow-up delivery mode.
 	const hasInput = $derived(hasDraft || allowEmptyMessageSubmit);
 	// Steering becomes eligible at the next safe turn boundary. The active
 	// model request or tool is never interrupted by this input route.
@@ -273,11 +258,6 @@
 	const stopMode = $derived(!hasInput && (interrupting || isGenerating || sessionRunning));
 	const chatInputPlaceholder = $derived.by(() => {
 		if (askAwaiting) {
-			if (askDeliveryMode === 'follow_up') {
-				return askHasOptions
-					? '输入会排队为后续消息；不会提交为当前问题答案'
-					: '输入后续消息；当前问题仍等待回答';
-			}
 			return askHasOptions
 				? '从上方的选项中选择，或者在此处输入答案或补充，Enter 提交'
 				: '在此处输入答案或补充，Enter 提交';
@@ -538,9 +518,7 @@
 		}));
 		if (!text && images.length === 0 && files.length === 0 && !allowEmptyMessageSubmit) return;
 		const submittedDeliveryMode = askAwaiting
-			? askDeliveryMode === 'follow_up'
-				? 'follow_up'
-				: undefined
+			? undefined
 			: confirmationAwaiting || sessionStatus === 'paused'
 				? 'follow_up'
 				: deliveryModeAvailable
@@ -814,27 +792,20 @@
 			{@render toolbarLeft?.()}
 		</div>
 		<div class="toolbar-right">
-			{#if deliveryModeAvailable && (!confirmationAwaiting || askAwaiting)}
+			{#if deliveryModeAvailable && !confirmationAwaiting && !askAwaiting}
 				<MaterialSelect
 					id="chat-delivery-mode"
-					ariaLabel={askAwaiting ? '问题回复方式' : '消息投递方式'}
-					width="compact"
-					value={selectedDeliveryMode}
-					options={deliveryModeOptions}
+					ariaLabel="消息投递方式"
+					appearance="toolbar"
+					width="content"
+					value={deliveryMode}
+					options={DELIVERY_MODE_OPTIONS}
 					disabled={interrupting}
-					title={askAwaiting
-						? askDeliveryMode === 'follow_up'
-							? '排队等待当前工作结束；不会回答或唤醒 Ask'
-							: '将输入和已选选项作为当前问题的答案'
-						: deliveryMode === 'follow_up'
-							? '等待当前工作自然完成后追加'
-							: '在下一个安全边界调整当前工作，不中断当前请求或工具'}
+					title={deliveryMode === 'follow_up'
+						? '等待当前工作自然完成后追加'
+						: '在下一个安全边界调整当前工作，不中断当前请求或工具'}
 					onChange={(value) => {
-						if (askAwaiting) {
-							if (value === 'auto' || value === 'follow_up') askDeliveryMode = value;
-						} else if (value === 'steering' || value === 'follow_up') {
-							deliveryMode = value;
-						}
+						if (value === 'steering' || value === 'follow_up') deliveryMode = value;
 					}}
 				/>
 			{/if}

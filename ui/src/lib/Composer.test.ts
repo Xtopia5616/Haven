@@ -16,9 +16,11 @@ describe('Composer context menu', () => {
 		const onsubmit = vi.fn();
 		render(Composer, { sessionRunning: true, onsubmit });
 		const deliveryMode = screen.getByRole('combobox', { name: '消息投递方式' });
-		expect(deliveryMode.parentElement?.getAttribute('data-width')).toBe('compact');
+		expect(deliveryMode.parentElement?.getAttribute('data-width')).toBe('content');
+		expect(deliveryMode.parentElement?.getAttribute('data-appearance')).toBe('toolbar');
 		await fireEvent.click(deliveryMode);
-		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
+		expect(screen.getByText('当前工作结束后开始处理')).toBeTruthy();
+		await fireEvent.click(screen.getByRole('option', { name: /完成后追加/ }));
 		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
 			target: { value: 'later' },
 		});
@@ -51,7 +53,7 @@ describe('Composer context menu', () => {
 
 		const deliveryMode = screen.getByRole('combobox', { name: '消息投递方式' });
 		await fireEvent.click(deliveryMode);
-		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
+		await fireEvent.click(screen.getByRole('option', { name: /完成后追加/ }));
 		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
 			target: { value: 'wait for natural completion' },
 		});
@@ -72,12 +74,17 @@ describe('Composer context menu', () => {
 		expect(screen.queryByText('会话排队中；本条消息会在会话启动后的安全边界接入。')).toBeNull();
 	});
 
-	it('shows answer and follow-up routing while Ask is waiting', async () => {
-		const onsubmit = vi.fn();
-		render(Composer, { askAwaiting: true, askHasOptions: true, onsubmit });
+	it('routes all composer input to the pending Ask without a delivery selector', async () => {
+		const submit = vi.fn();
+		render(Composer, {
+			askAwaiting: true,
+			askHasOptions: true,
+			sessionRunning: true,
+			onsubmit: submit,
+		});
 
-		const deliveryMode = screen.getByRole('combobox', { name: '问题回复方式' });
-		expect(deliveryMode.textContent).toContain('回答当前问题');
+		expect(screen.queryByRole('combobox', { name: '问题回复方式' })).toBeNull();
+		expect(screen.queryByRole('combobox', { name: '消息投递方式' })).toBeNull();
 		expect(
 			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
 		).toContain('输入答案或补充');
@@ -89,44 +96,24 @@ describe('Composer context menu', () => {
 		});
 		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
 
-		expect(onsubmit).toHaveBeenCalledWith({ text: 'the answer', images: [], files: [] });
+		expect(submit).toHaveBeenCalledWith({ text: 'the answer', images: [], files: [] });
 	});
 
-	it('keeps an explicit follow-up queued instead of submitting it as an Ask answer', async () => {
-		const onsubmit = vi.fn();
-		render(Composer, { askAwaiting: true, sessionStatus: 'paused', onsubmit });
-
-		await fireEvent.click(screen.getByRole('combobox', { name: '问题回复方式' }));
-		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
-		expect(
-			screen.queryByText(
-				'此消息会排队，不会回答或唤醒当前问题；当前所选答案选项也不会提交。请先回答问题，后续消息才会处理。',
-			),
-		).toBeNull();
-		expect(
-			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
-		).toContain('输入后续消息');
-		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
-			target: { value: 'after the current question' },
-		});
-		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
-
-		expect(onsubmit).toHaveBeenCalledWith(
-			expect.objectContaining({
-				text: 'after the current question',
-				deliveryMode: 'follow_up',
-			}),
-		);
-	});
-
-	it('does not submit selected Ask chips as an empty follow-up', async () => {
+	it('keeps selected Ask chips submit-ready without a follow-up mode', async () => {
 		const onsubmit = vi.fn();
 		render(Composer, { askAwaiting: true, allowEmptySubmit: true, onsubmit });
 
-		await fireEvent.click(screen.getByRole('combobox', { name: '问题回复方式' }));
-		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
-		expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', true);
-		expect(onsubmit).not.toHaveBeenCalled();
+		expect(screen.getByRole('button', { name: '发送' })).toHaveProperty('disabled', false);
+		expect(screen.queryByRole('combobox', { name: '问题回复方式' })).toBeNull();
+	});
+
+	it('submits selected Ask chips without a delivery override', async () => {
+		const onsubmit = vi.fn();
+		render(Composer, { askAwaiting: true, allowEmptySubmit: true, onsubmit });
+
+		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+		expect(onsubmit).toHaveBeenCalledWith({ text: '', images: [], files: [] });
 	});
 
 	it('keeps tool-boundary guidance out of the composer', async () => {
@@ -140,7 +127,7 @@ describe('Composer context menu', () => {
 			screen.queryByText('工具仍在执行；安全边界调整会等工具返回后接入，不会中断工具。'),
 		).toBeNull();
 		await fireEvent.click(screen.getByRole('combobox', { name: '消息投递方式' }));
-		await fireEvent.click(screen.getByRole('option', { name: '完成后追加' }));
+		await fireEvent.click(screen.getByRole('option', { name: /完成后追加/ }));
 		expect(
 			screen.queryByText('工具仍在执行；完成后追加会等整个工作自然结束，不会中断工具。'),
 		).toBeNull();

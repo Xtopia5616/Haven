@@ -8,7 +8,14 @@
 
 	type MenuRow =
 		| { kind: 'group'; label: string }
-		| { kind: 'option'; label: string; value: string; id: string; index: number };
+		| {
+				kind: 'option';
+				label: string;
+				description?: string;
+				value: string;
+				id: string;
+				index: number;
+		  };
 
 	interface Props {
 		value?: string;
@@ -19,6 +26,7 @@
 		title?: string;
 		iconOnly?: boolean;
 		icon?: IconName;
+		appearance?: 'standard' | 'toolbar';
 		width?: ControlWidth;
 		disabled?: boolean;
 	}
@@ -32,6 +40,7 @@
 		title = '',
 		iconOnly = false,
 		icon = 'folder',
+		appearance = 'standard',
 		width = 'fill',
 		disabled = false,
 	}: Props = $props();
@@ -58,6 +67,7 @@
 			rows.push({
 				kind: 'option',
 				label: opt.label,
+				description: opt.description,
 				value: opt.value,
 				id: `${listboxId}-option-${optionIndex}`,
 				index: optionIndex,
@@ -162,6 +172,7 @@
 <div
 	class="md-select-container"
 	data-width={width}
+	data-appearance={appearance}
 	data-icon-only={iconOnly ? 'true' : undefined}
 	bind:this={dropdownRef}
 >
@@ -217,7 +228,15 @@
 						onmousedown={(e) => e.preventDefault()}
 						type="button"
 					>
-						<span class="md-select-option-label">{row.label}</span>
+						<span class="md-select-option-copy">
+							<span class="md-select-option-label">{row.label}</span>
+							{#if row.description}
+								<span class="md-select-option-description">{row.description}</span>
+							{/if}
+						</span>
+						{#if appearance === 'toolbar' && row.value === value}
+							<Icon name="check" size={16} strokeWidth={2.5} className="md-select-option-check" />
+						{/if}
 					</button>
 				{/if}
 			{/each}
@@ -290,6 +309,24 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.md-select-option-copy {
+		display: flex;
+		flex: 1 1 auto;
+		flex-direction: column;
+		min-width: 0;
+		gap: 2px;
+	}
+	.md-select-option-description {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+		white-space: normal;
+	}
+	:global(.md-select-option-check) {
+		flex: 0 0 auto;
+		margin-left: var(--md-sys-space-md);
+		color: var(--md-sys-color-primary);
 	}
 	:global(.md-select-arrow) {
 		flex-shrink: 0;
@@ -371,5 +408,64 @@
 		outline: var(--md-sys-selection-outline-width) solid
 			var(--md-sys-selection-outline-color);
 		outline-offset: var(--md-sys-selection-outline-offset);
+	}
+	.md-select-container[data-appearance='toolbar'] {
+		width: fit-content;
+		max-width: 100%;
+		flex: 0 1 auto;
+	}
+	.md-select-container[data-appearance='toolbar'] .md-select-trigger {
+		width: fit-content;
+		max-width: 100%;
+		min-width: 0;
+		height: var(--md-comp-toolbar-height);
+		gap: var(--md-sys-space-xs);
+		padding-inline: var(--md-sys-space-sm);
+		font-size: var(--md-sys-typescale-label-large-size);
+		line-height: var(--md-sys-typescale-label-large-line-height);
+		color: var(--md-sys-color-on-surface-variant);
+		background: transparent;
+		border-color: transparent;
+		border-radius: var(--md-sys-shape-full);
+	}
+	.md-select-container[data-appearance='toolbar'] .md-select-trigger:hover,
+	.md-select-container[data-appearance='toolbar'] .md-select-trigger.open {
+		color: var(--md-sys-color-on-surface);
+		background: var(--md-sys-color-surface-container-high);
+		border-color: transparent;
+	}
+	.md-select-container[data-appearance='toolbar'] .md-select-trigger.open,
+	.md-select-container[data-appearance='toolbar'] .md-select-trigger:focus-visible {
+		padding-inline: var(--md-sys-space-sm);
+		border-width: 1px;
+		outline: none;
+		box-shadow: var(--md-sys-focus-ring);
+	}
+	.md-select-container[data-appearance='toolbar'] :global(.md-select-arrow) {
+		width: 16px;
+		height: 16px;
+		margin-left: 0;
+	}
+	.md-select-container[data-appearance='toolbar'] .md-select-menu {
+		left: auto;
+		right: 0;
+		width: max-content;
+		min-width: 228px;
+		max-width: min(320px, calc(100vw - 32px));
+		padding: var(--md-sys-space-2xs);
+		border-radius: var(--md-sys-shape-large);
+	}
+	.md-select-container[data-appearance='toolbar'] .md-select-option {
+		min-height: 50px;
+		height: auto;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-medium);
+	}
+	.md-select-container[data-appearance='toolbar'] .md-select-option.selected {
+		background: var(--md-sys-color-surface-container-high);
+		color: var(--md-sys-color-on-surface);
+		font-weight: 600;
+		outline: none;
 	}
 </style>

@@ -198,7 +198,7 @@ describe('createAskInteractionController', () => {
 		expect(setAutoFollow).toHaveBeenCalledOnce();
 	});
 
-	it('keeps an explicit follow-up queued separately from a pending ask', () => {
+	it('routes input to a pending ask even if a stale follow-up mode is supplied', () => {
 		loadAskMessages(createRequest('ask-1', '当前问题', ['A']));
 		const { controller, submitMessage } = createController();
 
@@ -209,12 +209,7 @@ describe('createAskInteractionController', () => {
 			deliveryMode: 'follow_up',
 		});
 
-		expect(submitMessage).toHaveBeenCalledWith(
-			'等当前工作完成后再处理',
-			[],
-			[],
-			'follow_up',
-		);
+		expect(submitMessage).toHaveBeenCalledWith('等当前工作完成后再处理', [], []);
 		expect(reducer.snapshot().interactions?.['ask-1']).toMatchObject({ status: 'pending' });
 	});
 

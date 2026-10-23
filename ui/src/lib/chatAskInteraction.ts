@@ -233,12 +233,14 @@ export function createAskInteractionController({
 	function handleInputSubmit({ text, images, files, deliveryMode }: InputSubmitPayload) {
 		setAutoFollow();
 		const sessionId = getActiveSessionId();
-		if (
-			deliveryMode !== 'follow_up' &&
-			sessionId &&
-			trySubmitAskSelections(sessionId, text, images, files)
-		)
+		if (sessionId && pendingFor(sessionId, 'ask').length > 0) {
+			if (!trySubmitAskSelections(sessionId, text, images, files)) {
+				// A pending Ask owns composer input until it is answered. Ignore any
+				// stale explicit delivery mode and submit through the Auto answer route.
+				submitMessage(text, images, files);
+			}
 			return;
+		}
 		if (deliveryMode) submitMessage(text, images, files, deliveryMode);
 		else submitMessage(text, images, files);
 	}
