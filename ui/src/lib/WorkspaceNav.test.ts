@@ -32,6 +32,14 @@ describe('WorkspaceNav', () => {
 		await toolsTab.click();
 		expect(onNavigate).toHaveBeenCalledWith('tools');
 	});
+	it('keeps names and tooltips available when compact tabs hide their text', () => {
+		const { getByRole } = render(WorkspaceNav, { tabs, activeTab: 'chat' });
+		for (const tab of tabs) {
+			const button = getByRole('tab', { name: tab.label });
+			expect(button.getAttribute('aria-label')).toBe(tab.label);
+			expect(button.getAttribute('title')).toBe(tab.label);
+		}
+	});
 
 	it('uses explicit semantic icons instead of deriving geometry from tab ids', () => {
 		render(WorkspaceNav, { tabs, activeTab: 'chat' });

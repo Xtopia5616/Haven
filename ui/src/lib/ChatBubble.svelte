@@ -658,7 +658,7 @@
 		min-width: 0;
 		min-inline-size: 0;
 		box-sizing: border-box;
-		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
+		padding: var(--md-sys-space-md) var(--chat-surface-padding, var(--md-sys-space-lg));
 		border-radius: var(--md-sys-shape-large);
 		font-size: var(--md-sys-typescale-body-medium-size);
 		line-height: var(--md-sys-typescale-body-medium-line-height);
@@ -713,8 +713,9 @@
 	}
 	.bubble.user {
 		margin-left: auto;
-		width: var(--md-sys-chat-surface-width);
-		max-width: var(--md-sys-chat-surface-width);
+		width: fit-content;
+		max-width: min(88%, var(--md-sys-chat-reading-width));
+		font-size: var(--chat-body-size, var(--md-sys-typescale-body-large-size));
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-primary) 84%,
@@ -745,7 +746,7 @@
 	.bubble.assistant:not(.tool):not(.thinking) {
 		width: min(100%, var(--md-sys-chat-reading-width));
 		max-width: min(100%, var(--md-sys-chat-reading-width));
-		font-size: var(--md-sys-typescale-body-large-size);
+		font-size: var(--chat-body-size, var(--md-sys-typescale-body-large-size));
 		line-height: var(--md-sys-typescale-body-large-line-height);
 	}
 	/* Tool cards have their own structured header, so keep a secondary-color
@@ -777,6 +778,7 @@
 	}
 	.bubble-header {
 		display: flex;
+		flex-wrap: wrap;
 		justify-content: space-between;
 		align-items: center;
 		gap: var(--md-sys-space-md);
@@ -787,6 +789,8 @@
 		font-weight: 700;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		display: inline-flex;
+		flex-wrap: wrap;
+		min-width: 0;
 		align-items: center;
 		gap: var(--md-sys-space-xs);
 	}
@@ -1318,8 +1322,7 @@
 			padding-inline: var(--md-sys-space-md);
 		}
 		.bubble.user {
-			width: 100%;
-			max-width: 100%;
+			max-width: 96%;
 		}
 		.bubble.assistant {
 			width: 100%;

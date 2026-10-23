@@ -1524,6 +1524,13 @@
 	}
 	.session-column {
 		container: conversation / inline-size;
+		/* Resolve these in descendants against the available conversation width,
+		 * including sidebar resizing, rather than the outer window. */
+		--chat-inline-gutter: clamp(var(--md-sys-space-md), 2.5cqi, var(--md-sys-space-3xl));
+		--chat-body-size: clamp(0.9375rem, 0.875rem + 0.15cqi, 1.0625rem);
+		--chat-title-size: clamp(1rem, 0.875rem + 0.4cqi, 1.25rem);
+		--chat-message-gap: clamp(var(--md-sys-space-md), 2cqi, var(--md-sys-space-2xl));
+		--chat-surface-padding: clamp(var(--md-sys-space-md), 2cqi, var(--md-sys-space-xl));
 		position: relative;
 		display: flex;
 		grid-column: 1 / -1;
@@ -1620,12 +1627,6 @@
 		:global(.chat-page .session-switch),
 		:global(.chat-page .session-header__new) {
 			display: none;
-		}
-	}
-
-	@container conversation (min-width: 760px) {
-		.messages-wrap {
-			--chat-inline-gutter: var(--md-sys-space-2xl);
 		}
 	}
 

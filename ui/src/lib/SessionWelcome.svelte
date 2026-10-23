@@ -56,7 +56,7 @@
 	.welcome {
 		text-align: center;
 		min-height: 100%;
-		padding: var(--md-sys-space-3xl) var(--md-sys-space-lg);
+		padding: clamp(var(--md-sys-space-lg), 5dvh, var(--md-sys-space-4xl)) var(--md-sys-space-xs);
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -73,7 +73,7 @@
 	}
 	.welcome h2 {
 		font-family: var(--md-ref-typeface-brand);
-		font-size: var(--md-sys-typescale-display-size);
+		font-size: clamp(1.5rem, 1rem + 2cqi, 2.5rem);
 		font-weight: 700;
 		letter-spacing: 0;
 		line-height: var(--md-sys-typescale-display-line-height);
@@ -89,7 +89,7 @@
 	}
 	.welcome p {
 		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-body-medium-size);
+		font-size: var(--chat-body-size, var(--md-sys-typescale-body-medium-size));
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 		max-width: 420px;
 	}
@@ -112,7 +112,7 @@
 		white-space: nowrap;
 	}
 	.welcome-examples {
-		width: min(100%, 560px);
+		width: min(100%, 720px);
 		margin-top: var(--md-sys-space-sm);
 		text-align: left;
 	}
@@ -124,10 +124,11 @@
 	}
 	.welcome-examples__list {
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: var(--md-sys-space-xs);
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+		gap: var(--md-sys-space-sm);
 	}
 	.welcome-examples__list button {
+		overflow-wrap: anywhere;
 		min-height: 56px;
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);

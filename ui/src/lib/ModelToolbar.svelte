@@ -202,7 +202,8 @@
 <style>
 	.model-switch {
 		position: relative;
-		flex-shrink: 0;
+		min-width: 0;
+		max-width: 100%;
 	}
 	:global(.md-btn.model-switch-btn) {
 		display: inline-flex;
@@ -211,7 +212,7 @@
 		gap: var(--md-sys-space-xs);
 		width: auto;
 		min-width: 0;
-		max-width: min(240px, 30vw);
+		max-width: min(100%, 16rem, 42cqi);
 		height: var(--md-comp-toolbar-height);
 		padding: 0 var(--md-sys-space-sm);
 		border: 1px solid var(--md-sys-color-outline-variant);
@@ -343,11 +344,12 @@
 	}
 	.effort-row {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--md-sys-space-xs);
 		padding: 0 var(--md-sys-space-md) var(--md-sys-space-sm);
 	}
 	.effort-row :global(.md-choice-chip) {
-		flex: 1;
+		flex: 1 0 3rem;
 		min-width: 0;
 		height: 32px;
 		padding: 0;
@@ -378,15 +380,15 @@
 	}
 	@container conversation (max-width: 640px) {
 		.model-menu {
-			/* Reserve the send button and the composer's outer/inner insets. */
+			/* Reserve the composer insets and the adjacent send button. */
 			min-width: min(
 				var(--md-comp-settings-control-width),
-				calc(100cqi - var(--md-comp-toolbar-height) - 4 * var(--md-sys-space-md))
+				calc(100cqi - 6 * var(--md-sys-space-md))
 			);
-			max-width: calc(100cqi - var(--md-comp-toolbar-height) - 4 * var(--md-sys-space-md));
+			max-width: calc(100cqi - 6 * var(--md-sys-space-md));
 		}
 		:global(.md-btn.model-switch-btn) {
-			max-width: min(170px, 30cqi);
+			max-width: min(100%, 16rem, 65cqi);
 		}
 	}
 </style>

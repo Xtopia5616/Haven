@@ -361,7 +361,7 @@
 
 	@media screen and (min-width: 600px) {
 		.app-shell {
-			--workspace-rail-width: 152px;
+			--workspace-rail-width: clamp(120px, 12vw, 152px);
 			--md-comp-titlebar-height: var(--md-sys-space-4xl);
 			display: grid;
 			grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
@@ -517,13 +517,33 @@
 		}
 	}
 
-	@media screen and (min-aspect-ratio: 21/9) {
+	@media screen and (min-width: 600px) and (max-width: 900px) {
 		.app-shell {
-			grid-template-columns: var(--workspace-rail-width) minmax(
-					0,
-					calc(233.333vh - var(--workspace-rail-width))
-				);
+			--workspace-rail-width: 72px;
+		}
+		.rail-brand,
+		.workspace-rail :global(.workspace-link) {
 			justify-content: center;
+			padding-inline: var(--md-sys-space-xs);
+		}
+		.rail-brand :global(.wordmark),
+		.workspace-rail :global(.workspace-link__copy),
+		.rail-footer :global(.status-text) {
+			display: none;
+		}
+		.rail-footer {
+			grid-template-columns: minmax(0, 1fr);
+			justify-items: center;
+		}
+		.rail-footer :global(.status-chip) {
+			justify-content: center;
+			padding-inline: var(--md-sys-space-xs);
+		}
+		.rail-footer :global(.task-action),
+		.rail-footer :global(.rail-theme-button[data-size='toolbar']) {
+			grid-column: 1;
+			grid-row: auto;
+			justify-self: center;
 		}
 	}
 

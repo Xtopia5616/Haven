@@ -576,14 +576,15 @@
 		el.style.height = 'auto';
 		el.style.paddingTop = CHAT_INPUT_BASE_PAD + 'px';
 		el.style.paddingBottom = CHAT_INPUT_BASE_PAD + 'px';
+		const computed = getComputedStyle(el);
+		const minHeight = Number.parseFloat(computed.minHeight) || CHAT_INPUT_MIN_H;
 		const contentH = el.scrollHeight;
-		const singleLine = !transcriptInput.includes('\n') && contentH <= CHAT_INPUT_MIN_H;
-		el.style.height = Math.max(CHAT_INPUT_MIN_H, contentH) + 'px';
+		const singleLine = !transcriptInput.includes('\n') && contentH <= minHeight;
+		el.style.height = Math.max(minHeight, contentH) + 'px';
 		if (singleLine) {
 			// Use the computed line height instead of a hard-coded font metric. The
 			// input font falls back to a CJK system font on Windows, so its actual
 			// line box can differ from the Latin token by a fraction of a pixel.
-			const computed = getComputedStyle(el);
 			const lineHeight = Number.parseFloat(computed.lineHeight);
 			const borderHeight =
 				Number.parseFloat(computed.borderTopWidth) +
@@ -610,22 +611,30 @@
 		// Observe width only: autoGrowInput writes the textarea height, and reacting
 		// to that same height change during ResizeObserver delivery can cause a
 		// resize-loop error when the window is being resized.
-		if (typeof ResizeObserver !== 'function') return;
 		let lastWidth = transcriptTextarea.clientWidth;
 		let pendingResizeFrame: number | undefined;
-		const observer = new ResizeObserver((entries) => {
-			const width = entries[0]?.contentRect.width;
-			if (width === undefined || width === lastWidth) return;
-			lastWidth = width;
+		function scheduleResize() {
 			if (pendingResizeFrame !== undefined) cancelAnimationFrame(pendingResizeFrame);
 			pendingResizeFrame = requestAnimationFrame(() => {
 				pendingResizeFrame = undefined;
 				autoGrowInput();
 			});
-		});
-		observer.observe(transcriptTextarea);
+		}
+		const observer =
+			typeof ResizeObserver === 'function'
+				? new ResizeObserver((entries) => {
+						const width = entries[0]?.contentRect.width;
+						if (width === undefined || width === lastWidth) return;
+						lastWidth = width;
+						scheduleResize();
+					})
+				: null;
+		observer?.observe(transcriptTextarea);
+		// Height-only resizes can change the compact input's CSS minimum.
+		window.addEventListener('resize', scheduleResize);
 		return () => {
-			observer.disconnect();
+			observer?.disconnect();
+			window.removeEventListener('resize', scheduleResize);
 			if (pendingResizeFrame !== undefined) cancelAnimationFrame(pendingResizeFrame);
 		};
 	});
@@ -876,6 +885,9 @@
 
 <style>
 	.input-area {
+		--md-comp-toolbar-height: clamp(36px, 5cqi, 44px);
+		--md-comp-icon-button-size: var(--md-comp-toolbar-height);
+		--md-comp-toolbar-gap: clamp(var(--md-sys-space-xs), 1cqi, var(--md-sys-space-sm));
 		position: absolute;
 		left: 50%;
 		bottom: var(--md-sys-space-md);
@@ -885,7 +897,8 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-1);
-		padding: var(--md-sys-space-md) var(--md-sys-space-lg) var(--md-sys-space-xs);
+		padding: var(--md-sys-space-sm) var(--chat-surface-padding, var(--md-sys-space-lg))
+			var(--md-sys-space-xs);
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
@@ -1042,7 +1055,7 @@
 		resize: none;
 		overflow-y: auto;
 		line-height: var(--md-sys-typescale-body-medium-line-height);
-		font-size: var(--md-sys-typescale-body-medium-size);
+		font-size: var(--chat-body-size, var(--md-sys-typescale-body-large-size));
 		text-align: left;
 	}
 	.chat-input::placeholder {
@@ -1069,7 +1082,8 @@
 		border-top: 1px solid var(--md-sys-color-outline-variant);
 	}
 	.toolbar-left {
-		flex: 0 0 auto;
+		flex: 1 1 10rem;
+		max-width: 100%;
 		min-width: 0;
 		flex-wrap: wrap;
 		display: flex;
@@ -1123,12 +1137,6 @@
 		}
 	}
 
-	@container conversation (min-width: 760px) {
-		.input-area {
-			--chat-inline-gutter: var(--md-sys-space-2xl);
-		}
-	}
-
 	@media screen and (max-height: 560px) {
 		.input-area {
 			bottom: var(--md-sys-space-xs);
@@ -1141,7 +1149,7 @@
 		}
 		.chat-input {
 			min-height: 40px;
-			max-height: 88px;
+			max-height: min(88px, 22dvh);
 			padding-block: var(--md-sys-space-sm);
 		}
 		.toolbar-row {

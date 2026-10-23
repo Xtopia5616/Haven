@@ -353,6 +353,26 @@ describe('Composer context menu', () => {
 		}
 	});
 
+	it('uses the compact CSS minimum when growing a draft in a short window', async () => {
+		const { container } = render(Composer, { onsubmit: vi.fn() });
+		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+		Object.defineProperty(textarea, 'scrollHeight', { configurable: true, value: 38 });
+		Object.defineProperty(textarea, 'clientHeight', { configurable: true, value: 40 });
+		const computedStyle = vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+			minHeight: '40px',
+			lineHeight: '20px',
+			borderTopWidth: '0px',
+			borderBottomWidth: '0px',
+		} as CSSStyleDeclaration);
+		try {
+			await fireEvent.input(textarea, { target: { value: '窄屏草稿' } });
+			expect(textarea.style.height).toBe('40px');
+			expect(textarea.style.paddingTop).toBe('10px');
+		} finally {
+			computedStyle.mockRestore();
+		}
+	});
+
 	it('keeps the chat draft text horizontally left-aligned', () => {
 		expect(composerSource).toMatch(/\.chat-input\s*\{[\s\S]*text-align:\s*left;/);
 	});

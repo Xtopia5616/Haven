@@ -82,7 +82,7 @@
 <header class="session-header">
 	<div class="session-header__identity">
 		<div class="session-header__title-row">
-			<h1>{title}</h1>
+			<h1 {title}>{title}</h1>
 			<div class="session-header__workspace-controls" role="group" aria-label="执行工作区">
 				<MaterialSelect
 					id="session-execution-workspace"
@@ -166,7 +166,7 @@
 		grid-template-columns: minmax(0, 1fr) auto;
 		align-items: center;
 		gap: var(--md-sys-space-lg);
-		padding: var(--md-sys-space-md) var(--md-sys-space-2xl);
+		padding: var(--md-sys-space-md) var(--chat-inline-gutter, var(--md-sys-space-2xl));
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 		background: color-mix(
 			in srgb,
@@ -202,7 +202,7 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-		font-size: var(--md-sys-typescale-title-large-size);
+		font-size: var(--chat-title-size, var(--md-sys-typescale-title-large-size));
 		font-weight: 700;
 		letter-spacing: 0;
 		line-height: var(--md-sys-typescale-title-large-line-height);
@@ -234,11 +234,15 @@
 	.session-header__lifecycle {
 		flex-shrink: 0;
 	}
+	.session-header__lifecycle :global(.md-btn) {
+		width: auto;
+		min-width: 0;
+	}
 	@container conversation (max-width: 900px) {
 		.session-header {
 			grid-template-columns: minmax(0, 1fr);
 			gap: var(--md-sys-space-sm);
-			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+			padding-block: var(--md-sys-space-sm);
 		}
 		.session-header__actions {
 			flex-wrap: wrap;
@@ -253,9 +257,6 @@
 		.session-header__title-row {
 			gap: var(--md-sys-space-sm);
 		}
-		.session-header h1 {
-			font-size: var(--md-sys-typescale-title-medium-size);
-		}
 		.session-header__actions {
 			gap: var(--md-sys-space-xs);
 		}
@@ -263,11 +264,10 @@
 			flex: 1 1 auto;
 		}
 		.session-header__lifecycle {
-			flex: 0 1 auto;
+			flex: 1 1 100%;
 		}
 		.session-header__lifecycle :global(.md-btn) {
-			flex: 1 1 auto;
-			min-width: 0;
+			flex: 1 1 5.5rem;
 		}
 	}
 	@media screen and (max-height: 560px) {

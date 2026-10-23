@@ -200,7 +200,7 @@
 		flex-direction: column;
 		align-items: stretch;
 		width: 100%;
-		gap: var(--md-sys-space-md);
+		gap: var(--chat-message-gap, var(--md-sys-space-md));
 	}
 
 	.continue-action {

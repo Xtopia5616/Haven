@@ -344,9 +344,12 @@
 			type="button"
 			id={`${idPrefix}-${tab.id}`}
 			class="md-tab"
+			class:md-tab--with-icon={showIcons}
 			class:active={activeTab === tab.id}
 			bind:this={tabElements[tab.id]}
 			aria-selected={activeTab === tab.id}
+			aria-label={showIcons ? (tab.hint ? `${tab.label} ${tab.hint}` : tab.label) : undefined}
+			title={showIcons ? (tab.hint ? `${tab.label} · ${tab.hint}` : tab.label) : undefined}
 			aria-controls={controlsId(tab.id)}
 			tabindex={activeTab === tab.id ? 0 : -1}
 			role="tab"
@@ -357,7 +360,7 @@
 					<Icon name={navigationTabIconName(tab)} size={17} />
 				</span>
 			{/if}
-			<span>{tab.label}</span>
+			<span class="md-tab__label">{tab.label}</span>
 			{#if tab.hint}<small>{tab.hint}</small>{/if}
 		</button>
 	{/each}
@@ -368,6 +371,16 @@
 <style>
 	.md-tabs {
 		position: relative;
+	}
+	.md-tab--with-icon {
+		container: navigation-tab / inline-size;
+		padding-inline: var(--md-sys-space-sm);
+	}
+	@container navigation-tab (max-width: 72px) {
+		.md-tab__label,
+		small {
+			display: none;
+		}
 	}
 
 	.md-tabs .md-tabs__indicator {
