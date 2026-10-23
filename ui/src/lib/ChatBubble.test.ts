@@ -211,7 +211,12 @@ describe('ChatBubble', () => {
 			}),
 		);
 
-		await waitFor(() => expect(container.querySelector('.md-content')).toBeTruthy());
+		// The first assistant bubble lazily imports the shared Markdown parser
+		// and highlighters. Keep this cold-render assertion independent of the
+		// parallel test workers' startup load.
+		await waitFor(() => expect(container.querySelector('.md-content')).toBeTruthy(), {
+			timeout: 5000,
+		});
 		expect(container.querySelector('.md-content strong')?.textContent).toBe('第一段');
 		expect(container.querySelector('.md-content li')?.textContent).toBe('第二段');
 		expect(container.querySelector('.caret')).toBeTruthy();
