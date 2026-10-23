@@ -1,6 +1,6 @@
 # 会话、工作区、权限与执行环境重设计
 
-> 日期：2026-10-23，状态更新：Slice 1 已按 [ADR 1373](adr/1373-session-scoped-execution-workspace.md) 完成；Slice 2 的执行预设、网络 Ask 拆分、Files/HTTP/剪贴板/窗口/注册表/MCP typed resource 与全局/工具级 `ResourcePolicy` 已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md)、[ADR 1377](adr/1377-once-only-http-domain-boundary-extension.md)、[ADR 1378](adr/1378-typed-clipboard-resource-boundary.md)、[ADR 1379](adr/1379-typed-window-resource-boundary.md)、[ADR 1380](adr/1380-typed-registry-resource-boundary.md) 和 [ADR 1381](adr/1381-bind-mcp-invocations-to-remote-targets.md) 实施。文件与 HTTP 一次性边界扩展也已完成。Slice 5 的会话执行方式选择已部分实施。Slice 3 的其他进程路径盘点及 Slice 4 的 MCP exposure 拆分仍待后续切片。
+> 日期：2026-10-23，状态更新：Slice 1 已按 [ADR 1373](adr/1373-session-scoped-execution-workspace.md) 完成；Slice 2 的执行预设、网络 Ask 拆分、Files/HTTP/剪贴板/窗口/注册表/MCP typed resource 与全局/工具级 `ResourcePolicy` 已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md)、[ADR 1377](adr/1377-once-only-http-domain-boundary-extension.md)、[ADR 1378](adr/1378-typed-clipboard-resource-boundary.md)、[ADR 1379](adr/1379-typed-window-resource-boundary.md)、[ADR 1380](adr/1380-typed-registry-resource-boundary.md) 和 [ADR 1381](adr/1381-bind-mcp-invocations-to-remote-targets.md) 实施。文件与 HTTP 一次性边界扩展也已完成。Slice 5 的会话执行方式入口与权限明细已按 Slice 表范围完成。Slice 3 的其他进程路径盘点及 Slice 4 的 MCP exposure 拆分仍待后续切片。
 > 决策入口：[ADR 1367](adr/1367-session-scoped-execution-policy-design.md)。实施状态只在[架构重构路线图](architecture-refactor-roadmap.md)维护。
 
 ## 1. 建议采用的模型
@@ -44,7 +44,7 @@ Haven 是 Windows 助手，工作区允许为空。打开应用、控制窗口�
 | `AuthorizationEngine::SafetyConfig` 拥有单个活动 `ExecutionWorkspace` | 标题区切目录会更新全局 `security.execution_root`；新 attempt 使用新根 | 切换 A 会话的目录不改变 B 会话或已创建后台任务 |
 | `SandboxMode` 实际主要控制本地写入，`NetworkPolicy` 曾包含 `Ask` | “只读”不是整个任务无副作用；网络边界夹带审批语义 | 资源限制描述可访问对象；询问只由执行方式决定 |
 | `McpToolExposure` 包含 direct / model_only / deferred / codemode / hidden | 可发现性、是否禁用和调用通道混在一个枚举 | 后续切片分开表达能力可用性、目录展示和调用适配 |
-| `path_sandbox_block` 曾从动态参数收集路径；ADR 1334 已修复 URL 被当成本地写入的问题 | 参数字段名不足以说明资源类型 | Files 与 HTTP 已声明 typed 本地路径和网络 origin；其它资源类型仍待扩展 |
+| `path_sandbox_block` 曾从动态参数收集路径；ADR 1334 已修复 URL 被当成本地写入的问题 | 参数字段名不足以说明资源类型 | Files、HTTP、剪贴板、窗口、注册表和 MCP 已声明 typed 资源；其余进程执行路径待 Slice 3 盘点 |
 
 已有的统一授权 owner、proof、目标绑定、执行前重检、DirectoryCapability、进程撤销及 durable nested journal 都有保留价值。需要改变的是它们的组合与所有权，不是重新建立一套安全系统。
 
@@ -195,7 +195,7 @@ HTTP MCP 按远程 endpoint、账户和目标对象授权，不要求本机进�
 | 顺序 | 状态 | 完整切片 | 随切片删除的旧设计 | 验收重点 |
 |---|---|---|---|---|
 | 1 | 已完成（ADR 1373） | Session 创建/恢复 → 工作绑定 → Files/Shell/prompt 使用同一 run context | 全局活动 workspace 对会话的隐式影响 | 双会话、恢复、失效目录、切目录期间的 attempt 与后台任务 |
-| 2 | 已完成（ADR 1374、1376–1381） | typed 资源契约 → 单一授权 → 文件/HTTP/剪贴板/窗口/注册表/MCP 执行 | 参数名猜路径；network 中的 Ask；Plan 与审批偏好的混合；分散的资源配置字段 | Files 源/目标、HTTP origin、剪贴板 read/write 与输入来源、窗口/桌面及注册表 hive/key/访问方向/值名均已声明；MCP tool 调用绑定连接配置/代次和完整参数摘要；全局/工具级策略已统一为 `ResourcePolicy`；文件写入只对收据中的精确目标扩展；HTTP 全局域名白名单只对当前调用的单个精确 origin 扩展 |
+| 2 | 已完成（ADR 1374、1376–1381） | typed 资源契约 → 单一授权 → 文件/HTTP/剪贴板/窗口/注册表/MCP 执行 | 参数名猜路径；network 中的 Ask；Plan 与审批偏好的混合；分散的资源配置字段 | Files 源/目标、HTTP origin、剪贴板 read/write 与输入来源、窗口/桌面及注册表 hive/key/访问方向/值名均已声明；MCP 执行 proof 绑定连接配置/代次，持久资源授权绑定稳定配置与完整参数摘要；全局/工具级策略已统一为 `ResourcePolicy`；文件写入只对收据中的精确目标扩展；HTTP 全局域名白名单只对当前调用的单个精确 origin 扩展 |
 | 3 | 部分完成（ADR 1368） | 将已有 MXC 工作接入统一执行环境，并盘点其他进程路径 | 将静态隔离声明视作已实施证明；隔离失败后的宽权限回退 | Shell 隔离已独立实现；其余子进程路径与统一 capability 报告待盘点 |
 | 4 | 部分完成 | 拆解 MCP exposure → 原生/Code Mode 共用资源契约与 journal | server 级 Legacy/CodeMode 常规选择及重复授权分支 | CodeMode 子调用已复用授权、MCP 远程调用资源契约和 durable journal；exposure 枚举拆分仍待完成 |
 | 5 | 已完成（ADR 1374、1376–1381） | 标题区执行方式、权限明细、规范资源策略和具体边界扩展 | 旧 permission/sandbox/network 三组模式及重复目录入口 | 设置页统一编辑全局文件/网络策略；边界扩展只作用于收据绑定的文件目标或 HTTP origin；剪贴板授权区分读取、写入和输入来源；窗口授权区分桌面读/截图与具体窗口读/交互/关闭；Registry 显示精确 hive/key 与读取方向；MCP grant 绑定连接与精确参数但不显示原始 URI/参数 |
