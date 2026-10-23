@@ -579,6 +579,15 @@ impl Tool for OperationViewTool {
         self.handler
             .authorization_resources(&self.routed_input(input))
     }
+
+    async fn authorization_contract(
+        &self,
+        input: &Value,
+    ) -> Result<crate::ToolAuthorizationContract, String> {
+        self.handler
+            .authorization_contract(&self.routed_input(input))
+            .await
+    }
 }
 
 #[cfg(test)]

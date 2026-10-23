@@ -15,6 +15,7 @@ use crate::{McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher};
 use futures_util::future::BoxFuture;
 use haven_common::{mcp::McpServerTransport, types::NetworkPolicy};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -326,6 +327,7 @@ pub struct McpClient {
     /// binds opaque MCP calls to this value so reconnects cannot redirect a
     /// pending confirmation to a different endpoint.
     manager_generation: AtomicU64,
+    authorization_config_fingerprint: String,
     pub(crate) transport: McpServerTransport,
     pub(crate) command: String,
     pub(crate) args: Vec<String>,
@@ -706,9 +708,11 @@ impl McpClient {
         stdio_process_authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
         stdio_process_launcher: Arc<dyn McpStdioProcessLauncher>,
     ) -> Self {
+        let authorization_config_fingerprint = mcp_target_config_fingerprint(config);
         Self {
             name: config.name.clone(),
             manager_generation: AtomicU64::new(0),
+            authorization_config_fingerprint,
             transport: config.transport.clone(),
             command: config.command.clone(),
             args: config.args.clone(),
@@ -795,6 +799,14 @@ impl McpClient {
             && self.cwd == cfg.cwd
             && self.url == cfg.url
             && self.enabled.load(Ordering::SeqCst) == cfg.enabled
+    }
+
+    /// Stable, opaque fingerprint of the connection configuration. Unlike the
+    /// manager generation this remains useful for persisted resource grants;
+    /// raw endpoints, commands, arguments, and environment values never leave
+    /// this client.
+    pub(crate) fn authorization_target_fingerprint(&self) -> String {
+        self.authorization_config_fingerprint.clone()
     }
 
     pub async fn status(&self) -> McpClientStatus {
@@ -1852,6 +1864,86 @@ fn validate_unique_tool_names(tools: &[McpToolInfo]) -> anyhow::Result<()> {
         anyhow::bail!("invalid tools/list: tool names must be non-empty and unique");
     }
     Ok(())
+}
+
+fn mcp_target_config_fingerprint(config: &haven_common::config::McpServerConfig) -> String {
+    let environment_names = config
+        .env
+        .iter()
+        .map(|entry| {
+            entry
+                .split_once('=')
+                .map_or(entry.as_str(), |(name, _)| name)
+        })
+        .collect::<Vec<_>>();
+    let identity = serde_json::json!({
+        "name": config.name,
+        "transport": config.transport.as_str(),
+        "command": config.command,
+        "args": config.args,
+        "environment_names": environment_names,
+        "environment_refs": config.env_refs,
+        "cwd": config.cwd,
+        "url": config.url,
+        "enabled": config.enabled,
+    });
+    Sha256::digest(haven_common::json::canonical_json_bytes(&identity))
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[cfg(test)]
+mod authorization_target_tests {
+    use super::*;
+
+    #[test]
+    fn target_fingerprint_is_stable_for_same_config_and_changes_with_account_material() {
+        let config = haven_common::config::McpServerConfig {
+            name: "calendar".into(),
+            transport: McpServerTransport::Http,
+            url: "https://mcp.example.test/tenant-a".into(),
+            env: vec!["API_TOKEN=secret-a".into()],
+            env_refs: vec![haven_common::config::McpEnvironmentCredentialRef {
+                name: "API_TOKEN".into(),
+                credential_ref: Some("cred-0123456789abcdef0123456789abcdef".into()),
+                has_value: true,
+            }],
+            ..Default::default()
+        };
+        let first = McpClient::new(&config, 1024, 4096).authorization_target_fingerprint();
+        let same = McpClient::new(&config, 1024, 4096).authorization_target_fingerprint();
+        let changed = McpClient::new(
+            &haven_common::config::McpServerConfig {
+                url: "https://mcp.example.test/tenant-b".into(),
+                ..config.clone()
+            },
+            1024,
+            4096,
+        )
+        .authorization_target_fingerprint();
+        let changed_account = McpClient::new(
+            &haven_common::config::McpServerConfig {
+                env: vec!["API_TOKEN=secret-b".into()],
+                env_refs: vec![haven_common::config::McpEnvironmentCredentialRef {
+                    name: "API_TOKEN".into(),
+                    credential_ref: Some("cred-1123456789abcdef0123456789abcdef".into()),
+                    has_value: true,
+                }],
+                ..config
+            },
+            1024,
+            4096,
+        )
+        .authorization_target_fingerprint();
+
+        assert_eq!(first, same);
+        assert_ne!(first, changed);
+        assert_ne!(first, changed_account);
+        assert_eq!(first.len(), 64);
+        assert!(!first.contains("secret-a"));
+        assert!(!changed_account.contains("secret-b"));
+    }
 }
 
 #[cfg(test)]

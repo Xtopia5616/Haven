@@ -351,13 +351,50 @@ async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
             .await
             .is_some()
     );
+    let request = facade
+        .resolve_authorization_request(Some(session_id), &name, &serde_json::json!({}))
+        .await
+        .expect("the ordinary model-facing authorization path remains available");
+    let [
+        crate::security::DeclaredResource::McpRemoteInvocation {
+            target_fingerprint,
+            request_fingerprint,
+        },
+    ] = request.resources.as_slice()
+    else {
+        panic!("MCP invocation must declare its exact remote target and parameters");
+    };
+    assert_eq!(target_fingerprint.len(), 64);
+    assert_eq!(request_fingerprint.len(), 64);
     assert!(
-        facade
-            .resolve_authorization_request(Some(session_id), &name, &serde_json::json!({}))
-            .await
-            .is_ok(),
-        "the ordinary model-facing authorization path remains available"
+        target_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
     );
+    assert!(
+        request_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    );
+    let different_arguments = facade
+        .resolve_authorization_request(
+            Some(session_id),
+            &name,
+            &serde_json::json!({"view": "month"}),
+        )
+        .await
+        .expect("MCP arguments are included in the trusted remote-call resource");
+    let [
+        crate::security::DeclaredResource::McpRemoteInvocation {
+            target_fingerprint: same_target,
+            request_fingerprint: different_request,
+        },
+    ] = different_arguments.resources.as_slice()
+    else {
+        panic!("MCP invocation must retain one remote resource");
+    };
+    assert_eq!(same_target, target_fingerprint);
+    assert_ne!(different_request, request_fingerprint);
 
     let mut hidden = config;
     hidden.exposure.default = McpToolExposure::Hidden;

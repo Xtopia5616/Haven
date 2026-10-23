@@ -6,7 +6,7 @@ use haven_common::types::{
     CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect, PermissionScope, RiskLevel,
     SandboxMode,
 };
-pub use haven_common::types::{ClipboardAccess, DesktopAccess, WindowAccess};
+pub use haven_common::types::{ClipboardAccess, DesktopAccess, RegistryAccess, WindowAccess};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -121,6 +121,17 @@ pub enum DeclaredResource {
         access: WindowAccess,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         element_fingerprint: Option<String>,
+    },
+    Registry {
+        hive: String,
+        path: String,
+        access: RegistryAccess,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_name: Option<String>,
+    },
+    McpRemoteInvocation {
+        target_fingerprint: String,
+        request_fingerprint: String,
     },
     ManagedAsset {
         asset_id: String,

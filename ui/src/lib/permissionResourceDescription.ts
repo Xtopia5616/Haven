@@ -29,6 +29,15 @@ export function declaredResourceDescription(resource: DeclaredResource): string 
 					: '关闭窗口';
 		return `${access} · ${resource.window_id} · PID ${resource.process_id}${resource.element_fingerprint ? ' · 指定控件' : ''}`;
 	}
+	if (resource.kind === 'registry') {
+		const location = `${resource.hive}${resource.path ? `\\${resource.path}` : ''}`;
+		return resource.access === 'enumerate_names'
+			? `列举注册表名称 · ${location}`
+			: `读取注册表值 · ${location} · ${resource.value_name ?? ''}`;
+	}
+	if (resource.kind === 'mcp_remote_invocation') {
+		return 'MCP 远程调用 · 已绑定连接与精确参数';
+	}
 	return `读取受管媒体资产 · ${resource.asset_id}`;
 }
 
@@ -55,6 +64,15 @@ export function permissionResourceScopeDescription(scope: PermissionResourceScop
 					? '操作窗口'
 					: '关闭窗口';
 		return `${access} · ${scope.window_id} · PID ${scope.process_id}${scope.element_fingerprint ? ' · 指定控件' : ''}`;
+	}
+	if (scope.kind === 'registry') {
+		const location = `${scope.hive}${scope.path ? `\\${scope.path}` : ''}`;
+		return scope.access === 'enumerate_names'
+			? `列举注册表名称 · ${location}`
+			: `读取注册表值 · ${location} · ${scope.value_name ?? ''}`;
+	}
+	if (scope.kind === 'mcp_remote_invocation') {
+		return 'MCP 远程调用 · 已绑定连接与精确参数';
 	}
 	return `读取受管媒体资产 · ${scope.asset_id}`;
 }

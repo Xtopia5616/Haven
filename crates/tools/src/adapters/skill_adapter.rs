@@ -137,6 +137,7 @@ impl Tool for SkillToolAdapter {
         Ok(ToolAuthorizationContract {
             policy,
             target_binding: None,
+            resources: Vec::new(),
         })
     }
 

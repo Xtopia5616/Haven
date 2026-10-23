@@ -1,12 +1,54 @@
 use async_trait::async_trait;
-use haven_common::types::RiskLevel;
+use haven_common::types::{RegistryAccess, RiskLevel};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::env::{EnvOperation, EnvParams, EnvScope, EnvTool};
 use super::power::{PowerOperation, PowerParams, PowerTool};
 use super::registry::{RegistryOperation, RegistryParams, RegistryTool};
-use crate::{Tool, ToolConcurrency, ToolResult};
+use crate::security::DeclaredResource;
+use crate::{Tool, ToolConcurrency, ToolExecutionContext, ToolResult};
+
+fn authorization_resources(params: &SystemParams) -> Result<Vec<DeclaredResource>, String> {
+    let scope = params
+        .scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("info");
+    if scope != "registry" {
+        return Ok(Vec::new());
+    }
+
+    let operation =
+        parse_registry_op(params.operation.as_deref()).map_err(|error| error.to_string())?;
+    let path = params
+        .path
+        .as_deref()
+        .ok_or_else(|| "path is required for registry access".to_owned())?;
+    let (hive, path) =
+        super::registry::canonical_registry_path(path).map_err(|error| error.to_string())?;
+    let (access, value_name) = match operation {
+        RegistryOperation::List => (RegistryAccess::EnumerateNames, None),
+        RegistryOperation::Get => {
+            let name = params
+                .name
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "name is required for registry get".to_owned())?;
+            if name.contains('\0') {
+                return Err("registry value name contains a NUL character".into());
+            }
+            (RegistryAccess::ReadValue, Some(name.to_owned()))
+        }
+    };
+    Ok(vec![DeclaredResource::Registry {
+        hive,
+        path,
+        access,
+        value_name,
+    }])
+}
 
 /// System information and control: machine info, env vars, registry, power,
 /// and displays.
@@ -215,6 +257,14 @@ impl Tool for SystemTool {
         }
     }
 
+    fn authorization_resources(&self, input: &Value) -> Result<Vec<DeclaredResource>, String> {
+        let mut input = input.clone();
+        crate::tool_contract::strip_private_tool_fields(&mut input);
+        let params = crate::tool_contract::parse_tool_input::<SystemParams>(&self.name(), input)
+            .map_err(|error| error.to_string())?;
+        authorization_resources(&params)
+    }
+
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
         let scope = input["scope"].as_str().unwrap_or("info");
         let operation = input["operation"].as_str();
@@ -320,6 +370,42 @@ impl Tool for SystemTool {
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let params = crate::tool_contract::parse_tool_input::<SystemParams>(&self.name(), input)?;
+        if !authorization_resources(&params)
+            .map_err(anyhow::Error::msg)?
+            .is_empty()
+        {
+            anyhow::bail!("registry access requires proof-derived authorization");
+        }
+        self.run(params, cancel).await
+    }
+
+    async fn execute_with_authorization_context(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+        context: &ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        if target_binding.is_some() {
+            anyhow::bail!("system operations do not accept a remote execution target binding");
+        }
+        let mut input = input;
+        crate::tool_contract::strip_private_tool_fields(&mut input);
+        let params = crate::tool_contract::parse_tool_input::<SystemParams>(&self.name(), input)?;
+        let declared = authorization_resources(&params).map_err(anyhow::Error::msg)?;
+        if declared != context.authorized_resources() {
+            anyhow::bail!("system resources no longer match their authorization proof");
+        }
+        if !declared.is_empty() {
+            let _permit = context
+                .acquire_execution_policy_permit()
+                .await
+                .map_err(anyhow::Error::msg)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("registry access requires proof-derived authorization")
+                })?;
+            return self.run(params, cancel).await;
+        }
         self.run(params, cancel).await
     }
 }
@@ -869,6 +955,82 @@ mod tests {
                 "path": "HKCU\\Software\\Haven"
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn registry_authorization_resources_bind_canonical_key_and_operation() {
+        let tool = SystemTool::default();
+        assert_eq!(
+            tool.authorization_resources(&json!({
+                "scope": "registry",
+                "operation": "list",
+                "path": "HKEY_CURRENT_USER\\Software\\Haven"
+            }))
+            .unwrap(),
+            vec![DeclaredResource::Registry {
+                hive: "HKCU".into(),
+                path: "Software\\Haven".into(),
+                access: RegistryAccess::EnumerateNames,
+                value_name: None,
+            }]
+        );
+        assert_eq!(
+            tool.authorization_resources(&json!({
+                "scope": "registry",
+                "operation": "get",
+                "path": "HKCU:\\Software\\Haven",
+                "name": "InstallPath"
+            }))
+            .unwrap(),
+            vec![DeclaredResource::Registry {
+                hive: "HKCU".into(),
+                path: "Software\\Haven".into(),
+                access: RegistryAccess::ReadValue,
+                value_name: Some("InstallPath".into()),
+            }]
+        );
+    }
+
+    #[test]
+    fn registry_authorization_resources_reject_invalid_keys_and_value_names() {
+        let tool = SystemTool::default();
+        for input in [
+            json!({"scope":"registry","operation":"list","path":"HKPD\\Software"}),
+            json!({
+                "scope":"registry",
+                "operation":"list",
+                "path": format!("HKCU\\Software\\{}", '\0')
+            }),
+            json!({"scope":"registry","operation":"get","path":"HKCU\\Software","name":""}),
+            json!({
+                "scope":"registry",
+                "operation":"get",
+                "path":"HKCU\\Software",
+                "name": format!("bad{}name", '\0')
+            }),
+        ] {
+            assert!(tool.authorization_resources(&input).is_err(), "{input}");
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_execution_requires_proof_bound_context() {
+        let result = SystemTool::default()
+            .execute(
+                json!({
+                    "scope": "registry",
+                    "operation": "list",
+                    "path": "HKCU\\Software\\Haven"
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("proof-derived authorization")
         );
     }
 

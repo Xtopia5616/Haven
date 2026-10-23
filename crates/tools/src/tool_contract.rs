@@ -157,6 +157,7 @@ pub struct OperationPolicy {
 pub struct ToolAuthorizationContract {
     pub policy: OperationPolicy,
     pub target_binding: Option<String>,
+    pub resources: Vec<crate::security::DeclaredResource>,
 }
 
 /// Confirmation derived from risk and whether the effect is read-only.
@@ -1445,6 +1446,7 @@ pub trait Tool: Send + Sync {
         Ok(ToolAuthorizationContract {
             policy: self.try_operation_policy(input)?,
             target_binding: self.authorization_target_binding(input).await?,
+            resources: self.authorization_resources(input)?,
         })
     }
 

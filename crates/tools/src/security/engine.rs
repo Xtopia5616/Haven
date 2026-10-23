@@ -29,8 +29,8 @@ use haven_common::config::{
 };
 use haven_common::types::{
     ApprovalPolicy, CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect,
-    PermissionResourceScope, PermissionResourceTarget, PermissionScope, RiskLevel, SandboxMode,
-    is_canonical_id,
+    PermissionResourceScope, PermissionResourceTarget, PermissionScope, RegistryAccess, RiskLevel,
+    SandboxMode, is_canonical_id,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -1440,6 +1440,61 @@ impl AuthorizationEngine {
                         element_fingerprint: element_fingerprint.clone(),
                     }
                 }
+                super::DeclaredResource::Registry {
+                    hive,
+                    path,
+                    access,
+                    value_name,
+                } => {
+                    if target != PermissionResourceTarget::Exact {
+                        return Err("registry grants require an exact resource scope".into());
+                    }
+                    if !matches!(hive.as_str(), "HKCU" | "HKLM" | "HKCR" | "HKU" | "HKCC")
+                        || hive.contains('\\')
+                        || hive.contains('\0')
+                        || path.contains('\0')
+                    {
+                        return Err(
+                            "persistent registry grant requires a canonical hive and key path"
+                                .into(),
+                        );
+                    }
+                    let value_name = match (access, value_name) {
+                        (RegistryAccess::EnumerateNames, None) => None,
+                        (RegistryAccess::ReadValue, Some(name))
+                            if !name.is_empty() && !name.contains('\0') =>
+                        {
+                            Some(name.clone())
+                        }
+                        _ => {
+                            return Err(
+                                "persistent registry grant has an invalid access/value-name pair"
+                                    .into(),
+                            );
+                        }
+                    };
+                    PermissionResourceScope::Registry {
+                        hive: hive.clone(),
+                        path: path.clone(),
+                        access: *access,
+                        value_name,
+                    }
+                }
+                super::DeclaredResource::McpRemoteInvocation {
+                    target_fingerprint,
+                    request_fingerprint,
+                } => {
+                    if target != PermissionResourceTarget::Exact
+                        || !is_sha256_fingerprint(target_fingerprint)
+                        || !is_sha256_fingerprint(request_fingerprint)
+                    {
+                        return Err("persistent MCP grant requires exact canonical target and request fingerprints".into());
+                    }
+                    PermissionResourceScope::McpRemoteInvocation {
+                        target_fingerprint: target_fingerprint.clone(),
+                        request_fingerprint: request_fingerprint.clone(),
+                    }
+                }
                 super::DeclaredResource::ManagedAsset { asset_id } => {
                     if !is_canonical_id(asset_id, "asset") {
                         return Err(
@@ -1842,6 +1897,8 @@ fn network_resource_block(
             | super::DeclaredResource::Clipboard { .. }
             | super::DeclaredResource::Desktop { .. }
             | super::DeclaredResource::Window { .. }
+            | super::DeclaredResource::Registry { .. }
+            | super::DeclaredResource::McpRemoteInvocation { .. }
             | super::DeclaredResource::ManagedAsset { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -2093,6 +2150,38 @@ fn permission_resource_scope_matches(
                 && granted_element_fingerprint == element_fingerprint
         }
         (
+            PermissionResourceScope::Registry {
+                hive: granted_hive,
+                path: granted_path,
+                access: granted_access,
+                value_name: granted_value_name,
+            },
+            super::DeclaredResource::Registry {
+                hive,
+                path,
+                access,
+                value_name,
+            },
+        ) => {
+            granted_hive == hive
+                && granted_path == path
+                && granted_access == access
+                && granted_value_name == value_name
+        }
+        (
+            PermissionResourceScope::McpRemoteInvocation {
+                target_fingerprint: granted_target_fingerprint,
+                request_fingerprint: granted_request_fingerprint,
+            },
+            super::DeclaredResource::McpRemoteInvocation {
+                target_fingerprint,
+                request_fingerprint,
+            },
+        ) => {
+            granted_target_fingerprint == target_fingerprint
+                && granted_request_fingerprint == request_fingerprint
+        }
+        (
             PermissionResourceScope::ManagedAsset {
                 asset_id: granted_asset_id,
             },
@@ -2247,6 +2336,8 @@ fn path_sandbox_block(
             | super::DeclaredResource::Clipboard { .. }
             | super::DeclaredResource::Desktop { .. }
             | super::DeclaredResource::Window { .. }
+            | super::DeclaredResource::Registry { .. }
+            | super::DeclaredResource::McpRemoteInvocation { .. }
             | super::DeclaredResource::ManagedAsset { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -2930,6 +3021,174 @@ mod tests {
             engine.authorize(&other_asset).await,
             AuthorizationDecision::RequiresConfirmation { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn persistent_registry_grants_bind_hive_key_access_and_value_name() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let capability = capability_scope!("system.registry");
+        let list = resource_test_request(
+            &capability,
+            vec![DeclaredResource::Registry {
+                hive: "HKCU".into(),
+                path: "Software\\Haven".into(),
+                access: RegistryAccess::EnumerateNames,
+                value_name: None,
+            }],
+        );
+        let scope = engine
+            .resource_scope_for_request(&list, PermissionResourceTarget::Exact)
+            .await
+            .unwrap();
+        assert_eq!(
+            scope,
+            vec![PermissionResourceScope::Registry {
+                hive: "HKCU".into(),
+                path: "Software\\Haven".into(),
+                access: RegistryAccess::EnumerateNames,
+                value_name: None,
+            }]
+        );
+        engine
+            .grant(
+                None,
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                scope,
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&list).await,
+            AuthorizationDecision::AutoApproved
+        ));
+
+        for changed in [
+            DeclaredResource::Registry {
+                hive: "HKLM".into(),
+                path: "Software\\Haven".into(),
+                access: RegistryAccess::EnumerateNames,
+                value_name: None,
+            },
+            DeclaredResource::Registry {
+                hive: "HKCU".into(),
+                path: "Software\\Other".into(),
+                access: RegistryAccess::EnumerateNames,
+                value_name: None,
+            },
+            DeclaredResource::Registry {
+                hive: "HKCU".into(),
+                path: "Software\\Haven".into(),
+                access: RegistryAccess::ReadValue,
+                value_name: Some("InstallPath".into()),
+            },
+        ] {
+            let changed_request = resource_test_request(&capability, vec![changed]);
+            assert!(matches!(
+                engine.authorize(&changed_request).await,
+                AuthorizationDecision::RequiresConfirmation { .. }
+            ));
+        }
+
+        let invalid_shape = resource_test_request(
+            &capability,
+            vec![DeclaredResource::Registry {
+                hive: "HKCU".into(),
+                path: "Software\\Haven".into(),
+                access: RegistryAccess::EnumerateNames,
+                value_name: Some("unexpected".into()),
+            }],
+        );
+        assert!(
+            engine
+                .resource_scope_for_request(&invalid_shape, PermissionResourceTarget::Exact)
+                .await
+                .is_err()
+        );
+        assert!(
+            engine
+                .resource_scope_for_request(&list, PermissionResourceTarget::Directory)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_mcp_grants_bind_target_and_exact_remote_request() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let capability = capability_scope!("mcp__calendar__calendar_status");
+        let request = resource_test_request(
+            &capability,
+            vec![DeclaredResource::McpRemoteInvocation {
+                target_fingerprint: "a".repeat(64),
+                request_fingerprint: "b".repeat(64),
+            }],
+        );
+        let scope = engine
+            .resource_scope_for_request(&request, PermissionResourceTarget::Exact)
+            .await
+            .unwrap();
+        engine
+            .grant(
+                None,
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                scope,
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&request).await,
+            AuthorizationDecision::AutoApproved
+        ));
+
+        for (target_fingerprint, request_fingerprint) in [
+            ("c".repeat(64), "b".repeat(64)),
+            ("a".repeat(64), "d".repeat(64)),
+        ] {
+            let changed = resource_test_request(
+                &capability,
+                vec![DeclaredResource::McpRemoteInvocation {
+                    target_fingerprint,
+                    request_fingerprint,
+                }],
+            );
+            assert!(matches!(
+                engine.authorize(&changed).await,
+                AuthorizationDecision::RequiresConfirmation { .. }
+            ));
+        }
+
+        for (invalid, target) in [
+            (
+                DeclaredResource::McpRemoteInvocation {
+                    target_fingerprint: "not-sha256".into(),
+                    request_fingerprint: "b".repeat(64),
+                },
+                PermissionResourceTarget::Exact,
+            ),
+            (
+                DeclaredResource::McpRemoteInvocation {
+                    target_fingerprint: "a".repeat(64),
+                    request_fingerprint: "b".repeat(64),
+                },
+                PermissionResourceTarget::Directory,
+            ),
+        ] {
+            let invalid_request = resource_test_request(&capability, vec![invalid]);
+            assert!(
+                engine
+                    .resource_scope_for_request(&invalid_request, target)
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     #[tokio::test]

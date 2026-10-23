@@ -393,8 +393,8 @@ export const PERMISSION_EFFECT_INPUT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffectInput = (typeof PERMISSION_EFFECT_INPUT_VALUES)[number];
 export const PERMISSION_EFFECT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffect = (typeof PERMISSION_EFFECT_VALUES)[number];
-export type PermissionResourceScopeInput = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccessInput } | { kind: 'network_destination'; scheme: string; host: string; port?: number | null } | { kind: 'clipboard'; access: ClipboardAccessInput } | { kind: 'desktop'; access: DesktopAccessInput } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccessInput; element_fingerprint?: string | null } | { kind: 'managed_asset'; asset_id: string };
-export type PermissionResourceScope = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'managed_asset'; asset_id: string };
+export type PermissionResourceScopeInput = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccessInput } | { kind: 'network_destination'; scheme: string; host: string; port?: number | null } | { kind: 'clipboard'; access: ClipboardAccessInput } | { kind: 'desktop'; access: DesktopAccessInput } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccessInput; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccessInput; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
+export type PermissionResourceScope = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccess; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
 export const PERMISSION_RESOURCE_TARGET_INPUT_VALUES = ['exact', 'directory'] as const;
 export type PermissionResourceTargetInput = (typeof PERMISSION_RESOURCE_TARGET_INPUT_VALUES)[number];
 export const PERMISSION_SCOPE_INPUT_VALUES = ['once', 'session', 'always'] as const;
@@ -403,6 +403,10 @@ export const PERMISSION_TARGET_INPUT_VALUES = ['operation', 'group', 'tool'] as 
 export type PermissionTargetInput = (typeof PERMISSION_TARGET_INPUT_VALUES)[number];
 export const PERMISSION_TARGET_VALUES = ['operation', 'group', 'tool'] as const;
 export type PermissionTarget = (typeof PERMISSION_TARGET_VALUES)[number];
+export const REGISTRY_ACCESS_INPUT_VALUES = ['enumerate_names', 'read_value'] as const;
+export type RegistryAccessInput = (typeof REGISTRY_ACCESS_INPUT_VALUES)[number];
+export const REGISTRY_ACCESS_VALUES = ['enumerate_names', 'read_value'] as const;
+export type RegistryAccess = (typeof REGISTRY_ACCESS_VALUES)[number];
 export const RISK_LEVEL_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;
 export type RiskLevel = (typeof RISK_LEVEL_VALUES)[number];
 export const SHELL_CHOICE_INPUT_VALUES = ['powershell', 'cmd', 'pwsh'] as const;
@@ -485,7 +489,7 @@ export type SessionCreator = (typeof SESSION_CREATOR_VALUES)[number];
 export interface LlmUsageRecord { usage_id: string; session_id: string; step_number: number | null; request_kind: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
-export type DeclaredResource = { kind: 'local_path'; path: string; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'managed_asset'; asset_id: string };
+export type DeclaredResource = { kind: 'local_path'; path: string; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccess; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 export const ADD_FACT_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -2452,6 +2456,48 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 								fields: {
 									'kind': {
 										optional: false,
+										shape: { kind: 'literal', value: 'registry' },
+									},
+									'hive': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: REGISTRY_ACCESS_VALUES },
+									},
+									'value_name': {
+										optional: true,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'mcp_remote_invocation' },
+									},
+									'target_fingerprint': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'request_fingerprint': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
 										shape: { kind: 'literal', value: 'managed_asset' },
 									},
 									'asset_id': {
@@ -4233,6 +4279,48 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 								fields: {
 									'kind': {
 										optional: false,
+										shape: { kind: 'literal', value: 'registry' },
+									},
+									'hive': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: REGISTRY_ACCESS_VALUES },
+									},
+									'value_name': {
+										optional: true,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'mcp_remote_invocation' },
+									},
+									'target_fingerprint': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'request_fingerprint': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
 										shape: { kind: 'literal', value: 'managed_asset' },
 									},
 									'asset_id': {
@@ -5371,6 +5459,48 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 											fields: {
 												'kind': {
 													optional: false,
+													shape: { kind: 'literal', value: 'registry' },
+												},
+												'hive': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'path': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'access': {
+													optional: false,
+													shape: { kind: 'enum', values: REGISTRY_ACCESS_VALUES },
+												},
+												'value_name': {
+													optional: true,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'mcp_remote_invocation' },
+												},
+												'target_fingerprint': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'request_fingerprint': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
 													shape: { kind: 'literal', value: 'managed_asset' },
 												},
 												'asset_id': {
@@ -6074,6 +6204,48 @@ export const INTERACTION_REQUESTED_EVENT_PAYLOAD_SHAPE = {
 						},
 						'element_fingerprint': {
 							optional: true,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'registry' },
+						},
+						'hive': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'path': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: REGISTRY_ACCESS_VALUES },
+						},
+						'value_name': {
+							optional: true,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'mcp_remote_invocation' },
+						},
+						'target_fingerprint': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'request_fingerprint': {
+							optional: false,
 							shape: { kind: 'string' },
 						}
 					}
@@ -7104,6 +7276,48 @@ export const LIST_SESSION_PERMISSIONS_RESPONSE_SHAPE = { kind: 'array', items: {
 						},
 						'element_fingerprint': {
 							optional: true,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'registry' },
+						},
+						'hive': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'path': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: REGISTRY_ACCESS_VALUES },
+						},
+						'value_name': {
+							optional: true,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'mcp_remote_invocation' },
+						},
+						'target_fingerprint': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'request_fingerprint': {
+							optional: false,
 							shape: { kind: 'string' },
 						}
 					}
@@ -8829,6 +9043,48 @@ export const SESSION_PERMISSION_GRANT_RESPONSE_SHAPE = {
 					fields: {
 						'kind': {
 							optional: false,
+							shape: { kind: 'literal', value: 'registry' },
+						},
+						'hive': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'path': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: REGISTRY_ACCESS_VALUES },
+						},
+						'value_name': {
+							optional: true,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'mcp_remote_invocation' },
+						},
+						'target_fingerprint': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'request_fingerprint': {
+							optional: false,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
 							shape: { kind: 'literal', value: 'managed_asset' },
 						},
 						'asset_id': {
@@ -9989,6 +10245,48 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 								fields: {
 									'kind': {
 										optional: false,
+										shape: { kind: 'literal', value: 'registry' },
+									},
+									'hive': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: REGISTRY_ACCESS_VALUES },
+									},
+									'value_name': {
+										optional: true,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'mcp_remote_invocation' },
+									},
+									'target_fingerprint': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'request_fingerprint': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
 										shape: { kind: 'literal', value: 'managed_asset' },
 									},
 									'asset_id': {
@@ -10867,6 +11165,48 @@ export const SETTINGS_RESPONSE_SHAPE = {
 												},
 												'element_fingerprint': {
 													optional: true,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'registry' },
+												},
+												'hive': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'path': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'access': {
+													optional: false,
+													shape: { kind: 'enum', values: REGISTRY_ACCESS_VALUES },
+												},
+												'value_name': {
+													optional: true,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'mcp_remote_invocation' },
+												},
+												'target_fingerprint': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'request_fingerprint': {
+													optional: false,
 													shape: { kind: 'string' },
 												}
 											}

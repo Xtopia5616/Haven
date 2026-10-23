@@ -507,6 +507,7 @@ impl Tool for LoadMcpTool {
         Ok(crate::ToolAuthorizationContract {
             policy,
             target_binding: Some(snapshot.authorization_target_binding()),
+            resources: Vec::new(),
         })
     }
 

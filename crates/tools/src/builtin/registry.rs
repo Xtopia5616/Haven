@@ -211,6 +211,22 @@ fn normalize_registry_path(path: &str) -> anyhow::Result<(String, String)> {
     Ok((hive_str.to_uppercase(), subpath.to_string()))
 }
 
+pub(super) fn canonical_registry_path(path: &str) -> anyhow::Result<(String, String)> {
+    let (hive, subpath) = normalize_registry_path(path)?;
+    if subpath.contains('\0') {
+        anyhow::bail!("registry path contains a NUL character");
+    }
+    let hive = match hive.as_str() {
+        "HKCU" | "HKEY_CURRENT_USER" => "HKCU",
+        "HKLM" | "HKEY_LOCAL_MACHINE" => "HKLM",
+        "HKCR" | "HKEY_CLASSES_ROOT" => "HKCR",
+        "HKU" | "HKEY_USERS" => "HKU",
+        "HKCC" | "HKEY_CURRENT_CONFIG" => "HKCC",
+        _ => anyhow::bail!("unknown registry hive: {}", hive),
+    };
+    Ok((hive.to_owned(), subpath))
+}
+
 impl RegistryTool {
     pub async fn run(
         &self,
@@ -254,14 +270,14 @@ fn run_registry_operation(
     use winreg::enums::*;
 
     fn parse_hive(path: &str) -> anyhow::Result<(RegKey, String)> {
-        let (hive_upper, subpath) = normalize_registry_path(path)?;
-        let hive = match hive_upper.as_str() {
-            "HKCU" | "HKEY_CURRENT_USER" => RegKey::predef(HKEY_CURRENT_USER),
-            "HKLM" | "HKEY_LOCAL_MACHINE" => RegKey::predef(HKEY_LOCAL_MACHINE),
-            "HKCR" | "HKEY_CLASSES_ROOT" => RegKey::predef(HKEY_CLASSES_ROOT),
-            "HKU" | "HKEY_USERS" => RegKey::predef(HKEY_USERS),
-            "HKCC" | "HKEY_CURRENT_CONFIG" => RegKey::predef(HKEY_CURRENT_CONFIG),
-            _ => anyhow::bail!("unknown registry hive: {}", hive_upper),
+        let (hive, subpath) = canonical_registry_path(path)?;
+        let hive = match hive.as_str() {
+            "HKCU" => RegKey::predef(HKEY_CURRENT_USER),
+            "HKLM" => RegKey::predef(HKEY_LOCAL_MACHINE),
+            "HKCR" => RegKey::predef(HKEY_CLASSES_ROOT),
+            "HKU" => RegKey::predef(HKEY_USERS),
+            "HKCC" => RegKey::predef(HKEY_CURRENT_CONFIG),
+            _ => unreachable!("canonical registry paths contain only supported hives"),
         };
         Ok((hive, subpath))
     }

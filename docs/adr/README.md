@@ -1283,3 +1283,5 @@
 - [1377：HTTP 全局域名边界的一次性扩展](1377-once-only-http-domain-boundary-extension.md)
 - [1378：剪贴板 typed 资源边界](1378-typed-clipboard-resource-boundary.md)
 - [1379：窗口与桌面 typed 资源边界](1379-typed-window-resource-boundary.md)
+- [1380：注册表 typed 资源边界](1380-typed-registry-resource-boundary.md)
+- [1381：将 MCP 调用绑定到远程目标与精确参数](1381-bind-mcp-invocations-to-remote-targets.md)

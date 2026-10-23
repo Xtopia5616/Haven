@@ -910,7 +910,13 @@ impl McpManager {
 
     fn target_binding_for(&self, client: &McpClient) -> Option<String> {
         let generation = client.manager_generation();
-        (generation != 0).then(|| format!("mcp-target:{:016x}:{generation:016x}", self.manager_id))
+        (generation != 0).then(|| {
+            format!(
+                "mcp-target:{:016x}:{generation:016x}:{}",
+                self.manager_id,
+                client.authorization_target_fingerprint()
+            )
+        })
     }
 
     async fn client_at_target_binding(
@@ -923,8 +929,13 @@ impl McpManager {
             .await
             .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", client_name))?;
         let generation = client.manager_generation();
-        let actual_binding = (generation != 0)
-            .then(|| format!("mcp-target:{:016x}:{generation:016x}", self.manager_id));
+        let actual_binding = (generation != 0).then(|| {
+            format!(
+                "mcp-target:{:016x}:{generation:016x}:{}",
+                self.manager_id,
+                client.authorization_target_fingerprint()
+            )
+        });
         if actual_binding.as_deref() != Some(expected_binding) {
             return Err(anyhow::Error::new(McpTargetChanged));
         }

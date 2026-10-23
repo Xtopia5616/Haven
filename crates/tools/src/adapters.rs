@@ -6,10 +6,14 @@ use haven_common::tools::{
 };
 use haven_common::types::{CapabilityScope, RiskLevel};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::operation_view::{OperationIdentity, OperationSpec};
-use crate::{OperationPolicy, StructuredToolError, Tool, ToolErrorMetadata, ToolResult};
+use crate::{
+    OperationPolicy, StructuredToolError, Tool, ToolAuthorizationContract, ToolErrorMetadata,
+    ToolResult,
+};
 use haven_mcp::{McpManager, McpToolInfo};
 
 /// External capability metadata is data, not an instruction channel. Keep
@@ -217,6 +221,46 @@ fn mcp_call_error(error: anyhow::Error) -> anyhow::Error {
     anyhow::Error::new(StructuredToolError::new(error.to_string(), metadata))
 }
 
+fn sha256_fingerprint(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn mcp_remote_invocation_resource(
+    input: &Value,
+    target_binding: &str,
+) -> Result<crate::security::DeclaredResource, String> {
+    let target_parts = target_binding.split(':').collect::<Vec<_>>();
+    let is_hex_component = |value: &str| {
+        value.len() == 16
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    let Some(["mcp-target", manager_id, generation, config_fingerprint]) =
+        <&[&str; 4]>::try_from(target_parts.as_slice()).ok()
+    else {
+        return Err("MCP target binding is not canonical".into());
+    };
+    if !is_hex_component(manager_id)
+        || !is_hex_component(generation)
+        || config_fingerprint.len() != 64
+        || !config_fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("MCP target binding is not canonical".into());
+    }
+    Ok(crate::security::DeclaredResource::McpRemoteInvocation {
+        // Manager identity and generation stay in the short-lived proof
+        // binding. Persistent consent follows the stable connection config.
+        target_fingerprint: (*config_fingerprint).to_owned(),
+        request_fingerprint: sha256_fingerprint(&haven_common::json::canonical_json_bytes(input)),
+    })
+}
+
 impl McpToolAdapter {
     pub fn new(manager: McpManager, server_name: &str, info: McpToolInfo) -> Self {
         Self::new_with_transport(manager, server_name, info, McpServerTransport::Stdio)
@@ -386,7 +430,16 @@ impl Tool for McpToolAdapter {
     async fn authorization_target_binding(&self, _input: &Value) -> Result<Option<String>, String> {
         #[cfg(all(debug_assertions, any(test, feature = "test-support")))]
         if self.panic_on_execute {
-            return Ok(None);
+            // The integration test exercises the real authorization and
+            // panic-containment path without registering a live MCP client.
+            // Give this test-only adapter a stable target so it still needs
+            // the same one-time approval as a connected MCP operation.
+            return Ok(Some(format!(
+                "mcp-target:{:016x}:{:016x}:{}",
+                0,
+                1,
+                "a".repeat(64)
+            )));
         }
         let binding = self
             .manager
@@ -396,6 +449,21 @@ impl Tool for McpToolAdapter {
                 "MCP server is not connected with the transport used by this adapter".to_string()
             })?;
         Ok(Some(binding))
+    }
+
+    async fn authorization_contract(
+        &self,
+        input: &Value,
+    ) -> Result<ToolAuthorizationContract, String> {
+        let target_binding = self
+            .authorization_target_binding(input)
+            .await?
+            .ok_or_else(|| "MCP server has no authorization-bound target".to_owned())?;
+        Ok(ToolAuthorizationContract {
+            policy: self.try_operation_policy(input)?,
+            resources: vec![mcp_remote_invocation_resource(input, &target_binding)?],
+            target_binding: Some(target_binding),
+        })
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -429,6 +497,25 @@ impl Tool for McpToolAdapter {
         if self.panic_on_execute {
             panic!("simulated MCP adapter panic");
         }
+        let target_binding_value = target_binding.ok_or_else(|| {
+            anyhow::Error::new(StructuredToolError::new(
+                "MCP execution is missing an authorization-bound target",
+                permission_error_metadata(),
+            ))
+        })?;
+        let expected_resource = mcp_remote_invocation_resource(&input, target_binding_value)
+            .map_err(|_| {
+                anyhow::Error::new(StructuredToolError::new(
+                    "MCP target or request no longer matches its authorization proof",
+                    permission_error_metadata(),
+                ))
+            })?;
+        if context.authorized_resources() != [expected_resource] {
+            return Err(anyhow::Error::new(StructuredToolError::new(
+                "MCP target or request no longer matches its authorization proof",
+                permission_error_metadata(),
+            )));
+        }
         let authorization = context.clone_execution_authorization().ok_or_else(|| {
             anyhow::Error::new(StructuredToolError::new(
                 "MCP execution requires a proof-bound Tools context",
@@ -446,7 +533,7 @@ impl Tool for McpToolAdapter {
             revoke_cancel.cancel();
         });
         let result = self
-            .execute_target_bound(input, call_cancel, target_binding.map(ToOwned::to_owned))
+            .execute_target_bound(input, call_cancel, Some(target_binding_value.to_owned()))
             .await;
         revocation.abort();
         let _ = revocation.await;
@@ -494,6 +581,46 @@ mod tests {
             .expect_err("target binding alone must not authorize an MCP call");
 
         assert!(error.to_string().contains("proof-bound Tools context"));
+    }
+
+    #[tokio::test]
+    async fn mcp_adapter_rejects_request_mismatched_with_authorized_resources() {
+        let adapter = mcp_adapter(serde_json::json!({"type": "object"}));
+        let error = adapter
+            .execute_with_authorization_context(
+                serde_json::json!({"record_id": "new-target"}),
+                CancellationToken::new(),
+                Some("mcp-target-binding"),
+                &crate::ToolExecutionContext::default(),
+            )
+            .await
+            .expect_err("an MCP call must match its exact approved parameters");
+
+        assert!(error.to_string().contains("request no longer matches"));
+    }
+
+    #[test]
+    fn mcp_remote_resource_survives_reconnect_but_binds_config_and_arguments() {
+        let input = serde_json::json!({"record_id": "record-a"});
+        let binding = |generation: u64, fingerprint: &str| {
+            format!("mcp-target:{:016x}:{generation:016x}:{fingerprint}", 7)
+        };
+        let config_fingerprint = "a".repeat(64);
+        let first =
+            mcp_remote_invocation_resource(&input, &binding(1, &config_fingerprint)).unwrap();
+        let reconnected =
+            mcp_remote_invocation_resource(&input, &binding(2, &config_fingerprint)).unwrap();
+        let changed_target =
+            mcp_remote_invocation_resource(&input, &binding(2, &"b".repeat(64))).unwrap();
+        let changed_arguments = mcp_remote_invocation_resource(
+            &serde_json::json!({"record_id": "record-b"}),
+            &binding(2, &config_fingerprint),
+        )
+        .unwrap();
+
+        assert_eq!(first, reconnected);
+        assert_ne!(first, changed_target);
+        assert_ne!(first, changed_arguments);
     }
 
     #[tokio::test]

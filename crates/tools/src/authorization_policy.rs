@@ -93,17 +93,14 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
             None => crate::ToolAuthorizationContract {
                 policy: unknown_operation_policy(tool_name)?,
                 target_binding: None,
+                resources: Vec::new(),
             },
-        };
-        let resources = match tool.as_ref() {
-            Some(tool) => tool.authorization_resources(input)?,
-            None => Vec::new(),
         };
         let authorization_input = Self::authorization_input_for(tool.as_ref(), input);
         Ok(
             AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
                 .with_target_binding(contract.target_binding)
-                .with_resources(resources),
+                .with_resources(contract.resources),
         )
     }
 
@@ -121,12 +118,11 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
                 "MCP capability is not enabled for CodeMode in this session".to_owned()
             })?;
         let contract = tool.authorization_contract(input).await?;
-        let resources = tool.authorization_resources(input)?;
         let authorization_input = Self::authorization_input_for(Some(&tool), input);
         Ok(
             AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
                 .with_target_binding(contract.target_binding)
-                .with_resources(resources),
+                .with_resources(contract.resources),
         )
     }
 
@@ -143,16 +139,13 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
             None => crate::ToolAuthorizationContract {
                 policy: unknown_operation_policy(tool_name)?,
                 target_binding: None,
+                resources: Vec::new(),
             },
-        };
-        let resources = match tool {
-            Some(tool) => tool.authorization_resources(input)?,
-            None => Vec::new(),
         };
         Ok(
             AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
                 .with_target_binding(contract.target_binding)
-                .with_resources(resources),
+                .with_resources(contract.resources),
         )
     }
 }
