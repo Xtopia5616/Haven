@@ -87,6 +87,114 @@ pub async fn get_settings(
         .map_err(|e| log_err("get_settings", e))
 }
 
+#[derive(Serialize)]
+pub struct LifecycleHooksSettingsResponse {
+    pub hooks: haven_common::config::LifecycleHooksConfig,
+    pub trusted_hook_workspaces: Vec<String>,
+    pub sandbox_mode: haven_common::types::SandboxMode,
+    pub network_policy: haven_common::types::NetworkPolicy,
+    pub config_version: u64,
+    pub diagnostics: Vec<haven_common::hooks::LifecycleHookEventDiagnostics>,
+}
+
+#[tauri::command]
+pub async fn get_lifecycle_hooks_settings(
+    state: State<'_, Arc<AppState>>,
+) -> Result<LifecycleHooksSettingsResponse, String> {
+    let snapshot = state
+        .runtime
+        .config_service
+        .snapshot()
+        .map_err(|error| log_err("get_lifecycle_hooks_settings", error))?;
+    let config = &snapshot.config;
+    let (sandbox_mode, network_policy) = state.runtime.tools.lifecycle_hook_security_policy().await;
+    Ok(LifecycleHooksSettingsResponse {
+        hooks: config.hooks.clone(),
+        trusted_hook_workspaces: config
+            .trusted_hook_workspaces
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+        sandbox_mode,
+        network_policy,
+        config_version: snapshot.version,
+        diagnostics: state.runtime.tools.lifecycle_hook_diagnostics(),
+    })
+}
+
+#[tauri::command]
+pub async fn save_lifecycle_hooks(
+    state: State<'_, Arc<AppState>>,
+    hooks: haven_common::config::LifecycleHooksConfig,
+) -> Result<(), String> {
+    state
+        .runtime
+        .config_service
+        .apply_patch(haven_common::config::ConfigPatch::LifecycleHooks(hooks))
+        .map(|_| ())
+        .map_err(|error| log_err("save_lifecycle_hooks", error))
+}
+
+/// Trust a project hook root selected through the native folder picker.
+#[tauri::command]
+pub async fn trust_hook_workspace(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .pick_folder(move |selection| {
+            let _ = sender.send(selection);
+        });
+    let Some(selection) = receiver
+        .await
+        .map_err(|_| log_err("trust_hook_workspace", "directory picker closed"))?
+    else {
+        return Ok(None);
+    };
+    let selected_path = selection
+        .into_path()
+        .map_err(|_| log_err("trust_hook_workspace", "invalid local directory"))?;
+    let canonical_path = std::fs::canonicalize(&selected_path)
+        .map_err(|_| log_err("trust_hook_workspace", "selected directory is unavailable"))?;
+    let canonical_path = haven_common::path::normalize_absolute_local_path(&canonical_path)
+        .filter(|path| path.is_dir())
+        .ok_or_else(|| {
+            log_err(
+                "trust_hook_workspace",
+                "selected path is not a local directory",
+            )
+        })?;
+    state
+        .runtime
+        .config_service
+        .apply_patch(haven_common::config::ConfigPatch::TrustHookWorkspace(
+            canonical_path.clone(),
+        ))
+        .map_err(|error| log_err("trust_hook_workspace", error))?;
+    Ok(Some(canonical_path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub async fn untrust_hook_workspace(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<(), String> {
+    state
+        .runtime
+        .config_service
+        .apply_patch(haven_common::config::ConfigPatch::UntrustHookWorkspace(
+            std::path::PathBuf::from(path),
+        ))
+        .map(|_| ())
+        .map_err(|error| log_err("untrust_hook_workspace", error))
+}
+
 /// Let the user choose a candidate execution root. The selected path is
 /// validated by Tools and returned to the SettingsSnapshot draft; this command does
 /// not persist it or grant renderer file access.

@@ -43,6 +43,7 @@
 | `get_api_key_status` | read | boolean presence only; credentials excluded |
 | `get_bootstrap_status` | read | status enum only |
 | `get_latest_session_for_resume` | read | most recent persisted session only |
+| `get_lifecycle_hooks_settings` | read | Hook executable config and exact trusted roots; diagnostics omit commands, payloads, and output |
 | `get_log_info` | read | path is optional; no environment details |
 | `get_mcp_prompt` | execute | explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages |
 | `get_performance_metrics` | read | bounded content-free backend counters plus renderer stream counters |
@@ -88,6 +89,7 @@
 | `revoke_session_permission` | mutate | non-empty session id and capability; removes one session grant |
 | `rollback_session` | mutate | event cursor and projection clock rollback |
 | `run_memory_maintenance` | mutate | maintenance path owns purge and embedding cleanup |
+| `save_lifecycle_hooks` | mutate | typed validated Hook config; execution remains subject to the active security policy |
 | `search_session_history_filtered` | read | bounded page and date-filtered projection |
 | `set_hotkey_capture_active` | mutate | transient renderer key-capture state only; not persisted |
 | `set_reasoning_effort` | mutate | request kind selects the assigned model; validated before config save |
@@ -104,7 +106,9 @@
 | `subscribe_mcp_resource` | execute | explicit UI selection from current resource list; enabled live target binding; bounded acknowledged subscription |
 | `switch_model` | mutate | requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID |
 | `toggle_mcp_server` | execute | AuthorizationPort; typed native admin operation connects before enabling |
+| `trust_hook_workspace` | mutate | native picker only; canonical local directory; grants project Hook config trust only |
 | `unsubscribe_mcp_resource` | execute | explicit UI cancellation; enabled live target binding; cancels only the selected resource stream |
+| `untrust_hook_workspace` | mutate | removes only an exact root already present in the trusted Hook list |
 | `update_mcp_server` | execute | AuthorizationPort; typed native admin operation validates and reconnects safely |
 | `update_session_title` | mutate | trimmed non-empty title only |
 | `update_settings` | mutate | rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules |

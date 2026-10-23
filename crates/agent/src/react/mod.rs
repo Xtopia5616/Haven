@@ -1282,11 +1282,13 @@ impl ReActEngine {
                 &state.canonical,
                 tool_token_estimate,
                 &router,
-                cancel,
+                cancel.clone(),
             )
             .await
         {
             Ok(Some(result)) => {
+                let tokens_before = result.tokens_before;
+                let tokens_after = result.tokens_after;
                 tracing::info!(
                     session_id = %ctx.session_id,
                     tokens_before = result.tokens_before,
@@ -1309,6 +1311,16 @@ impl ReActEngine {
                     state,
                 )
                 .await?;
+                let mut post_compact = haven_common::hooks::LifecycleHookPayload::new(
+                    haven_common::hooks::LifecycleHookEvent::PostCompact,
+                );
+                post_compact.session_id = Some(ctx.session_id.clone());
+                post_compact.run_id = Some(ctx.run_id);
+                post_compact.start_step = Some(ctx.step_number);
+                post_compact.tokens_before = Some(u64::from(tokens_before));
+                post_compact.tokens_after = Some(u64::from(tokens_after));
+                post_compact.success = Some(true);
+                let _ = self.lifecycle_hooks.run(post_compact, cancel.clone()).await;
                 Ok(true)
             }
             Ok(None) => Ok(false),

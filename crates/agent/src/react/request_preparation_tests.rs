@@ -200,6 +200,7 @@ async fn run_preparation_case(
                 start_step: 1,
                 emitter: Arc::new(SilentEmitter),
                 run_id: 1,
+                is_session_start: false,
             },
             &mut state,
         ),

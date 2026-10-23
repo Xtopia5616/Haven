@@ -105,6 +105,7 @@ export interface SessionRecordDto { session_id: string; input_text: string; titl
 export interface SessionResumeMessageDto { message_id: string; session_id: string; role: CanonicalRole; content: string; message_type: TranscriptMessageKind | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: SessionResumeMessageDto[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[]; working_document: string | null; working_document_sequence: number | null; event_sequence_watermark: number }
 export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
+export interface LifecycleHooksSettingsResponse { hooks: LifecycleHooksConfig; trusted_hook_workspaces: string[]; sandbox_mode: SandboxMode; network_policy: NetworkPolicy; config_version: number; diagnostics: LifecycleHookEventDiagnostics[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
 export interface ShellAvailability { available: boolean }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
@@ -202,6 +203,10 @@ export const REQUEST_KIND_VALUES = ['chat', 'fast_chat', 'vision', 'audio_chat',
 export type RequestKind = (typeof REQUEST_KIND_VALUES)[number];
 export interface RequestPolicyInput { request?: RequestKindInput; primary?: string }
 export interface RequestPolicy { request: RequestKind; primary: string }
+export interface HookCommandInput { command: string; args?: string[]; matcher?: string | null }
+export interface HookCommand { command: string; args: string[]; matcher: string | null }
+export interface LifecycleHooksConfigInput { pre_tool_use?: HookCommandInput[]; post_tool_use?: HookCommandInput[]; session_start?: HookCommandInput[]; run_start?: HookCommandInput[]; run_end?: HookCommandInput[]; pre_compact?: HookCommandInput[]; post_compact?: HookCommandInput[] }
+export interface LifecycleHooksConfig { pre_tool_use: HookCommand[]; post_tool_use: HookCommand[]; session_start: HookCommand[]; run_start: HookCommand[]; run_end: HookCommand[]; pre_compact: HookCommand[]; post_compact: HookCommand[] }
 export interface SettingsPatchInput { default_shell?: ShellChoiceInput | null; llm?: LlmConfigInput | null; hotkey?: HotkeyConfigInput | null; session?: SessionConfigInput | null; context_limits?: ContextLimitsConfigInput | null; memory?: MemoryConfigInput | null; security?: SecurityConfigInput | null; media?: MediaConfigInput | null; notification?: NotificationConfigInput | null; log?: LogConfigInput | null }
 export interface SettingsSnapshot { default_shell: ShellChoice; llm: LlmConfig; hotkey: HotkeyConfig; session: SessionConfig; context_limits: ContextLimitsConfig; memory: MemoryConfig; security: SecurityConfig; media: MediaConfig; skills: SkillsConfig; skills_exec: SkillsExecConfig; mcp_discovery: McpDiscoveryConfig; mcp_servers: McpServerConfig[]; notification: NotificationConfig; log: LogConfig; tool_settings: Record<string, ToolConfig> }
 export interface AudioConfigInput { max_duration_secs?: number; silence_timeout_ms?: number; vad_threshold?: number }
@@ -248,6 +253,11 @@ export interface SkillsExecConfig { venv_root: string; work_dir: string; timeout
 export interface StoredPermissionInput { key: string; effect: PermissionEffectInput }
 export interface StoredPermission { key: string; effect: PermissionEffect }
 export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_output_chars?: number; max_retries?: number; retry_backoff_secs?: number; allowed_paths: string[]; allowed_domains: string[]; disabled_operations: string[]; risk_override: RiskLevel | null }
+export const LIFECYCLE_HOOK_EVENT_VALUES = ['pre_tool_use', 'post_tool_use', 'session_start', 'run_start', 'run_end', 'pre_compact', 'post_compact'] as const;
+export type LifecycleHookEvent = (typeof LIFECYCLE_HOOK_EVENT_VALUES)[number];
+export interface LifecycleHookEventDiagnostics { event: LifecycleHookEvent; event_runs: number; command_runs: number; failures: number; denials: number; last_outcome: LifecycleHookOutcome | null; last_failure_code: string | null }
+export const LIFECYCLE_HOOK_OUTCOME_VALUES = ['no_hooks', 'succeeded', 'denied', 'failed_open'] as const;
+export type LifecycleHookOutcome = (typeof LIFECYCLE_HOOK_OUTCOME_VALUES)[number];
 export const SESSION_RUN_END_KIND_VALUES = ['turn_completed'] as const;
 export type SessionRunEndKind = (typeof SESSION_RUN_END_KIND_VALUES)[number];
 export const SESSION_STATUS_VALUES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
@@ -2353,6 +2363,211 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 		}
 	}
 } } as const;
+export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'hooks': {
+			optional: false,
+			shape: {
+				kind: 'object',
+				fields: {
+					'pre_tool_use': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					},
+					'post_tool_use': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					},
+					'session_start': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					},
+					'run_start': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					},
+					'run_end': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					},
+					'pre_compact': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					},
+					'post_compact': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					}
+				}
+			},
+		},
+		'trusted_hook_workspaces': {
+			optional: false,
+			shape: { kind: 'array', items: { kind: 'string' } },
+		},
+		'sandbox_mode': {
+			optional: false,
+			shape: { kind: 'enum', values: SANDBOX_MODE_VALUES },
+		},
+		'network_policy': {
+			optional: false,
+			shape: { kind: 'enum', values: NETWORK_POLICY_VALUES },
+		},
+		'config_version': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'diagnostics': {
+			optional: false,
+			shape: { kind: 'array', items: {
+				kind: 'object',
+				fields: {
+					'event': {
+						optional: false,
+						shape: { kind: 'enum', values: LIFECYCLE_HOOK_EVENT_VALUES },
+					},
+					'event_runs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'command_runs': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'failures': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'denials': {
+						optional: false,
+						shape: { kind: 'number' },
+					},
+					'last_outcome': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'enum', values: LIFECYCLE_HOOK_OUTCOME_VALUES } },
+					},
+					'last_failure_code': {
+						optional: false,
+						shape: { kind: 'nullable', inner: { kind: 'string' } },
+					}
+				}
+			} },
+		}
+	}
+} as const;
 export const GET_LOG_INFO_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -7262,6 +7477,7 @@ export const RUNTIME_SESSION_LIST_RESPONSE_SHAPE = {
 	}
 } as const;
 export const RUN_MEMORY_MAINTENANCE_RESPONSE_SHAPE = { kind: 'number' } as const;
+export const SAVE_LIFECYCLE_HOOKS_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
 	fields: {
@@ -10337,7 +10553,9 @@ export const TRAY_STATUS_CHANGED_EVENT_PAYLOAD_SHAPE = {
 		}
 	}
 } as const;
+export const TRUST_HOOK_WORKSPACE_RESPONSE_SHAPE = { kind: 'nullable', inner: { kind: 'string' } } as const;
 export const UNSUBSCRIBE_MCP_RESOURCE_RESPONSE_SHAPE = { kind: 'boolean' } as const;
+export const UNTRUST_HOOK_WORKSPACE_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const UPDATE_MCP_SERVER_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const UPDATE_SESSION_TITLE_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const UPDATE_SETTINGS_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -10372,6 +10590,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_api_key_status: GET_API_KEY_STATUS_RESPONSE_SHAPE,
 	get_bootstrap_status: GET_BOOTSTRAP_STATUS_RESPONSE_SHAPE,
 	get_latest_session_for_resume: GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE,
+	get_lifecycle_hooks_settings: GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE,
 	get_log_info: GET_LOG_INFO_RESPONSE_SHAPE,
 	get_mcp_prompt: GET_MCP_PROMPT_RESPONSE_SHAPE,
 	get_performance_metrics: GET_PERFORMANCE_METRICS_RESPONSE_SHAPE,
@@ -10417,6 +10636,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	revoke_session_permission: REVOKE_SESSION_PERMISSION_RESPONSE_SHAPE,
 	rollback_session: ROLLBACK_SESSION_RESPONSE_SHAPE,
 	run_memory_maintenance: RUN_MEMORY_MAINTENANCE_RESPONSE_SHAPE,
+	save_lifecycle_hooks: SAVE_LIFECYCLE_HOOKS_RESPONSE_SHAPE,
 	search_session_history_filtered: SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE,
 	set_hotkey_capture_active: SET_HOTKEY_CAPTURE_ACTIVE_RESPONSE_SHAPE,
 	set_reasoning_effort: SET_REASONING_EFFORT_RESPONSE_SHAPE,
@@ -10433,7 +10653,9 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	subscribe_mcp_resource: SUBSCRIBE_MCP_RESOURCE_RESPONSE_SHAPE,
 	switch_model: SWITCH_MODEL_RESPONSE_SHAPE,
 	toggle_mcp_server: TOGGLE_MCP_SERVER_RESPONSE_SHAPE,
+	trust_hook_workspace: TRUST_HOOK_WORKSPACE_RESPONSE_SHAPE,
 	unsubscribe_mcp_resource: UNSUBSCRIBE_MCP_RESOURCE_RESPONSE_SHAPE,
+	untrust_hook_workspace: UNTRUST_HOOK_WORKSPACE_RESPONSE_SHAPE,
 	update_mcp_server: UPDATE_MCP_SERVER_RESPONSE_SHAPE,
 	update_session_title: UPDATE_SESSION_TITLE_RESPONSE_SHAPE,
 	update_settings: UPDATE_SETTINGS_RESPONSE_SHAPE,
@@ -10553,6 +10775,7 @@ export interface TauriCommandMap {
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
 	get_bootstrap_status: { request: undefined; response: BootstrapStatus };
 	get_latest_session_for_resume: { request: undefined; response: SessionResumeResponse | null };
+	get_lifecycle_hooks_settings: { request: undefined; response: LifecycleHooksSettingsResponse };
 	get_log_info: { request: undefined; response: LogInfo };
 	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpFeatureCallOutcome };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
@@ -10598,6 +10821,7 @@ export interface TauriCommandMap {
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };
 	run_memory_maintenance: { request: undefined; response: number };
+	save_lifecycle_hooks: { request: { hooks: LifecycleHooksConfigInput }; response: void };
 	search_session_history_filtered: { request: { query?: string | null; status?: SessionHistoryStatusFilterInput | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: ReasoningEffortSelectionInput | null }; response: void };
@@ -10614,7 +10838,9 @@ export interface TauriCommandMap {
 	subscribe_mcp_resource: { request: { name: string; targetBinding: string; uri: string }; response: boolean };
 	switch_model: { request: { requestKind: RequestKindInput; modelConfigId: string }; response: void };
 	toggle_mcp_server: { request: { name: string; enabled: boolean }; response: void };
+	trust_hook_workspace: { request: undefined; response: string | null };
 	unsubscribe_mcp_resource: { request: { name: string; targetBinding: string; uri: string }; response: boolean };
+	untrust_hook_workspace: { request: { path: string }; response: void };
 	update_mcp_server: { request: { name: string; config: McpServerConfigInput }; response: void };
 	update_session_title: { request: { sessionId: string; title: string }; response: void };
 	update_settings: { request: { settings: SettingsPatchInput }; response: void };
@@ -10673,6 +10899,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_api_key_status: { boundary: 'read', security: "boolean presence only; credentials excluded" },
 	get_bootstrap_status: { boundary: 'read', security: "status enum only" },
 	get_latest_session_for_resume: { boundary: 'read', security: "most recent persisted session only" },
+	get_lifecycle_hooks_settings: { boundary: 'read', security: "Hook executable config and exact trusted roots; diagnostics omit commands, payloads, and output" },
 	get_log_info: { boundary: 'read', security: "path is optional; no environment details" },
 	get_mcp_prompt: { boundary: 'execute', security: "explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages" },
 	get_performance_metrics: { boundary: 'read', security: "bounded content-free backend counters plus renderer stream counters" },
@@ -10718,6 +10945,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	revoke_session_permission: { boundary: 'mutate', security: "non-empty session id and capability; removes one session grant" },
 	rollback_session: { boundary: 'mutate', security: "event cursor and projection clock rollback" },
 	run_memory_maintenance: { boundary: 'mutate', security: "maintenance path owns purge and embedding cleanup" },
+	save_lifecycle_hooks: { boundary: 'mutate', security: "typed validated Hook config; execution remains subject to the active security policy" },
 	search_session_history_filtered: { boundary: 'read', security: "bounded page and date-filtered projection" },
 	set_hotkey_capture_active: { boundary: 'mutate', security: "transient renderer key-capture state only; not persisted" },
 	set_reasoning_effort: { boundary: 'mutate', security: "request kind selects the assigned model; validated before config save" },
@@ -10734,7 +10962,9 @@ export const TAURI_COMMAND_CONTRACTS = {
 	subscribe_mcp_resource: { boundary: 'execute', security: "explicit UI selection from current resource list; enabled live target binding; bounded acknowledged subscription" },
 	switch_model: { boundary: 'mutate', security: "requestKind selects the route; modelConfigId is an assigned, capability-compatible Haven ModelConfig identity, not a Provider service model ID" },
 	toggle_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native admin operation connects before enabling" },
+	trust_hook_workspace: { boundary: 'mutate', security: "native picker only; canonical local directory; grants project Hook config trust only" },
 	unsubscribe_mcp_resource: { boundary: 'execute', security: "explicit UI cancellation; enabled live target binding; cancels only the selected resource stream" },
+	untrust_hook_workspace: { boundary: 'mutate', security: "removes only an exact root already present in the trusted Hook list" },
 	update_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native admin operation validates and reconnects safely" },
 	update_session_title: { boundary: 'mutate', security: "trimmed non-empty title only" },
 	update_settings: { boundary: 'mutate', security: "rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules" },

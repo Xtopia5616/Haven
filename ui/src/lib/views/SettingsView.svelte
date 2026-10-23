@@ -60,6 +60,7 @@
 	import SettingsDiagnostics from './SettingsDiagnostics.svelte';
 	import SettingsAbout from './SettingsAbout.svelte';
 	import SettingsSecurity from './SettingsSecurity.svelte';
+	import SettingsHooks from './SettingsHooks.svelte';
 	import SettingsLimits from './SettingsLimits.svelte';
 	import SettingsSaveBar from './SettingsSaveBar.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
@@ -336,6 +337,12 @@
 			keys: ['security'],
 		},
 		{
+			id: 'hooks',
+			label: '生命周期 Hooks',
+			description: '配置 Agent 生命周期命令、项目目录信任和 Hook 运行诊断。',
+			keys: [],
+		},
+		{
 			id: 'limits',
 			label: '性能与限制',
 			description: '调整上下文、工具、文件、并发和资源保护上限。',
@@ -363,6 +370,16 @@
 		description: string;
 		targetId?: string;
 	};
+	type HookDraftState = {
+		dirty: boolean;
+		save: () => Promise<boolean>;
+		discard: () => void;
+	};
+	let hookDraftState = $state<HookDraftState>({
+		dirty: false,
+		save: async () => true,
+		discard: () => {},
+	});
 	let settingsTab = $state<SettingsTabId>('behavior');
 	let visitedSettingsTabs = $state<SettingsTabId[]>(['behavior']);
 	let modelSection = $state<Extract<SettingsTabId, 'models' | 'media'>>('models');
@@ -374,11 +391,13 @@
 		try {
 			const current = buildPersistableSettings() as Record<string, unknown>;
 			const baseline = JSON.parse(savedSnapshot) as Record<string, unknown>;
-			return SETTINGS_SECTIONS.filter((section) =>
+			const dirtySections = SETTINGS_SECTIONS.filter((section) =>
 				section.keys.some(
 					(key) => JSON.stringify(current[key]) !== JSON.stringify(baseline[key]),
 				),
 			).map((section) => section.id);
+			if (hookDraftState.dirty && !dirtySections.includes('hooks')) dirtySections.push('hooks');
+			return dirtySections;
 		} catch {
 			return [] as SettingsTabId[];
 		}
@@ -536,17 +555,22 @@
 	function captureSnapshot() {
 		savedSnapshot = JSON.stringify(buildPersistableSettings());
 	}
-	function isDirty() {
+	function isSettingsFormDirty() {
 		return (
 			settingsLoaded &&
 			!!savedSnapshot &&
 			JSON.stringify(buildPersistableSettings()) !== savedSnapshot
 		);
 	}
-	const settingsDirty = $derived.by(() => isDirty());
+	function isDirty() {
+		return isSettingsFormDirty() || hookDraftState.dirty;
+	}
+	const settingsDirty = $derived.by(() => isSettingsFormDirty());
+	const anySettingsDirty = $derived.by(() => isDirty());
 
 	function discardAndReset() {
 		discardChanges();
+		hookDraftState.discard();
 		saveState = 'idle';
 		saveError = '';
 	}
@@ -958,11 +982,12 @@
 	}
 	function leaveWithoutSaving() {
 		discardChanges();
+		hookDraftState.discard();
 		finishLeaveDialog(true);
 	}
 	async function leaveWithSaving() {
 		leaveSaving = true;
-		if (await saveSettings()) finishLeaveDialog(true);
+		if (await saveAllChanges()) finishLeaveDialog(true);
 		else leaveSaving = false;
 	}
 	function stayOnSettings() {
@@ -1458,7 +1483,11 @@
 	}
 
 	async function handleSaveClick() {
-		const action = selectSettingsSaveAction(settingsLoaded, settingsDirty);
+		if (hookDraftState.dirty && !settingsDirty) {
+			await hookDraftState.save();
+			return;
+		}
+		const action = selectSettingsSaveAction(settingsLoaded, anySettingsDirty);
 		if (action === 'loading') {
 			addNotification('设置仍在加载，请稍候', 'info', 2500);
 			return;
@@ -1467,7 +1496,13 @@
 			addNotification('没有需要保存的设置', 'info', 2500);
 			return;
 		}
-		await saveSettings();
+		await saveAllChanges();
+	}
+
+	async function saveAllChanges() {
+		if (settingsDirty && (!settingsLoaded || !(await saveSettings()))) return false;
+		if (hookDraftState.dirty && !(await hookDraftState.save())) return false;
+		return true;
 	}
 
 </script>
@@ -1482,7 +1517,7 @@
 				>
 					{#snippet children()}
 						<SettingsSaveBar
-							dirty={settingsDirty}
+							dirty={anySettingsDirty}
 							dirtySectionLabels={dirtySettingsSectionLabels}
 							{saveState}
 							{saveError}
@@ -1673,6 +1708,14 @@
 										onResetSessionPermissions={resetSessionPermissions}
 										onPickExecutionRoot={pickExecutionWorkspace}
 									/>
+								</div>
+							{/if}
+							{#if visitedSettingsTabs.includes('hooks')}
+								<div hidden={settingsTab !== 'hooks'} data-settings-section="hooks">
+									<SettingsHooks
+									active={settingsTab === 'hooks'}
+									onDraftState={(draft) => (hookDraftState = draft)}
+								/>
 								</div>
 							{/if}
 							{#if visitedSettingsTabs.includes('limits')}

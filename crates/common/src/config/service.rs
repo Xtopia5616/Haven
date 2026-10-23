@@ -48,6 +48,7 @@ pub enum ConfigDomain {
     Notification,
     Log,
     Tools,
+    Hooks,
 }
 
 /// Notification emitted after a durable configuration mutation succeeds.
@@ -95,6 +96,9 @@ pub enum ConfigPatch {
     McpDiscovery(McpDiscoveryConfig),
     McpServers(Vec<McpServerConfig>),
     Tools(HashMap<String, ToolConfig>),
+    LifecycleHooks(super::LifecycleHooksConfig),
+    TrustHookWorkspace(std::path::PathBuf),
+    UntrustHookWorkspace(std::path::PathBuf),
     LogLevel(LogLevel),
 }
 
@@ -155,9 +159,41 @@ impl ConfigPatch {
             Self::McpDiscovery(discovery) => config.mcp_discovery = discovery,
             Self::McpServers(servers) => config.mcp_servers = servers,
             Self::Tools(tool_settings) => config.tool_settings = tool_settings,
+            Self::LifecycleHooks(hooks) => config.hooks = hooks,
+            Self::TrustHookWorkspace(path) => {
+                if !config
+                    .trusted_hook_workspaces
+                    .iter()
+                    .any(|trusted| same_workspace_path(trusted, &path))
+                {
+                    config.trusted_hook_workspaces.push(path);
+                }
+            }
+            Self::UntrustHookWorkspace(path) => {
+                let old_len = config.trusted_hook_workspaces.len();
+                config
+                    .trusted_hook_workspaces
+                    .retain(|trusted| !same_workspace_path(trusted, &path));
+                anyhow::ensure!(
+                    old_len != config.trusted_hook_workspaces.len(),
+                    "trusted Hook workspace was not found"
+                );
+            }
             Self::LogLevel(level) => config.log.level = level,
         }
         Ok(())
+    }
+}
+
+fn same_workspace_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
     }
 }
 
@@ -676,6 +712,11 @@ fn changed_domains(before: &AppConfig, after: &AppConfig) -> Vec<ConfigDomain> {
     changed!(Notification, notification);
     changed!(Log, log);
     changed!(Tools, tool_settings);
+    if before.hooks != after.hooks
+        || before.trusted_hook_workspaces != after.trusted_hook_workspaces
+    {
+        domains.push(ConfigDomain::Hooks);
+    }
     domains
 }
 
@@ -1016,6 +1057,81 @@ mod tests {
             vec![ConfigDomain::Hotkey, ConfigDomain::Session]
         );
         assert_eq!(receiver.recv().unwrap(), change);
+    }
+
+    #[test]
+    fn lifecycle_hook_patch_is_hot_versioned_and_not_exposed_in_settings() {
+        let (service, dir) = service();
+        let receiver = service.subscribe().unwrap();
+        let hooks = super::super::LifecycleHooksConfig {
+            run_start: vec![super::super::HookCommand {
+                command: "hook.exe".into(),
+                args: vec!["--run-start".into()],
+                matcher: None,
+            }],
+            ..Default::default()
+        };
+
+        let update = service
+            .apply_patch(ConfigPatch::LifecycleHooks(hooks.clone()))
+            .unwrap();
+
+        assert_eq!(update.snapshot.version, 1);
+        assert_eq!(
+            update.change.as_ref().unwrap().domains,
+            vec![ConfigDomain::Hooks]
+        );
+        assert_eq!(receiver.recv().unwrap().domains, vec![ConfigDomain::Hooks]);
+        assert_eq!(service.snapshot().unwrap().config.hooks, hooks);
+        assert!(
+            serde_json::to_string(&service.settings().unwrap())
+                .unwrap()
+                .contains("tool_settings")
+        );
+        assert!(
+            !serde_json::to_string(&service.settings().unwrap())
+                .unwrap()
+                .contains("hook.exe")
+        );
+
+        let persisted = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(persisted.contains("hook.exe"));
+    }
+
+    #[test]
+    fn hook_workspace_trust_patches_are_atomic_and_exact() {
+        let (service, _dir) = service();
+        let workspace = tempfile::tempdir().unwrap();
+        let path = crate::path::normalize_absolute_local_path(
+            &std::fs::canonicalize(workspace.path()).unwrap(),
+        )
+        .unwrap();
+
+        let trusted = service
+            .apply_patch(ConfigPatch::TrustHookWorkspace(path.clone()))
+            .unwrap();
+        assert_eq!(
+            trusted.snapshot.config.trusted_hook_workspaces,
+            vec![path.clone()]
+        );
+        assert_eq!(trusted.change.unwrap().domains, vec![ConfigDomain::Hooks]);
+
+        let duplicate = service
+            .apply_patch(ConfigPatch::TrustHookWorkspace(path.clone()))
+            .unwrap();
+        assert!(duplicate.change.is_none());
+        assert_eq!(duplicate.snapshot.version, 1);
+
+        let revoked = service
+            .apply_patch(ConfigPatch::UntrustHookWorkspace(path.clone()))
+            .unwrap();
+        assert!(revoked.snapshot.config.trusted_hook_workspaces.is_empty());
+        assert_eq!(revoked.change.unwrap().domains, vec![ConfigDomain::Hooks]);
+        assert!(
+            service
+                .apply_patch(ConfigPatch::UntrustHookWorkspace(path))
+                .is_err()
+        );
     }
 
     #[test]

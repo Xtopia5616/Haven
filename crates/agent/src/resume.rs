@@ -608,6 +608,7 @@ impl AgentLayer {
                     start_step,
                     emitter: emitter_arc,
                     run_id,
+                    is_session_start: false,
                 },
             )
             .await?;
@@ -791,6 +792,7 @@ impl AgentLayer {
                     start_step: 1,
                     emitter: emitter_arc,
                     run_id,
+                    is_session_start: false,
                 },
             )
             .await?;
@@ -1109,6 +1111,7 @@ mod direct_session_run_guard_tests {
                         start_step: 1,
                         emitter: Arc::new(NoopEmitter),
                         run_id: 1,
+                        is_session_start: false,
                     },
                 )
                 .await

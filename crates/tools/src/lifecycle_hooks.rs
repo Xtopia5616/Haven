@@ -9,13 +9,17 @@ use crate::security::{AuthorizationEngine, LifecycleHookProcessStartAuthorizatio
 use haven_common::config::{
     ConfigService, HookCommand, LifecycleHooksConfig, MAX_HOOKS_PER_EVENT, parse_project_hooks,
 };
-use haven_common::hooks::{LifecycleHookDecision, LifecycleHookEvent, LifecycleHookPayload};
+use haven_common::hooks::{
+    LifecycleHookDecision, LifecycleHookEvent, LifecycleHookEventDiagnostics, LifecycleHookOutcome,
+    LifecycleHookPayload,
+};
 use haven_platform::filesystem::DirectoryCapability;
 use haven_platform::process_containment::{ProcessContainment, process_spawn_lock};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
@@ -31,6 +35,7 @@ const PROCESS_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Default)]
 pub(crate) struct LifecycleHookService {
     config_service: OnceLock<Arc<ConfigService>>,
+    diagnostics: Mutex<HashMap<LifecycleHookEvent, LifecycleHookEventDiagnostics>>,
 }
 
 impl LifecycleHookService {
@@ -52,7 +57,9 @@ impl LifecycleHookService {
         mut payload: LifecycleHookPayload,
         cancel: CancellationToken,
     ) -> LifecycleHookDecision {
+        self.begin_event(payload.event);
         let Some(config_service) = self.config_service.get() else {
+            self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None);
             return LifecycleHookDecision::Allow;
         };
         let snapshot = match config_service.snapshot() {
@@ -71,6 +78,7 @@ impl LifecycleHookService {
                     .failure_decision(payload.event, "execution_workspace_unavailable")
                     .await;
             }
+            self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None);
             return LifecycleHookDecision::Allow;
         };
 
@@ -91,6 +99,7 @@ impl LifecycleHookService {
 
         hooks.retain(|hook| matcher_applies(hook, payload.tool_name.as_deref()));
         if hooks.is_empty() {
+            self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None);
             return LifecycleHookDecision::Allow;
         }
         if hooks.len() > MAX_HOOKS_PER_EVENT * 2 {
@@ -121,6 +130,8 @@ impl LifecycleHookService {
         };
 
         let event_deadline = tokio::time::Instant::now() + MAX_HOOK_EVENT_DURATION;
+        let mut had_failure = false;
+        let mut event_failure_code = None;
         for hook in hooks {
             if cancel.is_cancelled() {
                 return self.failure_decision(payload.event, "cancelled").await;
@@ -134,6 +145,7 @@ impl LifecycleHookService {
                         .await;
                 }
             };
+            self.command_started(payload.event);
             let result = tokio::time::timeout_at(
                 event_deadline,
                 run_hook_command(
@@ -148,7 +160,15 @@ impl LifecycleHookService {
             let output = match result {
                 Ok(Ok(output)) => output,
                 Ok(Err(failure)) => {
+                    had_failure = true;
+                    event_failure_code = Some(failure.code());
+                    self.record_failure(payload.event, failure.code());
                     if payload.event == LifecycleHookEvent::PreToolUse {
+                        self.finish_event(
+                            payload.event,
+                            LifecycleHookOutcome::FailedOpen,
+                            Some(failure.code()),
+                        );
                         return LifecycleHookDecision::Deny {
                             reason: failure.public_reason().to_owned(),
                         };
@@ -157,7 +177,15 @@ impl LifecycleHookService {
                     continue;
                 }
                 Err(_) => {
+                    had_failure = true;
+                    event_failure_code = Some("event_time_limit");
+                    self.record_failure(payload.event, "event_time_limit");
                     if payload.event == LifecycleHookEvent::PreToolUse {
+                        self.finish_event(
+                            payload.event,
+                            LifecycleHookOutcome::FailedOpen,
+                            Some("event_time_limit"),
+                        );
                         return LifecycleHookDecision::Deny {
                             reason: "PreToolUse hook exceeded its time limit".into(),
                         };
@@ -170,8 +198,17 @@ impl LifecycleHookService {
             if payload.event == LifecycleHookEvent::PreToolUse {
                 match parse_pre_tool_reply(&output.stdout) {
                     Ok(LifecycleHookDecision::Allow) => {}
-                    Ok(denied @ LifecycleHookDecision::Deny { .. }) => return denied,
+                    Ok(denied @ LifecycleHookDecision::Deny { .. }) => {
+                        self.finish_event(payload.event, LifecycleHookOutcome::Denied, None);
+                        return denied;
+                    }
                     Err(failure) => {
+                        self.record_failure(payload.event, failure.code());
+                        self.finish_event(
+                            payload.event,
+                            LifecycleHookOutcome::FailedOpen,
+                            Some(failure.code()),
+                        );
                         return LifecycleHookDecision::Deny {
                             reason: failure.public_reason().to_owned(),
                         };
@@ -179,7 +216,89 @@ impl LifecycleHookService {
                 }
             }
         }
+        if had_failure {
+            self.finish_event(
+                payload.event,
+                LifecycleHookOutcome::FailedOpen,
+                event_failure_code,
+            );
+        } else {
+            self.finish_event(payload.event, LifecycleHookOutcome::Succeeded, None);
+        }
         LifecycleHookDecision::Allow
+    }
+
+    pub(crate) fn diagnostics(&self) -> Vec<LifecycleHookEventDiagnostics> {
+        let Ok(diagnostics) = self.diagnostics.lock() else {
+            tracing::warn!("lifecycle hook diagnostics lock poisoned");
+            return Vec::new();
+        };
+        let mut values = diagnostics.values().cloned().collect::<Vec<_>>();
+        values.sort_by_key(|item| event_order(item.event));
+        values
+    }
+
+    fn begin_event(&self, event: LifecycleHookEvent) {
+        self.with_event_stats(event, |stats| {
+            stats.event_runs = stats.event_runs.saturating_add(1);
+            stats.last_outcome = None;
+            stats.last_failure_code = None;
+        });
+    }
+
+    fn command_started(&self, event: LifecycleHookEvent) {
+        self.with_event_stats(event, |stats| {
+            stats.command_runs = stats.command_runs.saturating_add(1);
+        });
+    }
+
+    fn record_failure(&self, event: LifecycleHookEvent, code: &str) {
+        self.with_event_stats(event, |stats| {
+            stats.failures = stats.failures.saturating_add(1);
+            stats.last_failure_code = Some(code.to_owned());
+        });
+    }
+
+    fn finish_event(
+        &self,
+        event: LifecycleHookEvent,
+        outcome: LifecycleHookOutcome,
+        failure_code: Option<&str>,
+    ) {
+        self.with_event_stats(event, |stats| {
+            stats.last_outcome = Some(outcome);
+            if let Some(code) = failure_code {
+                stats.last_failure_code = Some(code.to_owned());
+            } else if outcome != LifecycleHookOutcome::FailedOpen {
+                stats.last_failure_code = None;
+            }
+            if outcome == LifecycleHookOutcome::Denied {
+                stats.denials = stats.denials.saturating_add(1);
+            }
+        });
+    }
+
+    fn with_event_stats(
+        &self,
+        event: LifecycleHookEvent,
+        update: impl FnOnce(&mut LifecycleHookEventDiagnostics),
+    ) {
+        let Ok(mut diagnostics) = self.diagnostics.lock() else {
+            tracing::warn!("lifecycle hook diagnostics lock poisoned");
+            return;
+        };
+        let stats = diagnostics
+            .entry(event)
+            .or_insert_with(|| LifecycleHookEventDiagnostics {
+                event,
+                event_runs: 0,
+                command_runs: 0,
+                failures: 0,
+                denials: 0,
+                last_outcome: None,
+                last_failure_code: None,
+            });
+        update(stats);
     }
 
     async fn failure_decision(
@@ -187,6 +306,8 @@ impl LifecycleHookService {
         event: LifecycleHookEvent,
         failure: &'static str,
     ) -> LifecycleHookDecision {
+        self.record_failure(event, failure);
+        self.finish_event(event, LifecycleHookOutcome::FailedOpen, Some(failure));
         tracing::warn!(event = ?event, failure, "lifecycle hook event could not run");
         if event == LifecycleHookEvent::PreToolUse {
             LifecycleHookDecision::Deny {
@@ -195,6 +316,18 @@ impl LifecycleHookService {
         } else {
             LifecycleHookDecision::Allow
         }
+    }
+}
+
+fn event_order(event: LifecycleHookEvent) -> u8 {
+    match event {
+        LifecycleHookEvent::SessionStart => 0,
+        LifecycleHookEvent::RunStart => 1,
+        LifecycleHookEvent::PreToolUse => 2,
+        LifecycleHookEvent::PostToolUse => 3,
+        LifecycleHookEvent::PreCompact => 4,
+        LifecycleHookEvent::PostCompact => 5,
+        LifecycleHookEvent::RunEnd => 6,
     }
 }
 
@@ -395,8 +528,40 @@ fn clip_reason(reason: &str) -> String {
 fn matcher_applies(hook: &HookCommand, tool_name: Option<&str>) -> bool {
     match hook.matcher.as_deref() {
         None | Some("*") => true,
-        Some(matcher) => tool_name == Some(matcher),
+        Some(matcher) => tool_name.is_some_and(|name| wildcard_matches(matcher, name)),
     }
+}
+
+/// Match `*` over Unicode scalar values without compiling regexes or adding a
+/// dependency. Matcher length is capped by config validation.
+fn wildcard_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.chars().collect::<Vec<_>>();
+    let value = value.chars().collect::<Vec<_>>();
+    let (mut pattern_index, mut value_index) = (0, 0);
+    let mut star_index = None;
+    let mut retry_value_index = 0;
+
+    while value_index < value.len() {
+        if pattern_index < pattern.len()
+            && pattern[pattern_index] != '*'
+            && pattern[pattern_index] == value[value_index]
+        {
+            pattern_index += 1;
+            value_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == '*' {
+            star_index = Some(pattern_index);
+            pattern_index += 1;
+            retry_value_index = value_index;
+        } else if let Some(star) = star_index {
+            retry_value_index += 1;
+            value_index = retry_value_index;
+            pattern_index = star + 1;
+        } else {
+            return false;
+        }
+    }
+
+    pattern[pattern_index..].iter().all(|ch| *ch == '*')
 }
 
 fn is_trusted_workspace(root: &Path, trusted: &[PathBuf]) -> bool {
@@ -480,7 +645,7 @@ mod tests {
     use haven_common::config::{ConfigLoader, ConfigService, InMemoryCredentialStore};
 
     #[test]
-    fn matcher_supports_exact_names_and_global_wildcard() {
+    fn matcher_supports_exact_names_global_and_partial_wildcards() {
         let exact = HookCommand {
             command: "hook.exe".into(),
             args: Vec::new(),
@@ -495,6 +660,20 @@ mod tests {
             ..exact
         };
         assert!(matcher_applies(&all, None));
+
+        let namespace = HookCommand {
+            matcher: Some("mcp_*.search".into()),
+            ..all.clone()
+        };
+        assert!(matcher_applies(&namespace, Some("mcp_drive.search")));
+        assert!(!matcher_applies(&namespace, Some("mcp_drive.read")));
+
+        let middle = HookCommand {
+            matcher: Some("files.*.read".into()),
+            ..all
+        };
+        assert!(matcher_applies(&middle, Some("files.workspace.read")));
+        assert!(!matcher_applies(&middle, Some("files.read")));
     }
 
     #[test]
@@ -526,6 +705,29 @@ mod tests {
         assert!(payload.payload_truncated);
         assert!(payload.tool_output.is_none());
         assert!(payload.tool_input.is_none());
+    }
+
+    #[tokio::test]
+    async fn diagnostics_are_content_free_and_count_unconfigured_events() {
+        let hooks = LifecycleHookService::default();
+        let decision = hooks
+            .run(
+                &Arc::new(AuthorizationEngine::new()),
+                LifecycleHookPayload::new(LifecycleHookEvent::RunStart),
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert_eq!(decision, LifecycleHookDecision::Allow);
+        let diagnostics = hooks.diagnostics();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].event_runs, 1);
+        assert_eq!(diagnostics[0].command_runs, 0);
+        assert_eq!(
+            diagnostics[0].last_outcome,
+            Some(LifecycleHookOutcome::NoHooks)
+        );
+        assert!(diagnostics[0].last_failure_code.is_none());
     }
 
     #[test]

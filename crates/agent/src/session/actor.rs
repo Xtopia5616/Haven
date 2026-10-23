@@ -798,6 +798,8 @@ pub(crate) struct SessionState {
     /// The active ReAct run and its captured hot transcript are owned by this
     /// session state and polled only by the actor task.
     react_run: Option<ActiveReActRun>,
+    /// SessionStart fires once when this actor first accepts a ReAct run.
+    session_start_hook_fired: bool,
 }
 
 type ReActLoopFuture = Pin<Box<dyn Future<Output = anyhow::Result<ReActRunOutput>> + Send>>;
@@ -897,6 +899,7 @@ pub(crate) fn spawn(
             running: false,
             messaging: SessionMessagingState::default(),
             react_run: None,
+            session_start_hook_fired: false,
         };
         type ActiveRun = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
         let mut active_run: Option<ActiveRun> = None;
@@ -1147,7 +1150,7 @@ pub(crate) fn spawn(
                 ActorCommand::RunReActLoop {
                     engine,
                     replay,
-                    input,
+                    mut input,
                     reply,
                 } => {
                     if !state.running || state.react_run.is_some() {
@@ -1157,6 +1160,8 @@ pub(crate) fn spawn(
                         )));
                         continue;
                     }
+                    input.is_session_start = !state.session_start_hook_fired;
+                    state.session_start_hook_fired = true;
                     react_run_state.send_replace(true);
                     let mut react_state =
                         ReActState::new(replay.events, replay.canonical, replay.branch_points);
@@ -2012,6 +2017,7 @@ mod queue_tests {
             running: false,
             messaging: SessionMessagingState::default(),
             react_run: None,
+            session_start_hook_fired: false,
         }
     }
 
@@ -2410,6 +2416,7 @@ mod queue_tests {
                             start_step: 1,
                             emitter: Arc::new(NoopEmitter),
                             run_id,
+                            is_session_start: false,
                         },
                     )
                     .await

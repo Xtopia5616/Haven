@@ -7,7 +7,10 @@ pub struct LifecycleHooksConfig {
     pub pre_tool_use: Vec<HookCommand>,
     pub post_tool_use: Vec<HookCommand>,
     pub session_start: Vec<HookCommand>,
+    pub run_start: Vec<HookCommand>,
+    pub run_end: Vec<HookCommand>,
     pub pre_compact: Vec<HookCommand>,
+    pub post_compact: Vec<HookCommand>,
 }
 
 impl LifecycleHooksConfig {
@@ -16,7 +19,10 @@ impl LifecycleHooksConfig {
             crate::hooks::LifecycleHookEvent::PreToolUse => &self.pre_tool_use,
             crate::hooks::LifecycleHookEvent::PostToolUse => &self.post_tool_use,
             crate::hooks::LifecycleHookEvent::SessionStart => &self.session_start,
+            crate::hooks::LifecycleHookEvent::RunStart => &self.run_start,
+            crate::hooks::LifecycleHookEvent::RunEnd => &self.run_end,
             crate::hooks::LifecycleHookEvent::PreCompact => &self.pre_compact,
+            crate::hooks::LifecycleHookEvent::PostCompact => &self.post_compact,
         }
     }
 
@@ -24,7 +30,10 @@ impl LifecycleHooksConfig {
         self.pre_tool_use.is_empty()
             && self.post_tool_use.is_empty()
             && self.session_start.is_empty()
+            && self.run_start.is_empty()
+            && self.run_end.is_empty()
             && self.pre_compact.is_empty()
+            && self.post_compact.is_empty()
     }
 }
 
@@ -74,7 +83,10 @@ pub(crate) fn validate_lifecycle_hooks(config: &LifecycleHooksConfig) -> anyhow:
         ("pre_tool_use", &config.pre_tool_use),
         ("post_tool_use", &config.post_tool_use),
         ("session_start", &config.session_start),
+        ("run_start", &config.run_start),
+        ("run_end", &config.run_end),
         ("pre_compact", &config.pre_compact),
+        ("post_compact", &config.post_compact),
     ] {
         anyhow::ensure!(
             commands.len() <= super::MAX_HOOKS_PER_EVENT,
@@ -101,14 +113,12 @@ pub(crate) fn validate_lifecycle_hooks(config: &LifecycleHooksConfig) -> anyhow:
             );
             if let Some(matcher) = hook.matcher.as_deref() {
                 anyhow::ensure!(
-                    matcher == "*"
-                        || (!matcher.is_empty()
-                            && matcher.len() <= super::MAX_HOOK_MATCHER_BYTES
-                            && !matcher
-                                .chars()
-                                .any(|ch| ch.is_control() || ch.is_whitespace())
-                            && !matcher.contains('*')),
-                    "hooks.{event}[{index}].matcher must be '*' or an exact tool name"
+                    !matcher.is_empty()
+                        && matcher.len() <= super::MAX_HOOK_MATCHER_BYTES
+                        && !matcher
+                            .chars()
+                            .any(|ch| ch.is_control() || ch.is_whitespace()),
+                    "hooks.{event}[{index}].matcher must be a tool name pattern with '*' wildcards"
                 );
             }
         }
@@ -139,12 +149,22 @@ mod tests {
     }
 
     #[test]
-    fn project_hooks_reject_shell_globs_and_control_characters() {
-        let invalid_matcher = LifecycleHooksConfig {
+    fn project_hooks_accept_bounded_tool_globs_and_reject_control_characters() {
+        let glob_matcher = LifecycleHooksConfig {
             pre_tool_use: vec![HookCommand {
                 command: "hook.exe".into(),
                 args: Vec::new(),
                 matcher: Some("shell.*".into()),
+            }],
+            ..Default::default()
+        };
+        assert!(validate_lifecycle_hooks(&glob_matcher).is_ok());
+
+        let invalid_matcher = LifecycleHooksConfig {
+            pre_tool_use: vec![HookCommand {
+                command: "hook.exe".into(),
+                args: Vec::new(),
+                matcher: Some("shell.\n*".into()),
             }],
             ..Default::default()
         };

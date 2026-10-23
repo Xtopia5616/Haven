@@ -16,6 +16,7 @@ use haven_common::types::CanonicalMessage;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 /// Let the turn-boundary cancellation finish its durable result repair before
@@ -102,6 +103,8 @@ pub(crate) struct ReActRunInput {
     pub(crate) start_step: u32,
     pub(crate) emitter: Arc<dyn AgentEventEmitter>,
     pub(crate) run_id: u64,
+    /// Set by the session actor exactly once per actor lifetime.
+    pub(crate) is_session_start: bool,
 }
 
 impl ReActStepBudget {
@@ -142,11 +145,27 @@ impl ReActEngine {
         input: ReActRunInput,
         state: &mut ReActState,
     ) -> anyhow::Result<LoopExit> {
+        let run_end = LifecycleRunEndContext {
+            session_id: input.session_id.clone(),
+            run_id: input.run_id,
+            start_step: input.start_step,
+        };
+        let result = self.run_react_loop_inner(input, state).await;
+        self.emit_run_end(run_end, &result).await;
+        result
+    }
+
+    async fn run_react_loop_inner(
+        &self,
+        input: ReActRunInput,
+        state: &mut ReActState,
+    ) -> anyhow::Result<LoopExit> {
         let ReActRunInput {
             session_id,
             start_step,
             emitter,
             run_id,
+            is_session_start,
         } = input;
         let session_id = session_id.as_str();
         let budget = ReActStepBudget::from_engine(self, start_step);
@@ -159,16 +178,32 @@ impl ReActEngine {
             "ReAct run started"
         );
 
-        let mut session_start = haven_common::hooks::LifecycleHookPayload::new(
-            haven_common::hooks::LifecycleHookEvent::SessionStart,
+        if is_session_start {
+            let mut session_start = haven_common::hooks::LifecycleHookPayload::new(
+                haven_common::hooks::LifecycleHookEvent::SessionStart,
+            );
+            session_start.session_id = Some(session_id.to_owned());
+            session_start.run_id = Some(run_id);
+            session_start.start_step = Some(start_step);
+            let _ = self
+                .lifecycle_hooks
+                .run(
+                    session_start,
+                    self.executor.cancellation_token(session_id).await,
+                )
+                .await;
+        }
+
+        let mut run_start = haven_common::hooks::LifecycleHookPayload::new(
+            haven_common::hooks::LifecycleHookEvent::RunStart,
         );
-        session_start.session_id = Some(session_id.to_owned());
-        session_start.run_id = Some(run_id);
-        session_start.start_step = Some(start_step);
+        run_start.session_id = Some(session_id.to_owned());
+        run_start.run_id = Some(run_id);
+        run_start.start_step = Some(start_step);
         let _ = self
             .lifecycle_hooks
             .run(
-                session_start,
+                run_start,
                 self.executor.cancellation_token(session_id).await,
             )
             .await;
@@ -402,6 +437,51 @@ impl ReActEngine {
             ),
             _ => ReActRunBoundary::Continue,
         }
+    }
+}
+
+struct LifecycleRunEndContext {
+    session_id: String,
+    run_id: u64,
+    start_step: u32,
+}
+
+impl ReActEngine {
+    async fn emit_run_end(
+        &self,
+        context: LifecycleRunEndContext,
+        result: &anyhow::Result<LoopExit>,
+    ) {
+        let mut payload = haven_common::hooks::LifecycleHookPayload::new(
+            haven_common::hooks::LifecycleHookEvent::RunEnd,
+        );
+        payload.session_id = Some(context.session_id.clone());
+        payload.run_id = Some(context.run_id);
+        payload.start_step = Some(context.start_step);
+        payload.success = Some(
+            result
+                .as_ref()
+                .is_ok_and(|exit| !matches!(exit, LoopExit::Error(_))),
+        );
+        payload.run_outcome = Some(
+            match result {
+                Ok(LoopExit::Paused { reason }) => match reason {
+                    PauseReason::TurnEnd => "turn_end",
+                    PauseReason::Ask => "ask",
+                    PauseReason::Confirm => "confirm",
+                    PauseReason::Budget => "budget",
+                    PauseReason::External => "external_pause",
+                },
+                Ok(LoopExit::Cancelled) => "cancelled",
+                Ok(LoopExit::Completed) => "completed",
+                Ok(LoopExit::Error(_)) | Err(_) => "error",
+            }
+            .to_owned(),
+        );
+        let _ = self
+            .lifecycle_hooks
+            .run(payload, CancellationToken::new())
+            .await;
     }
 }
 

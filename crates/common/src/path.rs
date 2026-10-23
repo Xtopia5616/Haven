@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Return whether a path is absolute and local on the current platform.
 /// Windows UNC and device paths are excluded because Haven's directory
@@ -16,6 +16,24 @@ pub fn is_absolute_local_path(path: &Path) -> bool {
     {
         true
     }
+}
+
+/// Normalize a canonical absolute local path into the ordinary path spelling
+/// expected by config files and Windows directory capabilities.
+///
+/// Windows `std::fs::canonicalize` may return a verbatim drive path such as
+/// `\\?\C:\workspace`. Strip that prefix only for drive paths; UNC and other
+/// device paths remain rejected by `is_absolute_local_path`.
+pub fn normalize_absolute_local_path(path: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let normalized = {
+        let value = path.to_string_lossy();
+        PathBuf::from(value.strip_prefix(r"\\?\").unwrap_or(value.as_ref()))
+    };
+    #[cfg(not(windows))]
+    let normalized = path.to_path_buf();
+
+    is_absolute_local_path(&normalized).then_some(normalized)
 }
 
 /// Return whether `candidate` is lexically equal to or beneath `root`.
@@ -50,5 +68,27 @@ pub fn path_is_equal(left: &Path, right: &Path) -> bool {
     #[cfg(not(windows))]
     {
         left == right
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn normalizes_verbatim_local_drive_paths_but_rejects_unc_and_device_paths() {
+        assert_eq!(
+            normalize_absolute_local_path(Path::new(r"\\?\C:\workspace")),
+            Some(PathBuf::from(r"C:\workspace"))
+        );
+        assert_eq!(
+            normalize_absolute_local_path(Path::new(r"\\?\UNC\server\share")),
+            None
+        );
+        assert_eq!(
+            normalize_absolute_local_path(Path::new(r"\\.\PhysicalDrive0")),
+            None
+        );
     }
 }

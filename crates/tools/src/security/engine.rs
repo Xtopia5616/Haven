@@ -283,6 +283,11 @@ impl AuthorizationEngine {
         self.config.read().await.sandbox_mode
     }
 
+    pub(crate) async fn lifecycle_hook_security_policy(&self) -> (SandboxMode, NetworkPolicy) {
+        let config = self.config.read().await;
+        (config.sandbox_mode, config.network_policy)
+    }
+
     pub async fn execution_workspace_snapshot(&self) -> ExecutionWorkspaceSnapshot {
         self.config.read().await.execution_workspace.snapshot()
     }

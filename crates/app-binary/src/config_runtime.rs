@@ -311,6 +311,9 @@ impl RuntimeConfigApplyPlan {
                     // Notification settings are read from the current
                     // snapshot by the notification sink; no rebuild is needed.
                 }
+                ConfigDomain::Hooks => {
+                    // LifecycleHookService reads the current config snapshot per event.
+                }
                 ConfigDomain::Tools => plan.push_live(RuntimeConfigTarget::ToolSettings),
             }
         }

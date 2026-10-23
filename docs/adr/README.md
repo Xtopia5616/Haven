@@ -1274,3 +1274,4 @@
 - [1368：用 MXC ProcessContainer 限定 WorkspaceWrite Shell](1368-mxc-processcontainer-for-workspace-shell.md)
 - [1369：移除生成采样参数配置](1369-remove-generation-sampling-configuration.md)
 - [1370：Agent 模型消费者共享运行时发布点](1370-share-agent-model-runtime.md)
+- [1371：扩展生命周期 Hooks 的管理与事件覆盖](1371-expand-lifecycle-hooks.md)

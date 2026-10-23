@@ -369,6 +369,26 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "config response redacts credentials and MCP environment values",
     },
     CommandContract {
+        name: "get_lifecycle_hooks_settings",
+        boundary: CommandBoundary::Read,
+        security: "Hook executable config and exact trusted roots; diagnostics omit commands, payloads, and output",
+    },
+    CommandContract {
+        name: "save_lifecycle_hooks",
+        boundary: CommandBoundary::Mutate,
+        security: "typed validated Hook config; execution remains subject to the active security policy",
+    },
+    CommandContract {
+        name: "trust_hook_workspace",
+        boundary: CommandBoundary::Mutate,
+        security: "native picker only; canonical local directory; grants project Hook config trust only",
+    },
+    CommandContract {
+        name: "untrust_hook_workspace",
+        boundary: CommandBoundary::Mutate,
+        security: "removes only an exact root already present in the trusted Hook list",
+    },
+    CommandContract {
         name: "pick_execution_workspace_directory",
         boundary: CommandBoundary::Read,
         security: "user-selected local directory candidate only; validates but grants no file access",

@@ -16,6 +16,22 @@ export function loadSettings(): Promise<SettingsPayload | null> {
 	return invoke('get_settings').then(parseSettingsPayload);
 }
 
+export function getLifecycleHooksSettings(): Promise<TauriCommandResponse<'get_lifecycle_hooks_settings'>> {
+	return invoke('get_lifecycle_hooks_settings');
+}
+
+export function saveLifecycleHooks(hooks: TauriCommandRequest<'save_lifecycle_hooks'>['hooks']): Promise<void> {
+	return invoke('save_lifecycle_hooks', { hooks });
+}
+
+export function trustHookWorkspace(): Promise<string | null> {
+	return invoke('trust_hook_workspace');
+}
+
+export function untrustHookWorkspace(path: string): Promise<void> {
+	return invoke('untrust_hook_workspace', { path });
+}
+
 /** Open the native folder picker for an execution workspace candidate. */
 export function pickExecutionWorkspaceDirectory(): Promise<string | null> {
 	return invoke('pick_execution_workspace_directory');

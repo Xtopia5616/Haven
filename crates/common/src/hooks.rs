@@ -7,13 +7,39 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// User-configurable lifecycle point exposed to an external hook command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleHookEvent {
     PreToolUse,
     PostToolUse,
     SessionStart,
+    RunStart,
+    RunEnd,
     PreCompact,
+    PostCompact,
+}
+
+/// Content-free outcome visible in the Hooks settings diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleHookOutcome {
+    NoHooks,
+    Succeeded,
+    Denied,
+    FailedOpen,
+}
+
+/// Bounded in-memory counters for one event. No command, arguments, payload,
+/// stdout, stderr, or denial text is included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleHookEventDiagnostics {
+    pub event: LifecycleHookEvent,
+    pub event_runs: u64,
+    pub command_runs: u64,
+    pub failures: u64,
+    pub denials: u64,
+    pub last_outcome: Option<LifecycleHookOutcome>,
+    pub last_failure_code: Option<String>,
 }
 
 /// Bounded, typed metadata passed to a configured hook through JSON on stdin.
@@ -30,6 +56,9 @@ pub struct LifecycleHookPayload {
     pub tool_output: Option<Value>,
     pub success: Option<bool>,
     pub tokens_before: Option<u64>,
+    pub tokens_after: Option<u64>,
+    /// Stable, content-free run outcome such as `completed`, `paused`, or `error`.
+    pub run_outcome: Option<String>,
     pub payload_truncated: bool,
 }
 
@@ -45,6 +74,8 @@ impl LifecycleHookPayload {
             tool_output: None,
             success: None,
             tokens_before: None,
+            tokens_after: None,
+            run_outcome: None,
             payload_truncated: false,
         }
     }

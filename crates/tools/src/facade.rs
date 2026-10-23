@@ -1032,6 +1032,27 @@ impl ToolsFacade {
             .await
     }
 
+    /// Return bounded, content-free runtime diagnostics for lifecycle hooks.
+    pub fn lifecycle_hook_diagnostics(
+        &self,
+    ) -> Vec<haven_common::hooks::LifecycleHookEventDiagnostics> {
+        self.coordinator.lifecycle_hooks.diagnostics()
+    }
+
+    /// Return the policy currently enforced by the Hook process authorization gate.
+    pub async fn lifecycle_hook_security_policy(
+        &self,
+    ) -> (
+        haven_common::types::SandboxMode,
+        haven_common::types::NetworkPolicy,
+    ) {
+        self.coordinator
+            .core
+            .authorization
+            .lifecycle_hook_security_policy()
+            .await
+    }
+
     /// Apply the security configuration to every runtime boundary that needs
     /// the same snapshot. The authorization engine protects tool execution;
     /// the MCP manager additionally protects startup, refresh, reconnect, and
