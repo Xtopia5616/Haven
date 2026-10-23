@@ -17,8 +17,7 @@
 	import { syncStore } from '$lib/syncStore.ts';
 	import { openContextMenu } from '$lib/contextMenuStore.ts';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
-	import MaterialSelect from '$lib/MaterialSelect.svelte';
-	import type { SelectOption } from '$lib/selectOption.ts';
+	import MaterialChoiceChip from '$lib/MaterialChoiceChip.svelte';
 	import type { ReActExecutionPhase } from '$lib/reactExecutionPhaseStore.ts';
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
@@ -27,18 +26,6 @@
 	import { DRAFT_SESSION_ID } from '$lib/sessionReducer.ts';
 	import { publishWorkspaceStatusHint } from '$lib/workspaceStatusHintStore.ts';
 
-	const DELIVERY_MODE_OPTIONS: SelectOption[] = [
-		{
-			value: 'steering',
-			label: '安全边界调整',
-			description: '当前请求或工具结束后接入',
-		},
-		{
-			value: 'follow_up',
-			label: '完成后追加',
-			description: '当前工作结束后开始处理',
-		},
-	];
 	interface PendingChatImageAttachment extends ChatAttachmentPayload {
 		previewKey: string;
 	}
@@ -71,6 +58,8 @@
 		sessionStatusLabel?: string;
 		sessionWaitingReason?: SessionWaitingReason | null;
 		interrupting?: boolean;
+		hasPendingDelivery?: boolean;
+		hasPendingInteractions?: boolean;
 		askAwaiting?: boolean;
 		askHasOptions?: boolean;
 		confirmationAwaiting?: boolean;
@@ -97,6 +86,8 @@
 		sessionStatusLabel = '空闲',
 		sessionWaitingReason = null,
 		interrupting = false,
+		hasPendingDelivery = false,
+		hasPendingInteractions = false,
 		// While an ask card is waiting, guide the user from the input itself.
 		askAwaiting = false,
 		askHasOptions = false,
@@ -152,6 +143,12 @@
 
 	let deliveryMode = $state<Exclude<InputDeliveryModeInput, 'auto'>>('steering');
 	let deliveryModeAvailable = $derived(sessionRunning || isGenerating);
+	let deliveryModeDisabled = $derived(
+		interrupting || hasPendingDelivery || hasPendingInteractions,
+	);
+	let pendingSendBlocked = $derived(
+		(hasPendingDelivery || hasPendingInteractions || confirmationAwaiting) && !askAwaiting,
+	);
 	let allowEmptyMessageSubmit = $derived(
 		allowEmptySubmit && askAwaiting,
 	);
@@ -161,7 +158,7 @@
 			return '正在等待你的回答；发送内容和已选选项会作为当前问题的答案。';
 		}
 		if (confirmationAwaiting) {
-			return '工具正在等待权限确认；此处发送的消息只会排队，确认前不会开始处理。';
+			return '工具正在等待权限确认；请先处理待操作项目。';
 		}
 		if (sessionStatus === 'paused') {
 			if (sessionStatusLabel === '本轮已完成') {
@@ -263,7 +260,7 @@
 				: '在此处输入答案或补充，Enter 提交';
 		}
 		if (interrupting) return '当前正在停止；稍后可继续发送消息';
-		if (confirmationAwaiting) return '工具等待权限确认；消息会排队至确认完成';
+		if (confirmationAwaiting) return '工具正在等待权限确认；请先处理待操作项目';
 		if (sessionStatus === 'completed' || sessionStatus === 'error') {
 			return '输入指令以开始新的会话';
 		}
@@ -505,6 +502,7 @@
 	// single normalized payload and forward it to the host, then clear the
 	// draft. The host owns the actual submission side effects.
 	function handleSubmit() {
+		if (pendingSendBlocked) return;
 		if (pendingAttachmentReads > 0) {
 			addNotification('附件仍在读取，请完成后再发送', 'info');
 			return;
@@ -790,25 +788,35 @@
 	<div class="toolbar-row md-toolbar">
 		<div class="toolbar-left">
 			{@render toolbarLeft?.()}
+			{#if deliveryModeAvailable && !confirmationAwaiting && !askAwaiting}
+				<div
+					class="delivery-mode-group"
+					role="group"
+					aria-label="消息投递方式"
+					title={hasPendingInteractions
+						? '请先处理待操作项目'
+						: hasPendingDelivery
+							? '有待处理消息；送达后才能继续发送'
+							: undefined}
+				>
+					<MaterialChoiceChip
+						label="安全边界调整"
+						selected={deliveryMode === 'steering'}
+						disabled={deliveryModeDisabled}
+						className="delivery-mode-chip"
+						onSelect={() => (deliveryMode = 'steering')}
+					/>
+					<MaterialChoiceChip
+						label="完成后追加"
+						selected={deliveryMode === 'follow_up'}
+						disabled={deliveryModeDisabled}
+						className="delivery-mode-chip"
+						onSelect={() => (deliveryMode = 'follow_up')}
+					/>
+				</div>
+			{/if}
 		</div>
 		<div class="toolbar-right">
-			{#if deliveryModeAvailable && !confirmationAwaiting && !askAwaiting}
-				<MaterialSelect
-					id="chat-delivery-mode"
-					ariaLabel="消息投递方式"
-					appearance="toolbar"
-					width="content"
-					value={deliveryMode}
-					options={DELIVERY_MODE_OPTIONS}
-					disabled={interrupting}
-					title={deliveryMode === 'follow_up'
-						? '等待当前工作自然完成后追加'
-						: '在下一个安全边界调整当前工作，不中断当前请求或工具'}
-					onChange={(value) => {
-						if (value === 'steering' || value === 'follow_up') deliveryMode = value;
-					}}
-				/>
-			{/if}
 			<MaterialIconButton
 				size="toolbar"
 				label="添加附件"
@@ -836,7 +844,13 @@
 				size="toolbar"
 				variant={stopMode ? 'danger' : 'primary'}
 				label={hasInput ? '发送' : stopMode ? '中断输出' : '发送'}
-				title={pendingAttachmentReads > 0
+				title={pendingSendBlocked && hasInput
+					? hasPendingInteractions
+						? '请先处理待操作项目'
+						: confirmationAwaiting
+							? '请先处理待操作的权限确认'
+							: '已有待处理消息，等它送达后再发送'
+					: pendingAttachmentReads > 0
 					? '附件正在读取'
 					: hasInput
 						? '发送'
@@ -846,6 +860,7 @@
 				ariaBusy={interrupting || pendingAttachmentReads > 0}
 				disabled={interrupting ||
 					pendingAttachmentReads > 0 ||
+					(pendingSendBlocked && hasInput) ||
 					(!hasInput && !isGenerating && !sessionRunning)}
 				icon={hasInput ? 'send' : stopMode ? 'stop' : 'send'}
 				onclick={stopMode ? () => onstop?.() : handleSubmit}
@@ -1077,6 +1092,32 @@
 		padding: 0 var(--md-sys-space-md);
 		font-size: var(--md-sys-typescale-label-large-size);
 		line-height: var(--md-sys-typescale-label-large-line-height);
+	}
+	.delivery-mode-group {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		max-width: 100%;
+		padding: 2px;
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-surface-container-low);
+	}
+	.delivery-mode-group :global(.md-choice-chip.delivery-mode-chip) {
+		min-width: 0;
+		height: var(--md-comp-toolbar-height);
+		padding-inline: var(--md-sys-space-sm);
+		border-color: transparent;
+		background: transparent;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.delivery-mode-group :global(.md-choice-chip.delivery-mode-chip.selected) {
+		border-color: transparent;
+		background: var(--md-sys-color-primary-container);
+		color: var(--md-sys-color-on-primary-container);
 	}
 
 	@container conversation (max-width: 700px) {

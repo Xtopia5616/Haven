@@ -187,6 +187,14 @@
 		currentReducerState.messages[currentReducerState.activeSessionId || DRAFT_SESSION_ID] ??
 			emptySessionMessages,
 	);
+	const hasPendingDelivery = $derived(
+		activeSessionMessages.some(
+			(message) =>
+				message.role === 'user' &&
+				!!message.deliveryMode &&
+				message.received !== true,
+		),
+	);
 	let activeSessionWorkingDocument = $state(
 		currentReducerState.activeSessionId
 			? currentReducerState.workingDocuments[currentReducerState.activeSessionId] || ''
@@ -1448,6 +1456,8 @@
 			sessionStatusLabel={activeSessionStatusLabel}
 			sessionWaitingReason={activeSession?.waitingReason}
 			interrupting={interruptPending}
+			{hasPendingDelivery}
+			hasPendingInteractions={pendingInteractionItems.length > 0}
 			{askAwaiting}
 			{askHasOptions}
 			{confirmationAwaiting}

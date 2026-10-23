@@ -1,7 +1,6 @@
-/** A value/label row with optional supporting text for shared MaterialSelect menus. */
+/** A value/label row accepted by the shared MaterialSelect control. */
 export interface SelectOption {
 	value: string;
 	label: string;
-	description?: string;
 	group?: string;
 }
