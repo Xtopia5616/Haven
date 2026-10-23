@@ -98,6 +98,42 @@ impl HttpTool {
         params: HttpRequestParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        self.run_with_domain_constraints(params, cancel, None).await
+    }
+
+    async fn run_with_authorization_context(
+        &self,
+        params: HttpRequestParams,
+        cancel: CancellationToken,
+        context: &crate::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        let _permit = context
+            .acquire_execution_policy_permit()
+            .await
+            .map_err(anyhow::Error::msg)?;
+        if let Some(extension) = context.network_destination_extension() {
+            let input = serde_json::json!({"url": params.url});
+            let declared = self
+                .authorization_resources(&input)
+                .map_err(anyhow::Error::msg)?;
+            if declared.as_slice() != [extension.clone()] {
+                anyhow::bail!("HTTP destination no longer matches its confirmed origin");
+            }
+        }
+        self.run_with_domain_constraints(
+            params,
+            cancel,
+            context.network_domain_constraints().map(<[_]>::to_vec),
+        )
+        .await
+    }
+
+    async fn run_with_domain_constraints(
+        &self,
+        params: HttpRequestParams,
+        cancel: CancellationToken,
+        domain_constraints: Option<Vec<Vec<String>>>,
+    ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             return Ok(ToolResult::cancelled("HTTP request cancelled"));
         }
@@ -117,7 +153,10 @@ impl HttpTool {
         let as_html = params.as_html.unwrap_or(false);
         let headers: Vec<(String, String)> =
             params.headers.unwrap_or_default().into_iter().collect();
-        let allowed_domain_groups = self.effective_domain_constraints().await;
+        let allowed_domain_groups = match domain_constraints {
+            Some(constraints) => constraints,
+            None => self.effective_domain_constraints().await,
+        };
 
         if cancel.is_cancelled() {
             return Ok(ToolResult::cancelled("HTTP request cancelled"));
@@ -380,6 +419,22 @@ impl Tool for HttpTool {
         let params =
             crate::tool_contract::parse_tool_input::<HttpRequestParams>(&self.name(), input)?;
         self.run(params, cancel).await
+    }
+
+    async fn execute_with_authorization_context(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+        context: &crate::ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        if target_binding.is_some() {
+            anyhow::bail!("HTTP requests do not accept a remote execution target binding");
+        }
+        let params =
+            crate::tool_contract::parse_tool_input::<HttpRequestParams>(&self.name(), input)?;
+        self.run_with_authorization_context(params, cancel, context)
+            .await
     }
 }
 
@@ -879,6 +934,56 @@ mod tests {
         assert!(!result.truncated);
         let headers = result.output["headers"].as_array().unwrap();
         assert!(headers.iter().any(|h| h["name"] == "content-type"));
+    }
+
+    #[tokio::test]
+    async fn confirmed_http_origin_extension_is_bound_to_the_exact_origin() {
+        let url = serve_once("200 OK", "text/plain", "confirmed origin").await;
+        let tool = HttpTool::default();
+        let resource = tool
+            .authorization_resources(&json!({"url": url}))
+            .unwrap()
+            .remove(0);
+        let context = crate::ToolExecutionContext {
+            network_domain_constraints: Some(Vec::new()),
+            network_destination_extension: Some(resource),
+            ..crate::ToolExecutionContext::default()
+        };
+        let result = tool
+            .run_with_authorization_context(
+                HttpRequestParams {
+                    method: Some(HttpRequestMethod::Get),
+                    url: url.clone(),
+                    headers: None,
+                    body: None,
+                    as_html: None,
+                    timeout_secs: Some(5),
+                },
+                CancellationToken::new(),
+                &context,
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["body"], "confirmed origin");
+
+        let changed_origin = url.replacen("127.0.0.1", "localhost", 1);
+        let error = tool
+            .run_with_authorization_context(
+                HttpRequestParams {
+                    method: Some(HttpRequestMethod::Get),
+                    url: changed_origin,
+                    headers: None,
+                    body: None,
+                    as_html: None,
+                    timeout_secs: Some(5),
+                },
+                CancellationToken::new(),
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("confirmed origin"));
     }
 
     #[tokio::test]

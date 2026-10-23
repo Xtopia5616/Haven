@@ -1280,3 +1280,4 @@
 - [1374：会话级执行方式与 typed 资源合同](1374-session-execution-mode-and-resource-contracts.md)
 - [1375：将可复用授权绑定到资源范围](1375-resource-scoped-persistent-permissions.md)
 - [1376：统一资源策略与本次边界扩展](1376-canonical-resource-policy-and-boundary-extension.md)
+- [1377：HTTP 全局域名边界的一次性扩展](1377-once-only-http-domain-boundary-extension.md)

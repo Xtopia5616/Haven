@@ -1741,6 +1741,8 @@ pub trait Tool: Send + Sync {
 pub struct ToolExecutionContext {
     pub(crate) execution_workspace: Option<crate::execution_workspace::ExecutionWorkspace>,
     pub(crate) file_write_policy: Option<crate::security::FileWritePolicy>,
+    pub(crate) network_domain_constraints: Option<Vec<Vec<String>>>,
+    pub(crate) network_destination_extension: Option<crate::security::DeclaredResource>,
     pub(crate) execution_authorization: Option<crate::security::ExecutionPolicyAuthorization>,
     pub(crate) call_session_id: Option<String>,
     pub(crate) call_step_id: Option<String>,
@@ -1780,6 +1782,16 @@ impl ToolExecutionContext {
         &self,
     ) -> Option<crate::security::ExecutionPolicyAuthorization> {
         self.execution_authorization.clone()
+    }
+
+    pub(crate) fn network_domain_constraints(&self) -> Option<&[Vec<String>]> {
+        self.network_domain_constraints.as_deref()
+    }
+
+    pub(crate) fn network_destination_extension(
+        &self,
+    ) -> Option<&crate::security::DeclaredResource> {
+        self.network_destination_extension.as_ref()
     }
 
     pub(crate) fn with_call_identity(

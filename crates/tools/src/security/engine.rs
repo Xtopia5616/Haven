@@ -716,17 +716,7 @@ impl AuthorizationEngine {
 
     pub(crate) async fn network_domain_constraints(&self, tool_name: &str) -> Vec<Vec<String>> {
         let cfg = self.config.read().await;
-        let mut constraints = Vec::new();
-        if !cfg.global_network_domains.is_empty() {
-            constraints.push(cfg.global_network_domains.clone());
-        }
-        constraints.extend(
-            tool_setting_names(tool_name)
-                .filter_map(|name| cfg.tool_settings.get(name))
-                .map(|setting| setting.resource_policy.network.allowed_domains.clone())
-                .filter(|domains| !domains.is_empty()),
-        );
-        constraints
+        network_domain_constraints_for_config(&cfg, tool_name, true)
     }
 
     pub(crate) async fn execution_context_for_proof(
@@ -846,6 +836,44 @@ impl AuthorizationEngine {
         } else {
             None
         };
+        let network_destination_extension = if proof_resource_boundary_extension(proof) {
+            match request.resources.as_slice() {
+                [resource @ super::DeclaredResource::NetworkDestination { .. }]
+                    if request.tool_name == "http"
+                        && request.policy.network_access == NetworkAccess::Public =>
+                {
+                    Some(resource.clone())
+                }
+                resources
+                    if request.tool_name.starts_with("files.")
+                        && resources.iter().any(|resource| {
+                            matches!(
+                                resource,
+                                super::DeclaredResource::LocalPath {
+                                    access: super::LocalPathAccess::Write,
+                                    ..
+                                }
+                            )
+                        })
+                        && resources.iter().all(|resource| {
+                            matches!(resource, super::DeclaredResource::LocalPath { .. })
+                        }) =>
+                {
+                    None
+                }
+                _ => {
+                    return Err(
+                        "temporary resource extension does not match one supported typed resource"
+                            .into(),
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let network_domain_constraints = network_destination_extension
+            .as_ref()
+            .map(|_| network_domain_constraints_for_config(&cfg, &request.tool_name, false));
         let tool_settings_cancellation =
             self.register_tool_settings_cancellation(&request.tool_name);
         let session_trust_cancellation =
@@ -854,6 +882,8 @@ impl AuthorizationEngine {
         Ok(ToolExecutionContext {
             execution_workspace: Some(execution_workspace.clone()),
             file_write_policy,
+            network_domain_constraints,
+            network_destination_extension,
             execution_authorization: Some(ExecutionPolicyAuthorization {
                 authorization: Arc::clone(self),
                 policy_revision: proof.binding.policy_revision,
@@ -910,7 +940,7 @@ impl AuthorizationEngine {
         // silently turn Plan back into an execution mode.
         let execution_mode = cfg.execution_mode_for(session_id);
         if execution_mode.task_intent() == haven_common::types::TaskIntent::Analyze
-            && !policy.is_read_only()
+            && (resource_boundary_extension || !policy.is_read_only())
         {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: "analyze mode only permits read-only operations".into(),
@@ -1792,6 +1822,63 @@ fn network_resource_block(
     None
 }
 
+fn network_domain_extension_allowed(
+    cfg: &SafetyConfig,
+    tool_name: &str,
+    resources: &[super::DeclaredResource],
+    operation: &OperationPolicy,
+) -> bool {
+    if tool_name != "http" || operation.network_access != NetworkAccess::Public {
+        return false;
+    }
+    let [super::DeclaredResource::NetworkDestination { host, .. }] = resources else {
+        return false;
+    };
+    if cfg.global_network_domains.is_empty()
+        || haven_common::network::http_domain_allowed(host, &cfg.global_network_domains)
+    {
+        return false;
+    }
+    if tool_setting_names(tool_name).any(|name| {
+        cfg.tool_settings.get(name).is_some_and(|setting| {
+            setting.resource_policy.network.access == NetworkAccessBoundary::Deny
+                || (!setting.resource_policy.network.allowed_domains.is_empty()
+                    && !haven_common::network::http_domain_allowed(
+                        host,
+                        &setting.resource_policy.network.allowed_domains,
+                    ))
+        })
+    }) {
+        return false;
+    }
+    true
+}
+
+fn network_domain_constraints_for_config(
+    cfg: &SafetyConfig,
+    tool_name: &str,
+    include_global: bool,
+) -> Vec<Vec<String>> {
+    let mut constraints = Vec::new();
+    if include_global && !cfg.global_network_domains.is_empty() {
+        constraints.push(cfg.global_network_domains.clone());
+    }
+    constraints.extend(
+        tool_setting_names(tool_name)
+            .filter_map(|name| cfg.tool_settings.get(name))
+            .map(|setting| setting.resource_policy.network.allowed_domains.clone())
+            .filter(|domains| !domains.is_empty()),
+    );
+    constraints
+}
+
+fn proof_resource_boundary_extension(proof: &AuthorizationExecutionProof) -> bool {
+    matches!(
+        &proof.authorization,
+        ExecutionAuthorizationKind::Confirmed(receipt) if receipt.resource_boundary_extension
+    )
+}
+
 fn workspace_host_process_block(
     sandbox_mode: SandboxMode,
     tool_name: &str,
@@ -1992,10 +2079,16 @@ fn check_policy_boundaries(
         });
     }
     if let Some(reason) = network_resource_block(cfg, tool_name, resources, policy) {
+        let resource_extension_allowed =
+            network_domain_extension_allowed(cfg, tool_name, resources, policy);
         return Err(PolicyBoundaryFailure {
             reason,
-            reason_code: AuthorizationReasonCode::NetworkPolicy,
-            resource_extension_allowed: false,
+            reason_code: if resource_extension_allowed {
+                AuthorizationReasonCode::ResourceBoundaryExtension
+            } else {
+                AuthorizationReasonCode::NetworkPolicy
+            },
+            resource_extension_allowed,
         });
     }
     if let Some(failure) =
@@ -4374,6 +4467,197 @@ mod tests {
                 )
                 .await,
             ConfirmationResult::Blocked { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn global_http_domain_boundary_requests_exact_once_extension() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        let trusted_domains = vec!["trusted.example".to_owned()];
+        engine
+            .apply_security(&SecurityConfig {
+                resource_policy: ResourcePolicy {
+                    network: NetworkResourcePolicy {
+                        access: NetworkAccessBoundary::Restricted,
+                        allowed_domains: trusted_domains.clone(),
+                    },
+                    ..ResourcePolicy::default()
+                },
+                ..SecurityConfig::default()
+            })
+            .await
+            .expect("valid network policy applies");
+        engine
+            .set_tool_settings(HashMap::from([(
+                "http".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        network: NetworkResourcePolicy {
+                            access: NetworkAccessBoundary::Inherit,
+                            allowed_domains: vec!["api.outside.example".into()],
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            )]))
+            .await;
+        let input = json!({"url": "https://api.outside.example:8443/data?token=secret"});
+        let policy = fixture_policy("http", &input, RiskLevel::Medium);
+        let request = fixture_request(None, "http", &input, &policy).with_resources(vec![
+            DeclaredResource::NetworkDestination {
+                scheme: "https".into(),
+                host: "api.outside.example".into(),
+                port: Some(8443),
+            },
+        ]);
+
+        let check = engine.authorize_for_execution(&request).await;
+        let AuthorizationDecision::RequiresConfirmation {
+            receipt,
+            reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
+            ..
+        } = check.decision
+        else {
+            panic!("an HTTP origin outside the global domain list should request confirmation");
+        };
+        assert!(receipt.resource_boundary_extension);
+        assert_eq!(receipt.resources, request.resources);
+
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .expect("the exact confirmed origin should produce a proof");
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .expect("the proof should produce an HTTP execution context");
+        assert_eq!(
+            context.network_destination_extension(),
+            request.resources.first()
+        );
+        assert_eq!(
+            context.network_domain_constraints().unwrap(),
+            &[vec!["api.outside.example".to_owned()]],
+            "the one-call extension drops only the global list; tool-level lists remain"
+        );
+
+        let changed_origin = AuthorizationRequest::new(
+            None,
+            "http",
+            json!({"url": "https://api.attacker.example:8443/data?token=secret"}),
+            policy,
+        )
+        .with_resources(vec![DeclaredResource::NetworkDestination {
+            scheme: "https".into(),
+            host: "api.attacker.example".into(),
+            port: Some(8443),
+        }]);
+        assert!(
+            engine
+                .verify_receipt(&changed_origin, &receipt)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn http_domain_extension_cannot_override_tool_limits_or_unattended_mode() {
+        let engine = AuthorizationEngine::new();
+        let mut tool_settings = HashMap::new();
+        tool_settings.insert(
+            "http".into(),
+            ToolConfig {
+                resource_policy: ResourcePolicy {
+                    network: NetworkResourcePolicy {
+                        access: NetworkAccessBoundary::Inherit,
+                        allowed_domains: vec!["tool.example".into()],
+                    },
+                    ..ResourcePolicy::default()
+                },
+                ..ToolConfig::default()
+            },
+        );
+        engine
+            .apply_security(&SecurityConfig {
+                resource_policy: ResourcePolicy {
+                    network: NetworkResourcePolicy {
+                        access: NetworkAccessBoundary::Restricted,
+                        allowed_domains: vec!["global.example".into()],
+                    },
+                    ..ResourcePolicy::default()
+                },
+                ..SecurityConfig::default()
+            })
+            .await
+            .expect("valid global and tool network policies apply");
+        engine.set_tool_settings(tool_settings).await;
+        let input = json!({"url": "https://outside.example/data"});
+        let policy = fixture_policy("http", &input, RiskLevel::Medium);
+        let request = fixture_request(None, "http", &input, &policy).with_resources(vec![
+            DeclaredResource::NetworkDestination {
+                scheme: "https".into(),
+                host: "outside.example".into(),
+                port: Some(443),
+            },
+        ]);
+        assert!(matches!(
+            engine.authorize(&request).await,
+            AuthorizationDecision::Blocked {
+                reason_code: AuthorizationReasonCode::NetworkPolicy,
+                ..
+            }
+        ));
+
+        let unattended_engine = AuthorizationEngine::new();
+        unattended_engine
+            .apply_security(&SecurityConfig {
+                resource_policy: ResourcePolicy {
+                    network: NetworkResourcePolicy {
+                        access: NetworkAccessBoundary::Restricted,
+                        allowed_domains: vec!["global.example".into()],
+                    },
+                    ..ResourcePolicy::default()
+                },
+                ..SecurityConfig::default()
+            })
+            .await
+            .expect("valid global network policy applies");
+        unattended_engine
+            .set_execution_mode(ExecutionMode::Unattended)
+            .await;
+        let check = unattended_engine.authorize(&request).await;
+        assert!(matches!(
+            check,
+            AuthorizationDecision::Blocked {
+                reason_code: AuthorizationReasonCode::ApprovalPolicy,
+                ..
+            }
+        ));
+
+        let analyze_engine = AuthorizationEngine::new();
+        analyze_engine
+            .apply_security(&SecurityConfig {
+                resource_policy: ResourcePolicy {
+                    network: NetworkResourcePolicy {
+                        access: NetworkAccessBoundary::Restricted,
+                        allowed_domains: vec!["global.example".into()],
+                    },
+                    ..ResourcePolicy::default()
+                },
+                ..SecurityConfig::default()
+            })
+            .await
+            .expect("valid global network policy applies");
+        analyze_engine
+            .set_execution_mode(ExecutionMode::Analyze)
+            .await;
+        assert!(matches!(
+            analyze_engine.authorize(&request).await,
+            AuthorizationDecision::Blocked {
+                reason_code: AuthorizationReasonCode::AnalyzeMode,
+                ..
+            }
         ));
     }
 
