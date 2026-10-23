@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspaceSearch from '$lib/WorkspaceSearch.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
@@ -97,8 +98,7 @@
 		}
 	}
 
-	function handleRecallQueryInput(event: Event) {
-		const value = (event.currentTarget as HTMLInputElement).value;
+	function handleRecallQueryInput(value: string) {
 		if (value === memoryRecall.query) return;
 		onRecallQueryChange(value);
 	}
@@ -115,19 +115,16 @@
 
 <div class="memory-center">
 	<div class="memory-center-toolbar workspace-filter-bar" role="search">
-		<label class="memory-center-search" for="memory-center-query">
-			<input
+		<div class="memory-center-search">
+			<WorkspaceSearch
 				id="memory-center-query"
-				type="search"
-				class="md-input"
-				aria-label="记忆关键词"
+				label="记忆关键词"
 				value={memoryRecall.query}
 				placeholder="搜索事实或过去的对话，例如：深色主题"
-				oninput={handleRecallQueryInput}
-				onkeydown={handleKeydown}
-				autocomplete="off"
+				onInput={handleRecallQueryInput}
+				onKeydown={handleKeydown}
 			/>
-		</label>
+		</div>
 		<div class="memory-center-controls">
 			<div class="memory-center-selects">
 				<MaterialSelect

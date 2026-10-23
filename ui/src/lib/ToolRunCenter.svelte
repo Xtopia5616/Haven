@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspaceSearch from './WorkspaceSearch.svelte';
 	/**
 	 * Unified task list/detail view. The route owns loading, event merging and
 	 * IPC; this component only presents task lifecycle and emits user intent.
@@ -127,15 +128,14 @@
 
 <section class="task-center" aria-label="任务历史">
 	<div class="task-toolbar workspace-filter-bar" role="search">
-		<label class="task-search">
-			<span class="sr-only">搜索任务</span>
-			<input
-				class="md-input"
-				type="search"
+		<div class="task-search">
+			<WorkspaceSearch
+				label="搜索任务"
 				placeholder="搜索工具、来源会话或结果"
-				bind:value={query}
+				value={query}
+				onInput={(value) => (query = value)}
 			/>
-		</label>
+		</div>
 		{#if hasFilters}
 			<MaterialButton variant="text" label="清除筛选" onclick={clearFilters} />
 		{/if}

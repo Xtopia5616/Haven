@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspaceSearch from './WorkspaceSearch.svelte';
 	interface Props {
 		value?: string;
 		onInput?: (value: string) => void;
@@ -19,14 +20,9 @@
 	}: Props = $props();
 </script>
 
-<input
-	class="md-input md-input--compact tool-search {className}"
-	type="search"
-	{value}
-	{placeholder}
-	aria-label={ariaLabel}
-	oninput={(event) => onInput(event.currentTarget.value)}
-/>
+<div class="tool-search {className}">
+	<WorkspaceSearch {value} {placeholder} label={ariaLabel} {onInput} compact />
+</div>
 
 <style>
 	.tool-search {

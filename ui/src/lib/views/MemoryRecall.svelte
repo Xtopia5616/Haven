@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspaceSearch from '$lib/WorkspaceSearch.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
@@ -46,20 +47,18 @@
 <section class="recall-view" aria-label="记忆结果">
 	{#if showToolbar}
 		<div class="recall-toolbar workspace-filter-bar" role="search">
-			<label class="recall-search" for="memory-recall-query">
-				<span class="sr-only">检索记忆</span>
-				<input
+			<div class="recall-search">
+				<WorkspaceSearch
 					id="memory-recall-query"
-					type="search"
-					class="md-input"
-					bind:value={memoryRecall.query}
+					label="检索记忆"
+					value={memoryRecall.query}
+					onInput={(value) => (memoryRecall.query = value)}
 					placeholder="输入关键词，例如：深色主题"
-					onkeydown={(event) => {
+					onKeydown={(event) => {
 						if (event.key === 'Enter') onRunRecall();
 					}}
-					autocomplete="off"
 				/>
-			</label>
+			</div>
 			<div class="recall-kind">
 				<MaterialSelect
 					id="memory-recall-kind"

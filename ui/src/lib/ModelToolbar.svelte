@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspaceSearch from './WorkspaceSearch.svelte';
 	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
 	import type {
 		ReasoningEffortSelectionInput,
@@ -104,14 +105,16 @@
 			{/if}
 			{#if modelOptions.length > 0}
 				{#if modelOptions.length > 6}
-					<input
-						class="md-input md-input--compact model-search"
-						type="search"
-						aria-label="搜索模型"
-						placeholder="搜索模型或提供方"
-						disabled={switchingModel}
-						bind:value={modelFilter}
-					/>
+					<div class="model-search">
+						<WorkspaceSearch
+							label="搜索模型"
+							placeholder="搜索模型或提供方"
+							disabled={switchingModel}
+							value={modelFilter}
+							onInput={(value) => (modelFilter = value)}
+							compact
+						/>
+					</div>
 				{/if}
 				<div class="model-option-list motion-list" role="menu" aria-label="可选模型">
 					{#each filteredModelOptions as model}

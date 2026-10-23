@@ -3,6 +3,14 @@ import { describe, expect, it, vi } from 'vitest';
 import WorkspaceSearch from './WorkspaceSearch.svelte';
 
 describe('WorkspaceSearch', () => {
+	it('forwards keyboard actions for submitted searches', async () => {
+		const onKeydown = vi.fn();
+		render(WorkspaceSearch, { label: '检索记忆', onKeydown, compact: true });
+		await fireEvent.keyDown(screen.getByRole('searchbox'), { key: 'Enter' });
+		expect(onKeydown).toHaveBeenCalledOnce();
+		expect(onKeydown.mock.calls[0][0].key).toBe('Enter');
+	});
+
 	it('reports typing and clearing and returns focus to the search field', async () => {
 		const onInput = vi.fn();
 		render(WorkspaceSearch, { label: '搜索会话', value: '会议', onInput });

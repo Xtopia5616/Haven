@@ -236,8 +236,8 @@
 | `MaterialCollapsible` | 分组、详情和辅助信息的统一展开/收起控件 | 所有区块级折叠内容；通过 `header` snippet 提供标题、状态或计数 |
 | `StatusBadge` | 成功、警告、错误、信息和中性状态 | 只表达状态，不承载动作 |
 | `MaterialCard` / `SettingsSection` / `SettingsField` | 设置页卡片、分组和字段布局 | 设置、偏好等表单型页面 |
-| `WorkspaceSearch` | 工具、会话历史和设置的页面搜索；统一搜索图标、焦点、清空与禁用态 | 页面级搜索与筛选，业务状态由页面拥有 |
-| `ToolSearch` | 工具结果搜索框 | 工具/技能/MCP 结果页 |
+| `WorkspaceSearch` | 工具、任务、会话历史、记忆、设置和模型选择的搜索；统一搜索图标、焦点、清空与禁用态，紧凑场景使用 `compact` | 搜索与筛选，业务状态由调用方拥有；提交式检索通过 `onKeydown` 保留 Enter 操作 |
+| `ToolSearch` | 复用紧凑 `WorkspaceSearch` 的工具结果搜索框 | 工具/技能/MCP 结果页 |
 | `MenuItem` / `MaterialSplitButton` | 弹出菜单项和主动作 + 更多菜单 | 上下文菜单、切换菜单和确认动作 |
 
 #### 文字按钮与图标按钮的选择
