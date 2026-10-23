@@ -284,14 +284,24 @@ export const SESSION_WAITING_REASON_VALUES = ['user_input', 'user_interrupt', 'a
 export type SessionWaitingReason = (typeof SESSION_WAITING_REASON_VALUES)[number];
 export const TOOL_RUN_STATUS_VALUES = ['running', 'completed', 'failed', 'cancelled'] as const;
 export type ToolRunStatus = (typeof TOOL_RUN_STATUS_VALUES)[number];
+export const MCP_CATALOG_PRESENTATION_INPUT_VALUES = ['direct', 'deferred', 'hidden'] as const;
+export type McpCatalogPresentationInput = (typeof MCP_CATALOG_PRESENTATION_INPUT_VALUES)[number];
+export const MCP_CATALOG_PRESENTATION_VALUES = ['direct', 'deferred', 'hidden'] as const;
+export type McpCatalogPresentation = (typeof MCP_CATALOG_PRESENTATION_VALUES)[number];
+export const MCP_INVOCATION_ADAPTERS_INPUT_VALUES = ['none', 'native', 'codemode', 'native_and_codemode'] as const;
+export type McpInvocationAdaptersInput = (typeof MCP_INVOCATION_ADAPTERS_INPUT_VALUES)[number];
+export const MCP_INVOCATION_ADAPTERS_VALUES = ['none', 'native', 'codemode', 'native_and_codemode'] as const;
+export type McpInvocationAdapters = (typeof MCP_INVOCATION_ADAPTERS_VALUES)[number];
 export const MCP_SERVER_TRANSPORT_INPUT_VALUES = ['stdio', 'http'] as const;
 export type McpServerTransportInput = (typeof MCP_SERVER_TRANSPORT_INPUT_VALUES)[number];
 export const MCP_SERVER_TRANSPORT_VALUES = ['stdio', 'http'] as const;
 export type McpServerTransport = (typeof MCP_SERVER_TRANSPORT_VALUES)[number];
-export const MCP_TOOL_EXPOSURE_INPUT_VALUES = ['direct', 'model_only', 'deferred', 'codemode', 'hidden'] as const;
-export type McpToolExposureInput = (typeof MCP_TOOL_EXPOSURE_INPUT_VALUES)[number];
-export const MCP_TOOL_EXPOSURE_VALUES = ['direct', 'model_only', 'deferred', 'codemode', 'hidden'] as const;
-export type McpToolExposure = (typeof MCP_TOOL_EXPOSURE_VALUES)[number];
+export const MCP_TOOL_AVAILABILITY_INPUT_VALUES = ['enabled', 'disabled'] as const;
+export type McpToolAvailabilityInput = (typeof MCP_TOOL_AVAILABILITY_INPUT_VALUES)[number];
+export const MCP_TOOL_AVAILABILITY_VALUES = ['enabled', 'disabled'] as const;
+export type McpToolAvailability = (typeof MCP_TOOL_AVAILABILITY_VALUES)[number];
+export interface McpToolExposureInput { availability?: McpToolAvailabilityInput; catalog?: McpCatalogPresentationInput; invocation?: McpInvocationAdaptersInput }
+export interface McpToolExposure { availability: McpToolAvailability; catalog: McpCatalogPresentation; invocation: McpInvocationAdapters }
 export interface MediaAsset { asset_id: string; content_hash: string; media_type: string; size_bytes: number; filename?: string; source: MediaAssetSource; lifecycle: MediaAssetLifecycle; expires_at?: string }
 export const MEDIA_ASSET_LIFECYCLE_VALUES = ['request', 'session', 'managed', 'external'] as const;
 export type MediaAssetLifecycle = (typeof MEDIA_ASSET_LIFECYCLE_VALUES)[number];
@@ -5777,11 +5787,43 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 							fields: {
 								'default': {
 									optional: false,
-									shape: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES },
+									shape: {
+										kind: 'object',
+										fields: {
+											'availability': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_TOOL_AVAILABILITY_VALUES },
+											},
+											'catalog': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_CATALOG_PRESENTATION_VALUES },
+											},
+											'invocation': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_INVOCATION_ADAPTERS_VALUES },
+											}
+										}
+									},
 								},
 								'tools': {
 									optional: false,
-									shape: { kind: 'record', values: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES } },
+									shape: { kind: 'record', values: {
+										kind: 'object',
+										fields: {
+											'availability': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_TOOL_AVAILABILITY_VALUES },
+											},
+											'catalog': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_CATALOG_PRESENTATION_VALUES },
+											},
+											'invocation': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_INVOCATION_ADAPTERS_VALUES },
+											}
+										}
+									} },
 								}
 							}
 						},
@@ -6885,11 +6927,43 @@ export const LIST_MCP_SERVERS_RESPONSE_SHAPE = { kind: 'array', items: {
 				fields: {
 					'default': {
 						optional: false,
-						shape: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES },
+						shape: {
+							kind: 'object',
+							fields: {
+								'availability': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_TOOL_AVAILABILITY_VALUES },
+								},
+								'catalog': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_CATALOG_PRESENTATION_VALUES },
+								},
+								'invocation': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_INVOCATION_ADAPTERS_VALUES },
+								}
+							}
+						},
 					},
 					'tools': {
 						optional: false,
-						shape: { kind: 'record', values: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES } },
+						shape: { kind: 'record', values: {
+							kind: 'object',
+							fields: {
+								'availability': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_TOOL_AVAILABILITY_VALUES },
+								},
+								'catalog': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_CATALOG_PRESENTATION_VALUES },
+								},
+								'invocation': {
+									optional: false,
+									shape: { kind: 'enum', values: MCP_INVOCATION_ADAPTERS_VALUES },
+								}
+							}
+						} },
 					}
 				}
 			},
@@ -11492,11 +11566,43 @@ export const SETTINGS_RESPONSE_SHAPE = {
 							fields: {
 								'default': {
 									optional: false,
-									shape: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES },
+									shape: {
+										kind: 'object',
+										fields: {
+											'availability': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_TOOL_AVAILABILITY_VALUES },
+											},
+											'catalog': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_CATALOG_PRESENTATION_VALUES },
+											},
+											'invocation': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_INVOCATION_ADAPTERS_VALUES },
+											}
+										}
+									},
 								},
 								'tools': {
 									optional: false,
-									shape: { kind: 'record', values: { kind: 'enum', values: MCP_TOOL_EXPOSURE_VALUES } },
+									shape: { kind: 'record', values: {
+										kind: 'object',
+										fields: {
+											'availability': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_TOOL_AVAILABILITY_VALUES },
+											},
+											'catalog': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_CATALOG_PRESENTATION_VALUES },
+											},
+											'invocation': {
+												optional: false,
+												shape: { kind: 'enum', values: MCP_INVOCATION_ADAPTERS_VALUES },
+											}
+										}
+									} },
 								}
 							}
 						},

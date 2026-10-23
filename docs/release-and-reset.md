@@ -33,6 +33,8 @@ schema v61 为 session authorization grant 保存 typed `resource_scope`，允�
 
 ## 当前配置契约
 
+MCP tool exposure 已拆为 `availability`（`enabled` / `disabled`）、`catalog`（`direct` / `deferred` / `hidden`）和 `invocation`（`none` / `native` / `codemode` / `native_and_codemode`）。旧 `direct` 与 `model_only` 转换为 `enabled + direct + native`，旧 `deferred` 转换为 `enabled + deferred + native`，旧 `codemode` 转换为 `enabled + hidden + codemode`，旧 `hidden` 转换为 `disabled + hidden + none`。ConfigLoader 自动写回已知旧值；未知值按整份配置备份与只读恢复策略处理。此变化只影响 `config.toml`，不改变 MCP 协议或数据库，无需重置数据库、inbox 或凭据。若需要手工编辑 per-tool override，格式为对象字段：`availability`、`catalog`、`invocation`；设置页每行格式为 `pattern=availability,catalog,invocation`。
+
 生成采样参数已移除：Provider 的 `default_temperature`、模型的 `temperature`，以及运行时 endpoint 的 `temperature`、`top_p`、`top_k`、`frequency_penalty`、`presence_penalty`、`seed`。旧配置键按未知字段拒绝，不迁移、不兼容；请从 `config.toml` 的相应表中删除这些键，或仅重建该文件。无需重置数据库、凭据或会话。独立搜索的 `top_k` 是结果数量，继续保留（ADR 1369）。
 
 `config.toml` 文件上限为 4 MiB。超过上限的文件在启动读取或外部修改指纹检查时直接报错：原文件不备份、不改写，也不会回退到默认配置；Settings 序列化结果超限会拒绝更新并保留已有文件、快照和版本。请缩小 `config.toml` 后重启，无需删除数据库。

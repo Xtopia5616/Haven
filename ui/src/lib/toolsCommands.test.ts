@@ -44,7 +44,10 @@ function makeMcpServerSnapshot(overrides: Record<string, unknown> = {}) {
 		supports_resources: false,
 		supports_resource_subscriptions: false,
 		supports_prompts: false,
-		exposure: { default: 'deferred', tools: {} },
+		exposure: {
+			default: { availability: 'enabled', catalog: 'deferred', invocation: 'native' },
+			tools: {},
+		},
 		status: 'Disconnected',
 		tools: [
 			{
@@ -132,7 +135,10 @@ describe('ToolsView command boundary', () => {
 				supportsResources: false,
 				supportsResourceSubscriptions: false,
 				supportsPrompts: false,
-				exposure: { default: 'deferred', tools: {} },
+				exposure: {
+					default: { availability: 'enabled', catalog: 'deferred', invocation: 'native' },
+					tools: {},
+				},
 				status: { Offline: { error: 'server unavailable' } },
 				tools: [
 					{
@@ -289,7 +295,17 @@ describe('ToolsView command boundary', () => {
 		['URL', { url: false }],
 		['enabled state', { enabled: 'true' }],
 		['exposure mode', { exposure: { default: 'future', tools: {} } }],
-		['exposure overrides', { exposure: { default: 'deferred', tools: { '': 'hidden' } } }],
+		[
+			'exposure overrides',
+			{
+				exposure: {
+					default: { availability: 'enabled', catalog: 'deferred', invocation: 'native' },
+					tools: {
+						'': { availability: 'disabled', catalog: 'hidden', invocation: 'none' },
+					},
+				},
+			},
+		],
 		['tool schema', { tools: [{ name: 'tool', description: 'Tool', input_schema: null }] }],
 		['last error', { last_error: 1 }],
 		['diagnostic', { diagnostic: false }],

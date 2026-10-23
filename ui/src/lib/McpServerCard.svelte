@@ -65,13 +65,20 @@
 	}
 
 	function exposureLabel() {
-		return {
-			direct: 'Legacy 直出',
-			model_only: '仅模型直调',
-			deferred: 'Legacy 按需加载',
-			codemode: 'CodeMode 脚本',
-			hidden: '全部隐藏',
-		}[server.exposure.default];
+		const { availability, catalog, invocation } = server.exposure.default;
+		const availabilityLabel = availability === 'enabled' ? '可调用' : '已禁用';
+		const catalogLabel = {
+			direct: '直接提供',
+			deferred: '按需发现',
+			hidden: '目录隐藏',
+		}[catalog];
+		const invocationLabel = {
+			none: '无调用适配',
+			native: '原生调用',
+			codemode: 'Code Mode',
+			native_and_codemode: '原生 + Code Mode',
+		}[invocation];
+		return `${availabilityLabel} · ${catalogLabel} · ${invocationLabel}`;
 	}
 
 	let contextMenuItems: ContextMenuItem[] = $derived.by(() => {

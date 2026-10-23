@@ -11,12 +11,17 @@ import {
 	isStringArray,
 } from './valueGuards.ts';
 import {
+	MCP_CATALOG_PRESENTATION_VALUES,
+	MCP_INVOCATION_ADAPTERS_VALUES,
 	MCP_SERVER_TRANSPORT_VALUES,
-	MCP_TOOL_EXPOSURE_VALUES,
+	MCP_TOOL_AVAILABILITY_VALUES,
 	type McpExposureConfig as GeneratedMcpExposureConfig,
 	type McpRefreshResult as GeneratedMcpRefreshResult,
 	type McpServerSnapshot as GeneratedMcpServerSnapshot,
 	type McpToolExposure as GeneratedMcpToolExposure,
+	type McpToolAvailability as GeneratedMcpToolAvailability,
+	type McpCatalogPresentation as GeneratedMcpCatalogPresentation,
+	type McpInvocationAdapters as GeneratedMcpInvocationAdapters,
 	type McpToolInfo as GeneratedMcpToolInfo,
 } from './generatedCommands.ts';
 
@@ -26,7 +31,10 @@ export interface McpToolInfoView {
 	inputSchema: Record<string, unknown>;
 }
 
-export type McpToolExposureMode = GeneratedMcpToolExposure;
+export type McpToolAvailability = GeneratedMcpToolAvailability;
+export type McpCatalogPresentation = GeneratedMcpCatalogPresentation;
+export type McpInvocationAdapters = GeneratedMcpInvocationAdapters;
+export type McpToolExposurePolicy = GeneratedMcpToolExposure;
 export type McpExposureConfigView = GeneratedMcpExposureConfig;
 
 /** Renderer-facing camelCase projection of the generated Rust snapshot DTO. */
@@ -77,12 +85,17 @@ function isNullableMcpTargetBinding(value: unknown): value is string | null {
 	);
 }
 
-function isMcpExposureMode(value: unknown): value is McpToolExposureMode {
-	return isOneOf(value, MCP_TOOL_EXPOSURE_VALUES);
+function isMcpToolExposure(value: unknown): value is McpToolExposurePolicy {
+	return (
+		isRecord(value) &&
+		isOneOf(value.availability, MCP_TOOL_AVAILABILITY_VALUES) &&
+		isOneOf(value.catalog, MCP_CATALOG_PRESENTATION_VALUES) &&
+		isOneOf(value.invocation, MCP_INVOCATION_ADAPTERS_VALUES)
+	);
 }
 
 function isMcpExposureConfig(value: unknown): value is McpExposureConfigView {
-	if (!isRecord(value) || !isMcpExposureMode(value.default) || !isRecord(value.tools))
+	if (!isRecord(value) || !isMcpToolExposure(value.default) || !isRecord(value.tools))
 		return false;
 	const entries = Object.entries(value.tools);
 	return (
@@ -92,7 +105,7 @@ function isMcpExposureConfig(value: unknown): value is McpExposureConfigView {
 				pattern.length > 0 &&
 				pattern.length <= 256 &&
 				![...pattern].some((character) => /[\u0000-\u001f\u007f]/u.test(character)) &&
-				isMcpExposureMode(exposure),
+				isMcpToolExposure(exposure),
 		)
 	);
 }

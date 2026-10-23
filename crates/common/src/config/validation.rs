@@ -1282,18 +1282,18 @@ mod tests {
         server
             .exposure
             .tools
-            .insert("calendar_*".into(), crate::mcp::McpToolExposure::Direct);
+            .insert("calendar_*".into(), crate::mcp::McpToolExposure::default());
         server
             .exposure
             .tools
-            .insert("private_*".into(), crate::mcp::McpToolExposure::Hidden);
+            .insert("private_*".into(), crate::mcp::McpToolExposure::default());
         config.mcp_servers.push(server.clone());
         assert!(validate_app_config(&config).is_ok());
 
-        config.mcp_servers[0]
-            .exposure
-            .tools
-            .insert("bad\npattern".into(), crate::mcp::McpToolExposure::Hidden);
+        config.mcp_servers[0].exposure.tools.insert(
+            "bad\npattern".into(),
+            crate::mcp::McpToolExposure::default(),
+        );
         assert!(
             validate_app_config(&config)
                 .unwrap_err()
@@ -1305,7 +1305,7 @@ mod tests {
         for index in 0..=super::super::MAX_MCP_TOOL_EXPOSURE_OVERRIDES {
             config.mcp_servers[0].exposure.tools.insert(
                 format!("tool_{index}"),
-                crate::mcp::McpToolExposure::Deferred,
+                crate::mcp::McpToolExposure::default(),
             );
         }
         assert!(

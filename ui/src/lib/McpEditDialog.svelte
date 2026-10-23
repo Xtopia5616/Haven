@@ -8,9 +8,12 @@
 	import type { McpServerTransportInput } from '$lib/contracts/generatedCommands.ts';
 	import type { McpServerConfigInput } from '$lib/contracts/tools.ts';
 	import type {
+		McpCatalogPresentation,
 		McpExposureConfigView,
+		McpInvocationAdapters,
 		McpServerSnapshotView,
-		McpToolExposureMode,
+		McpToolAvailability,
+		McpToolExposurePolicy,
 	} from '$lib/contracts/mcp.ts';
 
 	interface EditorConfig extends McpServerConfigInput {
@@ -42,7 +45,9 @@
 	let argsText = $state('');
 	let envText = $state('');
 	let url = $state('');
-	let defaultExposure = $state<McpToolExposureMode>('deferred');
+	let defaultAvailability = $state<McpToolAvailability>('enabled');
+	let defaultCatalog = $state<McpCatalogPresentation>('deferred');
+	let defaultInvocation = $state<McpInvocationAdapters>('native');
 	let exposureOverridesText = $state('');
 	let fieldErrors = $state({
 		name: '',
@@ -57,16 +62,24 @@
 		{ value: 'stdio', label: 'Stdio (local process)' },
 		{ value: 'http', label: 'Streamable HTTP' },
 	];
-	const EXPOSURE_OPTIONS = [
-		{ value: 'direct', label: 'Legacy · direct — send schemas with every request' },
-		{
-			value: 'model_only',
-			label: 'Model-only — direct model calls only; no nested CodeMode',
-		},
-		{ value: 'deferred', label: 'Legacy · deferred — discover and load when needed' },
-		{ value: 'codemode', label: 'CodeMode — compose allowed tools in a bounded script' },
-		{ value: 'hidden', label: 'Hidden — unavailable to the assistant' },
+	const AVAILABILITY_OPTIONS = [
+		{ value: 'enabled', label: 'Enabled — calls are allowed by this MCP policy' },
+		{ value: 'disabled', label: 'Disabled — no model-facing adapter may call this tool' },
 	];
+	const CATALOG_OPTIONS = [
+		{ value: 'direct', label: 'Direct — list in discovery and expose without loading' },
+		{ value: 'deferred', label: 'On demand — discover, then load before native calls' },
+		{ value: 'hidden', label: 'Hidden — omit from the general tool catalog' },
+	];
+	const INVOCATION_OPTIONS = [
+		{ value: 'none', label: 'No invocation adapter' },
+		{ value: 'native', label: 'Native tool calls' },
+		{ value: 'codemode', label: 'Code Mode calls' },
+		{ value: 'native_and_codemode', label: 'Native and Code Mode calls' },
+	];
+	const AVAILABILITY_VALUES = ['enabled', 'disabled'];
+	const CATALOG_VALUES = ['direct', 'deferred', 'hidden'];
+	const INVOCATION_VALUES = ['none', 'native', 'codemode', 'native_and_codemode'];
 
 	function isHttp() {
 		return transport === 'http';
@@ -80,9 +93,14 @@
 		argsText = (server?.args || []).join('\n');
 		envText = (server?.env || []).join('\n');
 		url = server?.url || '';
-		defaultExposure = server?.exposure.default || 'deferred';
+		defaultAvailability = server?.exposure.default.availability || 'enabled';
+		defaultCatalog = server?.exposure.default.catalog || 'deferred';
+		defaultInvocation = server?.exposure.default.invocation || 'native';
 		exposureOverridesText = Object.entries(server?.exposure.tools || {})
-			.map(([pattern, mode]) => `${pattern}=${mode}`)
+			.map(
+				([pattern, policy]) =>
+					`${pattern}=${policy.availability},${policy.catalog},${policy.invocation}`,
+			)
 			.join('\n');
 		fieldErrors = { name: '', command: '', url: '', env: '', exposure: '' };
 	});
@@ -131,14 +149,20 @@
 			for (const [index, line] of exposureLines.entries()) {
 				const separator = line.lastIndexOf('=');
 				const pattern = line.slice(0, separator).trim();
-				const mode = line.slice(separator + 1).trim();
+				const [availability, catalog, invocation, ...extra] = line
+					.slice(separator + 1)
+					.split(',')
+					.map((part) => part.trim());
 				if (
 					separator < 1 ||
 					pattern.length > 256 ||
 					/[\u0000-\u001f\u007f]/u.test(pattern) ||
-					!['direct', 'model_only', 'deferred', 'codemode', 'hidden'].includes(mode)
+					extra.length > 0 ||
+					!AVAILABILITY_VALUES.includes(availability) ||
+					!CATALOG_VALUES.includes(catalog) ||
+					!INVOCATION_VALUES.includes(invocation)
 				) {
-					errors.exposure = `Line ${index + 1}: use pattern=direct, pattern=model_only, pattern=deferred, pattern=codemode, or pattern=hidden`;
+					errors.exposure = `Line ${index + 1}: use pattern=enabled|disabled,direct|deferred|hidden,none|native|codemode|native_and_codemode`;
 					break;
 				}
 				if (patterns.has(pattern)) {
@@ -152,7 +176,7 @@
 		return errors;
 	}
 
-	function parseExposureOverrides(): Record<string, McpToolExposureMode> {
+	function parseExposureOverrides(): Record<string, McpToolExposurePolicy> {
 		return Object.fromEntries(
 			exposureOverridesText
 				.split('\n')
@@ -160,9 +184,17 @@
 				.filter(Boolean)
 				.map((line) => {
 					const separator = line.lastIndexOf('=');
+					const [availability, catalog, invocation] = line
+						.slice(separator + 1)
+						.split(',')
+						.map((part) => part.trim());
 					return [
 						line.slice(0, separator).trim(),
-						line.slice(separator + 1).trim() as McpToolExposureMode,
+						{
+							availability: availability as McpToolAvailability,
+							catalog: catalog as McpCatalogPresentation,
+							invocation: invocation as McpInvocationAdapters,
+						},
 					];
 				}),
 		);
@@ -194,7 +226,14 @@
 				.map((l) => l.trim())
 				.filter(Boolean),
 			url: isHttp() ? url.trim() : '',
-			exposure: { default: defaultExposure, tools: parseExposureOverrides() },
+			exposure: {
+				default: {
+					availability: defaultAvailability,
+					catalog: defaultCatalog,
+					invocation: defaultInvocation,
+				},
+				tools: parseExposureOverrides(),
+			},
 			// No enable toggle in the dialog: new servers are added enabled,
 			// edits keep the current state — enable/disable happens from the
 			// server list (pill button) after the server is added.
@@ -261,21 +300,46 @@
 			{/snippet}
 		</MaterialField>
 		<MaterialField
-			label="Assistant exposure"
-			hint="Legacy uses ordinary tool calls. Model-only tools are callable only as top-level model calls, never as nested CodeMode calls. CodeMode composes only listed tools in a bounded script; each call is authorized separately. Calls requiring confirmation must use Legacy. Hidden tools cannot be called."
+			label="Tool availability"
+			hint="Disabled tools cannot be called through either adapter. Availability does not replace per-call authorization."
 		>
 			{#snippet children()}
 				<MaterialSelect
-					value={defaultExposure}
-					options={EXPOSURE_OPTIONS}
+					value={defaultAvailability}
+					options={AVAILABILITY_OPTIONS}
 					onChange={withStringValue((value) => {
-						if (
-							['direct', 'model_only', 'deferred', 'codemode', 'hidden'].includes(
-								value,
-							)
-						) {
-							defaultExposure = value as McpToolExposureMode;
-						}
+						if (AVAILABILITY_VALUES.includes(value))
+							defaultAvailability = value as McpToolAvailability;
+					})}
+				/>
+			{/snippet}
+		</MaterialField>
+		<MaterialField
+			label="Catalog presentation"
+			hint="Direct lists the tool and sends its schema with requests when a native adapter is enabled. On demand lists it for discovery and requires load_mcp before native calls. Hidden omits it from the general catalog; enabled native or Code Mode adapters still work. Set availability to Disabled to block calls."
+		>
+			{#snippet children()}
+				<MaterialSelect
+					value={defaultCatalog}
+					options={CATALOG_OPTIONS}
+					onChange={withStringValue((value) => {
+						if (CATALOG_VALUES.includes(value))
+							defaultCatalog = value as McpCatalogPresentation;
+					})}
+				/>
+			{/snippet}
+		</MaterialField>
+		<MaterialField
+			label="Invocation adapters"
+			hint="Code Mode composes child calls in a bounded script. Each native or Code Mode call still follows the ordinary authorization and journal path."
+		>
+			{#snippet children()}
+				<MaterialSelect
+					value={defaultInvocation}
+					options={INVOCATION_OPTIONS}
+					onChange={withStringValue((value) => {
+						if (INVOCATION_VALUES.includes(value))
+							defaultInvocation = value as McpInvocationAdapters;
 					})}
 				/>
 			{/snippet}
@@ -283,7 +347,7 @@
 		<MaterialField
 			label="Per-tool overrides"
 			forId="mcp-exposure-overrides"
-			hint="One rule per line: exact MCP tool name or * pattern = direct, model_only, deferred, codemode, or hidden. Most specific pattern wins."
+			hint="One rule per line: pattern=availability,catalog,adapters. Example: calendar_delete=disabled,hidden,none or calendar_*=enabled,deferred,native_and_codemode. Most specific pattern wins."
 			error={fieldErrors.exposure}
 		>
 			{#snippet children()}
@@ -292,7 +356,7 @@
 					class="md-textarea md-textarea--code"
 					bind:value={exposureOverridesText}
 					rows="4"
-					placeholder="calendar_delete=hidden&#10;calendar_*=direct"
+					placeholder="calendar_delete=disabled,hidden,none&#10;calendar_*=enabled,deferred,native"
 					class:input-error={fieldErrors.exposure}></textarea>
 			{/snippet}
 		</MaterialField>

@@ -12,7 +12,6 @@ use crate::mcp_server_config::McpServerConfigSource;
 use crate::registry::SessionToolOverlay;
 use crate::{Tool, ToolHandle, ToolRegistry, ToolResult};
 use haven_common::config::McpExposureConfig;
-use haven_common::mcp::McpToolExposure;
 use haven_mcp::McpManager;
 
 pub struct LoadMcpTool {
@@ -159,9 +158,10 @@ impl LoadMcpTool {
             );
         }
 
-        // `load_mcp` is the Legacy/deferred activation route. Direct tools
-        // already enter through native definitions; CodeMode and Hidden must
-        // never be made callable through this surface.
+        // `load_mcp` is the deferred native activation route. Direct and
+        // catalog-hidden tools with native adapters already enter through
+        // native definitions; CodeMode-only and adapter-less tools must never
+        // be made callable through this surface.
         let all_tools = deferred_tools_for_exposure(discovered_tools, &config.exposure);
         if all_tools.is_empty() {
             return Ok(ToolResult::ok(serde_json::json!({
@@ -436,7 +436,7 @@ fn deferred_tools_for_exposure(
 ) -> Vec<haven_mcp::McpToolInfo> {
     tools
         .into_iter()
-        .filter(|info| exposure.for_tool(&info.name) == McpToolExposure::Deferred)
+        .filter(|info| exposure.for_tool(&info.name).requires_native_load())
         .collect()
 }
 

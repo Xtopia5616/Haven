@@ -20,46 +20,106 @@ impl McpServerTransport {
     }
 }
 
-/// Model-facing route for one MCP capability. Exposure controls discoverability
-/// and invocation surface; it does not grant permission to perform the action.
+/// Whether a configured MCP tool is callable through any model-facing adapter.
+/// Availability does not grant permission to perform the remote operation.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum McpToolExposure {
-    /// Add the tool schema to the provider-native tool list.
+pub enum McpToolAvailability {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+/// How the tool appears to model-driven discovery.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpCatalogPresentation {
+    /// List the tool in the general catalog and expose it without an explicit load.
     Direct,
-    /// Add the tool schema to the provider-native tool list, but never permit
-    /// it as a nested CodeMode capability.
-    #[serde(rename = "model_only")]
-    ModelOnly,
-    /// Require catalog discovery and explicit activation before native calls.
+    /// List the tool for discovery; native calls require an explicit load.
     #[default]
     Deferred,
-    /// Permit calls only through the isolated CodeMode executor.
-    #[serde(rename = "codemode")]
-    CodeMode,
-    /// Make the tool unavailable to model-driven execution.
+    /// Omit the tool from the general catalog. Invocation adapters remain independent.
     Hidden,
 }
 
-impl McpToolExposure {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Direct => "direct",
-            Self::ModelOnly => "model_only",
-            Self::Deferred => "deferred",
-            Self::CodeMode => "codemode",
-            Self::Hidden => "hidden",
-        }
+/// Invocation adapters that can route the capability to the MCP server.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpInvocationAdapters {
+    #[default]
+    None,
+    Native,
+    #[serde(rename = "codemode")]
+    CodeMode,
+    #[serde(rename = "native_and_codemode")]
+    NativeAndCodeMode,
+}
+
+impl McpInvocationAdapters {
+    pub const fn supports_any(self) -> bool {
+        !matches!(self, Self::None)
     }
 
-    /// Whether the tool belongs to the provider-native model surface.
+    pub const fn supports_native(self) -> bool {
+        matches!(self, Self::Native | Self::NativeAndCodeMode)
+    }
+
+    pub const fn supports_codemode(self) -> bool {
+        matches!(self, Self::CodeMode | Self::NativeAndCodeMode)
+    }
+}
+
+/// Independent call availability, catalog presentation, and adapter support
+/// for one MCP capability. These fields control routing only; authorization
+/// remains per invocation in Tools.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct McpToolExposure {
+    #[serde(default)]
+    pub availability: McpToolAvailability,
+    #[serde(default)]
+    pub catalog: McpCatalogPresentation,
+    #[serde(default)]
+    pub invocation: McpInvocationAdapters,
+}
+
+impl Default for McpToolExposure {
+    fn default() -> Self {
+        Self {
+            availability: McpToolAvailability::Enabled,
+            catalog: McpCatalogPresentation::Deferred,
+            invocation: McpInvocationAdapters::Native,
+        }
+    }
+}
+
+impl McpToolExposure {
+    pub const fn is_available(self) -> bool {
+        matches!(self.availability, McpToolAvailability::Enabled)
+    }
+
+    /// Whether an enabled native adapter is sent directly to the provider.
+    /// Deferred tools require explicit loading; hidden only affects the general catalog.
     pub const fn is_provider_native(self) -> bool {
-        matches!(self, Self::Direct | Self::ModelOnly)
+        self.is_available()
+            && !matches!(self.catalog, McpCatalogPresentation::Deferred)
+            && self.invocation.supports_native()
     }
 
     /// Whether the capability may be described through Haven's MCP catalog.
     pub const fn is_catalog_visible(self) -> bool {
-        matches!(self, Self::Direct | Self::ModelOnly | Self::Deferred)
+        !matches!(self.catalog, McpCatalogPresentation::Hidden)
+    }
+
+    pub const fn has_invocation_adapter(self) -> bool {
+        self.invocation.supports_any()
+    }
+
+    pub const fn requires_native_load(self) -> bool {
+        self.is_available()
+            && matches!(self.catalog, McpCatalogPresentation::Deferred)
+            && self.invocation.supports_native()
     }
 }
 
@@ -127,87 +187,138 @@ fn mcp_tool_pattern_matches(pattern: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{McpToolExposure as Exposure, resolve_mcp_tool_exposure};
+    use super::{
+        McpCatalogPresentation as Catalog, McpInvocationAdapters as Adapters,
+        McpToolAvailability as Availability, McpToolExposure as Exposure,
+        resolve_mcp_tool_exposure,
+    };
     use std::collections::BTreeMap;
 
+    fn exposure(catalog: Catalog, invocation: Adapters) -> Exposure {
+        Exposure {
+            catalog,
+            invocation,
+            ..Exposure::default()
+        }
+    }
+
     #[test]
-    fn exposure_serializes_as_closed_lowercase_values() {
+    fn exposure_serializes_its_three_independent_axes() {
+        let value = exposure(Catalog::Direct, Adapters::NativeAndCodeMode);
         assert_eq!(
-            serde_json::to_string(&Exposure::CodeMode).unwrap(),
-            "\"codemode\""
+            serde_json::to_string(&value).unwrap(),
+            r#"{"availability":"enabled","catalog":"direct","invocation":"native_and_codemode"}"#
         );
-        assert!(serde_json::from_str::<Exposure>("\"legacy\"").is_err());
-        assert_eq!(
-            serde_json::to_string(&Exposure::ModelOnly).unwrap(),
-            "\"model_only\""
-        );
-        assert!(Exposure::ModelOnly.is_provider_native());
+        assert!(serde_json::from_str::<Exposure>(r#""legacy""#).is_err());
+        assert!(value.is_provider_native());
+        assert!(value.invocation.supports_codemode());
+    }
+
+    #[test]
+    fn availability_and_catalog_visibility_do_not_imply_an_invocation_adapter() {
+        let value = Exposure {
+            invocation: Adapters::None,
+            ..Exposure::default()
+        };
+        assert!(value.is_available());
+        assert!(value.is_catalog_visible());
+        assert!(!value.is_provider_native());
+        assert!(!value.requires_native_load());
+
+        let hidden_native = exposure(Catalog::Hidden, Adapters::Native);
+        assert!(!hidden_native.is_catalog_visible());
+        assert!(hidden_native.is_provider_native());
+
+        let disabled = Exposure {
+            availability: Availability::Disabled,
+            ..exposure(Catalog::Direct, Adapters::Native)
+        };
+        assert!(!disabled.is_provider_native());
     }
 
     #[test]
     fn exact_tool_override_wins_over_matching_patterns() {
         let overrides = BTreeMap::from([
-            ("delete_*".into(), Exposure::Hidden),
-            ("delete_user".into(), Exposure::Direct),
+            ("delete_*".into(), exposure(Catalog::Hidden, Adapters::None)),
+            (
+                "delete_user".into(),
+                exposure(Catalog::Direct, Adapters::Native),
+            ),
         ]);
 
         assert_eq!(
-            resolve_mcp_tool_exposure(Exposure::Deferred, &overrides, "delete_user"),
-            Exposure::Direct
+            resolve_mcp_tool_exposure(Exposure::default(), &overrides, "delete_user"),
+            exposure(Catalog::Direct, Adapters::Native)
         );
         assert_eq!(
-            resolve_mcp_tool_exposure(Exposure::Deferred, &overrides, "delete_project"),
-            Exposure::Hidden
+            resolve_mcp_tool_exposure(Exposure::default(), &overrides, "delete_project"),
+            exposure(Catalog::Hidden, Adapters::None)
         );
     }
 
     #[test]
     fn most_specific_pattern_wins_independent_of_insertion_order() {
         let overrides = BTreeMap::from([
-            ("get_*".into(), Exposure::Direct),
-            ("get_user_*".into(), Exposure::Hidden),
-            ("get_*_by_id".into(), Exposure::CodeMode),
+            ("get_*".into(), exposure(Catalog::Direct, Adapters::Native)),
+            (
+                "get_user_*".into(),
+                exposure(Catalog::Hidden, Adapters::None),
+            ),
+            (
+                "get_*_by_id".into(),
+                exposure(Catalog::Hidden, Adapters::CodeMode),
+            ),
         ]);
 
         assert_eq!(
-            resolve_mcp_tool_exposure(Exposure::Deferred, &overrides, "get_user_by_id"),
-            Exposure::CodeMode
+            resolve_mcp_tool_exposure(Exposure::default(), &overrides, "get_user_by_id"),
+            exposure(Catalog::Hidden, Adapters::CodeMode)
         );
     }
 
     #[test]
     fn equal_specificity_patterns_use_ascending_lexicographic_order() {
         let overrides = BTreeMap::from([
-            ("read_*".into(), Exposure::Direct),
-            ("*_file".into(), Exposure::Hidden),
+            ("read_*".into(), exposure(Catalog::Direct, Adapters::Native)),
+            ("*_file".into(), exposure(Catalog::Hidden, Adapters::None)),
         ]);
 
         assert_eq!(
-            resolve_mcp_tool_exposure(Exposure::Deferred, &overrides, "read_file"),
-            Exposure::Hidden
+            resolve_mcp_tool_exposure(Exposure::default(), &overrides, "read_file"),
+            exposure(Catalog::Hidden, Adapters::None)
         );
     }
 
     #[test]
     fn wildcard_matches_unicode_and_empty_segments() {
-        let overrides = BTreeMap::from([("文件_*_读取".into(), Exposure::CodeMode)]);
+        let overrides = BTreeMap::from([(
+            "文件_*_读取".into(),
+            exposure(Catalog::Hidden, Adapters::CodeMode),
+        )]);
 
         assert_eq!(
-            resolve_mcp_tool_exposure(Exposure::Deferred, &overrides, "文件_项目_读取"),
-            Exposure::CodeMode
+            resolve_mcp_tool_exposure(Exposure::default(), &overrides, "文件_项目_读取"),
+            exposure(Catalog::Hidden, Adapters::CodeMode)
         );
         assert_eq!(
-            resolve_mcp_tool_exposure(Exposure::Deferred, &overrides, "文件__读取"),
-            Exposure::CodeMode
+            resolve_mcp_tool_exposure(Exposure::default(), &overrides, "文件__读取"),
+            exposure(Catalog::Hidden, Adapters::CodeMode)
         );
     }
 
     #[test]
     fn unmatched_tool_uses_server_default() {
-        let overrides = BTreeMap::from([("private_*".into(), Exposure::Hidden)]);
+        let overrides = BTreeMap::from([(
+            "private_*".into(),
+            exposure(Catalog::Hidden, Adapters::None),
+        )]);
         assert_eq!(
-            resolve_mcp_tool_exposure(Exposure::Direct, &overrides, "public_info"),
-            Exposure::Direct
+            resolve_mcp_tool_exposure(
+                exposure(Catalog::Direct, Adapters::Native),
+                &overrides,
+                "public_info"
+            ),
+            exposure(Catalog::Direct, Adapters::Native)
         );
     }
 }

@@ -1285,3 +1285,5 @@
 - [1379：窗口与桌面 typed 资源边界](1379-typed-window-resource-boundary.md)
 - [1380：注册表 typed 资源边界](1380-typed-registry-resource-boundary.md)
 - [1381：将 MCP 调用绑定到远程目标与精确参数](1381-bind-mcp-invocations-to-remote-targets.md)
+- [1382：盘点 Shell 以外的进程执行路径并统一 capability 报告](1382-execution-path-capability-audit.md)
+- [1383：拆分 MCP 可用性、目录展示和调用适配](1383-split-mcp-availability-catalog-and-adapters.md)

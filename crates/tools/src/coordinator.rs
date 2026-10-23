@@ -6,8 +6,6 @@
 //! catalogs.
 
 use super::*;
-use haven_common::mcp::McpToolExposure;
-
 pub(crate) struct ToolRuntimeCoordinator {
     pub(crate) core: tool_core::ToolCore,
     pub(crate) runtime: tool_runtime::ToolRuntime,
@@ -404,10 +402,10 @@ impl ToolRuntimeCoordinator {
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|tool| server.exposure.for_tool(&tool.name) == McpToolExposure::Deferred)
+                .filter(|tool| server.exposure.for_tool(&tool.name).requires_native_load())
                 .map(|tool| tool.name)
                 .collect();
-            if tool_names.is_empty() && server.exposure.default != McpToolExposure::Deferred {
+            if tool_names.is_empty() && !server.exposure.default.requires_native_load() {
                 continue;
             }
             entries.push(catalog::McpServerIndexEntry::from_raw(

@@ -13,7 +13,10 @@ function server(tools: McpToolInfoView[]): McpServerSnapshotView {
 		cwd: null,
 		url: '',
 		enabled: true,
-		exposure: { default: 'deferred', tools: {} },
+		exposure: {
+			default: { availability: 'enabled', catalog: 'deferred', invocation: 'native' },
+			tools: {},
+		},
 		status: 'Connected',
 		tools,
 		lastError: null,

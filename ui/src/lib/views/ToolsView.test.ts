@@ -93,7 +93,10 @@ function mcpServer(name: string, status: string) {
 		supports_resources: false,
 		supports_resource_subscriptions: false,
 		supports_prompts: false,
-		exposure: { default: 'deferred', tools: {} },
+		exposure: {
+			default: { availability: 'enabled', catalog: 'deferred', invocation: 'native' },
+			tools: {},
+		},
 		status,
 		tools: [],
 		last_error: null,

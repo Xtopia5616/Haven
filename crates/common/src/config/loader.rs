@@ -407,6 +407,62 @@ fn migrate_builtin_tool_names(config: &mut AppConfig) -> bool {
     changed
 }
 
+/// Convert the former single MCP exposure enum to independent availability,
+/// catalog, and invocation fields. The conversion only preserves or narrows
+/// the old routes; unknown legacy strings are left untouched so normal config
+/// recovery backs up the original file and fails closed.
+fn migrate_mcp_tool_exposure(content: &str) -> Option<String> {
+    fn convert(value: &mut toml::Value) -> bool {
+        let Some(legacy) = value.as_str() else {
+            return false;
+        };
+        let (availability, catalog, invocation) = match legacy {
+            // `direct` and `model_only` currently have the same runtime route:
+            // both are native-only and neither enters the Code Mode allowlist.
+            "direct" | "model_only" => ("enabled", "direct", "native"),
+            "deferred" => ("enabled", "deferred", "native"),
+            "codemode" => ("enabled", "hidden", "codemode"),
+            "hidden" => ("disabled", "hidden", "none"),
+            _ => return false,
+        };
+        let mut fields = toml::map::Map::new();
+        fields.insert(
+            "availability".into(),
+            toml::Value::String(availability.into()),
+        );
+        fields.insert("catalog".into(), toml::Value::String(catalog.into()));
+        fields.insert("invocation".into(), toml::Value::String(invocation.into()));
+        *value = toml::Value::Table(fields);
+        true
+    }
+
+    let mut config = toml::from_str::<toml::Value>(content).ok()?;
+    let servers = config.get_mut("mcp_servers")?.as_array_mut()?;
+    let mut changed = false;
+    for server in servers {
+        let Some(exposure) = server
+            .get_mut("exposure")
+            .and_then(toml::Value::as_table_mut)
+        else {
+            continue;
+        };
+        if let Some(default) = exposure.get_mut("default") {
+            changed |= convert(default);
+        }
+        if let Some(overrides) = exposure
+            .get_mut("tools")
+            .and_then(toml::Value::as_table_mut)
+        {
+            for (_, override_value) in overrides.iter_mut() {
+                changed |= convert(override_value);
+            }
+        }
+    }
+    changed
+        .then(|| toml::to_string_pretty(&config).ok())
+        .flatten()
+}
+
 impl ConfigLoader {
     /// Returns the default config path under the application's data directory.
     pub fn default_path() -> PathBuf {
@@ -474,7 +530,9 @@ impl ConfigLoader {
         tracing::info!("loading config");
         let content = read_config_file(path)?;
         let source_fingerprint = Some(fingerprint_config_file(content.as_bytes()));
-        let (config, recovery_required) = match toml::from_str::<AppConfig>(&content) {
+        let migrated_exposure_content = migrate_mcp_tool_exposure(&content);
+        let parse_content = migrated_exposure_content.as_deref().unwrap_or(&content);
+        let (config, recovery_required) = match toml::from_str::<AppConfig>(parse_content) {
             Ok(mut config) => {
                 if config.context_limits.max_known_facts > MAX_FACTS_IN_EXTRACTION_PROMPT {
                     tracing::warn!(
@@ -502,12 +560,20 @@ impl ConfigLoader {
             source_fingerprint,
             recovery_required,
         };
-        if !loader.recovery_required && migrate_builtin_tool_names(&mut loader.config) {
-            tracing::info!("migrating stored builtin tool names in config.toml");
+        let migrated_tool_names =
+            !loader.recovery_required && migrate_builtin_tool_names(&mut loader.config);
+        if !loader.recovery_required && (migrated_exposure_content.is_some() || migrated_tool_names)
+        {
+            if migrated_exposure_content.is_some() {
+                tracing::info!("migrating stored MCP exposure values in config.toml");
+            }
+            if migrated_tool_names {
+                tracing::info!("migrating stored builtin tool names in config.toml");
+            }
             if let Err(error) = loader.persist() {
                 tracing::warn!(
                     error = %crate::error::sanitize_error_text(&error.to_string()),
-                    "failed to persist builtin tool name migration; canonical names remain active in memory"
+                    "failed to persist config migration; canonical values remain active in memory"
                 );
             }
         }
@@ -1579,6 +1645,62 @@ mod tests {
     }
 
     #[test]
+    fn load_migrates_legacy_mcp_exposure_without_widening_routes() {
+        use crate::mcp::{
+            McpCatalogPresentation as Catalog, McpInvocationAdapters as Adapters,
+            McpToolAvailability as Availability, McpToolExposure,
+        };
+
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let original = r#"
+[[mcp_servers]]
+name = "calendar"
+
+[mcp_servers.exposure]
+default = "deferred"
+tools = { "calendar_*" = "direct", "private_*" = "hidden", "batch_*" = "codemode", "legacy_*" = "model_only" }
+"#;
+        std::fs::write(&path, original).unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        let exposure = &loader.config().mcp_servers[0].exposure;
+        assert_eq!(exposure.default, McpToolExposure::default());
+        assert_eq!(
+            exposure.for_tool("calendar_status"),
+            McpToolExposure {
+                availability: Availability::Enabled,
+                catalog: Catalog::Direct,
+                invocation: Adapters::Native,
+            }
+        );
+        assert_eq!(
+            exposure.for_tool("private_record"),
+            McpToolExposure {
+                availability: Availability::Disabled,
+                catalog: Catalog::Hidden,
+                invocation: Adapters::None,
+            }
+        );
+        assert_eq!(
+            exposure.for_tool("batch_update").invocation,
+            Adapters::CodeMode
+        );
+        assert_eq!(
+            exposure.for_tool("legacy_sync").invocation,
+            Adapters::Native,
+            "legacy model_only and direct had the same native-only runtime route"
+        );
+
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("model_only"));
+        assert!(saved.contains("availability = \"disabled\""));
+        assert!(saved.contains("invocation = \"codemode\""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn load_migrates_legacy_builtin_permission_and_tool_settings_names() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1772,6 +1894,10 @@ default_web_search = "alway"
             (
                 "invalid MCP server name",
                 "[[mcp_servers]]\nname = \"server.name\"\n",
+            ),
+            (
+                "unknown MCP exposure mode",
+                "[[mcp_servers]]\nname = \"example\"\n\n[mcp_servers.exposure]\ndefault = \"legacy\"\n",
             ),
             (
                 "duplicate MCP server name",

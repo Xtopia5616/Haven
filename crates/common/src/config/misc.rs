@@ -1130,8 +1130,8 @@ impl Default for NotificationConfig {
 // Aggregated application config
 // ---------------------------------------------------------------------------
 
-/// MCP capability visibility defaults and per-tool overrides for one server.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// MCP capability policy defaults and per-tool overrides for one server.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct McpExposureConfig {
     /// Exposure used when no exact or wildcard tool override matches.
@@ -1139,15 +1139,6 @@ pub struct McpExposureConfig {
     /// Exact raw MCP tool names or `*` patterns mapped to their exposure.
     #[serde(default)]
     pub tools: std::collections::BTreeMap<String, crate::mcp::McpToolExposure>,
-}
-
-impl Default for McpExposureConfig {
-    fn default() -> Self {
-        Self {
-            default: crate::mcp::McpToolExposure::Deferred,
-            tools: std::collections::BTreeMap::new(),
-        }
-    }
 }
 
 impl McpExposureConfig {

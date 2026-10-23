@@ -2,7 +2,18 @@ use super::*;
 use crate::Tool;
 use crate::ToolHandle;
 use haven_common::config::McpServerConfig;
-use haven_common::mcp::McpServerTransport;
+use haven_common::mcp::{
+    McpCatalogPresentation as Catalog, McpInvocationAdapters as Adapters, McpServerTransport,
+    McpToolAvailability as Availability, McpToolExposure,
+};
+
+fn exposure(availability: Availability, catalog: Catalog, invocation: Adapters) -> McpToolExposure {
+    McpToolExposure {
+        availability,
+        catalog,
+        invocation,
+    }
+}
 
 fn tool_for_tests() -> LoadMcpTool {
     LoadMcpTool {
@@ -380,12 +391,24 @@ fn test_catalog_entries_truncates_long_descriptions() {
 #[test]
 fn legacy_loader_only_lists_deferred_tools() {
     let exposure = McpExposureConfig {
-        default: McpToolExposure::Hidden,
+        default: exposure(Availability::Disabled, Catalog::Hidden, Adapters::None),
         tools: std::collections::BTreeMap::from([
-            ("read_*".into(), McpToolExposure::Direct),
-            ("read_private".into(), McpToolExposure::Hidden),
-            ("batch_*".into(), McpToolExposure::Deferred),
-            ("code_*".into(), McpToolExposure::CodeMode),
+            (
+                "read_*".into(),
+                exposure(Availability::Enabled, Catalog::Direct, Adapters::Native),
+            ),
+            (
+                "read_private".into(),
+                exposure(Availability::Disabled, Catalog::Hidden, Adapters::None),
+            ),
+            (
+                "batch_*".into(),
+                exposure(Availability::Enabled, Catalog::Deferred, Adapters::Native),
+            ),
+            (
+                "code_*".into(),
+                exposure(Availability::Enabled, Catalog::Hidden, Adapters::CodeMode),
+            ),
         ]),
     };
     let available = vec![

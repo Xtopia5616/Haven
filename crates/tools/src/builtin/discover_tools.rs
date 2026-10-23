@@ -522,7 +522,12 @@ impl DiscoverToolsTool {
                     .unwrap_or_default();
                 let infos: Vec<_> = discovered
                     .into_iter()
-                    .filter(|info| config.exposure.for_tool(&info.name).is_catalog_visible())
+                    .filter(|info| {
+                        let exposure = config.exposure.for_tool(&info.name);
+                        exposure.is_available()
+                            && exposure.has_invocation_adapter()
+                            && exposure.is_catalog_visible()
+                    })
                     .collect();
                 let connected = self.mcp_manager.has_client(&config.name).await;
                 let names = infos
@@ -692,7 +697,12 @@ impl DiscoverToolsTool {
         let names = match self.mcp_manager.cached_tools(&config.name).await {
             Some(tools) => tools
                 .into_iter()
-                .filter(|info| config.exposure.for_tool(&info.name).is_catalog_visible())
+                .filter(|info| {
+                    let exposure = config.exposure.for_tool(&info.name);
+                    exposure.is_available()
+                        && exposure.has_invocation_adapter()
+                        && exposure.is_catalog_visible()
+                })
                 .map(|info| info.name)
                 .collect::<Vec<_>>(),
             None => Vec::new(),
@@ -719,11 +729,14 @@ impl DiscoverToolsTool {
                 continue;
             };
             for info in tools {
-                if !config.exposure.for_tool(&info.name).is_catalog_visible() {
+                let exposure = config.exposure.for_tool(&info.name);
+                if !exposure.is_available()
+                    || !exposure.has_invocation_adapter()
+                    || !exposure.is_catalog_visible()
+                {
                     continue;
                 }
                 if McpToolAdapter::qualified_name_of(&config.name, &info.name) == name {
-                    let exposure = config.exposure.for_tool(&info.name);
                     return Ok(Some((config.name.clone(), info, exposure)));
                 }
             }
@@ -1058,9 +1071,13 @@ fn mcp_tool_detail(
         "risk_level": RiskLevel::High,
         "input_schema": crate::adapters::sanitize_external_schema(&info.input_schema),
         "loaded": loaded,
-        "exposure": exposure.as_str(),
+        "exposure": {
+            "availability": exposure.availability,
+            "catalog": exposure.catalog,
+            "invocation": exposure.invocation,
+        },
     });
-    if exposure == McpToolExposure::Deferred {
+    if exposure.requires_native_load() {
         detail["load"] = serde_json::json!({
             "tool": "load_mcp",
             "arguments": { "server_name": server_name, "tool_names": [info.name] }

@@ -1,0 +1,53 @@
+# 执行上下文 Slice 3：进程路径 capability 盘点
+
+> 日期：2026-10-23。静态源码盘点，供执行上下文 Slice 3 验收与后续统一执行环境设计使用。此报告描述当前工作树，不是 Windows 运行时隔离验收。
+
+## 结论
+
+- `ProcessContainment` 在 Windows 上通过 Job Object 管理子进程树、进程数量和关闭时终止；它本身不限制文件或网络访问。
+- 目前只有前台 `shell` 的 `WorkspaceWrite` 路径尝试通过 MXC ProcessContainer 落实文件与网络边界。启动前 probe 必须确认 MXC 能执行完整请求；失败时拒绝启动，不回退到 host process。
+- Shell 的 `FullAccess`、后台 Shell、MCP stdio、Skill setup/runtime、LSP、Lifecycle Hook 和 Everything CLI 使用本机进程。适用入口另有授权、输入校验、输出预算、取消或 Job Object 管理，但这些不等于 OS 文件/网络隔离。
+- 按 ADR 1368，Skill、MCP stdio、LSP、Everything 和 lifecycle hooks 不使用 MXC；在 WorkspaceWrite 下依现有入口策略继续拒绝或保持既有 FullAccess 限制。不能因为进程已通过 start authorization 或挂入 Job Object，就把它当作满足 WorkspaceWrite。
+- URL/文件打开、开机自启、shell 可用性探测、Skill 文件夹打开、媒体目录 junction helper 属于 App/系统集成进程路径，不经过 ReAct 工具执行环境。
+- 当前 `ToolCapabilitySnapshot` 汇总媒体与 Web Search 可用性，不报告子进程隔离能力。因此本表是 Slice 3 的统一 capability 审计记录；它不是进程路径的动态运行时状态 API。
+
+## Capability 维度
+
+| 维度 | 当前权威实现 | 可证明的内容 | 不能据此声称 |
+|---|---|---|---|
+| 进程树与生命周期 | `haven-platform::process_containment::ProcessContainment` | Windows Job Object、kill-on-close、活动进程上限；调用方将新进程挂入 Job 后再恢复 | 文件权限受限、网络受限、只访问当前工作目录 |
+| 资源隔离 | `haven-platform::sandboxed_process::SandboxedProcess`（MXC） | MXC probe 接受当前策略后，按请求的读写/只读路径和网络开关创建 ProcessContainer | 未被 probe 证明的策略；域名级网络白名单；任何其它 host process 自动获得同等隔离 |
+| 操作授权 | `haven-tools` 的 `ExecutionPolicyAuthorization` / 具体能力 owner | 对应入口在 spawn 或副作用前按其 contract 检查当前授权；MCP 远程调用另外绑定连接目标及完整参数摘要 | 授权本身是 OS sandbox；进程内第三方代码无法越过 host 权限 |
+| 进程创建序列化 | `process_spawn_lock()` | Haven 自有标准进程适配器串行化短暂的 inheritable-handle 创建窗口 | 子进程访问隔离或互相独立 |
+| 动态能力摘要 | `ToolsFacade::tool_capability_snapshot` → `ToolCapabilitySnapshot` | prompt/runtime 当前可用的媒体与 Web Search 能力 | MXC 可用性、各子进程当前隔离强度或一份完整的 process capability matrix |
+
+## 子进程入口清单
+
+| 入口 | 创建者与触发方式 | 入口级控制 | 文件/网络边界结论 |
+|---|---|---|---|
+| 前台 Shell，`FullAccess` | `haven-tools` `builtin/shell.rs`，当前 ReAct 工具调用 | 执行策略 permit；Windows Job Object 管理树、取消会 kill 子进程 | 按设计以当前 Windows 用户权限运行；不提供文件/网络 sandbox |
+| 前台 Shell，`WorkspaceWrite` | 同上 | 执行 permit；Windows 先由 MXC probe 校验请求，再在 ProcessContainer 中 spawn；不支持或 probe 失败即拒绝 | 当前唯一接入 MXC 的进程能力；按请求设置工作目录、路径集和网络开关。MXC 路径不支持时无 host fallback；非 Windows 拒绝此模式 |
+| 后台 ToolRun Shell | `haven-tools` `tool_run_service/background.rs` | 启动前取得执行 permit；`ProcessContainment`、取消和 ToolRun 生命周期 | 本机权限；Job Object 不是资源隔离。ToolRun 的独立会话工作绑定和配置代次连接属于后续实施建议 |
+| MCP stdio server | `haven-mcp` `client.rs`，连接配置启动 server 时 | 单独的 process-start permit；`ProcessContainment`；stdio 生命周期随 MCP client 管理；tool invocation 再走 MCP 远程资源授权 | 本机权限，无 MXC 文件/网络策略。启动 server 的授权和每次远程 tool call 是不同边界；stdio 进程实例的执行上下文隔离仍需按提案验收 |
+| MCP Streamable HTTP | `haven-mcp` HTTP transport | 不启动本机子进程；MCP tool call 绑定连接配置指纹、连接代次和参数摘要 | 远程 endpoint/对象调用路径，不是本机进程隔离 |
+| Skill 环境创建与依赖安装 | `haven-skills` `venv.rs`，激活含依赖的 Skill 时运行 Python `venv` / `pip` | 进程启动 permit；`ProcessContainment`；输出有界 | 本机权限；pip 网络和文件副作用没有 MXC 边界 |
+| Skill 脚本执行 | `haven-tools` `skill_runner.rs`，模型加载后调用 Skill | 执行策略 permit；清理部分环境变量；每次 attempt 有私有 scratch cwd；`ProcessContainment`、取消及输出预算 | scratch 组织相对输出，不是文件 sandbox；Python/脚本仍以当前用户权限访问文件和网络 |
+| LSP server | `haven-tools` `builtin/lsp.rs`，语言工具启动 server 时 | 执行 permit；过滤基础环境；`ProcessContainment`；进程与 server 会话管理 | 以当前用户权限运行；Job Object 不限制 LSP server 的文件/网络访问 |
+| Lifecycle Hook | `haven-tools` `lifecycle_hooks.rs`，匹配已配置 lifecycle event 时 | Hook process-start authorization；`ProcessContainment`；取消、时间和输出上限 | 受管理的 host process；没有 MXC 资源隔离。Hook 配置是明确的本机扩展入口，不是 Shell 子命令 |
+| Everything CLI | `haven-tools` `builtin/everything_search.rs`，按文件搜索配置选择 CLI 时 | 当前搜索执行 permit；最小化环境；`ProcessContainment`；查询、数量和等待时限受限 | 工具契约可以限定搜索根，但底层 CLI 没有 MXC 文件/网络沙箱 |
+| shell 可用性 probe | `haven-app-binary` `commands/settings.rs`，Settings 探测 `where.exe` / `which` | 固定 executable name、标准 spawn lock、等待退出 | 探测系统 PATH；不是模型工具调用，不提供 OS 隔离 |
+| 开机自启管理 | `haven-app-binary` `autostart.rs`，用户启用/关闭自启时调用 `schtasks` | 固定子命令/参数、标准 spawn lock；结果同步等待 | Windows 用户任务计划管理；不属于会话执行能力 |
+| URL/路径/Skill 目录打开 | `haven-app-binary` `commands/external.rs` 与 `commands/skills.rs`，用户操作请求系统默认处理器或 Explorer | URL/路径由 App command 校验；Windows 用 ShellExecute/Explorer；其它系统通过系统 opener；普通进程路径持 spawn lock | 将目标交给系统默认应用；目标应用不受 Haven 的 process containment 管理 |
+| Managed Media junction helper | `haven-app-binary` `commands/managed_media.rs`，Windows 媒体目录维护路径 | 固定 PowerShell 脚本与已计算路径；标准 spawn lock、同步检查结果 | 本机用户权限执行文件系统维护；没有 Job Object 或 MXC sandbox |
+
+`ProcessContainment` 还用于固定 helper 的测试子进程；该类测试启动不计入生产执行路径。Async task、线程池、`spawn_blocking` 和模型 HTTP client 是 Haven 进程内任务或网络请求，不属于本表的 OS 子进程入口。
+
+## Slice 3 的实现边界
+
+本次盘点不把每个受管理的子进程改为 MXC。只有能够将入口的真实文件/网络请求完整表达为平台 policy，并在 spawn 前通过 backend probe 验证时，才可使用受限进程模式；其它入口继续按其现有授权运行在本机权限下，并在 capability 描述中如实区分 process-tree control 与资源隔离。MXC 拒绝、不支持的资源类型或策略变化都必须 fail closed，不能退回 host spawn。
+
+下一步若要将这份静态矩阵变为运行时 capability API，应由 Platform 提供描述本机 backend 与支持策略的窄 snapshot，并由 Tools 将其与具体路径所需能力匹配。该 API 不应把 `ProcessContainment` 的 Job Object 状态投影成文件/网络 sandbox，也不应让消费者取得 platform manager/registry。此报告未引入该 API、未改变运行行为或持久契约。
+
+## 验证范围
+
+本报告基于当前工作树静态搜索与调用链阅读；它没有证明每种真实 Windows host policy 或 MXC backend 的运行状态。Windows MXC 负向行为与发布验收仍需在 Windows 环境按[路线图 Gate](architecture-refactor-roadmap.md#51-windows-发布验收gate--open)执行。

@@ -208,10 +208,13 @@ MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并注册�
 ToolCall 表示 ReAct 前台调用路径，没有独立的 `toolcall.*` 工具根。内置 `load` 请求不设固定
 operation 数量上限，批次仍受 `context_limits.max_tools_per_request` 的原子准入预算约束。
 
-MCP exposure 按 tool 生效：`direct` 与 `model_only` 进入 provider-native 工具列表；`model_only`
-不得成为 CodeMode 的嵌套 capability。`deferred` 经目录显式加载后走 Legacy 原生调用，
-`codemode` 只进入受限 CodeMode allowlist，`hidden` 不可发现也不可执行。暴露只控制路由，不替代
-授权、sandbox 或网络策略（ADR 1163、1183）。
+MCP 工具策略按 tool 生效，并分成三个字段：`availability` 控制是否允许从模型入口调用，
+`catalog` 控制 native adapter 是否直接进入 provider surface、按需发现/加载，或仅从通用目录隐藏，
+`invocation` 列出 `native`、`codemode`、二者兼有或无适配器。`hidden` 只描述通用目录；要阻止调用必须将
+`availability` 设为 `disabled`。Code Mode 入口仅暴露配置允许的 MCP 子调用；原生和 Code Mode 子调用
+仍共用 Tools 的授权、MCP 远程目标绑定和 durable journal。路由字段不替代授权、sandbox 或网络策略
+（ADR 1163、1183、1383）。旧 `direct` / `model_only` / `deferred` / `codemode` / `hidden` 值在配置载入时
+保守转换为新字段；转换规则和进程能力盘点见[执行上下文 capability 报告](execution-path-capability-audit-2026-10-23.md)。
 
 Builtin 的 Skill 与 tool catalog 请求复用 `builtin/name_list.rs` 的有序非空名称去重原语；
 Skill 前缀移除、目录请求展平与 trim 仍由各自领域入口负责（ADR 0865）。

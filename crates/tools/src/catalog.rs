@@ -1,6 +1,5 @@
 use super::*;
 use crate::adapters::McpToolAdapter;
-use haven_common::mcp::McpToolExposure;
 use haven_mcp::McpToolInfo;
 
 /// Stable summary of an enabled MCP server for the model-facing prompt.
@@ -265,7 +264,7 @@ impl ToolsFacade {
         };
         let deferred_tools: Vec<_> = all_tools
             .into_iter()
-            .filter(|info| config.exposure.for_tool(&info.name) == McpToolExposure::Deferred)
+            .filter(|info| config.exposure.for_tool(&info.name).requires_native_load())
             .collect();
         let tools = match tool_names {
             None => deferred_tools,
@@ -349,13 +348,10 @@ impl ToolsFacade {
                         .await
                         .ok()
                         .flatten()?;
+                    let exposure = config.exposure.for_tool(tool_name);
                     if !config.enabled
-                        || !matches!(
-                            config.exposure.for_tool(tool_name),
-                            McpToolExposure::Direct
-                                | McpToolExposure::ModelOnly
-                                | McpToolExposure::Deferred
-                        )
+                        || !exposure.is_available()
+                        || !exposure.invocation.supports_native()
                     {
                         return None;
                     }
@@ -401,7 +397,8 @@ impl ToolsFacade {
                 continue;
             };
             for info in available {
-                if config.exposure.for_tool(&info.name) != McpToolExposure::CodeMode {
+                let exposure = config.exposure.for_tool(&info.name);
+                if !exposure.is_available() || !exposure.invocation.supports_codemode() {
                     continue;
                 }
                 let qualified_name = McpToolAdapter::qualified_name_of(&config.name, &info.name);
@@ -659,7 +656,12 @@ impl OperationCatalog<'_> {
             };
             definitions.extend(available.iter().filter_map(|info| {
                 let name = McpToolAdapter::qualified_name_of(&config.name, &info.name);
-                (config.exposure.for_tool(&info.name) == McpToolExposure::CodeMode
+                (config.exposure.for_tool(&info.name).is_available()
+                    && config
+                        .exposure
+                        .for_tool(&info.name)
+                        .invocation
+                        .supports_codemode()
                     && tool_config_enabled(settings, &name))
                 .then(|| {
                     crate::codemode_tool::mcp_code_mode_definition(manager, &config.name, info)
@@ -718,7 +720,7 @@ impl OperationCatalog<'_> {
             };
             let (eligible, ineligible): (Vec<_>, Vec<_>) =
                 active_tools.into_iter().partition(|(_, operation, _)| {
-                    config.exposure.for_tool(operation) == McpToolExposure::Deferred
+                    config.exposure.for_tool(operation).requires_native_load()
                 });
             removals.extend(ineligible.into_iter().map(|(name, _, _)| name));
             if eligible.is_empty() {

@@ -2,7 +2,10 @@ use crate::{
     CODEMODE_RUN_TOOL_NAME, McpManager, McpToolAdapter, McpToolInfo, ToolHandle, ToolsFacade,
 };
 use haven_common::config::{McpExposureConfig, McpServerConfig};
-use haven_common::mcp::{McpServerTransport, McpToolExposure};
+use haven_common::mcp::{
+    McpCatalogPresentation as Catalog, McpInvocationAdapters as Adapters, McpServerTransport,
+    McpToolAvailability as Availability, McpToolExposure,
+};
 use haven_common::types::{NetworkPolicy, SandboxMode};
 use serde_json::Value;
 use std::sync::Arc;
@@ -10,6 +13,14 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+fn exposure(catalog: Catalog, invocation: Adapters) -> McpToolExposure {
+    McpToolExposure {
+        catalog,
+        invocation,
+        ..McpToolExposure::default()
+    }
+}
 
 fn active_tool(manager: &McpManager, operation: &str) -> ToolHandle {
     Arc::new(McpToolAdapter::new(
@@ -117,12 +128,12 @@ async fn stale_session_mcp_calls_follow_current_exposure_policy() {
         name: "calendar".into(),
         ..Default::default()
     };
-    for exposure in [
-        McpToolExposure::Direct,
-        McpToolExposure::ModelOnly,
-        McpToolExposure::Deferred,
+    for policy in [
+        exposure(Catalog::Direct, Adapters::Native),
+        exposure(Catalog::Deferred, Adapters::Native),
+        exposure(Catalog::Hidden, Adapters::NativeAndCodeMode),
     ] {
-        config.exposure.default = exposure;
+        config.exposure.default = policy;
         facade.upsert_mcp_server_config(config.clone()).await;
         assert!(
             facade
@@ -131,8 +142,15 @@ async fn stale_session_mcp_calls_follow_current_exposure_policy() {
                 .is_some()
         );
     }
-    for exposure in [McpToolExposure::Hidden, McpToolExposure::CodeMode] {
-        config.exposure.default = exposure;
+    for policy in [
+        McpToolExposure {
+            availability: Availability::Disabled,
+            catalog: Catalog::Hidden,
+            invocation: Adapters::None,
+        },
+        exposure(Catalog::Hidden, Adapters::CodeMode),
+    ] {
+        config.exposure.default = policy;
         facade.upsert_mcp_server_config(config.clone()).await;
         assert!(
             facade
@@ -286,7 +304,7 @@ async fn load_mcp_rejects_a_live_client_from_a_different_config_generation() {
 }
 
 #[tokio::test]
-async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
+async fn native_mcp_tools_are_independent_from_catalog_visibility_and_availability() {
     let facade = ToolsFacade::new();
     let manager = facade.coordinator.builtins.mcp_manager.clone();
     manager.set_network_policy(NetworkPolicy::Open).await;
@@ -306,7 +324,7 @@ async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
         transport: McpServerTransport::Http,
         url: format!("http://{address}/mcp"),
         exposure: McpExposureConfig {
-            default: McpToolExposure::Direct,
+            default: exposure(Catalog::Direct, Adapters::Native),
             ..Default::default()
         },
         ..Default::default()
@@ -334,22 +352,29 @@ async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
     authorization
         .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
         .await;
-    let mut model_only = config.clone();
-    model_only.exposure.default = McpToolExposure::ModelOnly;
-    facade.upsert_mcp_server_config(model_only).await;
+    let mut dual_adapter = config.clone();
+    dual_adapter.exposure.default = exposure(Catalog::Direct, Adapters::NativeAndCodeMode);
+    facade.upsert_mcp_server_config(dual_adapter).await;
     let snapshot = facade.tool_catalog_snapshot(session_id).await;
     assert!(
         snapshot
             .provider_definitions()
             .iter()
             .any(|def| def.name == name),
-        "ModelOnly tools remain available as top-level model calls"
+        "a tool that supports both adapters remains available as a native call"
     );
     assert!(
         facade
             .get_tool_for_session(Some(session_id), &name)
             .await
             .is_some()
+    );
+    assert!(
+        facade
+            .get_codemode_subcall_tool_for_session(Some(session_id), &name)
+            .await
+            .is_some(),
+        "the CodeMode adapter is independent of the native adapter"
     );
     let request = facade
         .resolve_authorization_request(Some(session_id), &name, &serde_json::json!({}))
@@ -396,8 +421,67 @@ async fn direct_mcp_tools_are_advertised_and_hidden_tools_are_not_executable() {
     assert_eq!(same_target, target_fingerprint);
     assert_ne!(different_request, request_fingerprint);
 
+    let mut hidden_catalog = config.clone();
+    hidden_catalog.exposure.default = exposure(Catalog::Hidden, Adapters::Native);
+    facade.upsert_mcp_server_config(hidden_catalog).await;
+    let hidden_snapshot = facade.tool_catalog_snapshot(session_id).await;
+    assert!(
+        hidden_snapshot
+            .provider_definitions()
+            .iter()
+            .any(|def| def.name == name),
+        "a hidden directory entry remains callable through its enabled native adapter"
+    );
+    assert!(
+        facade
+            .get_tool_for_session(Some(session_id), &name)
+            .await
+            .is_some()
+    );
+    let directory = crate::builtin::discover_tools::DiscoverToolsTool {
+        deferred_catalog: facade.coordinator.core.operations.deferred.clone(),
+        registry: facade.coordinator.core.operations.installed.clone(),
+        session_tool_overlay: facade
+            .coordinator
+            .core
+            .operations
+            .session_tool_overlay
+            .clone(),
+        max_tools_per_request: 32,
+        mcp_manager: Arc::new(manager.clone()),
+        mcp_server_config_source: facade.coordinator.builtins.mcp_server_config_source.clone(),
+    };
+    let directory_detail = directory
+        .run(
+            crate::builtin::discover_tools::DiscoverToolsParams {
+                action: "describe".into(),
+                level: None,
+                source: Some("mcp".into()),
+                query: None,
+                name: Some(name.clone()),
+                root: None,
+                cursor: None,
+                limit: None,
+                revision: None,
+                operations: None,
+                roots: None,
+                session_id: Some(session_id.into()),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        directory_detail.output["status"], "not_found",
+        "hidden catalog entries stay out of general discovery"
+    );
+
     let mut hidden = config;
-    hidden.exposure.default = McpToolExposure::Hidden;
+    hidden.exposure.default = McpToolExposure {
+        availability: Availability::Disabled,
+        catalog: Catalog::Hidden,
+        invocation: Adapters::None,
+    };
     facade.upsert_mcp_server_config(hidden).await;
     let snapshot = facade.tool_catalog_snapshot(session_id).await;
     assert!(
@@ -439,7 +523,7 @@ async fn codemode_exposure_is_only_visible_through_the_synthetic_bounded_tool() 
         transport: McpServerTransport::Http,
         url: format!("http://{address}/mcp"),
         exposure: McpExposureConfig {
-            default: McpToolExposure::CodeMode,
+            default: exposure(Catalog::Hidden, Adapters::CodeMode),
             ..Default::default()
         },
         ..Default::default()
@@ -495,7 +579,11 @@ async fn codemode_exposure_is_only_visible_through_the_synthetic_bounded_tool() 
     assert!(request.target_binding.is_some());
 
     let mut hidden = config;
-    hidden.exposure.default = McpToolExposure::Hidden;
+    hidden.exposure.default = McpToolExposure {
+        availability: Availability::Disabled,
+        catalog: Catalog::Hidden,
+        invocation: Adapters::None,
+    };
     facade.upsert_mcp_server_config(hidden).await;
     assert!(
         facade
