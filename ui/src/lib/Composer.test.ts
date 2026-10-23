@@ -84,20 +84,14 @@ describe('Composer context menu', () => {
 		expect(onsubmit).not.toHaveBeenCalled();
 	});
 
-	it('blocks both delivery modes and composer sends while interactions are pending', async () => {
+	it('hides delivery modes and blocks composer sends while interactions are pending', async () => {
 		const onsubmit = vi.fn();
 		render(Composer, {
 			sessionRunning: true,
 			hasPendingInteractions: true,
 			onsubmit,
 		});
-		const deliveryMode = screen.getByRole('group', { name: '消息投递方式' });
-		expect(
-			within(deliveryMode).getByRole('button', { name: '安全边界调整' }),
-		).toHaveProperty('disabled', true);
-		expect(
-			within(deliveryMode).getByRole('button', { name: '完成后追加' }),
-		).toHaveProperty('disabled', true);
+		expect(screen.queryByRole('group', { name: '消息投递方式' })).toBeNull();
 
 		await fireEvent.input(screen.getByRole('textbox', { name: '消息输入框' }), {
 			target: { value: 'wait until pending interactions are resolved' },
@@ -250,12 +244,14 @@ describe('Composer context menu', () => {
 		});
 		expect(screen.queryByText('正在停止当前输出；停止完成后再发送新消息。')).toBeNull();
 		const deliveryMode = screen.getByRole('group', { name: '消息投递方式' });
-		expect(
-			within(deliveryMode).getByRole('button', { name: '安全边界调整' }),
-		).toHaveProperty('disabled', true);
-		expect(
-			within(deliveryMode).getByRole('button', { name: '完成后追加' }),
-		).toHaveProperty('disabled', true);
+		expect(within(deliveryMode).getByRole('button', { name: '安全边界调整' })).toHaveProperty(
+			'disabled',
+			true,
+		);
+		expect(within(deliveryMode).getByRole('button', { name: '完成后追加' })).toHaveProperty(
+			'disabled',
+			true,
+		);
 		expect(screen.getByRole('button', { name: '中断输出' })).toHaveProperty('disabled', true);
 	});
 

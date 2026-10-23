@@ -143,15 +143,11 @@
 
 	let deliveryMode = $state<Exclude<InputDeliveryModeInput, 'auto'>>('steering');
 	let deliveryModeAvailable = $derived(sessionRunning || isGenerating);
-	let deliveryModeDisabled = $derived(
-		interrupting || hasPendingDelivery || hasPendingInteractions,
-	);
+	let deliveryModeDisabled = $derived(interrupting || hasPendingDelivery);
 	let pendingSendBlocked = $derived(
 		(hasPendingDelivery || hasPendingInteractions || confirmationAwaiting) && !askAwaiting,
 	);
-	let allowEmptyMessageSubmit = $derived(
-		allowEmptySubmit && askAwaiting,
-	);
+	let allowEmptyMessageSubmit = $derived(allowEmptySubmit && askAwaiting);
 	let deliveryHint = $derived.by(() => {
 		if (interrupting) return '正在停止当前输出；停止完成后再发送新消息。';
 		if (askAwaiting) {
@@ -788,16 +784,12 @@
 	<div class="toolbar-row md-toolbar">
 		<div class="toolbar-left">
 			{@render toolbarLeft?.()}
-			{#if deliveryModeAvailable && !confirmationAwaiting && !askAwaiting}
+			{#if deliveryModeAvailable && !hasPendingInteractions && !confirmationAwaiting && !askAwaiting}
 				<div
 					class="delivery-mode-group"
 					role="group"
 					aria-label="消息投递方式"
-					title={hasPendingInteractions
-						? '请先处理待操作项目'
-						: hasPendingDelivery
-							? '有待处理消息；送达后才能继续发送'
-							: undefined}
+					title={hasPendingDelivery ? '有待处理消息；送达后才能继续发送' : undefined}
 				>
 					<MaterialChoiceChip
 						label="安全边界调整"
@@ -851,12 +843,12 @@
 							? '请先处理待操作的权限确认'
 							: '已有待处理消息，等它送达后再发送'
 					: pendingAttachmentReads > 0
-					? '附件正在读取'
-					: hasInput
-						? '发送'
-						: stopMode
-							? '中断当前输出'
-							: '发送'}
+						? '附件正在读取'
+						: hasInput
+							? '发送'
+							: stopMode
+								? '中断当前输出'
+								: '发送'}
 				ariaBusy={interrupting || pendingAttachmentReads > 0}
 				disabled={interrupting ||
 					pendingAttachmentReads > 0 ||
