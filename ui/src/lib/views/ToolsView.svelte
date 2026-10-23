@@ -49,6 +49,7 @@
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import CountChip from '$lib/CountChip.svelte';
+	import WorkspaceSearch from '$lib/WorkspaceSearch.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
 	import {
@@ -568,15 +569,14 @@
 					role="search"
 					aria-label="筛选工具资源"
 				>
-					<label class="resource-search">
-						<span class="sr-only">搜索工具资源</span>
-						<input
-							class="md-input"
-							type="search"
-							bind:value={searchQuery}
+					<div class="resource-search">
+						<WorkspaceSearch
+							label="搜索工具资源"
+							value={searchQuery}
 							placeholder="搜索名称、描述或地址"
+							onInput={(value) => (searchQuery = value)}
 						/>
-					</label>
+					</div>
 					<div class="resource-filter-controls">
 						<MaterialSelect
 							id="resource-enabled-filter"
@@ -611,13 +611,14 @@
 					>
 						{#snippet children()}
 							<RefreshButton
-								iconOnly
+								width="compact"
 								loading={builtinToolsLoading}
 								title="刷新内置工具列表"
 								onclick={refreshBuiltinTools}
 							/>
 							<MaterialButton
 								variant="outlined"
+								width="compact"
 								label="重置熔断"
 								onclick={resetToolCircuits}
 							/>
@@ -670,13 +671,13 @@
 					>
 						{#snippet children()}
 							<RefreshButton
-								width="equal"
+								width="compact"
 								loading={mcpRefreshing}
 								onclick={refreshMcpList}
 							/>
 							<MaterialButton
 								variant="outlined"
-								width="equal"
+								width="compact"
 								label="添加"
 								onclick={openAddDialog}
 							/>
@@ -739,13 +740,13 @@
 					>
 						{#snippet children()}
 							<RefreshButton
-								width="equal"
+								width="compact"
 								loading={skillsRefreshing}
 								onclick={refreshSkills}
 							/>
 							<MaterialButton
 								variant="outlined"
-								width="equal"
+								width="compact"
 								label="打开文件夹"
 								ariaLabel="打开技能文件夹"
 								onclick={openFolder}
@@ -855,32 +856,6 @@
 		grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
 		gap: var(--md-sys-space-sm);
 	}
-	@media (max-width: 700px) {
-		.resource-toolbar {
-			align-items: stretch;
-			flex-direction: column;
-		}
-		.resource-search,
-		.resource-filter-controls {
-			width: 100%;
-		}
-		.resource-search {
-			flex: 0 1 auto;
-		}
-		.resource-filter-controls {
-			align-items: stretch;
-			flex-direction: column;
-			gap: var(--md-sys-space-sm);
-		}
-		.resource-filter-controls :global(.md-select-container) {
-			width: 100%;
-		}
-	}
-	@media (max-width: 455px) {
-		:global(.resource-count) {
-			align-self: flex-start;
-		}
-	}
 	@media (min-width: 840px) {
 		.tools-page {
 			max-width: none;
@@ -894,11 +869,6 @@
 			grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
 			align-items: start;
 			gap: var(--md-sys-space-md);
-		}
-		.resource-toolbar {
-			position: sticky;
-			top: var(--md-sys-space-lg);
-			z-index: 2;
 		}
 	}
 	@container (max-width: 640px) {
@@ -922,18 +892,6 @@
 		}
 		:global(.resource-count) {
 			align-self: flex-start;
-		}
-	}
-	@media screen and (orientation: landscape) and (max-height: 560px) {
-		:global(.workspace-surface) {
-			padding: var(--md-sys-space-sm);
-		}
-		:global(.workspace-secondary-sidebar) {
-			top: var(--md-sys-space-xs);
-		}
-		.resource-toolbar {
-			top: var(--md-sys-space-xs);
-			margin-bottom: var(--md-sys-space-sm);
 		}
 	}
 </style>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkspaceSearch from '$lib/WorkspaceSearch.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -137,27 +138,28 @@
 
 <div class="history-view">
 	<div class="filter-bar workspace-filter-bar" role="search" aria-label="筛选会话">
-		<input
-			class="md-input"
-			type="text"
-			aria-label="搜索会话"
-			placeholder="搜索会话"
-			value={searchQuery}
-			oninput={(event) => {
-				onSearchQueryChange(event.currentTarget.value);
-				onSearchInput();
-			}}
-			autocomplete="off"
-		/>
+		<div class="history-search">
+			<WorkspaceSearch
+				label="搜索会话"
+				value={searchQuery}
+				onInput={(value) => {
+					onSearchQueryChange(value);
+					onSearchInput();
+				}}
+			/>
+		</div>
 		<div class="filter-controls">
 			<MaterialSelect
 				value={statusFilter}
+				width="compact"
 				ariaLabel="会话状态"
 				options={statusOptions}
 				onChange={handleStatusChange}
 			/>
 			<MaterialButton
 				variant="outlined"
+				width="content"
+				className="date-filter"
 				label={startDate || endDate
 					? `日期：${startDate ? startDate.replace(/-/g, '/') : '…'} ~ ${endDate ? endDate.replace(/-/g, '/') : '…'}`
 					: '日期筛选'}
@@ -322,20 +324,22 @@
 		display: flex;
 		align-items: center;
 		flex: 0 0 auto;
+		flex-wrap: wrap;
 		gap: var(--md-sys-space-md);
 		min-width: 0;
 	}
 	.filter-controls :global(.md-select-container) {
-		width: 140px;
-		flex-shrink: 0;
+		width: min(100%, var(--md-comp-control-compact-width));
+		flex: 0 0 var(--md-comp-control-compact-width);
 	}
-	.filter-controls :global(.md-btn--outlined) {
-		width: 120px;
-		overflow: hidden;
-		text-overflow: ellipsis;
+	.history-search {
+		flex: 1 1 var(--md-comp-settings-control-width);
+		min-width: 0;
+	}
+
+	.filter-controls :global(.date-filter) {
+		flex: 0 0 auto;
 		white-space: nowrap;
-		display: inline-block;
-		flex-shrink: 0;
 	}
 	.session-title-row {
 		display: flex;
@@ -399,7 +403,7 @@
 			align-items: stretch;
 			flex-direction: column;
 		}
-		.filter-bar > .md-input {
+		.history-search {
 			flex: none;
 			width: 100%;
 		}
@@ -411,11 +415,7 @@
 		}
 		.filter-controls :global(.md-select-container) {
 			width: auto;
-			flex: 1 1 140px;
-		}
-		.filter-controls :global(.md-btn--outlined) {
-			width: auto;
-			flex: 1 1 160px;
+			flex: 1 1 var(--md-comp-control-compact-width);
 		}
 		.filter-bar > :global(.count-chip) {
 			align-self: flex-start;
@@ -424,9 +424,6 @@
 	@container session-history (max-width: 420px) {
 		.filter-controls {
 			gap: var(--md-sys-space-sm);
-		}
-		.filter-controls :global(.md-btn--outlined) {
-			flex-basis: 140px;
 		}
 	}
 </style>

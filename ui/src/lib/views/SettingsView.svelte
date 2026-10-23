@@ -64,6 +64,8 @@
 	import SettingsLimits from './SettingsLimits.svelte';
 	import SettingsSaveBar from './SettingsSaveBar.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
+	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
+	import WorkspaceSearch from '$lib/WorkspaceSearch.svelte';
 	import WorkspaceSurface from '$lib/WorkspaceSurface.svelte';
 	import type {
 		AudioConfigInput,
@@ -396,7 +398,8 @@
 					(key) => JSON.stringify(current[key]) !== JSON.stringify(baseline[key]),
 				),
 			).map((section) => section.id);
-			if (hookDraftState.dirty && !dirtySections.includes('hooks')) dirtySections.push('hooks');
+			if (hookDraftState.dirty && !dirtySections.includes('hooks'))
+				dirtySections.push('hooks');
 			return dirtySections;
 		} catch {
 			return [] as SettingsTabId[];
@@ -621,20 +624,23 @@
 			'#settings-panel .settings-field, #settings-panel .limit-row, #settings-panel [data-setting-searchable]',
 		);
 		for (const field of fields) {
-			const sectionId = field.closest<HTMLElement>('[data-settings-section]')?.dataset
-				.settingsSection;
+			const sectionId =
+				field.closest<HTMLElement>('[data-settings-section]')?.dataset.settingsSection;
 			if (!sectionId || !isSettingsTabId(sectionId)) continue;
 			const section = SETTINGS_SECTIONS.find((item) => item.id === sectionId);
 			if (!section) continue;
 			const label =
-				field.querySelector<HTMLElement>(
-					'.settings-field__label label, .settings-field__label span, .limit-label label, .md-collapsible-header',
-				)?.textContent?.trim() || section.label;
+				field
+					.querySelector<HTMLElement>(
+						'.settings-field__label label, .settings-field__label span, .limit-label label, .md-collapsible-header',
+					)
+					?.textContent?.trim() || section.label;
 			const description =
-				field.querySelector<HTMLElement>('.settings-field__label small, .limit-hint')?.textContent?.trim() ||
-				'';
-			const searchable = `${label} ${description} ${section.label} ${field.textContent || ''}`
-				.toLocaleLowerCase();
+				field
+					.querySelector<HTMLElement>('.settings-field__label small, .limit-hint')
+					?.textContent?.trim() || '';
+			const searchable =
+				`${label} ${description} ${section.label} ${field.textContent || ''}`.toLocaleLowerCase();
 			if (!searchable.includes(query)) continue;
 			const targetId = `settings-search-${sequence}-hit-${nextIndex++}`;
 			field.dataset.settingsSearchId = targetId;
@@ -667,16 +673,19 @@
 		if (!field) return;
 		let collapsible = field.closest<HTMLElement>('.md-collapsible');
 		while (collapsible) {
-			const header = collapsible.querySelector<HTMLButtonElement>(':scope > .md-collapsible-header');
+			const header = collapsible.querySelector<HTMLButtonElement>(
+				':scope > .md-collapsible-header',
+			);
 			if (header?.getAttribute('aria-expanded') === 'false') header.click();
-			collapsible = collapsible.parentElement?.closest<HTMLElement>('.md-collapsible') ?? null;
+			collapsible =
+				collapsible.parentElement?.closest<HTMLElement>('.md-collapsible') ?? null;
 		}
 		await tick();
 		field.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
 		field.classList.add('settings-search-target');
-		field.querySelector<HTMLElement>(
-			'input:not([type="hidden"]), select, textarea, button',
-		)?.focus();
+		field
+			.querySelector<HTMLElement>('input:not([type="hidden"]), select, textarea, button')
+			?.focus();
 		if (highlightedSearchTarget && highlightedSearchTarget !== field) {
 			highlightedSearchTarget.classList.remove('settings-search-target');
 		}
@@ -1504,242 +1513,228 @@
 		if (hookDraftState.dirty && !(await hookDraftState.save())) return false;
 		return true;
 	}
-
 </script>
 
-<div class="settings-view-shell">
-	<div class="settings-surface-slot">
-		<WorkspaceSurface {entering} {onAnimationEnd}>
-			<div class="settings-page">
-				<WorkspacePageHeader
-					title="设置"
-					description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
-				>
-					{#snippet children()}
-						<SettingsSaveBar
-							dirty={anySettingsDirty}
-							dirtySectionLabels={dirtySettingsSectionLabels}
-							{saveState}
-							{saveError}
-							onDiscard={discardAndReset}
-							onSave={handleSaveClick}
-						/>
-					{/snippet}
-				</WorkspacePageHeader>
-				<div class="settings-search-area">
-					<label class="settings-search__label" for="settings-search">搜索设置</label>
-					<div class="settings-search__control">
-						<input
+<WorkspaceSurface {entering} {onAnimationEnd}>
+	<div class="settings-page">
+		<WorkspacePageHeader
+			title="设置"
+			description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
+		>
+			{#snippet children()}
+				<SettingsSaveBar
+					dirty={anySettingsDirty}
+					dirtySectionLabels={dirtySettingsSectionLabels}
+					{saveState}
+					{saveError}
+					onDiscard={discardAndReset}
+					onSave={handleSaveClick}
+				/>
+			{/snippet}
+		</WorkspacePageHeader>
+
+		<div class="settings-layout workspace-secondary-layout responsive-layout-transition">
+			<aside class="settings-sidebar workspace-secondary-sidebar responsive-layout-panel">
+				<MaterialTabs
+					tabs={settingsTabs}
+					activeTab={settingsTab}
+					onNavigate={changeSettingsTab}
+					ariaLabel="设置分类"
+					idPrefix="settings-tab"
+					panelId="settings-panel"
+					className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
+					{isVisible}
+				/>
+			</aside>
+			<div class="settings-main workspace-secondary-main">
+				<div id="settings-panel" role="tabpanel" aria-label={activeSettingsSection.label}>
+					<WorkspaceSectionHeader
+						title={activeSettingsSection.label}
+						description={activeSettingsSection.description}
+					>
+						{#snippet status()}
+							{#if dirtySettingsSectionIds.includes(settingsTab)}
+								<span class="settings-dirty-badge">有未保存修改</span>
+							{/if}
+						{/snippet}
+					</WorkspaceSectionHeader>
+					<div class="settings-search-area">
+						<WorkspaceSearch
 							id="settings-search"
-							class="md-input settings-search__input"
-							type="search"
+							label="搜索设置"
 							value={settingsSearchQuery}
 							placeholder={settingsLoaded
 								? '例如：录音快捷键、API Key、上下文窗口'
 								: '设置加载完成后可搜索'}
-							aria-describedby="settings-search-help"
-							aria-controls="settings-search-results"
-						disabled={!settingsLoaded}
-							oninput={(event) => void searchSettings(event.currentTarget.value)}
+							describedBy="settings-search-help"
+							controls={settingsSearchQuery.trim()
+								? 'settings-search-results'
+								: undefined}
+							disabled={!settingsLoaded}
+							onInput={(value) => void searchSettings(value)}
 						/>
-						{#if settingsSearchQuery}
-							<MaterialButton
-								variant="text"
-								className="settings-search__clear"
-								label="清空搜索"
-								onclick={() => void searchSettings('')}
-							/>
+						<p id="settings-search-help" class="settings-search__help">
+							搜索字段名称或用途；选择结果会切换分类并定位到对应设置。
+						</p>
+						{#if settingsSearchQuery.trim()}
+							<div
+								id="settings-search-results"
+								class="settings-search__results"
+								role="region"
+								aria-label="设置搜索结果"
+								aria-live="polite"
+							>
+								{#if settingsSearchLoading}
+									<p class="settings-search__empty">正在搜索设置…</p>
+								{:else if settingsSearchResults.length > 0}
+									{#each settingsSearchResults as result (result.id)}
+										<button
+											type="button"
+											class="settings-search__result"
+											onclick={() => void openSettingsSearchResult(result)}
+										>
+											<span class="settings-search__result-copy">
+												<strong>{result.label}</strong>
+												{#if result.description}
+													<small>{result.description}</small>
+												{/if}
+											</span>
+											<span class="settings-search__category"
+												>{result.sectionLabel}</span
+											>
+										</button>
+									{/each}
+								{:else}
+									<p class="settings-search__empty">
+										没有找到匹配的设置，试试“录音”“安全”或“限制”。
+									</p>
+								{/if}
+							</div>
 						{/if}
 					</div>
-					<p id="settings-search-help" class="settings-search__help">
-						搜索字段名称或用途；选择结果会切换分类并定位到对应设置。
-					</p>
-					{#if settingsSearchQuery.trim()}
+					{#if visitedSettingsTabs.includes('behavior')}
+						<div hidden={settingsTab !== 'behavior'} data-settings-section="behavior">
+							<SettingsBehavior
+								{hotkeyMode}
+								{hotkeyBinding}
+								{session}
+								{defaultShell}
+								{shellAvailable}
+								{memory}
+								{memoryMaintenance}
+								onHotkeyModeChange={setHotkeyMode}
+								onHotkeyBindingChange={setHotkeyBinding}
+								onHotkeyCaptureChange={setHotkeyCaptureActive}
+								onDefaultShellChange={setDefaultShell}
+								onRunMaintenance={runMaintenance}
+							/>
+						</div>
+					{/if}
+					{#if visitedSettingsTabs.includes('appearance')}
 						<div
-							id="settings-search-results"
-							class="settings-search__results"
-							role="region"
-							aria-label="设置搜索结果"
-							aria-live="polite"
+							hidden={settingsTab !== 'appearance'}
+							data-settings-section="appearance"
 						>
-							{#if settingsSearchLoading}
-								<p class="settings-search__empty">正在搜索设置…</p>
-							{:else if settingsSearchResults.length > 0}
-								{#each settingsSearchResults as result (result.id)}
-									<button
-										type="button"
-										class="settings-search__result"
-										onclick={() => void openSettingsSearchResult(result)}
-									>
-										<span class="settings-search__result-copy">
-											<strong>{result.label}</strong>
-											{#if result.description}
-												<small>{result.description}</small>
-											{/if}
-										</span>
-										<span class="settings-search__category">{result.sectionLabel}</span>
-									</button>
-								{/each}
+							<SettingsAppearance
+								{notification}
+								{autostartEnabled}
+								onAutostartChange={setAutostart}
+							/>
+						</div>
+					{/if}
+					{#if visitedSettingsTabs.includes('diagnostics')}
+						<div
+							hidden={settingsTab !== 'diagnostics'}
+							data-settings-section="diagnostics"
+						>
+							<SettingsDiagnostics {log} />
+						</div>
+					{/if}
+					{#if visitedSettingsTabs.includes('models') || visitedSettingsTabs.includes('media')}
+						<div
+							hidden={settingsTab !== 'models' && settingsTab !== 'media'}
+							data-settings-section={settingsTab}
+						>
+							{#if settingsLoaded}
+								<ModelSettings
+									section={modelSection}
+									active={settingsTab === 'models' || settingsTab === 'media'}
+									{llmConfig}
+									{audio}
+									{stt}
+									{ocr}
+									{tts}
+									{imageGen}
+									{mediaInputStrategy}
+									{contextLimits}
+									{keyConfigured}
+									{keyConfiguredProviders}
+									{mcpServerNames}
+									loaded={true}
+									searching={Boolean(settingsSearchQuery.trim())}
+									onDiscoverySettled={reBaselineAfterDiscovery}
+									onProviderDiscoveryFailure={(
+										/** @type {string} */ providerName,
+										/** @type {boolean} */ staticCatalog,
+									) => {
+										providerDiscoveryAlert = {
+											providerName,
+											staticCatalog,
+										};
+									}}
+								/>
 							{:else}
-								<p class="settings-search__empty">
-									没有找到匹配的设置，试试“录音”“安全”或“限制”。
-								</p>
+								<LoadingState
+									label="正在加载模型与 API Key 状态…"
+									variant="inline"
+								/>
 							{/if}
 						</div>
 					{/if}
-				</div>
-				<div
-					class="settings-layout workspace-secondary-layout responsive-layout-transition"
-				>
-					<aside
-						class="settings-sidebar workspace-secondary-sidebar responsive-layout-panel"
-					>
-						<MaterialTabs
-							tabs={settingsTabs}
-							activeTab={settingsTab}
-							onNavigate={changeSettingsTab}
-							ariaLabel="设置分类"
-							idPrefix="settings-tab"
-							panelId="settings-panel"
-							className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
-							{isVisible}
-						/>
-					</aside>
-					<div class="settings-main workspace-secondary-main">
-						<div
-							id="settings-panel"
-							role="tabpanel"
-							aria-label={activeSettingsSection.label}
-						>
-							<div class="settings-panel-heading">
-								<div>
-									<h2>{activeSettingsSection.label}</h2>
-									<p>{activeSettingsSection.description}</p>
-								</div>
-								{#if dirtySettingsSectionIds.includes(settingsTab)}
-									<span class="settings-dirty-badge">有未保存修改</span>
-								{/if}
-							</div>
-							{#if visitedSettingsTabs.includes('behavior')}
-								<div hidden={settingsTab !== 'behavior'} data-settings-section="behavior">
-									<SettingsBehavior
-										{hotkeyMode}
-										{hotkeyBinding}
-										{session}
-										{defaultShell}
-										{shellAvailable}
-										{memory}
-										{memoryMaintenance}
-										onHotkeyModeChange={setHotkeyMode}
-										onHotkeyBindingChange={setHotkeyBinding}
-										onHotkeyCaptureChange={setHotkeyCaptureActive}
-										onDefaultShellChange={setDefaultShell}
-										onRunMaintenance={runMaintenance}
-									/>
-								</div>
-							{/if}
-							{#if visitedSettingsTabs.includes('appearance')}
-								<div hidden={settingsTab !== 'appearance'} data-settings-section="appearance">
-									<SettingsAppearance
-										{notification}
-										{autostartEnabled}
-										onAutostartChange={setAutostart}
-									/>
-								</div>
-							{/if}
-							{#if visitedSettingsTabs.includes('diagnostics')}
-								<div hidden={settingsTab !== 'diagnostics'} data-settings-section="diagnostics">
-									<SettingsDiagnostics {log} />
-								</div>
-							{/if}
-							{#if visitedSettingsTabs.includes('models') || visitedSettingsTabs.includes('media')}
-								<div
-									hidden={settingsTab !== 'models' && settingsTab !== 'media'}
-									data-settings-section={settingsTab}
-								>
-									{#if settingsLoaded}
-										<ModelSettings
-											section={modelSection}
-											active={settingsTab === 'models' ||
-												settingsTab === 'media'}
-											{llmConfig}
-											{audio}
-											{stt}
-											{ocr}
-											{tts}
-											{imageGen}
-											{mediaInputStrategy}
-											{contextLimits}
-											{keyConfigured}
-											{keyConfiguredProviders}
-											{mcpServerNames}
-											loaded={true}
-										searching={Boolean(settingsSearchQuery.trim())}
-											onDiscoverySettled={reBaselineAfterDiscovery}
-											onProviderDiscoveryFailure={(
-												/** @type {string} */ providerName,
-												/** @type {boolean} */ staticCatalog,
-											) => {
-												providerDiscoveryAlert = {
-													providerName,
-													staticCatalog,
-												};
-											}}
-										/>
-									{:else}
-										<LoadingState
-											label="正在加载模型与 API Key 状态…"
-											variant="inline"
-										/>
-									{/if}
-								</div>
-							{/if}
-							{#if visitedSettingsTabs.includes('security')}
-								<div hidden={settingsTab !== 'security'} data-settings-section="security">
-									<SettingsSecurity
-										{security}
-										{sessionPermissions}
-										securityDirty={dirtySettingsSectionIds.includes('security')}
-										{securityRuntimeStatus}
-										{securityRuntimeNotice}
-										onRevokePermission={revokePermission}
-										onRevokeSessionPermission={revokeSessionPermission}
-										onResetPermissions={resetPermissions}
-										onResetSessionPermissions={resetSessionPermissions}
-										onPickExecutionRoot={pickExecutionWorkspace}
-									/>
-								</div>
-							{/if}
-							{#if visitedSettingsTabs.includes('hooks')}
-								<div hidden={settingsTab !== 'hooks'} data-settings-section="hooks">
-									<SettingsHooks
-									active={settingsTab === 'hooks'}
-									onDraftState={(draft) => (hookDraftState = draft)}
-								/>
-								</div>
-							{/if}
-							{#if visitedSettingsTabs.includes('limits')}
-								<div hidden={settingsTab !== 'limits'} data-settings-section="limits">
-									<SettingsLimits
-										{contextLimits}
-										modelContextWindows={llmConfig.models.map(
-											(model) => model.context_window,
-										)}
-									/>
-								</div>
-							{/if}
-							{#if visitedSettingsTabs.includes('about')}
-								<div hidden={settingsTab !== 'about'} data-settings-section="about">
-									<SettingsAbout />
-								</div>
-							{/if}
+					{#if visitedSettingsTabs.includes('security')}
+						<div hidden={settingsTab !== 'security'} data-settings-section="security">
+							<SettingsSecurity
+								{security}
+								{sessionPermissions}
+								securityDirty={dirtySettingsSectionIds.includes('security')}
+								{securityRuntimeStatus}
+								{securityRuntimeNotice}
+								onRevokePermission={revokePermission}
+								onRevokeSessionPermission={revokeSessionPermission}
+								onResetPermissions={resetPermissions}
+								onResetSessionPermissions={resetSessionPermissions}
+								onPickExecutionRoot={pickExecutionWorkspace}
+							/>
 						</div>
-					</div>
+					{/if}
+					{#if visitedSettingsTabs.includes('hooks')}
+						<div hidden={settingsTab !== 'hooks'} data-settings-section="hooks">
+							<SettingsHooks
+								active={settingsTab === 'hooks'}
+								onDraftState={(draft) => (hookDraftState = draft)}
+							/>
+						</div>
+					{/if}
+					{#if visitedSettingsTabs.includes('limits')}
+						<div hidden={settingsTab !== 'limits'} data-settings-section="limits">
+							<SettingsLimits
+								{contextLimits}
+								modelContextWindows={llmConfig.models.map(
+									(model) => model.context_window,
+								)}
+							/>
+						</div>
+					{/if}
+					{#if visitedSettingsTabs.includes('about')}
+						<div hidden={settingsTab !== 'about'} data-settings-section="about">
+							<SettingsAbout />
+						</div>
+					{/if}
 				</div>
 			</div>
-		</WorkspaceSurface>
+		</div>
 	</div>
-</div>
+</WorkspaceSurface>
 
 <MaterialDialog open={leaveDialogOpen} title="未保存的更改" onClose={stayOnSettings}>
 	{#snippet children()}<p>
@@ -1798,37 +1793,6 @@
 </MaterialDialog>
 
 <style>
-	.settings-view-shell {
-		--settings-surface-bottom-gap: var(
-			--workspace-surface-bottom-gap,
-			var(--md-sys-content-gutter)
-		);
-		display: flex;
-		flex-direction: column;
-		flex: 1 1 auto;
-		width: 100%;
-		min-width: 0;
-		min-height: 100%;
-	}
-	.settings-surface-slot {
-		display: flex;
-		flex: 1 1 auto;
-		min-width: 0;
-		min-height: 0;
-		margin-bottom: var(--settings-surface-bottom-gap);
-	}
-	.settings-surface-slot :global(.workspace-surface) {
-		flex: 1 1 auto;
-		min-height: 0;
-	}
-	:global(.content:not(.content--chat) .page-shell:has(.settings-view-shell)) {
-		display: flex;
-		flex-direction: column;
-		min-height: 100%;
-	}
-	:global(.content:not(.content--chat):has(.tab-panel:not([hidden]) .settings-view-shell)) {
-		padding-bottom: 0;
-	}
 	.settings-page {
 		display: flex;
 		flex: 1;
@@ -1850,35 +1814,8 @@
 	.settings-search-area {
 		position: relative;
 		z-index: 2;
-		width: min(100%, 42rem);
-		margin: 0 auto var(--md-sys-space-lg);
-	}
-	.settings-search__label {
-		display: block;
-		margin-bottom: var(--md-sys-space-xs);
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 650;
-	}
-	.settings-search__control {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		padding: var(--md-sys-space-2xs) var(--md-sys-space-xs);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-low);
-	}
-	.settings-search__input {
-		flex: 1 1 auto;
-		min-width: 0;
-		border: 0;
-		background: transparent;
-		box-shadow: none;
-	}
-	.settings-search__input:focus-visible {
-		outline: 2px solid var(--md-sys-color-primary);
-		outline-offset: 1px;
+		width: 100%;
+		margin-bottom: var(--md-sys-space-lg);
 	}
 	.settings-search__help,
 	.settings-search__empty {
@@ -1952,7 +1889,11 @@
 		border-radius: var(--md-sys-shape-small);
 		outline: 2px solid var(--md-sys-color-primary);
 		outline-offset: 3px;
-		background-color: color-mix(in srgb, var(--md-sys-color-primary-container) 24%, transparent);
+		background-color: color-mix(
+			in srgb,
+			var(--md-sys-color-primary-container) 24%,
+			transparent
+		);
 		scroll-margin-block: 24px;
 	}
 	:global(.settings-page .md-btn[data-width='content']:not(.accent-swatch)) {
@@ -1973,28 +1914,6 @@
 		margin-inline: auto;
 		container-name: settings-content;
 		container-type: inline-size;
-	}
-	.settings-panel-heading {
-		display: flex;
-		align-items: flex-start;
-		justify-content: space-between;
-		gap: var(--md-sys-space-lg);
-		margin: 0 0 var(--md-sys-space-xl);
-		padding-bottom: var(--md-sys-space-md);
-		border-bottom: 1px solid
-			color-mix(in srgb, var(--md-sys-color-outline-variant) 58%, transparent);
-	}
-	.settings-panel-heading h2 {
-		margin: 0;
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-headline-medium-size);
-		line-height: var(--md-sys-typescale-headline-medium-line-height);
-	}
-	.settings-panel-heading p {
-		margin: var(--md-sys-space-xs) 0 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.settings-dirty-badge {
 		flex: 0 0 auto;
@@ -2033,11 +1952,6 @@
 			grid-template-rows: minmax(0, 1fr);
 		}
 	}
-	@container settings-content (max-width: 640px) {
-		.settings-panel-heading {
-			flex-direction: column;
-		}
-	}
 	@container settings-page (max-width: 640px) {
 		.settings-page :global(.page-heading-actions) {
 			flex: 1 1 100%;
@@ -2048,17 +1962,9 @@
 		}
 	}
 	@media screen and (orientation: landscape) and (max-height: 560px) {
-		.settings-surface-slot :global(.workspace-surface) {
-			padding: var(--md-sys-space-md);
-		}
 		.settings-page :global(.page-heading) {
 			gap: var(--md-sys-space-sm);
 			margin-bottom: var(--md-sys-space-md);
-		}
-		.settings-panel-heading {
-			gap: var(--md-sys-space-sm);
-			margin-bottom: var(--md-sys-space-md);
-			padding-bottom: var(--md-sys-space-sm);
 		}
 	}
 	@media screen and (orientation: landscape) and (max-height: 560px) and (max-width: 839.99px) {

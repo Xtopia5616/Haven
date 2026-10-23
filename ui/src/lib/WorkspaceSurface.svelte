@@ -27,6 +27,7 @@
 <style>
 	.workspace-surface {
 		display: flex;
+		flex: 1;
 		flex-direction: column;
 		width: 100%;
 		min-width: 0;

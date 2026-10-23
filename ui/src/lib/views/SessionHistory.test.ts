@@ -18,6 +18,34 @@ function setViewport(width: number, height: number) {
 describe('SessionHistory actions', () => {
 	beforeEach(() => setViewport(1024, 768));
 
+	it('clears the search through the same filter update path as typing', async () => {
+		const onSearchQueryChange = vi.fn();
+		const onSearchInput = vi.fn();
+		render(SessionHistory, {
+			...commonProps,
+			searchQuery: '会议',
+			onSearchQueryChange,
+			onSearchInput,
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '清空搜索会话' }));
+		expect(onSearchQueryChange).toHaveBeenCalledWith('');
+		expect(onSearchInput).toHaveBeenCalledTimes(1);
+	});
+
+	it('keeps the complete date range available on the date filter action', async () => {
+		const onOpenDateFilter = vi.fn();
+		render(SessionHistory, {
+			...commonProps,
+			startDate: '2026-10-01',
+			endDate: '2026-10-23',
+			onOpenDateFilter,
+		});
+		await fireEvent.click(
+			screen.getByRole('button', { name: '日期：2026/10/01 ~ 2026/10/23' }),
+		);
+		expect(onOpenDateFilter).toHaveBeenCalledTimes(1);
+	});
+
 	it('shows the history count in the shared filter bar', () => {
 		render(SessionHistory, { ...commonProps, totalCount: 3 });
 

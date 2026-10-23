@@ -295,7 +295,15 @@
 	/* Secondary workspaces use WorkspaceSurface for their shared frame and
 	 * entry motion. Keeping chat outside that component preserves its full-bleed
 	 * chat layout. */
+	:global(.content:not(.content--chat) .tab-panel:not([hidden])) {
+		display: flex;
+		flex-direction: column;
+		min-height: 100%;
+	}
 	:global(.content:not(.content--chat) .page-shell) {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
 		max-width: clamp(640px, 92vw, var(--md-sys-content-max-width));
 		min-width: 0;
 	}

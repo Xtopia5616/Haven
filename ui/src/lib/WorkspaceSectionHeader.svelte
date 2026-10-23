@@ -6,6 +6,7 @@
 		description?: string;
 		headingId?: string;
 		children?: Snippet;
+		status?: Snippet;
 	}
 
 	/**
@@ -16,6 +17,7 @@
 		description = '',
 		headingId = undefined,
 		children = undefined,
+		status = undefined,
 	}: Props = $props();
 </script>
 
@@ -24,6 +26,7 @@
 		<h2 id={headingId}>{title}</h2>
 		{#if description}<p>{description}</p>{/if}
 	</div>
+	{@render status?.()}
 	{#if children}
 		<div
 			class="workspace-section-header__actions"
@@ -79,6 +82,9 @@
 		.workspace-section-header__actions {
 			width: 100%;
 			justify-content: flex-start;
+		}
+		.workspace-section-header__content {
+			flex: 0 1 auto;
 		}
 	}
 </style>
