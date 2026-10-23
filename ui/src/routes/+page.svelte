@@ -1527,10 +1527,10 @@
 		/* Resolve these in descendants against the available conversation width,
 		 * including sidebar resizing, rather than the outer window. */
 		--chat-inline-gutter: clamp(var(--md-sys-space-md), 2.5cqi, var(--md-sys-space-3xl));
-		--chat-body-size: clamp(0.9375rem, 0.875rem + 0.15cqi, 1.0625rem);
-		--chat-title-size: clamp(1rem, 0.875rem + 0.4cqi, 1.25rem);
-		--chat-message-gap: clamp(var(--md-sys-space-md), 2cqi, var(--md-sys-space-2xl));
-		--chat-surface-padding: clamp(var(--md-sys-space-md), 2cqi, var(--md-sys-space-xl));
+		--chat-body-size: clamp(0.875rem, 0.8125rem + 0.15cqi, 0.9375rem);
+		--chat-title-size: clamp(1rem, 0.875rem + 0.3cqi, 1.125rem);
+		--chat-message-gap: clamp(var(--md-sys-space-md), 1.5cqi, var(--md-sys-space-lg));
+		--chat-surface-padding: clamp(var(--md-sys-space-md), 1.5cqi, var(--md-sys-space-lg));
 		position: relative;
 		display: flex;
 		grid-column: 1 / -1;

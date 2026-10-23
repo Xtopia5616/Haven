@@ -164,7 +164,7 @@
 		grid-template-columns: minmax(0, 1fr) auto;
 		align-items: center;
 		gap: var(--md-sys-space-lg);
-		padding: var(--md-sys-space-md) var(--chat-inline-gutter, var(--md-sys-space-2xl));
+		padding: var(--md-sys-space-sm) var(--chat-inline-gutter, var(--md-sys-space-2xl));
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 		background: color-mix(
 			in srgb,
@@ -201,7 +201,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		font-size: var(--chat-title-size, var(--md-sys-typescale-title-large-size));
-		font-weight: 700;
+		font-weight: 600;
 		letter-spacing: 0;
 		line-height: var(--md-sys-typescale-title-large-line-height);
 	}

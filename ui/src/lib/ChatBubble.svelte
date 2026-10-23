@@ -744,8 +744,8 @@
 		box-shadow: var(--md-sys-elevation-1);
 	}
 	.bubble.assistant:not(.tool):not(.thinking) {
-		width: min(100%, var(--md-sys-chat-reading-width));
-		max-width: min(100%, var(--md-sys-chat-reading-width));
+		width: var(--md-sys-chat-surface-width);
+		max-width: var(--md-sys-chat-surface-width);
 		font-size: var(--chat-body-size, var(--md-sys-typescale-body-large-size));
 		line-height: var(--md-sys-typescale-body-large-line-height);
 	}

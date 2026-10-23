@@ -151,9 +151,9 @@
 	}
 	.session-rail h2 {
 		margin: 0;
-		font-size: var(--md-sys-typescale-headline-medium-size);
+		font-size: var(--md-sys-typescale-title-large-size);
 		font-weight: 700;
-		line-height: var(--md-sys-typescale-headline-medium-line-height);
+		line-height: var(--md-sys-typescale-title-large-line-height);
 	}
 	:global(.md-btn.session-rail__new) {
 		gap: var(--md-sys-space-sm);
@@ -189,7 +189,7 @@
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		width: 100%;
-		min-height: 60px;
+		min-height: 56px;
 		padding: var(--md-sys-space-sm);
 		border: 0;
 		border-radius: var(--md-sys-shape-medium);
@@ -217,9 +217,9 @@
 	.session-rail__item-mark {
 		display: grid;
 		place-items: center;
-		width: 34px;
-		height: 34px;
-		flex: 0 0 34px;
+		width: var(--md-comp-icon-button-compact-size);
+		height: var(--md-comp-icon-button-compact-size);
+		flex: 0 0 var(--md-comp-icon-button-compact-size);
 		border-radius: var(--md-sys-shape-small);
 		background: var(--md-sys-color-surface-container-high);
 		color: var(--md-sys-color-on-surface-variant);

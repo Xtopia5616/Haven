@@ -885,7 +885,7 @@
 
 <style>
 	.input-area {
-		--md-comp-toolbar-height: clamp(36px, 5cqi, 44px);
+		--md-comp-toolbar-height: var(--md-comp-button-small-height);
 		--md-comp-icon-button-size: var(--md-comp-toolbar-height);
 		--md-comp-toolbar-gap: clamp(var(--md-sys-space-xs), 1cqi, var(--md-sys-space-sm));
 		position: absolute;

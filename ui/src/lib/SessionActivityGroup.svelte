@@ -265,7 +265,7 @@
 			var(--md-sys-color-surface-container-low)
 		);
 		color: var(--md-sys-color-on-surface);
-		box-shadow: var(--md-sys-elevation-1);
+		box-shadow: none;
 	}
 	.activity-group.is-streaming {
 		border-color: color-mix(
@@ -330,8 +330,8 @@
 	.activity-items {
 		display: flex;
 		flex-direction: column;
-		gap: var(--md-sys-space-xs);
-		padding: var(--md-sys-space-sm) 0 var(--md-sys-space-xs);
+		gap: 0;
+		padding: var(--md-sys-space-xs) 0;
 	}
 	.media-plan-items {
 		display: flex;

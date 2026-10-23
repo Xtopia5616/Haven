@@ -1026,8 +1026,8 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 28px;
-		height: 28px;
+		width: var(--md-comp-icon-button-dense-size);
+		height: var(--md-comp-icon-button-dense-size);
 		border-radius: var(--md-sys-shape-small);
 		background: var(--md-sys-color-surface-container-highest);
 		color: var(--md-sys-color-primary);
@@ -1036,9 +1036,9 @@
 		flex: none;
 	}
 	.tool-card-label {
-		font-size: var(--md-sys-typescale-label-large-size);
-		font-weight: 700;
-		line-height: var(--md-sys-typescale-label-large-line-height);
+		font-size: var(--md-sys-typescale-body-small-size);
+		font-weight: 600;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface);
 		min-width: 0;
 		flex: 1 1 10rem;
