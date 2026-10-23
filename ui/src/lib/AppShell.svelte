@@ -54,8 +54,6 @@
 		content,
 	}: Props = $props();
 
-	let navigationExpanded = $state(false);
-
 	const isDevelopmentBuild = import.meta.env.DEV;
 </script>
 
@@ -82,7 +80,7 @@
 	{@render themeControl()}
 {/snippet}
 
-<div class="app-shell responsive-layout-transition" class:navigation-expanded={navigationExpanded}>
+<div class="app-shell responsive-layout-transition">
 	<header class="titlebar md-toolbar">
 		<div class="titlebar-left">
 			<MaterialButton
@@ -115,20 +113,13 @@
 		>
 			<Logo size={30} withText={true} />
 		</button>
-		<MaterialIconButton
-			label={navigationExpanded ? '收起主导航' : '展开主导航'}
-			title={navigationExpanded ? '收起主导航' : '展开主导航'}
-			ariaExpanded={navigationExpanded}
-			icon={navigationExpanded ? 'chevronLeft' : 'chevronRight'}
-			variant="ghost"
-			onclick={() => (navigationExpanded = !navigationExpanded)}
-		/>
-		<div class="rail-section-label">工作区</div>
-		<LandscapeWorkspaceNav
-			tabs={navigationTabs ?? tabs}
-			activeTab={navigationActiveTab ?? activeTab}
-			{onNavigate}
-		/>
+		<div class="rail-navigation">
+			<LandscapeWorkspaceNav
+				tabs={navigationTabs ?? tabs}
+				activeTab={navigationActiveTab ?? activeTab}
+				{onNavigate}
+			/>
+		</div>
 		<div class="rail-footer">
 			{@render shellControls()}
 		</div>
@@ -211,7 +202,6 @@
 	}
 	.workspace-rail {
 		display: none;
-		transition: padding var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.compact-workspace-nav {
 		flex: 0 0 auto;
@@ -371,7 +361,7 @@
 
 	@media screen and (min-width: 600px) {
 		.app-shell {
-			--workspace-rail-width: 80px;
+			--workspace-rail-width: 152px;
 			--md-comp-titlebar-height: var(--md-sys-space-4xl);
 			display: grid;
 			grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
@@ -393,81 +383,61 @@
 			display: none;
 		}
 		.workspace-rail {
-			--rail-control-size: 52px;
-			--rail-item-gap: var(--md-sys-space-sm);
+			--rail-control-size: 36px;
 			grid-column: 1;
 			grid-row: 1 / span 2;
 			display: flex;
 			flex-direction: column;
-			align-items: center;
-			gap: var(--md-sys-space-lg);
+			gap: var(--md-sys-space-xl);
 			min-width: 0;
-			padding: var(--md-sys-space-md) var(--md-sys-space-sm);
+			min-height: 0;
+			padding: var(--md-sys-space-lg) var(--md-sys-space-sm);
 			border-right: 1px solid var(--md-sys-color-outline-variant);
 			background: var(--md-sys-color-surface-container-low);
 		}
 		.rail-brand {
-			display: grid;
-			place-items: center;
-			width: var(--rail-control-size);
-			height: var(--rail-control-size);
-			padding: 0;
+			display: flex;
+			align-items: center;
+			width: 100%;
+			min-height: 44px;
+			flex-shrink: 0;
+			padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 			border: 0;
 			border-radius: var(--md-sys-shape-medium);
 			background: transparent;
 			cursor: pointer;
 			-webkit-app-region: no-drag;
+			transition: background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard);
 		}
 		.rail-brand:hover {
 			background: var(--md-sys-color-surface-container-high);
 		}
-		.rail-brand :global(.wordmark),
-		.rail-section-label {
-			display: none;
-		}
-		.rail-section-label {
-			color: var(--md-sys-color-on-surface-variant);
-			font-size: var(--md-sys-typescale-label-small-size);
-			font-weight: 700;
-			letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
-		}
-		.workspace-rail :global(.landscape-workspace-nav) {
-			align-items: center;
-			width: 100%;
-			gap: var(--rail-item-gap);
+		.rail-navigation {
+			flex: 0 1 auto;
+			min-height: 0;
+			overflow-y: auto;
+			scrollbar-width: thin;
 		}
 		.workspace-rail :global(.workspace-link) {
-			justify-content: center;
-			width: var(--rail-control-size);
-			min-height: 64px;
-			flex-direction: column;
-			gap: 0;
-			padding: var(--md-sys-space-xs) 0;
-			border-radius: var(--md-sys-shape-medium);
-		}
-		.workspace-rail :global(.workspace-link__copy) {
-			display: flex;
-			flex: 0;
-			text-align: center;
+			flex-shrink: 0;
+			gap: var(--md-sys-space-xs);
+			min-height: 48px;
+			padding: var(--md-sys-space-sm);
 		}
 		.workspace-rail :global(.workspace-link__label) {
-			font-size: var(--md-sys-typescale-label-small-size);
+			font-size: var(--md-sys-typescale-body-small-size);
+			white-space: nowrap;
 		}
 		.workspace-rail :global(.workspace-link__hint) {
 			display: none;
 		}
-		.workspace-rail :global(.workspace-link.active) {
-			border-color: transparent;
-		}
 		.rail-footer {
-			--rail-footer-control-height: var(--rail-control-size);
 			display: grid;
-			grid-template-columns: var(--rail-control-size);
-			grid-template-rows: repeat(2, var(--rail-footer-control-height));
+			grid-template-columns: repeat(2, minmax(0, 1fr));
 			align-items: center;
-			justify-content: center;
-			gap: var(--rail-item-gap);
-			width: 100%;
+			gap: var(--md-sys-space-sm);
+			flex-shrink: 0;
 			margin-top: auto;
 			padding-top: var(--md-sys-space-md);
 			border-top: 1px solid var(--md-sys-color-outline-variant);
@@ -476,49 +446,43 @@
 			display: contents;
 		}
 		.rail-footer :global(.status-chip) {
-			grid-column: 1;
+			grid-column: 1 / -1;
 			grid-row: 1;
-			justify-content: center;
-			width: var(--rail-control-size);
-			min-width: var(--rail-control-size);
-			height: var(--rail-footer-control-height);
-			min-height: var(--rail-footer-control-height);
-			padding: 0;
+			justify-content: flex-start;
+			min-width: 0;
+			width: 100%;
+			height: var(--rail-control-size);
+			padding-inline: var(--md-sys-space-sm);
 		}
 		.rail-footer :global(.status-text) {
-			display: none;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
 		}
 		.rail-footer :global(.task-action) {
 			grid-column: 1;
-			grid-row: 3;
-			justify-content: center;
-		}
-		.rail-footer :global(.task-action .md-icon-btn[data-size='toolbar']) {
-			width: var(--rail-footer-control-height);
-			min-width: var(--rail-footer-control-height);
-			height: var(--rail-footer-control-height);
-			min-height: var(--rail-footer-control-height);
+			grid-row: 2;
+			justify-self: start;
 		}
 		.rail-footer :global(.rail-theme-button[data-size='toolbar']) {
-			grid-column: 1;
+			grid-column: 2;
 			grid-row: 2;
-			justify-self: center;
-			width: var(--rail-footer-control-height);
-			min-width: var(--rail-footer-control-height);
-			height: var(--rail-footer-control-height);
-			min-height: var(--rail-footer-control-height);
+			justify-self: end;
+		}
+		.rail-footer :global(.md-icon-btn[data-size='toolbar']) {
+			width: var(--rail-control-size);
+			min-width: var(--rail-control-size);
+			height: var(--rail-control-size);
+			min-height: var(--rail-control-size);
 			border: 1px solid var(--md-sys-color-outline-variant);
-			border-radius: var(--md-comp-status-radius);
+			border-radius: var(--md-sys-shape-medium);
+			background: var(--md-sys-color-surface-container);
+		}
+		.rail-footer :global(.md-icon-btn[data-size='toolbar']:hover) {
 			background: var(--md-sys-color-surface-container-high);
-			transition:
-				background-color var(--md-sys-motion-duration-fast)
-					var(--md-sys-motion-easing-standard),
-				border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 		}
-		.rail-footer :global(.rail-theme-button[data-size='toolbar']:hover) {
-			border-color: var(--md-sys-color-outline);
-			background: var(--md-sys-color-surface-container-highest);
-		}
+
 		.compact-workspace-nav {
 			display: none;
 		}
@@ -550,104 +514,6 @@
 		:global(.content:not(.content--chat) .workspace-surface) {
 			min-height: 100%;
 			padding: var(--md-sys-space-2xl);
-		}
-	}
-
-	@media screen and (min-width: 600px) {
-		.app-shell.navigation-expanded {
-			--workspace-rail-width: 200px;
-			grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
-		}
-		.navigation-expanded .workspace-rail {
-			align-items: stretch;
-			gap: var(--md-sys-space-md);
-			padding: var(--md-sys-space-lg) var(--md-sys-space-md);
-		}
-		.navigation-expanded .rail-brand {
-			justify-content: flex-start;
-			width: 100%;
-			padding-inline: var(--md-sys-space-sm);
-		}
-		.navigation-expanded .rail-brand :global(.wordmark),
-		.navigation-expanded .rail-section-label {
-			display: initial;
-		}
-		.navigation-expanded .rail-section-label {
-			display: block;
-			padding: var(--md-sys-space-sm) var(--md-sys-space-sm) 0;
-		}
-		.navigation-expanded .workspace-rail :global(.landscape-workspace-nav) {
-			align-items: stretch;
-		}
-		.navigation-expanded .workspace-rail :global(.workspace-link) {
-			justify-content: flex-start;
-			flex-direction: row;
-			gap: var(--md-sys-space-md);
-			width: 100%;
-			min-height: 56px;
-			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		}
-		.navigation-expanded .workspace-rail :global(.workspace-link__copy) {
-			display: flex;
-			flex: 1 1 auto;
-			text-align: left;
-			max-width: 14rem;
-			opacity: 1;
-			transform: none;
-			pointer-events: auto;
-		}
-		.navigation-expanded .workspace-rail :global(.workspace-link__hint) {
-			display: block;
-		}
-		.navigation-expanded .workspace-rail :global(.workspace-link__label) {
-			font-size: var(--md-sys-typescale-body-medium-size);
-		}
-		.navigation-expanded .rail-footer {
-			--rail-footer-control-height: var(--md-comp-status-height);
-			display: flex;
-			flex-direction: row;
-			align-items: center;
-			width: 100%;
-			padding-inline: var(--md-sys-space-sm);
-		}
-		.navigation-expanded .rail-footer :global(.status-switch) {
-			display: inline-flex;
-			flex-direction: row;
-			align-items: center;
-			gap: var(--md-sys-space-xs);
-			width: calc(100% - var(--md-comp-icon-button-size) - var(--md-sys-space-xs));
-			min-width: 0;
-		}
-		.navigation-expanded .rail-footer :global(.status-chip) {
-			justify-content: flex-start;
-			width: auto;
-			min-width: 0;
-			height: var(--rail-footer-control-height);
-			min-height: var(--rail-footer-control-height);
-			flex: 1 1 auto;
-			max-width: 100%;
-			padding-inline: var(--md-sys-space-sm);
-		}
-		.navigation-expanded .rail-footer :global(.status-text) {
-			display: inline;
-			min-width: 0;
-			overflow: hidden;
-			text-overflow: ellipsis;
-			white-space: nowrap;
-		}
-		.navigation-expanded .rail-footer :global(.rail-theme-button) {
-			align-self: center;
-			margin-inline-start: auto;
-			width: var(--rail-footer-control-height);
-			min-width: var(--rail-footer-control-height);
-			height: var(--rail-footer-control-height);
-			min-height: var(--rail-footer-control-height);
-		}
-		.navigation-expanded .rail-footer :global(.task-action .md-icon-btn[data-size='toolbar']) {
-			width: var(--rail-footer-control-height);
-			min-width: var(--rail-footer-control-height);
-			height: var(--rail-footer-control-height);
-			min-height: var(--rail-footer-control-height);
 		}
 	}
 

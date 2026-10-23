@@ -1,19 +1,27 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, within } from '@testing-library/svelte';
 import AppShell from './AppShell.svelte';
 
 describe('AppShell', () => {
-	it('defaults to compact navigation and lets the user expand and collapse it', async () => {
-		const view = render(AppShell, { tabs: [] });
-		const shell = view.container.querySelector('.app-shell')!;
-		expect(shell.classList.contains('navigation-expanded')).toBe(false);
-		await fireEvent.click(screen.getByRole('button', { name: '展开主导航' }));
-		expect(shell.classList.contains('navigation-expanded')).toBe(true);
-		expect(
-			screen.getByRole('button', { name: '收起主导航' }).getAttribute('aria-expanded'),
-		).toBe('true');
-		await fireEvent.click(screen.getByRole('button', { name: '收起主导航' }));
-		expect(shell.classList.contains('navigation-expanded')).toBe(false);
+	it('keeps labeled workspace navigation in a single rail without a layout toggle', async () => {
+		const onNavigate = vi.fn();
+		render(AppShell, {
+			tabs: [
+				{ id: 'chat', label: '对话', icon: 'chat' },
+				{ id: 'memory', label: '长期记忆', icon: 'memory', hint: '事实与偏好' },
+			],
+			activeTab: 'chat',
+			onNavigate,
+		});
+		const rail = within(screen.getByRole('complementary', { name: 'Haven 主导航' }));
+		expect(rail.queryByRole('button', { name: /展开主导航|收起主导航/ })).toBeNull();
+		expect(rail.getByRole('button', { name: '对话' }).getAttribute('aria-current')).toBe(
+			'page',
+		);
+		const memoryButton = rail.getByRole('button', { name: '长期记忆' });
+		expect(memoryButton.title).toBe('长期记忆 · 事实与偏好');
+		await fireEvent.click(memoryButton);
+		expect(onNavigate).toHaveBeenCalledWith('memory');
 	});
 
 	it('shows a dev badge in the window chrome for development builds', () => {
