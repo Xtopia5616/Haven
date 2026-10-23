@@ -48,6 +48,9 @@ corepack pnpm run test:coverage
 corepack pnpm run check
 ```
 
+### Tauri Local Verification
+- Use `cargo tauri dev` for local app verification. Do not run `cargo tauri build` to generate release bundles/installers unless the user explicitly requests release-package validation.
+
 ### Codex Worktree Build Cache
 - Codex worktrees are supported; Kilo/Kilocode worktrees and commands are retired.
 - `.cargo/config.toml` disables Rust incremental compilation to prevent unbounded per-worktree cache growth.
