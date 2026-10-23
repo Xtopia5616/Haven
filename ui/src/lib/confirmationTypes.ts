@@ -3,6 +3,7 @@ import type {
 	PermissionEffectInput,
 	PermissionScopeInput,
 	PermissionTargetInput,
+	PermissionResourceTargetInput,
 } from '$lib/contracts/generatedCommands.ts';
 
 export interface ConfirmationDecision {
@@ -11,4 +12,5 @@ export interface ConfirmationDecision {
 	effect?: PermissionEffectInput;
 	scope?: PermissionScopeInput;
 	target?: PermissionTargetInput;
+	resourceTarget?: PermissionResourceTargetInput;
 }

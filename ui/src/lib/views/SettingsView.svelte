@@ -255,7 +255,7 @@
 		running: false,
 		lastCount: null,
 	});
-	let security = $state<SecurityConfigInput & { permissions: StoredPermission[] }>({
+	let security = $state<Omit<SecurityConfigInput, 'permissions'> & { permissions: StoredPermission[] }>({
 		execution_mode: 'collaborative',
 		sandbox_mode: 'workspace_write',
 		network_policy: 'restricted',

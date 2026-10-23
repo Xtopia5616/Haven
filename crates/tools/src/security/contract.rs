@@ -1,6 +1,7 @@
 use super::engine::{canonical_authorization_hash, execution_proof_expiry};
 use crate::OperationPolicy;
 use haven_common::config::{SecurityConfig, StoredPermission};
+pub use haven_common::types::LocalPathAccess;
 use haven_common::types::{
     CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect, PermissionScope, RiskLevel,
     SandboxMode,
@@ -15,6 +16,8 @@ use std::path::{Path, PathBuf};
 pub struct ConfirmationReceipt {
     pub confirmation_id: haven_common::types::ConfirmId,
     pub capability: CapabilityScope,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<DeclaredResource>,
     pub canonical_input_hash: String,
     pub effective_risk: RiskLevel,
     pub policy_revision: u64,
@@ -88,6 +91,7 @@ pub struct AuthorizationRequest {
 
 /// A resource named by a trusted operation contract, with its access intent.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind")]
 pub enum DeclaredResource {
     LocalPath {
         path: std::path::PathBuf,
@@ -98,12 +102,6 @@ pub enum DeclaredResource {
         host: String,
         port: Option<u16>,
     },
-}
-
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub enum LocalPathAccess {
-    Read,
-    Write,
 }
 
 #[derive(Debug)]
@@ -239,12 +237,22 @@ pub trait AuthorizationPort: Send + Sync {
         proof: &AuthorizationExecutionProof,
     ) -> Result<(), String>;
 
+    /// Convert owner-authored resource declarations into stable persisted
+    /// grant scopes. Local paths are anchored to the current session workspace
+    /// before they are stored.
+    async fn resource_scope_for_request(
+        &self,
+        request: &AuthorizationRequest,
+        target: haven_common::types::PermissionResourceTarget,
+    ) -> Result<Vec<haven_common::types::PermissionResourceScope>, String>;
+
     async fn grant(
         &self,
         session_id: Option<&str>,
         capability: CapabilityScope,
         effect: PermissionEffect,
         scope: PermissionScope,
+        resource_scope: Vec<haven_common::types::PermissionResourceScope>,
     );
 
     async fn list_permanent(&self) -> Vec<StoredPermission>;

@@ -11,7 +11,9 @@ use haven_agent::{
     ToolCatalogPort, ToolExecutionContext, ToolExecutionPort, ToolObservationPort,
     ToolRunCompletionReceiverPort,
 };
-use haven_common::types::{MessageAttachment, RiskLevel};
+use haven_common::types::{
+    MessageAttachment, PermissionResourceScope, PermissionResourceTarget, RiskLevel,
+};
 use haven_tools::{
     AuthorizationDecision, AuthorizationPort, AuthorizationRequest, ConfirmationReceipt,
     ScheduleAgentCapability, ScheduleFiredReceiver, SessionWorkingDocumentPort, SkillCatalogPort,
@@ -349,15 +351,26 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
             .await
     }
 
+    async fn resource_scope_for_request(
+        &self,
+        request: &AuthorizationRequest,
+        target: PermissionResourceTarget,
+    ) -> Result<Vec<PermissionResourceScope>, String> {
+        self.authorization
+            .resource_scope_for_request(request, target)
+            .await
+    }
+
     async fn grant(
         &self,
         session_id: Option<&str>,
         capability: haven_common::types::CapabilityScope,
         effect: haven_common::types::PermissionEffect,
         scope: haven_common::types::PermissionScope,
+        resource_scope: Vec<PermissionResourceScope>,
     ) {
         self.authorization
-            .grant(session_id, capability, effect, scope)
+            .grant(session_id, capability, effect, scope, resource_scope)
             .await;
     }
 

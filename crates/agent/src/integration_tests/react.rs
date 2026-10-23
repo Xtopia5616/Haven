@@ -791,21 +791,11 @@ async fn media_tool_usage_flows_to_event_and_database() {
     tools
         .share_services()
         .authorization
-        .set_execution_mode(haven_common::types::ExecutionMode::Unattended)
+        .set_execution_mode(haven_common::types::ExecutionMode::Collaborative)
         .await;
-    // `media.describe` delegates to a configured vision provider, so the
-    // external-network disclosure gate still applies in unattended mode.
+    // `media.describe` delegates to a configured vision provider. The
+    // operation has no typed provider destination, so it is approved once.
     // This test exercises usage propagation after that explicit approval.
-    tools
-        .share_services()
-        .authorization
-        .grant(
-            None,
-            haven_common::types::CapabilityScope::try_new("media.describe").unwrap(),
-            haven_common::types::PermissionEffect::Allow,
-            haven_common::types::PermissionScope::Always,
-        )
-        .await;
     tools
         .share_services()
         .tool_catalog_test_support
@@ -854,6 +844,38 @@ async fn media_tool_usage_flows_to_event_and_database() {
     agent.set_emitter(collector.clone());
     let session = executor.create_session("describe the image").await.unwrap();
 
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
+
+    let confirmations = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let requests = executor
+                .pending_interactions(
+                    &session.session_id,
+                    crate::interaction::InteractionKind::Confirm,
+                )
+                .await;
+            if !requests.is_empty() {
+                break requests;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("media.describe should request one-time approval without a typed resource");
+    assert_eq!(confirmations.len(), 1);
+    executor
+        .resolve_interaction(
+            &session.session_id,
+            &confirmations[0].request_id,
+            serde_json::Value::Bool(true),
+            false,
+        )
+        .await
+        .unwrap()
+        .expect("media.describe confirmation should resolve");
     agent
         .run_session_from_id(&session.session_id)
         .await
@@ -2270,6 +2292,7 @@ async fn continue_from_error_clears_stale_confirmation_requests() {
         Some(haven_tools::ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("test.operation").unwrap(),
+            resources: Vec::new(),
             canonical_input_hash: String::new(),
             effective_risk: haven_common::types::RiskLevel::High,
             policy_revision: 1,

@@ -649,6 +649,7 @@ mod tests {
             Some(haven_tools::ConfirmationReceipt {
                 confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("haven.test").unwrap(),
+                resources: Vec::new(),
                 canonical_input_hash: String::new(),
                 effective_risk: haven_common::types::RiskLevel::Safe,
                 policy_revision: 1,
@@ -736,6 +737,7 @@ mod tests {
         let receipt = haven_tools::ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("admin.test").unwrap(),
+            resources: Vec::new(),
             canonical_input_hash: "hash".into(),
             effective_risk: haven_common::types::RiskLevel::Medium,
             policy_revision: 1,
@@ -767,6 +769,7 @@ mod tests {
         let receipt = haven_tools::ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("admin.test").unwrap(),
+            resources: Vec::new(),
             canonical_input_hash: "hash".into(),
             effective_risk: haven_common::types::RiskLevel::Medium,
             policy_revision: 1,
@@ -874,6 +877,7 @@ mod tests {
         let receipt = haven_tools::ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("haven.test").unwrap(),
+            resources: Vec::new(),
             canonical_input_hash: String::new(),
             effective_risk: haven_common::types::RiskLevel::Safe,
             policy_revision: 1,

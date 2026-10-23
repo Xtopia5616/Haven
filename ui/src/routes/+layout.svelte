@@ -704,6 +704,7 @@
 		effect,
 		scope,
 		target,
+		resourceTarget,
 	}: ConfirmationDecision) {
 		if (!requestId || confirmationRequestsInFlight.has(requestId)) return false;
 		const currentRequest = appSessionReducer.snapshot().interactions[requestId];
@@ -719,6 +720,7 @@
 			effect: resolvedEffect,
 			scope: resolvedScope,
 			target: resolvedTarget,
+			...(resourceTarget ? { resourceTarget } : {}),
 		};
 		try {
 			const resolution = parseConfirmationResolutionResult(
@@ -1282,9 +1284,7 @@
 									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
 										finishTabEntry(tab.id, event)}
 								>
-									<TabComponent
-										isVisible={activeTab === 'tools'}
-									/>
+									<TabComponent isVisible={activeTab === 'tools'} />
 								</WorkspaceSurface>
 							{:else if lazyViewStates.tools === 'error'}
 								<WorkspaceSurface
@@ -1395,6 +1395,7 @@
 			permissionKey={activeConfirmRequest?.permissionKey ||
 				activeConfirmRequest?.toolName ||
 				''}
+			resources={activeConfirmRequest?.resources || []}
 			createdAt={activeConfirmRequest?.createdAt || ''}
 			deadlineAt={activeConfirmDeadlineAt ?? Number.NaN}
 			onDismiss={dismissConfirmation}

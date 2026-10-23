@@ -135,7 +135,7 @@ repository source 值后显式投影字段，repository 新增字段不会自动
 | `fork_session_from_message` | mutate | 按精确用户消息身份创建独立子会话；从消息处重放，可能再次触发工具 |
 | `update_session_title` | mutate | 更新非空标题 |
 | `delete_session` / `delete_all_sessions` | mutate | 删除一条或全部持久会话，并广播 `session:lifecycle(deleted)` |
-| `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect: PermissionEffectInput, scope: PermissionScopeInput, target: PermissionTargetInput }`；Tauri 只接受 Rust permission enum 的规范 snake_case 值。owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor；期限由 owner 按登记的 `expires_at` 仲裁，不接受 renderer 的超时决定。结果为 `resolved`、`expired` 或 `stale`；解码/命令错误表示可重试失败，pending UI 保留 |
+| `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect: PermissionEffectInput, scope: PermissionScopeInput, target: PermissionTargetInput, resourceTarget?: PermissionResourceTargetInput }`；Tauri 只接受 Rust permission enum 的规范 snake_case 值。持久 Allow 会从 pending receipt 的 typed 声明计算资源范围；调用方不能提交路径、origin 或任意 scope。owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor；期限由 owner 按登记的 `expires_at` 仲裁，不接受 renderer 的超时决定。结果为 `resolved`、`expired` 或 `stale`；解码/命令错误表示可重试失败，pending UI 保留 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。
 

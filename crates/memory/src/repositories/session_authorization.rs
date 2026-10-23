@@ -1,9 +1,12 @@
 //! Durable authorization decisions scoped to one persisted session.
 
+use super::fact_graph::in_immediate_transaction;
 use crate::Database;
 use haven_common::types::{
-    CapabilityScope, PermissionEffect, PermissionScope, PermissionTarget, is_canonical_id,
+    CapabilityScope, PermissionEffect, PermissionResourceScope, PermissionScope, PermissionTarget,
+    is_canonical_id,
 };
+use rusqlite::OptionalExtension;
 
 /// A session-scoped authorization rule stored with its lifetime and the
 /// target selected in the confirmation UI. `capability` is the validated
@@ -14,6 +17,7 @@ pub struct SessionAuthorizationGrant {
     pub scope: PermissionScope,
     pub target: PermissionTarget,
     pub effect: PermissionEffect,
+    pub resource_scope: Vec<PermissionResourceScope>,
 }
 
 /// A session grant paired with the session that owns it, used when a live
@@ -30,12 +34,14 @@ impl SessionAuthorizationGrant {
         capability: CapabilityScope,
         target: PermissionTarget,
         effect: PermissionEffect,
+        resource_scope: Vec<PermissionResourceScope>,
     ) -> Self {
         Self {
             capability,
             scope: PermissionScope::Session,
             target,
             effect,
+            resource_scope,
         }
     }
 }
@@ -54,23 +60,57 @@ impl Database {
             grant.scope == PermissionScope::Session,
             "session authorization grant must use session scope"
         );
+        anyhow::ensure!(
+            grant.effect != PermissionEffect::Allow || !grant.resource_scope.is_empty(),
+            "session-scoped allow requires a resource scope"
+        );
         let conn = self.try_conn()?;
-        conn.execute(
-            "INSERT INTO session_authorization_grants
-                (session_id, capability_key, permission_scope, permission_target, effect)
-             VALUES (?1, ?2, 'session', ?3, ?4)
-             ON CONFLICT(session_id, capability_key) DO UPDATE SET
-                permission_scope = excluded.permission_scope,
-                permission_target = excluded.permission_target,
-                effect = excluded.effect",
-            rusqlite::params![
-                session_id,
-                grant.capability.as_str(),
-                grant.target.as_str(),
-                permission_effect_name(grant.effect),
-            ],
-        )?;
-        Ok(())
+        in_immediate_transaction(&conn, |conn| {
+            let existing = conn
+                .query_row(
+                    "SELECT effect, resource_scope FROM session_authorization_grants
+                     WHERE session_id = ?1 AND capability_key = ?2",
+                    rusqlite::params![session_id, grant.capability.as_str()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            let mut scopes = match existing {
+                Some((effect, resource_scope))
+                    if effect == permission_effect_name(grant.effect) =>
+                {
+                    serde_json::from_str::<Vec<PermissionResourceScope>>(&resource_scope)?
+                }
+                _ => Vec::new(),
+            };
+            if grant.effect == PermissionEffect::Deny {
+                scopes.clear();
+            } else {
+                for scope in &grant.resource_scope {
+                    if !scopes.contains(scope) {
+                        scopes.push(scope.clone());
+                    }
+                }
+            }
+            let resource_scope = serde_json::to_string(&scopes)?;
+            conn.execute(
+                "INSERT INTO session_authorization_grants
+                    (session_id, capability_key, permission_scope, permission_target, effect, resource_scope)
+                 VALUES (?1, ?2, 'session', ?3, ?4, ?5)
+                 ON CONFLICT(session_id, capability_key) DO UPDATE SET
+                    permission_scope = excluded.permission_scope,
+                    permission_target = excluded.permission_target,
+                    effect = excluded.effect,
+                    resource_scope = excluded.resource_scope",
+                rusqlite::params![
+                    session_id,
+                    grant.capability.as_str(),
+                    grant.target.as_str(),
+                    permission_effect_name(grant.effect),
+                    resource_scope,
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     /// Load every authorization rule for one persisted session. Any malformed
@@ -83,7 +123,7 @@ impl Database {
         validate_session_id(session_id)?;
         let conn = self.try_conn()?;
         let mut statement = conn.prepare(
-            "SELECT capability_key, permission_scope, permission_target, effect
+            "SELECT capability_key, permission_scope, permission_target, effect, resource_scope
              FROM session_authorization_grants
              WHERE session_id = ?1
              ORDER BY capability_key",
@@ -94,6 +134,7 @@ impl Database {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })?;
         rows.map(|row| parse_grant_row(row?)).collect()
@@ -108,7 +149,8 @@ impl Database {
         let conn = self.try_conn()?;
         let mut statement = conn.prepare(
             "SELECT grants.session_id, sessions.title, grants.capability_key,
-                    grants.permission_scope, grants.permission_target, grants.effect
+                    grants.permission_scope, grants.permission_target, grants.effect,
+                    grants.resource_scope
              FROM session_authorization_grants AS grants
              JOIN sessions ON sessions.id = grants.session_id
              ORDER BY grants.session_id, grants.capability_key",
@@ -121,10 +163,12 @@ impl Database {
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
             ))
         })?;
         rows.map(|row| {
-            let (session_id, session_title, capability_key, scope, target, effect) = row?;
+            let (session_id, session_title, capability_key, scope, target, effect, resource_scope) =
+                row?;
             anyhow::ensure!(
                 is_canonical_id(&session_id, "ses"),
                 "stored session authorization session_id is not canonical"
@@ -132,7 +176,7 @@ impl Database {
             Ok(StoredSessionAuthorizationGrant {
                 session_id,
                 session_title,
-                grant: parse_grant_row((capability_key, scope, target, effect))?,
+                grant: parse_grant_row((capability_key, scope, target, effect, resource_scope))?,
             })
         })
         .collect()
@@ -169,7 +213,13 @@ fn validate_session_id(session_id: &str) -> anyhow::Result<()> {
 }
 
 fn parse_grant_row(
-    (capability_key, scope, target, effect): (String, String, String, String),
+    (capability_key, scope, target, effect, resource_scope): (
+        String,
+        String,
+        String,
+        String,
+        String,
+    ),
 ) -> anyhow::Result<SessionAuthorizationGrant> {
     let capability = CapabilityScope::try_new(capability_key).map_err(anyhow::Error::msg)?;
     let scope = parse_permission_scope(&scope)?;
@@ -182,6 +232,8 @@ fn parse_grant_row(
         scope,
         target: parse_permission_target(&target)?,
         effect: parse_permission_effect(&effect)?,
+        resource_scope: serde_json::from_str(&resource_scope)
+            .map_err(|error| anyhow::anyhow!("invalid persisted resource scope: {error}"))?,
     })
 }
 
@@ -217,6 +269,14 @@ fn parse_permission_target(value: &str) -> anyhow::Result<PermissionTarget> {
 mod tests {
     use super::*;
 
+    fn resource_scope(name: &str) -> Vec<PermissionResourceScope> {
+        vec![PermissionResourceScope::LocalPath {
+            path: std::path::PathBuf::from(format!("C:\\authorized\\{name}")),
+            recursive: false,
+            access: haven_common::types::LocalPathAccess::Read,
+        }]
+    }
+
     fn grant(
         capability: &str,
         target: PermissionTarget,
@@ -226,6 +286,11 @@ mod tests {
             CapabilityScope::try_new(capability).unwrap(),
             target,
             effect,
+            if effect == PermissionEffect::Allow {
+                resource_scope("file.txt")
+            } else {
+                Vec::new()
+            },
         )
     }
 
@@ -268,6 +333,50 @@ mod tests {
                 ),
                 replacement,
             ]
+        );
+    }
+
+    #[test]
+    fn repeated_same_effect_session_allows_merge_resource_scopes() {
+        let db = Database::open_in_memory().unwrap();
+        let session = db.create_session("authorization scope union").unwrap();
+        let capability = CapabilityScope::try_new("files.read").unwrap();
+        let first = SessionAuthorizationGrant::session(
+            capability.clone(),
+            PermissionTarget::Operation,
+            PermissionEffect::Allow,
+            resource_scope("one.txt"),
+        );
+        let second = SessionAuthorizationGrant::session(
+            capability,
+            PermissionTarget::Operation,
+            PermissionEffect::Allow,
+            resource_scope("two.txt"),
+        );
+        db.persist_session_authorization_grant(&session.session_id, &first)
+            .unwrap();
+        db.persist_session_authorization_grant(&session.session_id, &second)
+            .unwrap();
+        let grants = db
+            .session_authorization_grants(&session.session_id)
+            .unwrap();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].resource_scope.len(), 2);
+    }
+
+    #[test]
+    fn unscoped_session_allow_is_rejected() {
+        let db = Database::open_in_memory().unwrap();
+        let session = db.create_session("unscoped authorization").unwrap();
+        let grant = SessionAuthorizationGrant::session(
+            CapabilityScope::try_new("files.read").unwrap(),
+            PermissionTarget::Operation,
+            PermissionEffect::Allow,
+            Vec::new(),
+        );
+        assert!(
+            db.persist_session_authorization_grant(&session.session_id, &grant)
+                .is_err()
         );
     }
 

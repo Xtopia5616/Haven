@@ -24,6 +24,7 @@ import {
 	type AppBootstrapEvent as GeneratedAppBootstrapEvent,
 	type HotkeyConflictEvent as GeneratedHotkeyConflictEvent,
 	type InteractionKind,
+	type DeclaredResource,
 	type InteractionOwner as InteractionOwnerWire,
 	type InteractionRequestedEvent as GeneratedInteractionRequestedEvent,
 	type InteractionStatus,
@@ -68,6 +69,7 @@ interface InteractionRequestBase {
 	riskLevel?: RiskLevel;
 	summary?: string;
 	permissionKey?: string;
+	resources?: DeclaredResource[];
 	invocationStepId?: string;
 	toolIndex?: number;
 	toolCallId?: string;
@@ -83,10 +85,7 @@ interface ConfirmInteractionDetails {
 	toolCallId?: string;
 }
 type SessionInteractionOwner = Extract<InteractionOwnerView, { kind: 'session' }>;
-	type ScheduleRunInteractionOwner = Extract<
-	InteractionOwnerView,
-{ kind: 'schedule_run' }
->;
+type ScheduleRunInteractionOwner = Extract<InteractionOwnerView, { kind: 'schedule_run' }>;
 type AppCommandInteractionOwner = Extract<InteractionOwnerView, { kind: 'app_command' }>;
 
 export type InteractionRequest =
@@ -284,6 +283,7 @@ export function mapInteractionRequest(value: unknown): InteractionRequest | null
 		...(wire.risk_level ? { riskLevel: wire.risk_level } : {}),
 		...(wire.summary ? { summary: wire.summary } : {}),
 		...(wire.permission_key ? { permissionKey: wire.permission_key } : {}),
+		...(wire.resources?.length ? { resources: wire.resources } : {}),
 		...(wire.invocation_step_id ? { invocationStepId: wire.invocation_step_id } : {}),
 		...(wire.tool_index != null ? { toolIndex: wire.tool_index } : {}),
 		...(wire.tool_call_id ? { toolCallId: wire.tool_call_id } : {}),

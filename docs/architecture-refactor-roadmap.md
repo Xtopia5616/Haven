@@ -75,7 +75,7 @@
 | 状态 | 当前项 |
 |---|---|
 | **Next** | 新一轮 R02：提供已保存配置的显式 reapply；模型/媒体组合发布与会话工作绑定的后续顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
-| **Active** | ADR 1367 的 Slice 1 已实现；当前 Slice 2 已完成会话级执行预设、Ask 与网络范围分离、Files 本地资源和 HTTP origin 声明，并接入会话 IPC/UI。剩余 typed 资源覆盖、MCP exposure 与范围化授权仍需完成；见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)、[ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 和[设计提案](execution-context-redesign.md)。 |
+| **Active** | ADR 1367 的 Slice 1 已实现；Slice 2 已完成会话级执行预设、Ask 与网络范围分离、Files 本地资源、HTTP origin 声明及对现有 typed 资源的精确/目录范围持久授权。尚无可信声明的窗口、剪贴板、注册表、MCP 远程对象和其它进程能力仍不能保存可复用 Allow；后续还需补齐 typed 资源执行前验证与 MCP exposure 拆分。见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)、[ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1375](adr/1375-resource-scoped-persistent-permissions.md) 和[设计提案](execution-context-redesign.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）

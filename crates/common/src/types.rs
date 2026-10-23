@@ -338,6 +338,42 @@ pub enum PermissionTarget {
     Tool,
 }
 
+/// How a persistent permission is bound to the resources declared by one
+/// confirmed operation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionResourceTarget {
+    /// Keep local paths exact; network destinations remain exact origins.
+    Exact,
+    /// Expand local paths to their containing directory subtree. Network
+    /// destinations remain exact origins.
+    Directory,
+}
+
+/// Access direction for a declared local path resource.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalPathAccess {
+    Read,
+    Write,
+}
+
+/// Persistent resource boundary attached to an allow or deny grant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PermissionResourceScope {
+    LocalPath {
+        path: std::path::PathBuf,
+        recursive: bool,
+        access: LocalPathAccess,
+    },
+    NetworkDestination {
+        scheme: String,
+        host: String,
+        port: Option<u16>,
+    },
+}
+
 impl PermissionTarget {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value.trim().to_ascii_lowercase().as_str() {

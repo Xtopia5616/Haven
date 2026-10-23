@@ -34,6 +34,7 @@ describe('settings command contracts', () => {
 			capability: 'system.power-lock',
 			target: 'operation',
 			effect: 'allow',
+			resource_scope: [],
 		};
 		const { session_id, ...rest } = grant;
 		const [parsedGrant] = parseSessionPermissionGrantResponses([grant]);

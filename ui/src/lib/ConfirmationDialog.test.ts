@@ -19,6 +19,7 @@ describe('ConfirmationDialog', () => {
 			riskLevel: 'medium',
 			summary: '写入文件',
 			permissionKey: 'files.write',
+			resources: [{ kind: 'local_path', path: 'C:\\notes.txt', access: 'write' }],
 			onConfirm,
 		});
 
@@ -77,6 +78,7 @@ describe('ConfirmationDialog', () => {
 			toolName: 'system.power.lock',
 			sessionId: 'ses-f598facda111677e0871bdc09d391332',
 			permissionKey: 'system.power.lock',
+			resources: [{ kind: 'local_path', path: 'C:\\notes.txt', access: 'write' }],
 			onConfirm: vi.fn(),
 		});
 
@@ -159,6 +161,14 @@ describe('ConfirmationDialog', () => {
 			requestId: 'conf-16c894afc7e907aa73537a342ea11872',
 			toolName: 'mcp__server__write',
 			permissionKey: 'mcp.server.write',
+			resources: [
+				{
+					kind: 'network_destination',
+					scheme: 'https',
+					host: 'api.example.test',
+					port: null,
+				},
+			],
 			onConfirm: vi.fn(),
 		});
 
@@ -177,6 +187,14 @@ describe('ConfirmationDialog', () => {
 			...deadlineProps(),
 			requestId: 'conf-b1e0260f9f155eaca25bb42b04a91e5d',
 			toolName: 'mcp__server__write',
+			resources: [
+				{
+					kind: 'network_destination',
+					scheme: 'https',
+					host: 'api.example.test',
+					port: null,
+				},
+			],
 			onConfirm,
 		});
 

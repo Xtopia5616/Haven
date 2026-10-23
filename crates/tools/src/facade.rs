@@ -1316,18 +1316,10 @@ mod capability_tests {
             )
             .await;
         authorization
-            .set_execution_mode(haven_common::types::ExecutionMode::Unattended)
+            .set_execution_mode(haven_common::types::ExecutionMode::Collaborative)
             .await;
         let tool_name = crate::skill_tool_name(skill_name);
         let capability = haven_common::types::CapabilityScope::try_new(&tool_name).unwrap();
-        authorization
-            .grant(
-                None,
-                capability.clone(),
-                haven_common::types::PermissionEffect::Allow,
-                haven_common::types::PermissionScope::Always,
-            )
-            .await;
         let request = crate::AuthorizationRequest::new(
             None,
             tool_name,
@@ -1335,16 +1327,15 @@ mod capability_tests {
             crate::OperationPolicy::external(capability, haven_common::types::RiskLevel::High),
         );
         let check = authorization.authorize_for_execution(&request).await;
-        assert!(matches!(
-            check.decision,
-            crate::AuthorizationDecision::AutoApproved
-        ));
-        (
-            request,
-            check
-                .execution_proof
-                .expect("auto-approved Skill has an execution proof"),
-        )
+        let crate::AuthorizationDecision::RequiresConfirmation { receipt, .. } = check.decision
+        else {
+            panic!("unscoped Skill execution should require a fresh confirmation")
+        };
+        let proof = authorization
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .expect("the exact user-approved Skill request has an execution proof");
+        (request, proof)
     }
 
     struct AvailableStt;

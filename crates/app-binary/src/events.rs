@@ -457,6 +457,8 @@ pub(crate) struct InteractionRequestedEvent {
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<haven_tools::DeclaredResource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invocation_step_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

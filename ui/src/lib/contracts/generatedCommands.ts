@@ -108,7 +108,7 @@ export interface SessionResumeMessageDto { message_id: string; session_id: strin
 export interface SessionResumeResponse { session: SessionRecordDto; messages: SessionResumeMessageDto[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[]; working_document: string | null; working_document_sequence: number | null; event_sequence_watermark: number }
 export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
 export interface LifecycleHooksSettingsResponse { hooks: LifecycleHooksConfig; trusted_hook_workspaces: string[]; sandbox_mode: SandboxMode; network_policy: NetworkPolicy; config_version: number; diagnostics: LifecycleHookEventDiagnostics[] }
-export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect }
+export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect; resource_scope: PermissionResourceScope[] }
 export interface ShellAvailability { available: boolean }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
@@ -133,7 +133,7 @@ export interface AgentWorkingDocumentEvent { session_id: string; markdown: strin
 export interface AppBootstrapEvent { status: BootstrapStatus }
 export interface HotkeyConflictEvent { binding: string; error: string }
 export interface HotkeyRebindEvent { old_binding: string; new_binding: string }
-export interface InteractionRequestedEvent { request_id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
+export interface InteractionRequestedEvent { request_id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; resources?: DeclaredResource[]; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
 export interface McpResourceChangedEvent { name: string; uri: string | null }
 export interface McpStatusChangedEvent { name: string; status: McpClientStatus }
 export interface MuteChangedEvent { muted: boolean }
@@ -252,8 +252,8 @@ export interface SessionConfigInput { max_concurrent?: number; prompt_history_li
 export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps_per_run: number; max_steps_per_session?: number }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
 export interface SkillsExecConfig { venv_root: string; work_dir: string; timeout_secs: number; max_output_lines: number }
-export interface StoredPermissionInput { key: string; effect: PermissionEffectInput }
-export interface StoredPermission { key: string; effect: PermissionEffect }
+export interface StoredPermissionInput { key: string; effect: PermissionEffectInput; resource_scope?: PermissionResourceScopeInput[] }
+export interface StoredPermission { key: string; effect: PermissionEffect; resource_scope?: PermissionResourceScope[] }
 export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_output_chars?: number; max_retries?: number; retry_backoff_secs?: number; allowed_paths: string[]; allowed_domains: string[]; disabled_operations: string[]; risk_override: RiskLevel | null }
 export const LIFECYCLE_HOOK_EVENT_VALUES = ['pre_tool_use', 'post_tool_use', 'session_start', 'run_start', 'run_end', 'pre_compact', 'post_compact'] as const;
 export type LifecycleHookEvent = (typeof LIFECYCLE_HOOK_EVENT_VALUES)[number];
@@ -361,6 +361,10 @@ export const INJECT_SOURCE_VALUES = ['steering', 'follow_up', 'answer', 'tool_ru
 export type InjectSource = (typeof INJECT_SOURCE_VALUES)[number];
 export const INPUT_DELIVERY_MODE_INPUT_VALUES = ['auto', 'steering', 'follow_up'] as const;
 export type InputDeliveryModeInput = (typeof INPUT_DELIVERY_MODE_INPUT_VALUES)[number];
+export const LOCAL_PATH_ACCESS_INPUT_VALUES = ['read', 'write'] as const;
+export type LocalPathAccessInput = (typeof LOCAL_PATH_ACCESS_INPUT_VALUES)[number];
+export const LOCAL_PATH_ACCESS_VALUES = ['read', 'write'] as const;
+export type LocalPathAccess = (typeof LOCAL_PATH_ACCESS_VALUES)[number];
 export interface MessageAttachmentInput { asset_id?: string | null; media_type: string; data: string; filename?: string | null; path?: string | null; sha256?: string | null; size_bytes?: number | null; expires_at?: string | null; representations?: MediaRepresentationInput[]; preferred_representation?: MediaRepresentationKindInput | null }
 export interface MessageAttachment { asset_id?: string; media_type: string; data: string; filename?: string; path?: string; sha256?: string; size_bytes?: number; expires_at?: string; representations?: MediaRepresentation[]; preferred_representation?: MediaRepresentationKind }
 export const NETWORK_POLICY_INPUT_VALUES = ['deny', 'restricted', 'open'] as const;
@@ -371,6 +375,10 @@ export const PERMISSION_EFFECT_INPUT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffectInput = (typeof PERMISSION_EFFECT_INPUT_VALUES)[number];
 export const PERMISSION_EFFECT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffect = (typeof PERMISSION_EFFECT_VALUES)[number];
+export type PermissionResourceScopeInput = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccessInput } | { kind: 'network_destination'; scheme: string; host: string; port?: number | null };
+export type PermissionResourceScope = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null };
+export const PERMISSION_RESOURCE_TARGET_INPUT_VALUES = ['exact', 'directory'] as const;
+export type PermissionResourceTargetInput = (typeof PERMISSION_RESOURCE_TARGET_INPUT_VALUES)[number];
 export const PERMISSION_SCOPE_INPUT_VALUES = ['once', 'session', 'always'] as const;
 export type PermissionScopeInput = (typeof PERMISSION_SCOPE_INPUT_VALUES)[number];
 export const PERMISSION_TARGET_INPUT_VALUES = ['operation', 'group', 'tool'] as const;
@@ -459,6 +467,7 @@ export type SessionCreator = (typeof SESSION_CREATOR_VALUES)[number];
 export interface LlmUsageRecord { usage_id: string; session_id: string; step_number: number | null; request_kind: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
+export type DeclaredResource = { kind: 'local_path'; path: string; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null };
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 export const ADD_FACT_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -2328,6 +2337,49 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 						optional: true,
 						shape: { kind: 'string' },
 					},
+					'resources': {
+						optional: true,
+						shape: { kind: 'array', items: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'local_path' },
+									},
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'network_destination' },
+									},
+									'scheme': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'host': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'port': {
+										optional: false,
+										shape: { kind: 'nullable', inner: { kind: 'number' } },
+									}
+								}
+							}
+						] } },
+					},
 					'invocation_step_id': {
 						optional: true,
 						shape: { kind: 'string' },
@@ -3962,6 +4014,49 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 						optional: true,
 						shape: { kind: 'string' },
 					},
+					'resources': {
+						optional: true,
+						shape: { kind: 'array', items: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'local_path' },
+									},
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'network_destination' },
+									},
+									'scheme': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'host': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'port': {
+										optional: false,
+										shape: { kind: 'nullable', inner: { kind: 'number' } },
+									}
+								}
+							}
+						] } },
+					},
 					'invocation_step_id': {
 						optional: true,
 						shape: { kind: 'string' },
@@ -4952,6 +5047,53 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 								'effect': {
 									optional: false,
 									shape: { kind: 'enum', values: PERMISSION_EFFECT_VALUES },
+								},
+								'resource_scope': {
+									optional: true,
+									shape: { kind: 'array', items: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'local_path' },
+												},
+												'path': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'recursive': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												},
+												'access': {
+													optional: false,
+													shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'network_destination' },
+												},
+												'scheme': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'host': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'port': {
+													optional: false,
+													shape: { kind: 'nullable', inner: { kind: 'number' } },
+												}
+											}
+										}
+									] } },
 								}
 							}
 						} },
@@ -5521,6 +5663,49 @@ export const INTERACTION_REQUESTED_EVENT_PAYLOAD_SHAPE = {
 		'permission_key': {
 			optional: true,
 			shape: { kind: 'string' },
+		},
+		'resources': {
+			optional: true,
+			shape: { kind: 'array', items: { kind: 'union', anyOf: [
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'local_path' },
+						},
+						'path': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'network_destination' },
+						},
+						'scheme': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'host': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'port': {
+							optional: false,
+							shape: { kind: 'nullable', inner: { kind: 'number' } },
+						}
+					}
+				}
+			] } },
 		},
 		'invocation_step_id': {
 			optional: true,
@@ -6436,6 +6621,53 @@ export const LIST_SESSION_PERMISSIONS_RESPONSE_SHAPE = { kind: 'array', items: {
 		'effect': {
 			optional: false,
 			shape: { kind: 'enum', values: PERMISSION_EFFECT_VALUES },
+		},
+		'resource_scope': {
+			optional: false,
+			shape: { kind: 'array', items: { kind: 'union', anyOf: [
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'local_path' },
+						},
+						'path': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'recursive': {
+							optional: false,
+							shape: { kind: 'boolean' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'network_destination' },
+						},
+						'scheme': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'host': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'port': {
+							optional: false,
+							shape: { kind: 'nullable', inner: { kind: 'number' } },
+						}
+					}
+				}
+			] } },
 		}
 	}
 } } as const;
@@ -8041,6 +8273,53 @@ export const SESSION_PERMISSION_GRANT_RESPONSE_SHAPE = {
 		'effect': {
 			optional: false,
 			shape: { kind: 'enum', values: PERMISSION_EFFECT_VALUES },
+		},
+		'resource_scope': {
+			optional: false,
+			shape: { kind: 'array', items: { kind: 'union', anyOf: [
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'local_path' },
+						},
+						'path': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'recursive': {
+							optional: false,
+							shape: { kind: 'boolean' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'network_destination' },
+						},
+						'scheme': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'host': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'port': {
+							optional: false,
+							shape: { kind: 'nullable', inner: { kind: 'number' } },
+						}
+					}
+				}
+			] } },
 		}
 	}
 } as const;
@@ -9095,6 +9374,49 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 						optional: true,
 						shape: { kind: 'string' },
 					},
+					'resources': {
+						optional: true,
+						shape: { kind: 'array', items: { kind: 'union', anyOf: [
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'local_path' },
+									},
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'network_destination' },
+									},
+									'scheme': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'host': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'port': {
+										optional: false,
+										shape: { kind: 'nullable', inner: { kind: 'number' } },
+									}
+								}
+							}
+						] } },
+					},
 					'invocation_step_id': {
 						optional: true,
 						shape: { kind: 'string' },
@@ -9834,6 +10156,53 @@ export const SETTINGS_RESPONSE_SHAPE = {
 								'effect': {
 									optional: false,
 									shape: { kind: 'enum', values: PERMISSION_EFFECT_VALUES },
+								},
+								'resource_scope': {
+									optional: true,
+									shape: { kind: 'array', items: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'local_path' },
+												},
+												'path': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'recursive': {
+													optional: false,
+													shape: { kind: 'boolean' },
+												},
+												'access': {
+													optional: false,
+													shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'network_destination' },
+												},
+												'scheme': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'host': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'port': {
+													optional: false,
+													shape: { kind: 'nullable', inner: { kind: 'number' } },
+												}
+											}
+										}
+									] } },
 								}
 							}
 						} },
@@ -10886,7 +11255,7 @@ export interface TauriCommandMap {
 	reset_permissions: { request: undefined; response: void };
 	reset_session_permissions: { request: undefined; response: number };
 	reset_tool_circuits: { request: undefined; response: void };
-	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: PermissionEffectInput; scope: PermissionScopeInput; target: PermissionTargetInput }; response: ConfirmationResolutionResult };
+	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: PermissionEffectInput; scope: PermissionScopeInput; target: PermissionTargetInput; resourceTarget?: PermissionResourceTargetInput | null }; response: ConfirmationResolutionResult };
 	respond_mcp_feature_input: { request: { name: string; targetBinding: string; requestId: number; answers: Record<string, McpElicitationAnswerInput> }; response: McpFeatureCallOutcome };
 	review_fact_proposal: { request: { proposalId: string; decision: FactProposalDecisionInput }; response: MemoryFactProposalReviewResponse };
 	revoke_permission: { request: { key: string }; response: void };

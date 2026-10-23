@@ -909,6 +909,7 @@ pub struct SessionPermissionGrant {
     pub capability: String,
     pub target: PermissionTarget,
     pub effect: PermissionEffect,
+    pub resource_scope: Vec<haven_common::types::PermissionResourceScope>,
 }
 
 #[tauri::command]
@@ -929,6 +930,7 @@ pub async fn list_session_permissions(
                     capability: stored.grant.capability.to_string(),
                     target: stored.grant.target,
                     effect: stored.grant.effect,
+                    resource_scope: stored.grant.resource_scope,
                 })
                 .collect()
         })
@@ -980,6 +982,7 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
                         .map_err(|error| log_err("revoke_permission", error))?,
                     permission.effect,
                     haven_common::types::PermissionScope::Always,
+                    permission.resource_scope.clone(),
                 )
                 .await;
         }
@@ -1022,6 +1025,7 @@ pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), St
                     },
                     permission.effect,
                     haven_common::types::PermissionScope::Always,
+                    permission.resource_scope.clone(),
                 )
                 .await;
         }
@@ -1074,6 +1078,7 @@ pub async fn revoke_session_permission(
                 existing.capability,
                 existing.effect,
                 existing.scope,
+                existing.resource_scope,
             )
             .await;
         return Err(log_err("revoke_session_permission", error));
@@ -1109,6 +1114,7 @@ pub async fn reset_session_permissions(state: State<'_, Arc<AppState>>) -> Resul
                         stored.grant.capability,
                         stored.grant.effect,
                         stored.grant.scope,
+                        stored.grant.resource_scope,
                     )
                     .await;
             }
@@ -1275,6 +1281,7 @@ mod tests {
             capability: "files.read".into(),
             target: PermissionTarget::Group,
             effect: PermissionEffect::Deny,
+            resource_scope: Vec::new(),
         };
 
         assert_eq!(
@@ -1284,7 +1291,8 @@ mod tests {
                 "session_title": "session title",
                 "capability": "files.read",
                 "target": "group",
-                "effect": "deny"
+                "effect": "deny",
+                "resource_scope": []
             })
         );
     }
@@ -1370,6 +1378,11 @@ mod tests {
         let live_permission = StoredPermission {
             key: "files.read".into(),
             effect: PermissionEffect::Allow,
+            resource_scope: vec![haven_common::types::PermissionResourceScope::LocalPath {
+                path: std::path::PathBuf::from("C:\\authorized\\file.txt"),
+                recursive: false,
+                access: haven_common::types::LocalPathAccess::Read,
+            }],
         };
         live_config.security.permissions = vec![live_permission.clone()];
         live_config.security.encrypt_sensitive = false;

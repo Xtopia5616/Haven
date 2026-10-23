@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use haven_common::config::{SecurityConfig, StoredPermission};
 use haven_common::types::{
     CapabilityScope, ExecutionMode, MessageAttachment, NetworkPolicy, PermissionEffect,
-    PermissionScope, RiskLevel, SandboxMode,
+    PermissionResourceScope, PermissionResourceTarget, PermissionScope, RiskLevel, SandboxMode,
 };
 #[cfg(test)]
 use haven_tools::ToolsFacade;
@@ -156,12 +156,19 @@ pub trait ToolAuthorizationPort: Send + Sync {
         proof: &haven_tools::AuthorizationExecutionProof,
     ) -> Result<(), String>;
 
+    async fn resource_scope_for_request(
+        &self,
+        request: &AuthorizationRequest,
+        target: PermissionResourceTarget,
+    ) -> Result<Vec<PermissionResourceScope>, String>;
+
     async fn grant(
         &self,
         session_id: Option<&str>,
         capability: CapabilityScope,
         effect: PermissionEffect,
         scope: PermissionScope,
+        resource_scope: Vec<PermissionResourceScope>,
     );
 
     async fn apply_security(&self, security: &SecurityConfig);
@@ -510,15 +517,26 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
             .await
     }
 
+    async fn resource_scope_for_request(
+        &self,
+        request: &AuthorizationRequest,
+        target: PermissionResourceTarget,
+    ) -> Result<Vec<PermissionResourceScope>, String> {
+        self.authorization
+            .resource_scope_for_request(request, target)
+            .await
+    }
+
     async fn grant(
         &self,
         session_id: Option<&str>,
         capability: CapabilityScope,
         effect: PermissionEffect,
         scope: PermissionScope,
+        resource_scope: Vec<PermissionResourceScope>,
     ) {
         self.authorization
-            .grant(session_id, capability, effect, scope)
+            .grant(session_id, capability, effect, scope, resource_scope)
             .await;
     }
 

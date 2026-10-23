@@ -1,12 +1,14 @@
 use crate::app_state::AppState;
-use crate::commands::confirmation::{persist_permanent_permission, resolve_app_confirmation};
+use crate::commands::confirmation::{
+    ConfirmationGrantSelection, persist_permanent_permission, resolve_app_confirmation,
+};
 use crate::commands::{
     RuntimeSessionListResponse, emit_event_logged, log_err, validate_command_id,
 };
 use crate::events::{InteractionRequestedEvent, SESSION_LIFECYCLE_EVENT, SessionLifecycleEvent};
 use haven_agent::InteractionStatus;
 use haven_common::error::sanitize_error_text;
-use haven_common::types::ExecutionMode;
+use haven_common::types::{ExecutionMode, PermissionResourceTarget};
 use haven_memory::SessionStep;
 use haven_memory::{Session, SessionCreation, SessionCreationSource};
 use serde::Serialize;
@@ -387,6 +389,7 @@ pub async fn resolve_confirmation(
     effect: haven_common::types::PermissionEffect,
     scope: haven_common::types::PermissionScope,
     target: haven_common::types::PermissionTarget,
+    resource_target: Option<PermissionResourceTarget>,
 ) -> Result<ConfirmationResolutionResult, String> {
     validate_command_id(&request_id, "request_id", "conf")
         .map_err(|error| log_err("resolve_confirmation", error))?;
@@ -413,9 +416,12 @@ pub async fn resolve_confirmation(
             &app,
             &owner,
             &request_id,
-            perm_effect,
-            perm_scope,
-            perm_target,
+            ConfirmationGrantSelection {
+                effect: perm_effect,
+                scope: perm_scope,
+                target: perm_target,
+                resource_target: resource_target.unwrap_or(PermissionResourceTarget::Exact),
+            },
         )
         .await;
     }
@@ -443,11 +449,12 @@ pub async fn resolve_confirmation(
         state
             .runtime
             .executor
-            .resolve_confirmation_with_session_grant_for_owner(
+            .resolve_confirmation_with_resource_scoped_session_grant_for_owner(
                 &owner,
                 &confirm_id,
                 perm_target,
                 perm_effect,
+                resource_target.unwrap_or(PermissionResourceTarget::Exact),
             )
             .await
     } else {
@@ -512,12 +519,29 @@ pub async fn resolve_confirmation(
             )
         })
         .map_err(|error| log_err("resolve_confirmation", error))?;
+    let resource_scope = if matches!(perm_effect, haven_common::types::PermissionEffect::Allow) {
+        state
+            .runtime
+            .services
+            .authorization
+            .resource_scope_for_request(
+                &authorization_request,
+                resource_target.unwrap_or(PermissionResourceTarget::Exact),
+            )
+            .await
+            .map_err(|error| log_err("resolve_confirmation", error))?
+    } else {
+        Vec::new()
+    };
     // Persist Always before publishing it to the live authorization engine.
     // If the atomic config write fails, the process must not temporarily
     // behave as if a permanent grant exists when restart would forget it.
     let _config_apply_guard = if matches!(perm_scope, haven_common::types::PermissionScope::Always)
     {
-        Some(persist_permanent_permission(&state, key.as_str(), perm_effect).await?)
+        Some(
+            persist_permanent_permission(&state, key.as_str(), perm_effect, resource_scope.clone())
+                .await?,
+        )
     } else {
         None
     };
@@ -530,6 +554,7 @@ pub async fn resolve_confirmation(
             key,
             perm_effect,
             perm_scope,
+            resource_scope,
         )
         .await;
     Ok(ConfirmationResolutionResult::Resolved)
@@ -845,7 +870,9 @@ mod tests {
     use crate::commands::{RuntimeSessionDto, RuntimeSessionListResponse};
     use haven_agent::{InteractionOwner, InteractionRequest, SessionInfo, StepInfo};
     use haven_common::lifecycle::SessionStatus;
-    use haven_common::types::{PermissionEffect, PermissionScope, PermissionTarget, RiskLevel};
+    use haven_common::types::{
+        PermissionEffect, PermissionResourceTarget, PermissionScope, PermissionTarget, RiskLevel,
+    };
     use haven_tools::ConfirmationReceipt;
 
     async fn test_state_and_ui_confirmation(
@@ -874,6 +901,7 @@ mod tests {
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: authorization_request.policy.capability.clone(),
+            resources: Vec::new(),
             canonical_input_hash: String::new(),
             effective_risk: RiskLevel::Medium,
             policy_revision: 0,
@@ -916,6 +944,7 @@ mod tests {
             PermissionEffect::Deny,
             PermissionScope::Once,
             PermissionTarget::Operation,
+            PermissionResourceTarget::Exact,
         )
         .await
     }
@@ -1329,6 +1358,7 @@ mod tests {
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: authorization_request.policy.capability.clone(),
+            resources: Vec::new(),
             canonical_input_hash: String::new(),
             effective_risk: RiskLevel::Medium,
             policy_revision: 0,
@@ -1352,6 +1382,7 @@ mod tests {
             PermissionEffect::Allow,
             PermissionScope::Session,
             PermissionTarget::Operation,
+            PermissionResourceTarget::Exact,
         )
         .await
         .unwrap_err();
@@ -1373,6 +1404,7 @@ mod tests {
             PermissionEffect::Deny,
             PermissionScope::Once,
             PermissionTarget::Operation,
+            PermissionResourceTarget::Exact,
         )
         .await
         .unwrap();
@@ -1450,6 +1482,7 @@ mod tests {
             PermissionEffect::Allow,
             PermissionScope::Session,
             PermissionTarget::Operation,
+            PermissionResourceTarget::Exact,
         )
         .await
         {

@@ -172,6 +172,7 @@ mod tests {
         ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: CapabilityScope::try_new("haven.mcp.refresh").unwrap(),
+            resources: Vec::new(),
             canonical_input_hash: "test-hash".into(),
             effective_risk: RiskLevel::Medium,
             policy_revision: 1,
@@ -205,6 +206,7 @@ mod tests {
                 capability,
                 PermissionEffect::Allow,
                 PermissionScope::Session,
+                Vec::new(),
             )
             .await;
         assert!(matches!(

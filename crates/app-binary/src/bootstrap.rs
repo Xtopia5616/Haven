@@ -54,6 +54,7 @@ pub(crate) fn project_interaction(
         risk_level: None,
         summary: None,
         permission_key: None,
+        resources: Vec::new(),
         invocation_step_id: None,
         tool_index: None,
         tool_call_id: None,
@@ -84,6 +85,11 @@ pub(crate) fn project_interaction(
                 .as_ref()
                 .or_else(|| nested_confirmation.as_ref().map(|nested| &nested.receipt))
                 .map(|receipt| receipt.capability.to_string());
+            event.resources = receipt
+                .as_ref()
+                .or_else(|| nested_confirmation.as_ref().map(|nested| &nested.receipt))
+                .map(|receipt| receipt.resources.clone())
+                .unwrap_or_default();
             event.invocation_step_id = (!step_id.is_empty()).then(|| step_id.clone());
             event.tool_index = Some(*tool_index);
             event.tool_call_id = (!tool_call_id.is_empty()).then(|| tool_call_id.clone());
@@ -116,6 +122,12 @@ pub(crate) fn project_interaction(
                     .capability
                     .to_string(),
             );
+            event.resources = nested_confirmation
+                .as_ref()
+                .map(|nested| &nested.receipt)
+                .unwrap_or(receipt)
+                .resources
+                .clone();
         }
     }
     event

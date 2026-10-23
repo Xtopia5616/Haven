@@ -11,9 +11,8 @@ use super::execution::{
 };
 use super::filesystem::{
     FileReadPolicy, FileWritePolicy, is_unc_or_device_path, open_directory_roots, path_is_allowed,
+    path_is_within, resolve_path_without_reparse,
 };
-#[cfg(test)]
-use super::filesystem::{path_is_within, resolve_path_without_reparse};
 #[cfg(test)]
 use super::prompt::{LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase};
 use crate::execution_workspace::{ExecutionWorkspace, ExecutionWorkspaceSnapshot};
@@ -27,7 +26,7 @@ use crate::{
 use haven_common::config::{SecurityConfig, StoredPermission, ToolConfig};
 use haven_common::types::{
     ApprovalPolicy, CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect,
-    PermissionScope, RiskLevel, SandboxMode,
+    PermissionResourceScope, PermissionResourceTarget, PermissionScope, RiskLevel, SandboxMode,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -37,11 +36,14 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-/// Per-session allow/deny sets keyed by typed capability scope.
-#[derive(Clone, Default)]
+/// Allow and deny grants keyed by capability, each with resource boundaries.
+type ScopedGrantMap = HashMap<CapabilityScope, Vec<PermissionResourceScope>>;
+
+/// Per-session allow/deny maps keyed by typed capability scope.
+#[derive(Clone, Default, PartialEq, Eq)]
 struct SessionGrants {
-    allow: HashSet<CapabilityScope>,
-    deny: HashSet<CapabilityScope>,
+    allow: ScopedGrantMap,
+    deny: ScopedGrantMap,
 }
 
 /// Combined safety config under a single RwLock so `check` reads atomically.
@@ -64,7 +66,7 @@ pub(super) struct SafetyConfig {
     /// Permission and trust changes do not affect an already-running server.
     pub(super) process_boundary_revision: u64,
     /// Permanent (Always) grants from `SecurityConfig.permissions`.
-    permanent: HashMap<CapabilityScope, PermissionEffect>,
+    permanent: SessionGrants,
     /// Session-scoped grants keyed by session id.
     session_grants: HashMap<String, SessionGrants>,
     /// Live copy of `tool_settings` for disabled_operations / risk_override /
@@ -162,7 +164,7 @@ impl AuthorizationEngine {
                 network_policy: NetworkPolicy::Restricted,
                 policy_revision: 0,
                 process_boundary_revision: 0,
-                permanent: HashMap::new(),
+                permanent: SessionGrants::default(),
                 session_grants: HashMap::new(),
                 tool_settings: HashMap::new(),
             })),
@@ -477,11 +479,28 @@ impl AuthorizationEngine {
         let process_boundaries_changed = cfg.sandbox_mode != security.sandbox_mode
             || cfg.writable_roots != writable_roots
             || cfg.network_policy != security.network_policy;
-        let mut permanent = HashMap::new();
+        let mut permanent = SessionGrants::default();
         for permission in &security.permissions {
             match CapabilityScope::try_new(&permission.key) {
                 Ok(capability) => {
-                    permanent.insert(capability, permission.effect);
+                    let scopes = if permission.effect == PermissionEffect::Allow
+                        && permission.resource_scope.is_empty()
+                    {
+                        tracing::warn!(
+                            capability = %capability,
+                            "ignoring unscoped persistent allow; reauthorize with a resource scope"
+                        );
+                        continue;
+                    } else if permission.effect == PermissionEffect::Deny {
+                        Vec::new()
+                    } else {
+                        permission.resource_scope.clone()
+                    };
+                    let destination = match permission.effect {
+                        PermissionEffect::Allow => &mut permanent.allow,
+                        PermissionEffect::Deny => &mut permanent.deny,
+                    };
+                    merge_resource_scopes(destination.entry(capability).or_default(), &scopes);
                 }
                 Err(_error) => {
                     // Keep runtime policy fail-closed if a caller constructs
@@ -576,16 +595,8 @@ impl AuthorizationEngine {
     /// which policy mode is active and whether explicit grants/blocks exist.
     pub async fn prompt_summary(&self) -> String {
         let cfg = self.config.read().await;
-        let always_allowed = cfg
-            .permanent
-            .values()
-            .filter(|effect| **effect == PermissionEffect::Allow)
-            .count();
-        let always_denied = cfg
-            .permanent
-            .values()
-            .filter(|effect| **effect == PermissionEffect::Deny)
-            .count();
+        let always_allowed = cfg.permanent.allow.len();
+        let always_denied = cfg.permanent.deny.len();
         let disabled_tools = cfg.tool_settings.values().filter(|c| !c.enabled).count();
         let disabled_operations = cfg
             .tool_settings
@@ -740,7 +751,13 @@ impl AuthorizationEngine {
         // Deny always wins over Allow (permanent deny → session deny →
         // permanent allow → session allow). Session deny can override a
         // permanent allow for the rest of that session.
-        if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
+        if scoped_grant_matches(
+            &cfg.permanent.deny,
+            key,
+            &request.resources,
+            &workspace,
+            true,
+        ) {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: format!("permanently denied: {key}"),
                 reason_code: AuthorizationReasonCode::PermanentDeny,
@@ -748,7 +765,7 @@ impl AuthorizationEngine {
         }
         if let Some(sid) = session_id
             && let Some(grants) = cfg.session_grants.get(sid)
-            && match_key_set(&grants.deny, key)
+            && scoped_grant_matches(&grants.deny, key, &request.resources, &workspace, true)
         {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: format!("denied for this session: {key}"),
@@ -761,7 +778,13 @@ impl AuthorizationEngine {
         let hard_confirmation =
             risk >= RiskLevel::Critical || policy.confirmation == ConfirmationRequirement::Required;
         if !hard_confirmation {
-            if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Allow) {
+            if scoped_grant_matches(
+                &cfg.permanent.allow,
+                key,
+                &request.resources,
+                &workspace,
+                false,
+            ) {
                 return AuthorizationCheck::auto_approved(
                     request,
                     cfg.policy_revision,
@@ -771,7 +794,7 @@ impl AuthorizationEngine {
             }
             if let Some(sid) = session_id
                 && let Some(grants) = cfg.session_grants.get(sid)
-                && match_key_set(&grants.allow, key)
+                && scoped_grant_matches(&grants.allow, key, &request.resources, &workspace, false)
             {
                 return AuthorizationCheck::auto_approved(
                     request,
@@ -828,6 +851,7 @@ impl AuthorizationEngine {
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: key.clone(),
+            resources: request.resources.clone(),
             canonical_input_hash: canonical_authorization_hash_for_workspace(
                 request,
                 workspace.generation(),
@@ -867,6 +891,9 @@ impl AuthorizationEngine {
         if receipt.capability != *key {
             return Err("confirmation receipt does not match the capability scope".into());
         }
+        if receipt.resources != request.resources {
+            return Err("confirmation receipt does not match the declared resources".into());
+        }
         if receipt.canonical_input_hash
             != canonical_authorization_hash_for_workspace(
                 request,
@@ -902,12 +929,18 @@ impl AuthorizationEngine {
         ) {
             return Err(failure.reason);
         }
-        if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
+        if scoped_grant_matches(
+            &cfg.permanent.deny,
+            key,
+            &request.resources,
+            &workspace,
+            true,
+        ) {
             return Err(format!("permanently denied: {key}"));
         }
         if let Some(sid) = session_id
             && let Some(grants) = cfg.session_grants.get(sid)
-            && match_key_set(&grants.deny, key)
+            && scoped_grant_matches(&grants.deny, key, &request.resources, &workspace, true)
         {
             return Err(format!("denied for this session: {key}"));
         }
@@ -1009,12 +1042,18 @@ impl AuthorizationEngine {
         {
             return Err("analyze mode only permits read-only operations".into());
         }
-        if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
+        if scoped_grant_matches(
+            &cfg.permanent.deny,
+            key,
+            &request.resources,
+            &workspace,
+            true,
+        ) {
             return Err(format!("permanently denied: {key}"));
         }
         if let Some(session_id) = session_id
             && let Some(grants) = cfg.session_grants.get(session_id)
-            && match_key_set(&grants.deny, key)
+            && scoped_grant_matches(&grants.deny, key, &request.resources, &workspace, true)
         {
             return Err(format!("denied for this session: {key}"));
         }
@@ -1035,30 +1074,57 @@ impl AuthorizationEngine {
         capability: CapabilityScope,
         effect: PermissionEffect,
         scope: PermissionScope,
+        resource_scope: Vec<PermissionResourceScope>,
     ) {
         if matches!(scope, PermissionScope::Once) {
+            return;
+        }
+        let resource_scope = if effect == PermissionEffect::Deny {
+            Vec::new()
+        } else {
+            resource_scope
+        };
+        if effect == PermissionEffect::Allow && resource_scope.is_empty() {
+            tracing::warn!(
+                capability = %capability,
+                "refusing to install an unscoped persistent allow"
+            );
             return;
         }
         let mut cfg = self.config.write().await;
         match scope {
             PermissionScope::Always => {
-                cfg.permanent.insert(capability.clone(), effect);
+                match effect {
+                    PermissionEffect::Allow => {
+                        cfg.permanent.deny.remove(&capability);
+                    }
+                    PermissionEffect::Deny => {
+                        cfg.permanent.allow.remove(&capability);
+                    }
+                }
+                let destination = match effect {
+                    PermissionEffect::Allow => &mut cfg.permanent.allow,
+                    PermissionEffect::Deny => &mut cfg.permanent.deny,
+                };
+                merge_resource_scopes(
+                    destination.entry(capability.clone()).or_default(),
+                    &resource_scope,
+                );
             }
             PermissionScope::Session => {
                 let Some(sid) = session_id else {
                     return;
                 };
                 let entry = cfg.session_grants.entry(sid.to_string()).or_default();
-                match effect {
-                    PermissionEffect::Allow => {
-                        entry.deny.remove(&capability);
-                        entry.allow.insert(capability.clone());
-                    }
-                    PermissionEffect::Deny => {
-                        entry.allow.remove(&capability);
-                        entry.deny.insert(capability.clone());
-                    }
-                }
+                let (destination, opposite) = match effect {
+                    PermissionEffect::Allow => (&mut entry.allow, &mut entry.deny),
+                    PermissionEffect::Deny => (&mut entry.deny, &mut entry.allow),
+                };
+                opposite.remove(&capability);
+                merge_resource_scopes(
+                    destination.entry(capability.clone()).or_default(),
+                    &resource_scope,
+                );
             }
             PermissionScope::Once => {}
         }
@@ -1068,17 +1134,101 @@ impl AuthorizationEngine {
         // Revocations and policy/config changes still advance the revision.
     }
 
+    pub async fn resource_scope_for_request(
+        &self,
+        request: &AuthorizationRequest,
+        target: PermissionResourceTarget,
+    ) -> Result<Vec<PermissionResourceScope>, String> {
+        if request.resources.is_empty() {
+            return Err("persistent allow requires typed resource declarations".into());
+        }
+        let cfg = self.config.read().await;
+        let workspace = cfg.execution_workspace_for(request.session_id.as_deref());
+        let mut scopes = Vec::with_capacity(request.resources.len());
+        for resource in &request.resources {
+            let scope = match resource {
+                super::DeclaredResource::LocalPath { path, access } => {
+                    let resolved = resolve_relative_sandbox_path(path.clone(), &workspace);
+                    if is_unc_or_device_path(&resolved) {
+                        return Err(
+                            "persistent path grant does not support UNC or device paths".into()
+                        );
+                    }
+                    let path = resolve_path_without_reparse(&resolved).ok_or_else(|| {
+                        "persistent path grant could not safely resolve the resource".to_owned()
+                    })?;
+                    let path = persisted_local_resource_path(path)?;
+                    let (path, recursive) = match target {
+                        PermissionResourceTarget::Exact => (path, false),
+                        PermissionResourceTarget::Directory => {
+                            let resource_is_directory = std::fs::metadata(&path)
+                                .map(|metadata| metadata.is_dir())
+                                .unwrap_or(false);
+                            let root = if resource_is_directory {
+                                path
+                            } else {
+                                path.parent()
+                                    .map(Path::to_path_buf)
+                                    .ok_or_else(|| "path has no containing directory".to_owned())?
+                            };
+                            let root = resolve_path_without_reparse(&root)
+                                .ok_or_else(|| "directory grant root is unavailable".to_owned())?;
+                            let root = persisted_local_resource_path(root)?;
+                            if !std::fs::metadata(&root)
+                                .map(|metadata| metadata.is_dir())
+                                .unwrap_or(false)
+                            {
+                                return Err(
+                                    "directory grant root is not an available directory".into()
+                                );
+                            }
+                            (root, true)
+                        }
+                    };
+                    PermissionResourceScope::LocalPath {
+                        path,
+                        recursive,
+                        access: *access,
+                    }
+                }
+                super::DeclaredResource::NetworkDestination { scheme, host, port } => {
+                    PermissionResourceScope::NetworkDestination {
+                        scheme: scheme.to_ascii_lowercase(),
+                        host: host.to_ascii_lowercase(),
+                        port: *port,
+                    }
+                }
+            };
+            if !scopes.contains(&scope) {
+                scopes.push(scope);
+            }
+        }
+        Ok(scopes)
+    }
+
     /// Snapshot of permanent grants for the settings UI.
     pub async fn list_permanent(&self) -> Vec<StoredPermission> {
         let cfg = self.config.read().await;
-        let mut out: Vec<_> = cfg
+        let mut out = cfg
             .permanent
+            .allow
             .iter()
-            .map(|(key, effect)| StoredPermission {
+            .map(|(key, scopes)| StoredPermission {
                 key: key.to_string(),
-                effect: *effect,
+                effect: PermissionEffect::Allow,
+                resource_scope: scopes.clone(),
             })
-            .collect();
+            .chain(
+                cfg.permanent
+                    .deny
+                    .iter()
+                    .map(|(key, scopes)| StoredPermission {
+                        key: key.to_string(),
+                        effect: PermissionEffect::Deny,
+                        resource_scope: scopes.clone(),
+                    }),
+            )
+            .collect::<Vec<_>>();
         out.sort_by(|a, b| a.key.cmp(&b.key));
         out
     }
@@ -1090,7 +1240,8 @@ impl AuthorizationEngine {
             return false;
         };
         let mut cfg = self.config.write().await;
-        let removed_permanent = cfg.permanent.remove(&capability).is_some();
+        let removed_permanent = cfg.permanent.allow.remove(&capability).is_some()
+            | cfg.permanent.deny.remove(&capability).is_some();
         if removed_permanent {
             self.bump_global_policy_revision(&mut cfg);
         }
@@ -1106,8 +1257,8 @@ impl AuthorizationEngine {
         let mut cfg = self.config.write().await;
         let mut removed = false;
         let keep_session = if let Some(grants) = cfg.session_grants.get_mut(session_id) {
-            removed |= grants.allow.remove(capability);
-            removed |= grants.deny.remove(capability);
+            removed |= grants.allow.remove(capability).is_some();
+            removed |= grants.deny.remove(capability).is_some();
             !grants.allow.is_empty() || !grants.deny.is_empty()
         } else {
             true
@@ -1126,8 +1277,8 @@ impl AuthorizationEngine {
     /// explicit reset command and remain in effect.
     pub async fn clear_permanent(&self) -> usize {
         let mut cfg = self.config.write().await;
-        let removed = cfg.permanent.len();
-        cfg.permanent.clear();
+        let removed = cfg.permanent.allow.len() + cfg.permanent.deny.len();
+        cfg.permanent = SessionGrants::default();
         if removed > 0 {
             self.bump_global_policy_revision(&mut cfg);
         }
@@ -1241,14 +1392,24 @@ impl AuthorizationPort for AuthorizationEngine {
         AuthorizationEngine::verify_execution_proof(self, request, proof).await
     }
 
+    async fn resource_scope_for_request(
+        &self,
+        request: &AuthorizationRequest,
+        target: PermissionResourceTarget,
+    ) -> Result<Vec<PermissionResourceScope>, String> {
+        AuthorizationEngine::resource_scope_for_request(self, request, target).await
+    }
+
     async fn grant(
         &self,
         session_id: Option<&str>,
         capability: CapabilityScope,
         effect: PermissionEffect,
         scope: PermissionScope,
+        resource_scope: Vec<PermissionResourceScope>,
     ) {
-        AuthorizationEngine::grant(self, session_id, capability, effect, scope).await;
+        AuthorizationEngine::grant(self, session_id, capability, effect, scope, resource_scope)
+            .await;
     }
 
     async fn list_permanent(&self) -> Vec<StoredPermission> {
@@ -1392,30 +1553,116 @@ fn workspace_host_process_block(
     .then(|| format!("workspace-write sandbox cannot safely constrain host process '{tool_name}'"))
 }
 
-fn match_grant(
-    map: &HashMap<CapabilityScope, PermissionEffect>,
-    key: &CapabilityScope,
-) -> Option<PermissionEffect> {
-    let candidates = key.candidates();
-    // A child Allow must never outrank a parent Deny. Check the entire
-    // inheritance chain for denies before considering any allow, otherwise a
-    // broad deny such as `files` could be bypassed by `files.read`.
-    if candidates
-        .iter()
-        .any(|candidate| map.get(candidate) == Some(&PermissionEffect::Deny))
-    {
-        return Some(PermissionEffect::Deny);
+fn merge_resource_scopes(
+    current: &mut Vec<PermissionResourceScope>,
+    additions: &[PermissionResourceScope],
+) {
+    for scope in additions {
+        if !current.contains(scope) {
+            current.push(scope.clone());
+        }
     }
-    candidates
-        .iter()
-        .any(|candidate| map.get(candidate) == Some(&PermissionEffect::Allow))
-        .then_some(PermissionEffect::Allow)
 }
 
-fn match_key_set(set: &HashSet<CapabilityScope>, key: &CapabilityScope) -> bool {
-    key.candidates()
-        .into_iter()
-        .any(|candidate| set.contains(&candidate))
+/// Windows `canonicalize` returns the `\\?\` extended syntax. It is useful
+/// for long-path I/O, but storing it makes later resource resolution treat a
+/// persisted grant as a device path and can prevent it from matching its
+/// ordinary drive-letter declaration. Persist only ordinary local absolute
+/// paths; UNC and device paths remain unsupported.
+fn persisted_local_resource_path(path: PathBuf) -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    let path = {
+        let value = path.to_string_lossy();
+        let value = value.strip_prefix(r"\\?\").unwrap_or(&value);
+        PathBuf::from(value)
+    };
+
+    if !path.is_absolute() || is_unc_or_device_path(&path) {
+        return Err("persistent path grant requires an ordinary local absolute path".into());
+    }
+    Ok(path)
+}
+
+fn scoped_grant_matches(
+    grants: &ScopedGrantMap,
+    key: &CapabilityScope,
+    resources: &[super::DeclaredResource],
+    workspace: &ExecutionWorkspace,
+    allow_unscoped: bool,
+) -> bool {
+    key.candidates().into_iter().any(|candidate| {
+        let Some(scopes) = grants.get(&candidate) else {
+            return false;
+        };
+        if scopes.is_empty() {
+            return allow_unscoped;
+        }
+        !resources.is_empty()
+            && resources.iter().all(|resource| {
+                scopes
+                    .iter()
+                    .any(|scope| permission_resource_scope_matches(scope, resource, workspace))
+            })
+    })
+}
+
+fn permission_resource_scope_matches(
+    scope: &PermissionResourceScope,
+    resource: &super::DeclaredResource,
+    workspace: &ExecutionWorkspace,
+) -> bool {
+    match (scope, resource) {
+        (
+            PermissionResourceScope::LocalPath {
+                path: root,
+                recursive,
+                access: granted_access,
+            },
+            super::DeclaredResource::LocalPath {
+                path,
+                access: requested_access,
+            },
+        ) if granted_access == requested_access => {
+            let root = resolve_relative_sandbox_path(root.clone(), workspace);
+            let path = resolve_relative_sandbox_path(path.clone(), workspace);
+            let (Some(root), Some(path)) = (
+                resolve_path_without_reparse(&root),
+                resolve_path_without_reparse(&path),
+            ) else {
+                return false;
+            };
+            if *recursive {
+                path_is_within(&path, &root)
+            } else {
+                paths_equal(&path, &root)
+            }
+        }
+        (
+            PermissionResourceScope::NetworkDestination {
+                scheme: granted_scheme,
+                host: granted_host,
+                port: granted_port,
+            },
+            super::DeclaredResource::NetworkDestination { scheme, host, port },
+        ) => {
+            granted_scheme.eq_ignore_ascii_case(scheme)
+                && granted_host.eq_ignore_ascii_case(host)
+                && granted_port == port
+        }
+        _ => false,
+    }
+}
+
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
 }
 
 fn disabled_operation_block(
@@ -1697,11 +1944,13 @@ mod tests {
         session_id: &str,
     ) -> ExecutionPolicyAuthorization {
         let input = json!({});
+        // The session already has an `ask` deny while this test is creating
+        // an unrelated process authorization to observe session revocation.
         let request = AuthorizationRequest::new(
             Some(session_id),
-            "ask",
+            "authorization.test.safe",
             input.clone(),
-            fixture_policy("ask", &input, RiskLevel::Safe),
+            fixture_policy("authorization.test.safe", &input, RiskLevel::Safe),
         );
         let proof = authorization
             .authorize_for_execution(&request)
@@ -1774,6 +2023,227 @@ mod tests {
         }
         AuthorizationRequest::new(session_id, tool_name, input.clone(), policy.clone())
             .with_resources(resources)
+    }
+
+    fn resource_scope_test_policy(capability: CapabilityScope) -> OperationPolicy {
+        OperationPolicy {
+            risk_level: RiskLevel::Medium,
+            capability,
+            confirmation: ConfirmationRequirement::SecurityPolicy,
+            idempotency: crate::OperationIdempotency::Idempotent,
+            scope: crate::ToolOperationScope::Global,
+            concurrency: ToolConcurrency::ReadOnly,
+            effect: OperationEffect::ExternalEffect,
+            data_sensitivity: DataSensitivity::None,
+            network_access: NetworkAccess::None,
+            execution_boundary: crate::ExecutionBoundary::InProcess,
+        }
+    }
+
+    fn resource_test_request(
+        capability: &CapabilityScope,
+        resources: Vec<DeclaredResource>,
+    ) -> AuthorizationRequest {
+        AuthorizationRequest::new(
+            None,
+            "resource.test",
+            json!({}),
+            resource_scope_test_policy(capability.clone()),
+        )
+        .with_resources(resources)
+    }
+
+    #[tokio::test]
+    async fn persistent_allow_matches_only_the_confirmed_exact_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let approved_path = directory.path().join("approved.txt");
+        let sibling_path = directory.path().join("sibling.txt");
+        std::fs::write(&approved_path, "approved").unwrap();
+        std::fs::write(&sibling_path, "sibling").unwrap();
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let capability = capability_scope!("resource.test");
+        let approved = resource_test_request(
+            &capability,
+            vec![DeclaredResource::LocalPath {
+                path: approved_path.clone(),
+                access: LocalPathAccess::Read,
+            }],
+        );
+        let scope = engine
+            .resource_scope_for_request(&approved, PermissionResourceTarget::Exact)
+            .await
+            .unwrap();
+        let PermissionResourceScope::LocalPath {
+            path: saved_path, ..
+        } = &scope[0]
+        else {
+            panic!("local path declaration must produce a local path grant")
+        };
+        assert!(saved_path.is_absolute());
+        assert!(!is_unc_or_device_path(saved_path));
+        engine
+            .grant(
+                None,
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                scope,
+            )
+            .await;
+
+        assert!(matches!(
+            engine.authorize(&approved).await,
+            AuthorizationDecision::AutoApproved
+        ));
+        let sibling = resource_test_request(
+            &capability,
+            vec![DeclaredResource::LocalPath {
+                path: sibling_path,
+                access: LocalPathAccess::Read,
+            }],
+        );
+        assert!(matches!(
+            engine.authorize(&sibling).await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn directory_scope_covers_descendants_but_not_sibling_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("workspace");
+        let nested = root.join("nested");
+        let sibling = directory.path().join("outside");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        let approved_path = root.join("note.txt");
+        let nested_path = nested.join("child.txt");
+        let outside_path = sibling.join("secret.txt");
+        std::fs::write(&approved_path, "approved").unwrap();
+        std::fs::write(&nested_path, "nested").unwrap();
+        std::fs::write(&outside_path, "outside").unwrap();
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let capability = capability_scope!("resource.test");
+        let approved = resource_test_request(
+            &capability,
+            vec![DeclaredResource::LocalPath {
+                path: approved_path,
+                access: LocalPathAccess::Read,
+            }],
+        );
+        let scope = engine
+            .resource_scope_for_request(&approved, PermissionResourceTarget::Directory)
+            .await
+            .unwrap();
+        engine
+            .grant(
+                None,
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                scope,
+            )
+            .await;
+
+        for path in [nested_path, outside_path] {
+            let request = resource_test_request(
+                &capability,
+                vec![DeclaredResource::LocalPath {
+                    path: path.clone(),
+                    access: LocalPathAccess::Read,
+                }],
+            );
+            let decision = engine.authorize(&request).await;
+            if path.starts_with(&root) {
+                assert!(matches!(decision, AuthorizationDecision::AutoApproved));
+            } else {
+                assert!(matches!(
+                    decision,
+                    AuthorizationDecision::RequiresConfirmation { .. }
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn persistent_network_allow_matches_only_the_confirmed_origin() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let capability = capability_scope!("resource.test");
+        let origin = resource_test_request(
+            &capability,
+            vec![DeclaredResource::NetworkDestination {
+                scheme: "https".into(),
+                host: "api.example.test".into(),
+                port: Some(8443),
+            }],
+        );
+        let scope = engine
+            .resource_scope_for_request(&origin, PermissionResourceTarget::Exact)
+            .await
+            .unwrap();
+        engine
+            .grant(
+                None,
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                scope,
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&origin).await,
+            AuthorizationDecision::AutoApproved
+        ));
+        let different_origin = resource_test_request(
+            &capability,
+            vec![DeclaredResource::NetworkDestination {
+                scheme: "https".into(),
+                host: "api.example.test".into(),
+                port: Some(443),
+            }],
+        );
+        assert!(matches!(
+            engine.authorize(&different_origin).await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn persistent_allow_without_typed_resources_is_refused() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let capability = capability_scope!("resource.test");
+        let request = resource_test_request(&capability, Vec::new());
+        assert!(
+            engine
+                .resource_scope_for_request(&request, PermissionResourceTarget::Exact)
+                .await
+                .is_err()
+        );
+        engine
+            .grant(
+                None,
+                capability,
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                Vec::new(),
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&request).await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
     }
 
     #[tokio::test]
@@ -1983,6 +2453,7 @@ mod tests {
                 capability_scope!("shell"),
                 PermissionEffect::Allow,
                 PermissionScope::Always,
+                Vec::new(),
             )
             .await;
         assert_eq!(engine.config.read().await.policy_revision, 0);
@@ -2009,24 +2480,27 @@ mod tests {
             .grant(
                 Some("session-one"),
                 ask_capability.clone(),
-                PermissionEffect::Allow,
+                PermissionEffect::Deny,
                 PermissionScope::Session,
+                Vec::new(),
             )
             .await;
         engine
             .grant(
                 Some("session-two"),
                 ask_capability.clone(),
-                PermissionEffect::Allow,
+                PermissionEffect::Deny,
                 PermissionScope::Session,
+                Vec::new(),
             )
             .await;
         engine
             .grant(
                 Some("session-four"),
                 ask_capability.clone(),
-                PermissionEffect::Allow,
+                PermissionEffect::Deny,
                 PermissionScope::Session,
+                Vec::new(),
             )
             .await;
 
@@ -2344,8 +2818,9 @@ mod tests {
             .grant(
                 Some("session-one"),
                 capability.clone(),
-                PermissionEffect::Allow,
+                PermissionEffect::Deny,
                 PermissionScope::Session,
+                Vec::new(),
             )
             .await;
         assert!(
@@ -2835,6 +3310,7 @@ mod tests {
                 request.capability().clone(),
                 PermissionEffect::Deny,
                 PermissionScope::Session,
+                Vec::new(),
             )
             .await;
 
@@ -2933,7 +3409,10 @@ mod tests {
             risk_level: RiskLevel,
         ) -> ConfirmationResult {
             let policy = fixture_policy(tool_name, params, risk_level);
-            let request = fixture_request(session_id, tool_name, params, &policy);
+            let mut request = fixture_request(session_id, tool_name, params, &policy);
+            if request.resources.is_empty() {
+                request.resources = threshold_fixture_resource();
+            }
             let result = self.engine.authorize(&request).await;
             if risk_level < self.threshold
                 && matches!(result, ConfirmationResult::RequiresConfirmation { .. })
@@ -2943,6 +3422,38 @@ mod tests {
                 result
             }
         }
+
+        async fn grant(
+            &self,
+            session_id: Option<&str>,
+            capability: CapabilityScope,
+            effect: PermissionEffect,
+            scope: PermissionScope,
+            mut resource_scope: Vec<PermissionResourceScope>,
+        ) {
+            if effect == PermissionEffect::Allow && resource_scope.is_empty() {
+                resource_scope = threshold_fixture_resource_scope();
+            }
+            self.engine
+                .grant(session_id, capability, effect, scope, resource_scope)
+                .await;
+        }
+    }
+
+    fn threshold_fixture_resource() -> Vec<DeclaredResource> {
+        vec![DeclaredResource::NetworkDestination {
+            scheme: "https".into(),
+            host: "fixture.invalid".into(),
+            port: None,
+        }]
+    }
+
+    fn threshold_fixture_resource_scope() -> Vec<PermissionResourceScope> {
+        vec![PermissionResourceScope::NetworkDestination {
+            scheme: "https".into(),
+            host: "fixture.invalid".into(),
+            port: None,
+        }]
     }
     impl std::ops::Deref for ThresholdFixture {
         type Target = AuthorizationEngine;
@@ -3133,6 +3644,7 @@ mod tests {
                 capability_scope!("files.write"),
                 PermissionEffect::Allow,
                 PermissionScope::Always,
+                Vec::new(),
             )
             .await;
         gateway.set_execution_mode(ExecutionMode::Analyze).await;
@@ -3673,7 +4185,8 @@ mod tests {
             panic!("High-risk shell call should require confirmation");
         };
         let safe_request =
-            AuthorizationRequest::new(None, "shell", safe_input.clone(), safe_policy.clone());
+            AuthorizationRequest::new(None, "shell", safe_input.clone(), safe_policy.clone())
+                .with_resources(threshold_fixture_resource());
         gateway
             .verify_receipt(&safe_request, &receipt)
             .await
@@ -3683,7 +4196,8 @@ mod tests {
         assert!(
             gateway
                 .verify_receipt(
-                    &AuthorizationRequest::new(None, "shell", changed_input, changed_policy,),
+                    &AuthorizationRequest::new(None, "shell", changed_input, changed_policy)
+                        .with_resources(threshold_fixture_resource()),
                     &receipt,
                 )
                 .await
@@ -3807,6 +4321,7 @@ mod tests {
             capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
         let result = gw
@@ -3828,6 +4343,7 @@ mod tests {
             capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
         assert!(matches!(
@@ -3874,6 +4390,7 @@ mod tests {
             capability_scope!("shell"),
             PermissionEffect::Deny,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
         let result = gw.check(None, "shell", &json!({}), RiskLevel::Safe).await;
@@ -3888,6 +4405,7 @@ mod tests {
             capability_scope!("files.read"),
             PermissionEffect::Allow,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
 
@@ -3903,6 +4421,7 @@ mod tests {
             capability_scope!("files"),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
         let result = gw
@@ -3924,6 +4443,7 @@ mod tests {
             capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
         assert!(matches!(
@@ -3959,6 +4479,7 @@ mod tests {
             capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
         gw.grant(
@@ -3966,6 +4487,7 @@ mod tests {
             capability_scope!("tool1"),
             PermissionEffect::Deny,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
         assert!(matches!(
@@ -4027,6 +4549,7 @@ mod tests {
             capability_scope!("shell"),
             PermissionEffect::Allow,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
         gw.grant(
@@ -4034,6 +4557,7 @@ mod tests {
             capability_scope!("files"),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
 
@@ -4076,6 +4600,7 @@ mod tests {
             capability_scope!("system.hibernate"),
             PermissionEffect::Allow,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
         assert!(matches!(
@@ -4093,6 +4618,7 @@ mod tests {
             capability_scope!("tool1"),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
         assert!(matches!(
@@ -4285,6 +4811,7 @@ mod tests {
             permissions: vec![StoredPermission {
                 key: "files:read".into(),
                 effect: PermissionEffect::Allow,
+                resource_scope: Vec::new(),
             }],
             ..SecurityConfig::default()
         })
@@ -4354,6 +4881,7 @@ mod tests {
             capability_scope!("files"),
             PermissionEffect::Allow,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
         gw.grant(
@@ -4361,6 +4889,7 @@ mod tests {
             capability_scope!("files"),
             PermissionEffect::Deny,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
         assert!(matches!(
@@ -4383,6 +4912,7 @@ mod tests {
             capability_scope!("files"),
             PermissionEffect::Deny,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
         gw.grant(
@@ -4390,6 +4920,7 @@ mod tests {
             capability_scope!("files.read"),
             PermissionEffect::Allow,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
 
@@ -4408,6 +4939,7 @@ mod tests {
             capability_scope!("files"),
             PermissionEffect::Allow,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
         gw.grant(
@@ -4415,6 +4947,7 @@ mod tests {
             capability_scope!("files.delete"),
             PermissionEffect::Deny,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
 
@@ -4438,6 +4971,7 @@ mod tests {
             capability_scope!("system.power"),
             PermissionEffect::Deny,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
         gw.grant(
@@ -4445,6 +4979,7 @@ mod tests {
             capability_scope!("system.power.lock"),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
 
@@ -4468,6 +5003,7 @@ mod tests {
             capability_scope!("shell"),
             PermissionEffect::Deny,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
         gw.grant(
@@ -4475,6 +5011,7 @@ mod tests {
             capability_scope!("shell"),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
 
@@ -4527,6 +5064,7 @@ mod tests {
                 capability_scope!(&key),
                 PermissionEffect::Deny,
                 PermissionScope::Always,
+                Vec::new(),
             )
             .await;
             assert!(
@@ -5161,6 +5699,7 @@ mod tests {
             capability_scope!(&mcp_name),
             PermissionEffect::Allow,
             PermissionScope::Always,
+            Vec::new(),
         )
         .await;
         gw.grant(
@@ -5168,6 +5707,7 @@ mod tests {
             capability_scope!(&skill_name),
             PermissionEffect::Allow,
             PermissionScope::Session,
+            Vec::new(),
         )
         .await;
 

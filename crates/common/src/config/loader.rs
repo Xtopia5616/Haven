@@ -351,11 +351,26 @@ fn migrate_builtin_tool_names(config: &mut AppConfig) -> bool {
             permission.key = canonical_key.to_owned();
             changed = true;
         }
+        if permission.effect == crate::types::PermissionEffect::Allow
+            && permission.resource_scope.is_empty()
+        {
+            // Resource-free allows from older config versions cannot be
+            // narrowed safely. Drop them and require a new explicit approval.
+            changed = true;
+            continue;
+        }
         if let Some(index) = permission_indexes.get(&permission.key).copied() {
             // A denial always wins if a legacy key and its canonical key both
             // exist. This prevents a name migration from widening access.
             if permission.effect == crate::types::PermissionEffect::Deny {
                 permissions[index].effect = crate::types::PermissionEffect::Deny;
+                permissions[index].resource_scope.clear();
+            } else if permissions[index].effect == crate::types::PermissionEffect::Allow {
+                for scope in permission.resource_scope {
+                    if !permissions[index].resource_scope.contains(&scope) {
+                        permissions[index].resource_scope.push(scope);
+                    }
+                }
             }
             changed = true;
         } else {
@@ -1570,10 +1585,12 @@ mod tests {
             StoredPermission {
                 key: "haven.mcp.mcp_add".into(),
                 effect: crate::types::PermissionEffect::Allow,
+                resource_scope: Vec::new(),
             },
             StoredPermission {
                 key: "haven.mcp.add".into(),
                 effect: crate::types::PermissionEffect::Deny,
+                resource_scope: Vec::new(),
             },
         ];
         config.tool_settings.insert(
@@ -1594,12 +1611,48 @@ mod tests {
             [StoredPermission {
                 key: "haven.mcp.add".into(),
                 effect: crate::types::PermissionEffect::Deny,
+                resource_scope: Vec::new(),
             }]
         );
         assert!(!loader.config().tool_settings["media.get_volume"].enabled);
         let persisted = std::fs::read_to_string(&path).unwrap();
         assert!(!persisted.contains("haven.mcp.mcp_add"));
         assert!(!persisted.contains("media.volume_get"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_drops_resource_free_persistent_allow_but_keeps_deny() {
+        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[security.permissions]]
+key = "files.read"
+effect = "allow"
+
+[[security.permissions]]
+key = "system.power"
+effect = "deny"
+"#,
+        )
+        .unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        assert_eq!(
+            loader.config().security.permissions,
+            [StoredPermission {
+                key: "system.power".into(),
+                effect: crate::types::PermissionEffect::Deny,
+                resource_scope: Vec::new(),
+            }]
+        );
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(!persisted.contains("files.read"));
+        assert!(persisted.contains("system.power"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

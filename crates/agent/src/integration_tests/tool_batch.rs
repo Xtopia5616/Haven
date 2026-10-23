@@ -653,7 +653,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     tools
         .share_services()
         .authorization
-        .set_execution_mode(haven_common::types::ExecutionMode::Unattended)
+        .set_execution_mode(haven_common::types::ExecutionMode::Collaborative)
         .await;
     tools
         .share_services()
@@ -720,25 +720,6 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
 
     let mcp_name = "mcp__panic-server__panic_5ftool";
     let skill_name = "skill__panic-skill";
-    for (tool_name, input) in [
-        (mcp_name, serde_json::json!({})),
-        (skill_name, serde_json::json!({"params": {}})),
-    ] {
-        let policy = tools
-            .resolve_operation_policy(None, tool_name, &input)
-            .await
-            .unwrap();
-        tools
-            .share_services()
-            .authorization
-            .grant(
-                None,
-                policy.capability,
-                haven_common::types::PermissionEffect::Allow,
-                haven_common::types::PermissionScope::Always,
-            )
-            .await;
-    }
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             tool_call_updates: Vec::new(),
@@ -788,12 +769,47 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
         .await
         .unwrap();
 
-    let history = tokio::time::timeout(
+    tokio::time::timeout(
         std::time::Duration::from_secs(5),
         agent.run_session_from_id(&session.session_id),
     )
     .await
     .expect("real adapter panic session must not hang")
+    .unwrap();
+    let confirmations = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let requests = executor
+                .pending_interactions(
+                    &session.session_id,
+                    crate::interaction::InteractionKind::Confirm,
+                )
+                .await;
+            if requests.len() == 2 {
+                break requests;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("untyped MCP and Skill operations should require one-time approvals");
+    for request in &confirmations {
+        executor
+            .resolve_interaction(
+                &session.session_id,
+                &request.request_id,
+                serde_json::Value::Bool(true),
+                false,
+            )
+            .await
+            .unwrap()
+            .expect("confirmation should resolve");
+    }
+    let history = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        agent.run_session_from_id(&session.session_id),
+    )
+    .await
+    .expect("approved adapter panic session must not hang")
     .unwrap();
     assert!(!history.is_empty(), "the session must recover and continue");
     assert!(collector.has_tool_call(mcp_name));

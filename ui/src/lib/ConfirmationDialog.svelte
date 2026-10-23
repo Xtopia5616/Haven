@@ -7,11 +7,14 @@
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import { describePermissionRuleImpact } from './permissionRuleDescription.ts';
+	import { declaredResourceDescription } from './permissionResourceDescription.ts';
 	import type {
 		PermissionEffectInput,
 		PermissionScopeInput,
 		PermissionTargetInput,
+		PermissionResourceTargetInput,
 		RiskLevel,
+		DeclaredResource,
 	} from '$lib/contracts/generatedCommands.ts';
 	import type { ConfirmationDecision } from '$lib/confirmationTypes.ts';
 
@@ -25,6 +28,7 @@
 		riskLevel?: RiskLevel;
 		summary?: string;
 		permissionKey?: string;
+		resources?: DeclaredResource[];
 		createdAt: string;
 		deadlineAt: number;
 		onDismiss?: (requestId: string) => void;
@@ -49,6 +53,7 @@
 		riskLevel,
 		summary,
 		permissionKey,
+		resources = [],
 		createdAt,
 		deadlineAt,
 		onDismiss,
@@ -59,10 +64,15 @@
 	let showDenyMenu = $state(false);
 	let showAllowMenu = $state(false);
 	let pendingPersistentTarget = $state<PermissionTargetInput | null>(null);
+	let resourceTarget = $state<PermissionResourceTargetInput>('exact');
 	let submittedRequestId = $state<string | null>(null);
 	let dialogEl = $state<HTMLDivElement | null>(null);
 
 	let normalizedRisk = $derived(String(riskLevel || 'medium').toLowerCase());
+	let hasLocalPathResource = $derived(
+		resources.some((resource) => resource.kind === 'local_path'),
+	);
+	let hasPersistentResources = $derived(resources.length > 0);
 	let riskLabel = $derived(RISK_LABELS[normalizedRisk] || '中风险');
 	let timeoutPercent = $derived(
 		Math.min(100, Math.max(0, ((remaining * 1000) / countdownDurationMs) * 100)),
@@ -122,6 +132,7 @@
 		showDenyMenu = false;
 		showAllowMenu = false;
 		pendingPersistentTarget = null;
+		resourceTarget = 'exact';
 		let disposed = false;
 		const deadline = deadlineAt;
 		if (!Number.isFinite(deadline)) {
@@ -157,6 +168,7 @@
 		effect: PermissionEffectInput,
 		scope: PermissionScopeInput,
 		target: PermissionTargetInput = 'operation',
+		selectedResourceTarget?: PermissionResourceTargetInput,
 	) {
 		const activeRequestId = requestId;
 		if (!activeRequestId || submittedRequestId === activeRequestId) {
@@ -173,6 +185,9 @@
 				effect,
 				scope,
 				target,
+				...(effect === 'allow' && scope !== 'once' && hasPersistentResources
+					? { resourceTarget: selectedResourceTarget || resourceTarget }
+					: {}),
 			});
 			if (accepted === false && requestId === activeRequestId) submittedRequestId = null;
 		} catch {
@@ -181,6 +196,7 @@
 	}
 
 	function requestPersistentAllow(target: PermissionTargetInput) {
+		if (!hasPersistentResources) return;
 		const needsWarning =
 			target !== 'operation' ||
 			normalizedRisk === 'high' ||
@@ -191,7 +207,7 @@
 			showAllowMenu = false;
 			return;
 		}
-		decide('allow', 'always', target);
+		decide('allow', 'always', target, resourceTarget);
 	}
 
 	function dismiss() {
@@ -265,6 +281,18 @@
 						<code>{permissionKey}</code>
 					</div>
 				{/if}
+				<section class="resource-list" aria-label="授权资源">
+					<div class="section-label">本次操作声明的资源</div>
+					{#if resources.length > 0}
+						<ul>
+							{#each resources as resource, index (`${resource.kind}:${index}`)}
+								<li><code>{declaredResourceDescription(resource)}</code></li>
+							{/each}
+						</ul>
+					{:else}
+						<p>此操作没有声明可保存的资源范围，只能本次允许。</p>
+					{/if}
+				</section>
 			</section>
 
 			<section class="summary" id="permission-dialog-summary">
@@ -299,6 +327,15 @@
 						: '永久授权跨会话生效，关键操作仍可能继续要求确认'}
 				</span>
 			</div>
+			{#if hasPersistentResources && hasLocalPathResource}
+				<label class="resource-target-choice">
+					<span>保存的路径范围</span>
+					<select bind:value={resourceTarget} aria-label="保存的路径范围">
+						<option value="exact">仅声明的路径</option>
+						<option value="directory">所在目录及其子项</option>
+					</select>
+				</label>
+			{/if}
 			{#if pendingPersistentTarget}
 				<div class="always-warning" role="alert">
 					<Icon name="alertTriangle" size={16} />
@@ -318,7 +355,12 @@
 						label="永久允许"
 						ariaLabel="确认永久允许"
 						onclick={() =>
-							decide('allow', 'always', pendingPersistentTarget || 'operation')}
+							decide(
+								'allow',
+								'always',
+								pendingPersistentTarget || 'operation',
+								resourceTarget,
+							)}
 					/>
 				</div>
 			{/if}
@@ -330,16 +372,17 @@
 						label="本次允许"
 						onclick={() => decide('allow', 'once', 'operation')}
 					/>
-					{#if allowSessionScope}
+					{#if allowSessionScope && hasPersistentResources}
 						<MaterialButton
 							variant="tonal"
 							className="btn-session"
 							label="本会话允许"
 							ariaLabel="本会话允许此操作"
-							onclick={() => decide('allow', 'session', 'operation')}
+							onclick={() => decide('allow', 'session', 'operation', resourceTarget)}
 						/>
 					{/if}
-					<div class="more-allow">
+					{#if hasPersistentResources}
+						<div class="more-allow">
 							<MaterialButton
 								variant="text"
 								className="more-allow-trigger"
@@ -359,7 +402,12 @@
 											<MenuItem
 												label={`本会话允许${option.label}`}
 												onSelect={() =>
-													decide('allow', 'session', option.target)}
+													decide(
+														'allow',
+														'session',
+														option.target,
+														resourceTarget,
+													)}
 											/>
 										{/each}
 									{/if}
@@ -373,54 +421,55 @@
 								</div>
 							{/if}
 						</div>
+					{/if}
 				</div>
 				<MaterialSplitButton
-						label="拒绝"
-						variant="danger"
-						className="deny-split"
-						open={showDenyMenu}
-						onclick={() => decide('deny', 'once')}
-						onToggle={() => (showDenyMenu = !showDenyMenu)}
-						ariaLabel="更多拒绝选项"
-					>
-						{#snippet children()}
-							{#if showDenyMenu}
-								<div class="deny-menu motion-menu-enter motion-list" role="menu">
-									<p class="scope-impact-note scope-impact-note--deny">
-										功能组和工具拒绝会阻止对应权限键及其所有下级操作，并优先于匹配的允许规则。
-									</p>
-									{#if allowSessionScope}
-										<MenuItem
-											label="本会话拒绝"
-											ariaLabel="本会话拒绝此操作"
-											danger
-											onSelect={() => decide('deny', 'session', 'operation')}
-										/>
-										{#each targetOptions.slice(1) as option (option.target)}
-											<MenuItem
-												label={`本会话拒绝${option.label}`}
-												danger
-												onSelect={() =>
-													decide('deny', 'session', option.target)}
-											/>
-										{/each}
-									{/if}
+					label="拒绝"
+					variant="danger"
+					className="deny-split"
+					open={showDenyMenu}
+					onclick={() => decide('deny', 'once')}
+					onToggle={() => (showDenyMenu = !showDenyMenu)}
+					ariaLabel="更多拒绝选项"
+				>
+					{#snippet children()}
+						{#if showDenyMenu}
+							<div class="deny-menu motion-menu-enter motion-list" role="menu">
+								<p class="scope-impact-note scope-impact-note--deny">
+									功能组和工具拒绝会阻止对应权限键及其所有下级操作，并优先于匹配的允许规则。
+								</p>
+								{#if allowSessionScope}
 									<MenuItem
-										label="始终拒绝"
-										ariaLabel="始终拒绝此操作"
+										label="本会话拒绝"
+										ariaLabel="本会话拒绝此操作"
 										danger
-										onSelect={() => decide('deny', 'always', 'operation')}
+										onSelect={() => decide('deny', 'session', 'operation')}
 									/>
 									{#each targetOptions.slice(1) as option (option.target)}
 										<MenuItem
-											label={`始终拒绝${option.label}`}
+											label={`本会话拒绝${option.label}`}
 											danger
-											onSelect={() => decide('deny', 'always', option.target)}
+											onSelect={() =>
+												decide('deny', 'session', option.target)}
 										/>
 									{/each}
-								</div>
-							{/if}
-						{/snippet}
+								{/if}
+								<MenuItem
+									label="始终拒绝"
+									ariaLabel="始终拒绝此操作"
+									danger
+									onSelect={() => decide('deny', 'always', 'operation')}
+								/>
+								{#each targetOptions.slice(1) as option (option.target)}
+									<MenuItem
+										label={`始终拒绝${option.label}`}
+										danger
+										onSelect={() => decide('deny', 'always', option.target)}
+									/>
+								{/each}
+							</div>
+						{/if}
+					{/snippet}
 				</MaterialSplitButton>
 			</div>
 		</footer>
@@ -584,6 +633,53 @@
 	.operation-card {
 		padding: var(--md-sys-space-lg);
 		background: var(--md-sys-color-surface-container-low);
+	}
+
+	.resource-list {
+		margin-top: var(--md-sys-space-md);
+		padding-top: var(--md-sys-space-sm);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+	}
+
+	.resource-list ul {
+		display: grid;
+		gap: var(--md-sys-space-xs);
+		margin: var(--md-sys-space-xs) 0 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	.resource-list li,
+	.resource-list p {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+
+	.resource-list code {
+		color: var(--md-sys-color-on-surface);
+		font-family: var(--md-sys-typescale-mono);
+		overflow-wrap: anywhere;
+	}
+
+	.resource-target-choice {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--md-sys-space-md);
+		margin-bottom: var(--md-sys-space-sm);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+	}
+
+	.resource-target-choice select {
+		max-width: 60%;
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border: 1px solid var(--md-sys-color-outline);
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface);
+		color: var(--md-sys-color-on-surface);
+		font: inherit;
 	}
 
 	.operation-name {

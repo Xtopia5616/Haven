@@ -1017,13 +1017,14 @@ impl SessionSupervisor {
         capability: CapabilityScope,
         target: PermissionTarget,
         effect: PermissionEffect,
+        resource_scope: Vec<haven_common::types::PermissionResourceScope>,
     ) -> anyhow::Result<()> {
         let _lifecycle = self.lifecycle_guard().await;
         self.ensure_lifecycle_open()?;
         if self.is_session_closing(session_id) {
             anyhow::bail!("session '{}' is closing; retry after deletion", session_id);
         }
-        let grant = SessionAuthorizationGrant::session(capability, target, effect);
+        let grant = SessionAuthorizationGrant::session(capability, target, effect, resource_scope);
         self.store
             .persist_session_authorization_grant(session_id, grant.clone())
             .await?;
@@ -1033,6 +1034,7 @@ impl SessionSupervisor {
                 grant.capability,
                 grant.effect,
                 grant.scope,
+                grant.resource_scope,
             )
             .await;
         Ok(())
@@ -1057,6 +1059,7 @@ impl SessionSupervisor {
                     stored.grant.capability,
                     stored.grant.effect,
                     stored.grant.scope,
+                    stored.grant.resource_scope,
                 )
                 .await;
         }
@@ -1093,6 +1096,7 @@ impl SessionSupervisor {
                     grant.capability,
                     grant.effect,
                     grant.scope,
+                    grant.resource_scope,
                 )
                 .await;
         }
@@ -1299,6 +1303,7 @@ impl SessionSupervisor {
                     grant.capability,
                     grant.effect,
                     grant.scope,
+                    grant.resource_scope,
                 )
                 .await;
         }
@@ -1579,22 +1584,43 @@ mod tests {
             .ensure_session_loaded(&record.session_id)
             .await
             .unwrap();
+        let resource_scope = first
+            .authorization
+            .resource_scope_for_request(
+                &high_risk_session_request(&record.session_id),
+                haven_common::types::PermissionResourceTarget::Exact,
+            )
+            .await
+            .unwrap();
         first
             .grant_session_permission(
                 &record.session_id,
                 CapabilityScope::try_new("files.write").unwrap(),
                 PermissionTarget::Operation,
                 PermissionEffect::Allow,
+                resource_scope.clone(),
             )
             .await
             .unwrap();
-        assert!(matches!(
+        let request = high_risk_session_request(&record.session_id);
+        let persisted = db.session_authorization_grants(&record.session_id).unwrap();
+        assert_eq!(persisted[0].resource_scope, resource_scope);
+        assert_eq!(
             first
                 .authorization
-                .authorize(&high_risk_session_request(&record.session_id))
-                .await,
-            AuthorizationDecision::AutoApproved
-        ));
+                .resource_scope_for_request(
+                    &request,
+                    haven_common::types::PermissionResourceTarget::Exact,
+                )
+                .await
+                .unwrap(),
+            resource_scope
+        );
+        let decision = first.authorization.authorize(&request).await;
+        assert!(
+            matches!(decision, AuthorizationDecision::AutoApproved),
+            "resource-scoped session grant decision was {decision:?}"
+        );
         assert!(matches!(
             first
                 .authorization
@@ -1656,6 +1682,11 @@ mod tests {
                 CapabilityScope::try_new("files.write").unwrap(),
                 PermissionTarget::Operation,
                 PermissionEffect::Allow,
+                vec![haven_common::types::PermissionResourceScope::LocalPath {
+                    path: PathBuf::from("C:\\authorized\\file.txt"),
+                    recursive: false,
+                    access: haven_common::types::LocalPathAccess::Write,
+                }],
             )
             .await
             .unwrap_err();
@@ -1682,11 +1713,20 @@ mod tests {
         exec.ensure_session_loaded(&record.session_id)
             .await
             .unwrap();
+        let resource_scope = exec
+            .authorization
+            .resource_scope_for_request(
+                &high_risk_session_request(&record.session_id),
+                haven_common::types::PermissionResourceTarget::Exact,
+            )
+            .await
+            .unwrap();
         exec.grant_session_permission(
             &record.session_id,
             CapabilityScope::try_new("files.write").unwrap(),
             PermissionTarget::Operation,
             PermissionEffect::Allow,
+            resource_scope,
         )
         .await
         .unwrap();
@@ -2505,6 +2545,11 @@ mod tests {
             CapabilityScope::try_new("files.write").unwrap(),
             PermissionTarget::Operation,
             PermissionEffect::Allow,
+            vec![haven_common::types::PermissionResourceScope::LocalPath {
+                path: PathBuf::from("C:\\authorized\\file.txt"),
+                recursive: false,
+                access: haven_common::types::LocalPathAccess::Write,
+            }],
         )
         .await
         .unwrap();
@@ -3768,6 +3813,11 @@ mod tests {
             CapabilityScope::try_new("files.write").unwrap(),
             PermissionTarget::Operation,
             PermissionEffect::Allow,
+            vec![haven_common::types::PermissionResourceScope::LocalPath {
+                path: std::path::PathBuf::from("notes.txt"),
+                recursive: false,
+                access: haven_common::types::LocalPathAccess::Write,
+            }],
         );
         db.persist_session_authorization_grant(&healthy.session_id, &grant)
             .unwrap();
@@ -4316,6 +4366,7 @@ mod tests {
                 confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("test.operation")
                     .unwrap(),
+                resources: Vec::new(),
                 canonical_input_hash: String::new(),
                 effective_risk: haven_common::types::RiskLevel::Safe,
                 policy_revision: 1,
@@ -4426,6 +4477,7 @@ mod tests {
                     confirmation_id: haven_common::types::ConfirmId::new(),
                     capability: haven_common::types::CapabilityScope::try_new("test.operation")
                         .unwrap(),
+                    resources: Vec::new(),
                     canonical_input_hash: String::new(),
                     effective_risk: haven_common::types::RiskLevel::High,
                     policy_revision: 1,
@@ -4609,6 +4661,7 @@ mod tests {
                 confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("test.operation")
                     .unwrap(),
+                resources: Vec::new(),
                 canonical_input_hash: String::new(),
                 effective_risk: haven_common::types::RiskLevel::High,
                 policy_revision: 1,
@@ -4692,6 +4745,7 @@ mod tests {
         let receipt = || haven_tools::ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("test.operation").unwrap(),
+            resources: Vec::new(),
             canonical_input_hash: String::new(),
             effective_risk: haven_common::types::RiskLevel::Safe,
             policy_revision: 1,
@@ -4841,6 +4895,7 @@ mod tests {
             Some(haven_tools::ConfirmationReceipt {
                 confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("files.write").unwrap(),
+                resources: Vec::new(),
                 canonical_input_hash: String::new(),
                 effective_risk: haven_common::types::RiskLevel::High,
                 policy_revision: 1,

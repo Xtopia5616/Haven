@@ -163,16 +163,25 @@ mod scheduled_authorization_tests {
             &self,
             input: &Value,
         ) -> Result<Vec<haven_tools::DeclaredResource>, String> {
-            if self.name != "files.write" {
-                return Ok(Vec::new());
-            }
-            let path = input
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "files.write test input requires a path".to_owned())?;
+            let (path, access) = if self.name == "files.write" {
+                (
+                    input
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "files.write test input requires a path".to_owned())?,
+                    haven_tools::LocalPathAccess::Write,
+                )
+            } else {
+                // Synthetic scheduled tools declare a stable test-only resource
+                // so grant lifecycle tests exercise scoped persistence.
+                (
+                    "scheduled-test-resource",
+                    haven_tools::LocalPathAccess::Read,
+                )
+            };
             Ok(vec![haven_tools::DeclaredResource::LocalPath {
                 path: path.into(),
-                access: haven_tools::LocalPathAccess::Write,
+                access,
             }])
         }
 
@@ -265,6 +274,7 @@ mod scheduled_authorization_tests {
         haven_tools::ConfirmationReceipt {
             confirmation_id,
             capability: haven_common::types::CapabilityScope::try_new(capability).unwrap(),
+            resources: Vec::new(),
             canonical_input_hash: String::new(),
             effective_risk: RiskLevel::High,
             policy_revision: 1,
@@ -1927,6 +1937,7 @@ mod interaction_owner_route_tests {
         haven_tools::ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new(capability).unwrap(),
+            resources: Vec::new(),
             canonical_input_hash: String::new(),
             effective_risk: haven_common::types::RiskLevel::High,
             policy_revision: 1,

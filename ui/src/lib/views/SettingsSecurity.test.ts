@@ -108,6 +108,7 @@ describe('SettingsSecurity', () => {
 			capability: 'files.write',
 			target: 'operation',
 			effect: 'deny' as const,
+			resource_scope: [],
 		};
 		const onRevokeSessionPermission = vi.fn(async () => true);
 		render(SettingsSecurity, {
@@ -141,6 +142,14 @@ describe('SettingsSecurity', () => {
 					capability: 'files.write',
 					target: 'operation',
 					effect: 'allow',
+					resource_scope: [
+						{
+							kind: 'local_path',
+							path: 'C:\\Projects\\demo',
+							recursive: false,
+							access: 'read',
+						},
+					],
 				},
 			],
 			onResetSessionPermissions,
@@ -220,7 +229,9 @@ describe('SettingsSecurity', () => {
 
 		expect(screen.getByText('文件访问模式')).toBeTruthy();
 		expect(screen.getByText(/不会替其它进程设置 Windows 文件或网络限制/)).toBeTruthy();
-		expect(screen.getByText(/Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写/)).toBeTruthy();
+		expect(
+			screen.getByText(/Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写/),
+		).toBeTruthy();
 		expect(screen.getByText(/Skill 与 MCP stdio 子进程仍会被拒绝/)).toBeTruthy();
 	});
 
@@ -231,7 +242,8 @@ describe('SettingsSecurity', () => {
 		},
 		{
 			sandboxMode: 'workspace_write',
-			explanation: /Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写；网络按独立策略执行/,
+			explanation:
+				/Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写；网络按独立策略执行/,
 		},
 	] as const)(
 		'describes network authorization alongside $sandboxMode filesystem policy',
@@ -256,5 +268,4 @@ describe('SettingsSecurity', () => {
 		expect(screen.getByText('仍按旧策略运行')).toBeTruthy();
 		expect(screen.getByText(/重启前实际采用该旧策略/)).toBeTruthy();
 	});
-
 });

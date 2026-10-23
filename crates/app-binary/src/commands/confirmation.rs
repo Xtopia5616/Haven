@@ -84,6 +84,13 @@ pub(crate) struct UiConfirmationPending {
     pub action: UiConfirmationAction,
 }
 
+pub(super) struct ConfirmationGrantSelection {
+    pub effect: haven_common::types::PermissionEffect,
+    pub scope: haven_common::types::PermissionScope,
+    pub target: haven_common::types::PermissionTarget,
+    pub resource_target: haven_common::types::PermissionResourceTarget,
+}
+
 /// Register a renderer-triggered MCP/skill invocation as the same canonical
 /// confirmation interaction used by agent and scheduled confirmations. The
 /// app-level store retains the typed execution payload needed after resolve;
@@ -228,9 +235,7 @@ pub(super) async fn resolve_app_confirmation(
     app: &AppHandle,
     owner: &haven_agent::InteractionOwner,
     request_id: &str,
-    perm_effect: haven_common::types::PermissionEffect,
-    perm_scope: haven_common::types::PermissionScope,
-    perm_target: haven_common::types::PermissionTarget,
+    selection: ConfirmationGrantSelection,
 ) -> Result<ConfirmationResolutionResult, String> {
     if owner != &haven_agent::InteractionOwner::AppCommand {
         tracing::warn!(
@@ -244,9 +249,10 @@ pub(super) async fn resolve_app_confirmation(
         state.as_ref(),
         owner,
         request_id,
-        perm_effect,
-        perm_scope,
-        perm_target,
+        selection.effect,
+        selection.scope,
+        selection.target,
+        selection.resource_target,
     )
     .await?;
     let pending = match resolution {
@@ -271,7 +277,10 @@ pub(super) async fn resolve_app_confirmation(
         AppConfirmationResolution::Resolved(pending) => pending,
     };
 
-    let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
+    let confirmed = matches!(
+        selection.effect,
+        haven_common::types::PermissionEffect::Allow
+    );
     let session_id = pending.request.session_id.clone();
     let request_id = pending.request.request_id.clone();
     let decision = if confirmed { "approved" } else { "denied" };
@@ -368,6 +377,7 @@ pub(super) async fn arbitrate_app_confirmation(
     perm_effect: haven_common::types::PermissionEffect,
     perm_scope: haven_common::types::PermissionScope,
     perm_target: haven_common::types::PermissionTarget,
+    resource_target: haven_common::types::PermissionResourceTarget,
 ) -> Result<AppConfirmationResolution, String> {
     if owner != &haven_agent::InteractionOwner::AppCommand {
         return Ok(AppConfirmationResolution::Stale);
@@ -402,7 +412,15 @@ pub(super) async fn arbitrate_app_confirmation(
         let _ = pending.request.expire();
         return Ok(AppConfirmationResolution::Expired(pending));
     }
-    accept_ui_confirmation(state, pending, perm_effect, perm_scope, perm_target).await?;
+    accept_ui_confirmation(
+        state,
+        pending,
+        perm_effect,
+        perm_scope,
+        perm_target,
+        resource_target,
+    )
+    .await?;
     let pending = pending_registry
         .remove(request_id)
         .expect("accepted app confirmation remains registered");
@@ -415,6 +433,7 @@ pub(super) async fn accept_ui_confirmation(
     perm_effect: haven_common::types::PermissionEffect,
     perm_scope: haven_common::types::PermissionScope,
     perm_target: haven_common::types::PermissionTarget,
+    resource_target: haven_common::types::PermissionResourceTarget,
 ) -> Result<(), String> {
     if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
         return Err(log_err(
@@ -468,13 +487,29 @@ pub(super) async fn accept_ui_confirmation(
             ));
         }
         haven_common::types::PermissionScope::Always => {
-            let config_apply_guard =
-                persist_permanent_permission(state, grant_key.as_str(), perm_effect).await?;
+            let resource_scope = if allowed {
+                state
+                    .runtime
+                    .services
+                    .authorization
+                    .resource_scope_for_request(&pending.authorization_request, resource_target)
+                    .await
+                    .map_err(|error| log_err("resolve_ui_confirmation", error))?
+            } else {
+                Vec::new()
+            };
+            let config_apply_guard = persist_permanent_permission(
+                state,
+                grant_key.as_str(),
+                perm_effect,
+                resource_scope.clone(),
+            )
+            .await?;
             state
                 .runtime
                 .services
                 .authorization
-                .grant(None, grant_key, perm_effect, perm_scope)
+                .grant(None, grant_key, perm_effect, perm_scope, resource_scope)
                 .await;
             drop(config_apply_guard);
         }
@@ -561,8 +596,15 @@ pub(super) async fn persist_permanent_permission(
     state: &AppState,
     key: &str,
     effect: haven_common::types::PermissionEffect,
+    resource_scope: Vec<haven_common::types::PermissionResourceScope>,
 ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
     use haven_common::config::StoredPermission;
+    if effect == haven_common::types::PermissionEffect::Allow && resource_scope.is_empty() {
+        return Err(log_err(
+            "persist_permanent_permission",
+            "persistent allow requires typed resource declarations",
+        ));
+    }
     let guard = state.runtime.config_runtime_coordinator.lock_owned().await;
     state
         .runtime
@@ -570,11 +612,24 @@ pub(super) async fn persist_permanent_permission(
         .edit(|config| {
             let permissions = &mut config.security.permissions;
             if let Some(existing) = permissions.iter_mut().find(|p| p.key == key) {
-                existing.effect = effect;
+                if existing.effect != effect {
+                    existing.effect = effect;
+                    existing.resource_scope.clear();
+                }
+                if effect == haven_common::types::PermissionEffect::Deny {
+                    existing.resource_scope.clear();
+                } else {
+                    for scope in &resource_scope {
+                        if !existing.resource_scope.contains(scope) {
+                            existing.resource_scope.push(scope.clone());
+                        }
+                    }
+                }
             } else {
                 permissions.push(StoredPermission {
                     key: key.to_string(),
                     effect,
+                    resource_scope,
                 });
             }
             Ok(())

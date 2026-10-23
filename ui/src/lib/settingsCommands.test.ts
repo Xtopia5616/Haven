@@ -78,6 +78,7 @@ describe('Settings commands', () => {
 				capability: 'files.read',
 				target: 'operation',
 				effect: 'allow',
+				resource_scope: [],
 			},
 		];
 		const rendererGrants: SessionPermissionGrant[] = [
@@ -87,6 +88,7 @@ describe('Settings commands', () => {
 				capability: grants[0].capability,
 				target: grants[0].target,
 				effect: grants[0].effect,
+				resource_scope: grants[0].resource_scope,
 			},
 		];
 		const settingsRequest = { settings: { default_shell: 'pwsh' as const } };
@@ -104,13 +106,13 @@ describe('Settings commands', () => {
 			.mockResolvedValueOnce({
 				loginId: 'login-1',
 				authorizationUrl: 'https://auth.openai.com/authorize',
-			accountEmail: null,
-			planUsageEnabled: false,
+				accountEmail: null,
+				planUsageEnabled: false,
 			})
 			.mockResolvedValueOnce({
 				credentialRef: 'cred-0000008c3defb1edb984fe2ac71c71c9',
 				accountEmail: 'user@example.com',
-			planUsageEnabled: true,
+				planUsageEnabled: true,
 			})
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce(undefined)
@@ -188,14 +190,8 @@ describe('Settings commands', () => {
 			['reset_session_permissions'],
 			['set_hotkey_capture_active', { active: true }],
 			['stage_provider_credential', { providerName: 'provider', apiKey: 'secret' }],
-			[
-				'start_chatgpt_plan_login',
-				{ providerName: 'chatgpt' },
-			],
-			[
-				'complete_chatgpt_plan_login',
-				{ loginId: 'login-1', providerName: 'chatgpt' },
-			],
+			['start_chatgpt_plan_login', { providerName: 'chatgpt' }],
+			['complete_chatgpt_plan_login', { loginId: 'login-1', providerName: 'chatgpt' }],
 			['cancel_chatgpt_plan_login', { loginId: 'login-1' }],
 			[
 				'discard_staged_chatgpt_plan_credential',

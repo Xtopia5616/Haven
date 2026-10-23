@@ -529,6 +529,10 @@ pub struct StoredPermission {
     /// root aggregate key for broad grants. Colon-separated keys are invalid.
     pub key: String,
     pub effect: crate::types::PermissionEffect,
+    /// Persistent allow rules must carry a typed resource boundary. Empty is
+    /// accepted for deny rules, which remain capability-wide.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resource_scope: Vec<crate::types::PermissionResourceScope>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

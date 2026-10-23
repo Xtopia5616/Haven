@@ -11,11 +11,19 @@
 		describePermissionRuleImpact,
 		permissionTargetLabel,
 	} from '$lib/permissionRuleDescription.ts';
+	import { permissionResourceScopeDescription } from '$lib/permissionResourceDescription.ts';
 	import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
+	import type { PermissionResourceScope } from '$lib/contracts/generatedCommands.ts';
 	import type { SessionPermissionGrant } from '$lib/contracts/settings.ts';
 
 	interface Props {
-		security: SecurityConfigInput & { permissions: Array<{ key: string; effect: string }> };
+		security: SecurityConfigInput & {
+			permissions: Array<{
+				key: string;
+				effect: string;
+				resource_scope?: PermissionResourceScope[];
+			}>;
+		};
 		sessionPermissions?: SessionPermissionGrant[];
 		securityDirty?: boolean;
 		securityRuntimeStatus?: 'current' | 'unchanged' | 'incomplete';
@@ -388,7 +396,7 @@
 				<SettingsField label="网络策略" id="security-network">
 					<MaterialSelect
 						id="security-network"
-					value={security.network_policy || 'restricted'}
+						value={security.network_policy || 'restricted'}
 						options={NETWORK_POLICIES.map((policy) => ({
 							value: policy.value,
 							label: policy.label,
@@ -409,8 +417,7 @@
 					<h3>新会话默认工作目录</h3>
 					<p>
 						此目录只用于初始化新会话。每个会话随后独立保存工作目录，Files 的相对路径和
-						Shell 默认目录会跟随该会话。工作区可写模式下，只有
-						writable_roots
+						Shell 默认目录会跟随该会话。工作区可写模式下，只有 writable_roots
 						留空时它才是默认写入范围；自定义可写目录非空时会覆盖此默认范围。Files
 						工具配置的 allowed_paths 还会进一步收窄写入范围。
 						已开始的调用继续使用旧工作区；子进程是否隔离由各自的执行边界决定。
@@ -526,6 +533,15 @@
 							<span class="perm-impact">
 								{describePermissionRuleImpact(perm.key, perm.effect)}
 							</span>
+							{#if perm.effect === 'allow' && perm.resource_scope?.length}
+								{#each perm.resource_scope as resourceScope, index (`${resourceScope.kind}:${index}`)}
+									<span class="perm-scope"
+										>资源：{permissionResourceScopeDescription(
+											resourceScope,
+										)}</span
+									>
+								{/each}
+							{/if}
 							<code class="perm-key">{perm.key}</code>
 						</div>
 						<span class="perm-effect" class:deny={perm.effect === 'deny'}>
@@ -590,6 +606,17 @@
 							<span class="perm-impact">
 								{describePermissionRuleImpact(grant.capability, grant.effect)}
 							</span>
+							{#if grant.effect === 'allow' && grant.resource_scope.length > 0}
+								{#each grant.resource_scope as resourceScope, index (`${resourceScope.kind}:${index}`)}
+									<span class="perm-scope"
+										>资源：{permissionResourceScopeDescription(
+											resourceScope,
+										)}</span
+									>
+								{/each}
+							{:else if grant.effect === 'deny'}
+								<span class="perm-scope">拒绝适用于此授权键及匹配的下级操作</span>
+							{/if}
 							<span class="perm-scope">{grant.session_title || grant.sessionId}</span>
 							<code class="perm-key">{grant.sessionId} · {grant.capability}</code>
 						</div>

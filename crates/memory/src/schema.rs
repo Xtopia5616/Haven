@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 60;
+pub const SCHEMA_VERSION: i32 = 61;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -131,6 +131,7 @@ const SCHEMA_SQL: &[&str] = &[
         permission_scope TEXT NOT NULL CHECK(permission_scope = 'session'),
         permission_target TEXT NOT NULL CHECK(permission_target IN ('operation','group','tool')),
         effect TEXT NOT NULL CHECK(effect IN ('allow','deny')),
+        resource_scope TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(resource_scope)),
         PRIMARY KEY(session_id, capability_key)
     )",
     // Internal key-value store (fact-extraction cursors, etc.).
@@ -801,6 +802,7 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("session_authorization_grants", "capability_key"),
     ("session_authorization_grants", "permission_scope"),
     ("session_authorization_grants", "effect"),
+    ("session_authorization_grants", "resource_scope"),
     ("session_steps", "thought"),
     ("memory_nodes", "kind"),
     ("memory_items", "content"),

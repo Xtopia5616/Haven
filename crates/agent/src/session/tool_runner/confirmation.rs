@@ -363,8 +363,32 @@ impl SessionSupervisor {
         target: haven_common::types::PermissionTarget,
         effect: haven_common::types::PermissionEffect,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
-        self.resolve_confirmation_with_session_grant_inner(owner, request_id, target, effect)
-            .await
+        self.resolve_confirmation_with_resource_scoped_session_grant_for_owner(
+            owner,
+            request_id,
+            target,
+            effect,
+            haven_common::types::PermissionResourceTarget::Exact,
+        )
+        .await
+    }
+
+    pub async fn resolve_confirmation_with_resource_scoped_session_grant_for_owner(
+        self: &Arc<Self>,
+        owner: &crate::interaction::InteractionOwner,
+        request_id: &haven_common::types::ConfirmId,
+        target: haven_common::types::PermissionTarget,
+        effect: haven_common::types::PermissionEffect,
+        resource_target: haven_common::types::PermissionResourceTarget,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        self.resolve_confirmation_with_session_grant_inner(
+            owner,
+            request_id,
+            target,
+            effect,
+            resource_target,
+        )
+        .await
     }
 
     async fn resolve_confirmation_with_session_grant_inner(
@@ -373,6 +397,7 @@ impl SessionSupervisor {
         step_id: &haven_common::types::ConfirmId,
         target: haven_common::types::PermissionTarget,
         effect: haven_common::types::PermissionEffect,
+        resource_target: haven_common::types::PermissionResourceTarget,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
         let request = match expected_owner {
@@ -501,6 +526,14 @@ impl SessionSupervisor {
                 anyhow::bail!("confirmation request can no longer be executed: {reason}");
             }
         }
+        let resource_scope = if matches!(effect, haven_common::types::PermissionEffect::Allow) {
+            self.authorization
+                .resource_scope_for_request(&authorization_request, resource_target)
+                .await
+                .map_err(anyhow::Error::msg)?
+        } else {
+            Vec::new()
+        };
         if let Some(schedule_run_id) = scheduled_run_id.as_deref()
             && !self
                 .schedules
@@ -520,7 +553,7 @@ impl SessionSupervisor {
             return Ok(None);
         }
         if let Err(error) = self
-            .grant_session_permission(session_id, key, target, effect)
+            .grant_session_permission(session_id, key, target, effect, resource_scope)
             .await
         {
             if let Some(schedule_run_id) = scheduled_run_id.as_deref()
