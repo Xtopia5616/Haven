@@ -152,6 +152,20 @@ export function updateSettings(request: TauriCommandRequest<'update_settings'>):
 	return invoke('update_settings', request);
 }
 
+/** Read per-target config versions and retryable runtime-apply state. */
+export function getSettingsRuntimeApplyStatus(): Promise<
+	TauriCommandResponse<'get_settings_runtime_apply_status'>
+> {
+	return invoke('get_settings_runtime_apply_status');
+}
+
+/** Reapply pending live targets from the latest saved Settings snapshot. */
+export function reapplySavedSettings(): Promise<
+	TauriCommandResponse<'reapply_saved_settings'>
+> {
+	return invoke('reapply_saved_settings');
+}
+
 /** Enable the application-managed startup entry. */
 export function enableAutostart(): Promise<void> {
 	return invoke('enable_autostart');

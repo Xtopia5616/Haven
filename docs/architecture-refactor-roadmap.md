@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1–5 已完成（ADR 1373–1374、1376–1383）：Slice 3 已盘点 Shell 外的进程入口并形成统一 capability 报告；Slice 4 已拆分 MCP 可用性、目录展示与调用适配，并保守迁移旧 exposure 配置。Slice 2 的执行预设、typed 资源合同、规范 `ResourcePolicy` 与精确边界扩展已完成（ADR 1374、1376–1381）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
-> 更新日期：2026-10-23
+> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1–5 的实现已完成（ADR 1373–1374、1376–1383）；Slice 3 的 Windows capability 验收与 Slice 4 的配置/目录/调用交互验收仍开放，见 §5。Slice 2 的执行预设、typed 资源合同、规范 `ResourcePolicy` 与精确边界扩展已完成（ADR 1374、1376–1381）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
+> 更新日期：2026-10-24
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -70,13 +70,14 @@
 
 ## 5. 未完成事项
 
-状态按执行性质区分：**Gate** 是发布前签核条件；**Active** 是当前唯一实施切片；**Next** 是已有证据、等待前一切片完成后再进入的目标；**Candidate** 是已记录证据但不在当前顺序中的工作。结构性目标一次只推进一个 Active slice；行数下降、文件变少或 crate 变少不是完成指标。风险用于确定分片和验收，不单独作为暂缓理由。
+状态按执行性质区分：**Gate** 是发布前签核条件；**Active** 是当前唯一实施切片；**Next** 是已有证据、等待前一切片完成后再进入的目标；**Acceptance Open** 表示实现已提交但指定环境/交互验收尚未签核；**Candidate** 是已记录证据但不在当前顺序中的工作。结构性目标一次只推进一个 Active slice；行数下降、文件变少或 crate 变少不是完成指标。风险用于确定分片和验收，不单独作为暂缓理由。
 
 | 状态 | 当前项 |
 |---|---|
-| **Next** | 新一轮 R02：提供已保存配置的显式 reapply。模型/媒体发布边界以及后台任务与会话工作绑定、配置代次接线仍在后续建议中，未排入当前切片，顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
+| **Next** | 新一轮 R03：验证模型与媒体配置分步发布的混合代次影响，并声明最小原子可见范围。会话工作与后台任务、配置代次的接线仍属后续建议；顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
+| **Completed** | 新一轮 R02：按 runtime target 显示期望/实际配置版本、结果与净化原因；可在共享 apply gate 下仅重试失败或尚未执行目标，状态见 [ADR 1384](adr/1384-explicit-reapply-of-saved-runtime-configuration.md)。 |
 | **Completed** | Slice 2 typed 资源合同（ADR 1374、1376–1381）：Files/HTTP/剪贴板/窗口/注册表与 MCP 远程调用均由可信 adapter 在执行前声明并验证；MCP 执行 proof 绑定连接配置/代次，持久资源授权绑定稳定配置与完整参数摘要。见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)、[ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1375](adr/1375-resource-scoped-persistent-permissions.md)、[ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md)、[ADR 1377](adr/1377-once-only-http-domain-boundary-extension.md)、[ADR 1378](adr/1378-typed-clipboard-resource-boundary.md)、[ADR 1379](adr/1379-typed-window-resource-boundary.md)、[ADR 1380](adr/1380-typed-registry-resource-boundary.md)、[ADR 1381](adr/1381-bind-mcp-invocations-to-remote-targets.md) 和[设计提案](execution-context-redesign.md)。 |
-| **Completed** | Execution-context Slice 3–4（ADR 1382–1383）：形成子进程 capability 审计矩阵，明确只有 WorkspaceWrite Shell 接 MXC；`ProcessContainment` 是进程树/生命周期控制，不是文件或网络隔离。MCP 现在分字段配置 `availability`、`catalog` 与 `invocation`；旧 exposure 值按等强规则迁移。静态能力报告不等于动态 runtime status，也不替代 Windows MXC 验收。见[报告](execution-path-capability-audit-2026-10-23.md)、[ADR 1382](adr/1382-execution-path-capability-audit.md) 和 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)。 |
+| **Acceptance Open** | Execution-context Slice 3–4 的实现见 ADR 1382–1383；验收仍开放。Slice 3 需在受支持 Windows 环境验证 MXC/进程能力边界；Slice 4 需验收 `availability`、`catalog`、`invocation` 的 Settings 交互与旧 exposure 配置迁移。静态 capability 报告和自动化用例不替代真实平台/配置验收。见[报告](execution-path-capability-audit-2026-10-23.md)、[ADR 1382](adr/1382-execution-path-capability-audit.md) 和 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）

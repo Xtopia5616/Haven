@@ -112,6 +112,11 @@ export interface SessionPermissionGrant { session_id: string; session_title: str
 export interface ShellAvailability { available: boolean }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
 export interface BuiltinToolManifestListResponse { tools: ToolManifest[] }
+export const RUNTIME_CONFIG_TARGET_VALUES = ['input_pipeline', 'shell', 'context_limits', 'llm_router', 'session_runtime', 'mcp', 'security', 'logging', 'hotkey', 'skills', 'tool_settings', 'memory_inference', 'skills_restart'] as const;
+export type RuntimeConfigTarget = (typeof RUNTIME_CONFIG_TARGET_VALUES)[number];
+export const SETTINGS_RUNTIME_APPLY_RESULT_VALUES = ['applied', 'pending', 'retryable', 'pending_restart'] as const;
+export type SettingsRuntimeApplyResult = (typeof SETTINGS_RUNTIME_APPLY_RESULT_VALUES)[number];
+export interface SettingsRuntimeTargetStatus { target: RuntimeConfigTarget; expectedConfigVersion: number; actualConfigVersion: number; result: SettingsRuntimeApplyResult; reason: string | null }
 export interface AgentCompactionEvent { session_id: string; summary: string; tokens_before: number; tokens_after: number; degraded: boolean; episode_id?: string; event_sequence?: number }
 export interface AgentMediaPlanEvent { session_id: string; step_number: number; run_id: number; request_kind: RequestKind; strategy: MediaInputStrategy; projections: MediaProjection[]; notices: MediaPlanNotice[]; event_sequence?: number }
 export interface AgentNotificationEvent { session_id?: string; title: string; body: string; notification_kind?: AgentNotificationKind; tool_run_kind?: ToolRunKindDto; tool_run_id?: string; tool_run_status?: ToolRunCompletionStatusDto }
@@ -6053,6 +6058,31 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const GET_SETTINGS_RUNTIME_APPLY_STATUS_RESPONSE_SHAPE = { kind: 'array', items: {
+	kind: 'object',
+	fields: {
+		'target': {
+			optional: false,
+			shape: { kind: 'enum', values: RUNTIME_CONFIG_TARGET_VALUES },
+		},
+		'expectedConfigVersion': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'actualConfigVersion': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'result': {
+			optional: false,
+			shape: { kind: 'enum', values: SETTINGS_RUNTIME_APPLY_RESULT_VALUES },
+		},
+		'reason': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		}
+	}
+} } as const;
 export const HOTKEY_CONFLICT_EVENT_PAYLOAD_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -8035,6 +8065,31 @@ export const READ_MCP_RESOURCE_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const REAPPLY_SAVED_SETTINGS_RESPONSE_SHAPE = { kind: 'array', items: {
+	kind: 'object',
+	fields: {
+		'target': {
+			optional: false,
+			shape: { kind: 'enum', values: RUNTIME_CONFIG_TARGET_VALUES },
+		},
+		'expectedConfigVersion': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'actualConfigVersion': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'result': {
+			optional: false,
+			shape: { kind: 'enum', values: SETTINGS_RUNTIME_APPLY_RESULT_VALUES },
+		},
+		'reason': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		}
+	}
+} } as const;
 export const REASSIGN_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RECALL_MEMORY_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
@@ -12198,6 +12253,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_session_for_resume: GET_SESSION_FOR_RESUME_RESPONSE_SHAPE,
 	get_session_lineage: GET_SESSION_LINEAGE_RESPONSE_SHAPE,
 	get_settings: GET_SETTINGS_RESPONSE_SHAPE,
+	get_settings_runtime_apply_status: GET_SETTINGS_RUNTIME_APPLY_STATUS_RESPONSE_SHAPE,
 	interrupt_session: INTERRUPT_SESSION_RESPONSE_SHAPE,
 	is_autostart_enabled: IS_AUTOSTART_ENABLED_RESPONSE_SHAPE,
 	list_builtin_tool_manifests: LIST_BUILTIN_TOOL_MANIFESTS_RESPONSE_SHAPE,
@@ -12220,6 +12276,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	pick_execution_workspace_directory: PICK_EXECUTION_WORKSPACE_DIRECTORY_RESPONSE_SHAPE,
 	read_log_tail: READ_LOG_TAIL_RESPONSE_SHAPE,
 	read_mcp_resource: READ_MCP_RESOURCE_RESPONSE_SHAPE,
+	reapply_saved_settings: REAPPLY_SAVED_SETTINGS_RESPONSE_SHAPE,
 	reassign_staged_chatgpt_plan_credential: REASSIGN_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE,
 	recall_memory: RECALL_MEMORY_RESPONSE_SHAPE,
 	reconnect_mcp_server: RECONNECT_MCP_SERVER_RESPONSE_SHAPE,
@@ -12387,6 +12444,7 @@ export interface TauriCommandMap {
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
 	get_settings: { request: undefined; response: SettingsSnapshot };
+	get_settings_runtime_apply_status: { request: undefined; response: SettingsRuntimeTargetStatus[] };
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
@@ -12409,6 +12467,7 @@ export interface TauriCommandMap {
 	pick_execution_workspace_directory: { request: undefined; response: string | null };
 	read_log_tail: { request: { maxLines?: number | null }; response: LogTail };
 	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpFeatureCallOutcome };
+	reapply_saved_settings: { request: undefined; response: SettingsRuntimeTargetStatus[] };
 	reassign_staged_chatgpt_plan_credential: { request: { credentialRef: string; providerName: string }; response: void };
 	recall_memory: { request: { query: string; kind?: MemoryRecallKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };
 	reconnect_mcp_server: { request: { name: string }; response: void };
@@ -12515,6 +12574,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_session_for_resume: { boundary: 'read', security: "session-scoped persisted projection" },
 	get_session_lineage: { boundary: 'read', security: "parent and direct child sessions of the selected session only" },
 	get_settings: { boundary: 'read', security: "config response redacts credentials and MCP environment values" },
+	get_settings_runtime_apply_status: { boundary: 'read', security: "per-runtime-target config versions and sanitized apply status only" },
 	interrupt_session: { boundary: 'mutate', security: "pauses the selected active session without deleting it" },
 	is_autostart_enabled: { boundary: 'read', security: "state boolean only" },
 	list_builtin_tool_manifests: { boundary: 'read', security: "builtin manifest projection; schemas are dynamic extension data" },
@@ -12537,6 +12597,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	pick_execution_workspace_directory: { boundary: 'read', security: "user-selected local directory candidate only; validates but grants no file access" },
 	read_log_tail: { boundary: 'read', security: "bounded tail; file logging must be enabled" },
 	read_mcp_resource: { boundary: 'execute', security: "explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content" },
+	reapply_saved_settings: { boundary: 'mutate', security: "reapplies only pending live targets from the latest saved config snapshot under the shared config apply gate" },
 	reassign_staged_chatgpt_plan_credential: { boundary: 'mutate', security: "moves one exact staged ChatGPT credential reference to another ChatGPT plan provider name without exposing its secret" },
 	recall_memory: { boundary: 'read', security: "bounded and credential-filtered recall" },
 	reconnect_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native operation reconnects one existing configured server after final version check" },

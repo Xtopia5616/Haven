@@ -464,9 +464,19 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "status enum only",
     },
     CommandContract {
+        name: "get_settings_runtime_apply_status",
+        boundary: CommandBoundary::Read,
+        security: "per-runtime-target config versions and sanitized apply status only",
+    },
+    CommandContract {
         name: "update_settings",
         boundary: CommandBoundary::Mutate,
         security: "rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules",
+    },
+    CommandContract {
+        name: "reapply_saved_settings",
+        boundary: CommandBoundary::Mutate,
+        security: "reapplies only pending live targets from the latest saved config snapshot under the shared config apply gate",
     },
     CommandContract {
         name: "list_session_permissions",

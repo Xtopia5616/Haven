@@ -21,6 +21,17 @@ struct SettingsRuntimeApplyContext {
     change: haven_common::config::ConfigChanged,
 }
 
+#[derive(Clone)]
+struct SettingsRuntimePhaseContext {
+    command_name: &'static str,
+    state: Arc<AppState>,
+    app: tauri::AppHandle,
+    snapshot: Arc<haven_common::config::ConfigSnapshot>,
+    old_hotkey: Arc<String>,
+    prepared_router: Arc<std::sync::Mutex<Option<PreparedRouterRuntime>>>,
+    timing: Arc<SettingsRuntimeApplyTiming>,
+}
+
 struct SettingsRuntimeApplyTiming {
     started: std::time::Instant,
     last: std::sync::Mutex<std::time::Instant>,
@@ -427,19 +438,23 @@ pub async fn get_bootstrap_status(app: tauri::AppHandle) -> Result<BootstrapStat
 /// of live updates and security ahead of MCP config reloads.
 async fn execute_settings_apply_phase(
     phase: SettingsRuntimeApplyPhase,
-    state: Arc<AppState>,
-    app: tauri::AppHandle,
-    snapshot: Arc<haven_common::config::ConfigSnapshot>,
-    old_hotkey: Arc<String>,
-    prepared_router: Arc<std::sync::Mutex<Option<PreparedRouterRuntime>>>,
-    timing: Arc<SettingsRuntimeApplyTiming>,
+    context: SettingsRuntimePhaseContext,
 ) -> SettingsRuntimeApplyOutcome {
+    let SettingsRuntimePhaseContext {
+        command_name,
+        state,
+        app,
+        snapshot,
+        old_hotkey,
+        prepared_router,
+        timing,
+    } = context;
     let config = &snapshot.config;
     match phase {
         SettingsRuntimeApplyPhase::RouterPrepare => match state
             .runtime
             .config_runtime_coordinator
-            .prepare_router_runtime(&state, &snapshot, "update_settings")
+            .prepare_router_runtime(&state, &snapshot, command_name)
         {
             Ok(prepared) => {
                 *prepared_router
@@ -448,9 +463,7 @@ async fn execute_settings_apply_phase(
                 timing.tick("config apply");
                 SettingsRuntimeApplyOutcome::applied()
             }
-            Err(error) => {
-                SettingsRuntimeApplyOutcome::failed_already_rendered("update_settings", error)
-            }
+            Err(error) => SettingsRuntimeApplyOutcome::failed_already_rendered(command_name, error),
         },
         SettingsRuntimeApplyPhase::InputPipeline => {
             state
@@ -465,9 +478,7 @@ async fn execute_settings_apply_phase(
                 .set_media_strategy(config.media.input_strategy)
             {
                 Ok(()) => SettingsRuntimeApplyOutcome::applied(),
-                Err(error) => {
-                    SettingsRuntimeApplyOutcome::failed("update_settings media strategy", error)
-                }
+                Err(error) => SettingsRuntimeApplyOutcome::failed(command_name, error),
             }
         }
         SettingsRuntimeApplyPhase::Shell => {
@@ -479,18 +490,14 @@ async fn execute_settings_apply_phase(
             timing.tick("set_default_shell");
             match result {
                 Ok(_) => SettingsRuntimeApplyOutcome::applied(),
-                Err(error) => SettingsRuntimeApplyOutcome::failed_catalog_rebuild(
-                    "update_settings shell",
-                    error,
-                ),
+                Err(error) => {
+                    SettingsRuntimeApplyOutcome::failed_catalog_rebuild(command_name, error)
+                }
             }
         }
         SettingsRuntimeApplyPhase::Security => {
             if let Err(error) = state.runtime.tools.apply_security(&config.security).await {
-                return SettingsRuntimeApplyOutcome::failed(
-                    "update_settings execution workspace",
-                    error,
-                );
+                return SettingsRuntimeApplyOutcome::failed(command_name, error);
             }
             match state
                 .runtime
@@ -505,10 +512,7 @@ async fn execute_settings_apply_phase(
                     timing.tick("apply_security");
                     SettingsRuntimeApplyOutcome::applied()
                 }
-                Err(error) => SettingsRuntimeApplyOutcome::failed(
-                    "update_settings restore session authorization grants",
-                    error,
-                ),
+                Err(error) => SettingsRuntimeApplyOutcome::failed(command_name, error),
             }
         }
         SettingsRuntimeApplyPhase::McpConfig => {
@@ -550,12 +554,12 @@ async fn execute_settings_apply_phase(
                 Err(RouterRuntimePublishError::ToolCatalog(error)) => {
                     crate::commands::emit_llm_config_changed(&app);
                     SettingsRuntimeApplyOutcome::failed_catalog_rebuild_after_router_publish(
-                        "update_settings router publish",
+                        command_name,
                         error,
                     )
                 }
                 Err(error @ RouterRuntimePublishError::Agent(_)) => {
-                    SettingsRuntimeApplyOutcome::failed("update_settings router publish", error)
+                    SettingsRuntimeApplyOutcome::failed(command_name, error)
                 }
             }
         }
@@ -565,10 +569,7 @@ async fn execute_settings_apply_phase(
                 .input_pipeline
                 .set_ring_buffer_capacity_secs(config.context_limits.input_ring_buffer_secs)
             {
-                return SettingsRuntimeApplyOutcome::failed(
-                    "update_settings input ring buffer",
-                    error,
-                );
+                return SettingsRuntimeApplyOutcome::failed(command_name, error);
             }
             let result = state
                 .runtime
@@ -577,20 +578,16 @@ async fn execute_settings_apply_phase(
                 .await;
             timing.tick("set_context_limits");
             match result {
-                Err(error) => SettingsRuntimeApplyOutcome::failed_catalog_rebuild(
-                    "update_settings context limits",
-                    error,
-                ),
+                Err(error) => {
+                    SettingsRuntimeApplyOutcome::failed_catalog_rebuild(command_name, error)
+                }
                 Ok(_) => match state
                     .runtime
                     .agent
                     .set_context_limits(config.context_limits.clone())
                 {
                     Ok(()) => SettingsRuntimeApplyOutcome::applied(),
-                    Err(error) => SettingsRuntimeApplyOutcome::failed(
-                        "update_settings agent context limits",
-                        error,
-                    ),
+                    Err(error) => SettingsRuntimeApplyOutcome::failed(command_name, error),
                 },
             }
         }
@@ -608,30 +605,21 @@ async fn execute_settings_apply_phase(
                 .agent
                 .set_max_steps_per_run(config.session.max_steps_per_run)
             {
-                return SettingsRuntimeApplyOutcome::failed(
-                    "update_settings max_steps_per_run",
-                    error,
-                );
+                return SettingsRuntimeApplyOutcome::failed(command_name, error);
             }
             if let Err(error) = state
                 .runtime
                 .agent
                 .set_max_steps_per_session(config.session.max_steps_per_session)
             {
-                return SettingsRuntimeApplyOutcome::failed(
-                    "update_settings max_steps_per_session",
-                    error,
-                );
+                return SettingsRuntimeApplyOutcome::failed(command_name, error);
             }
             if let Err(error) = state
                 .runtime
                 .executor
                 .set_max_concurrent(config.session.max_concurrent)
             {
-                return SettingsRuntimeApplyOutcome::failed(
-                    "update_settings max_concurrent",
-                    error,
-                );
+                return SettingsRuntimeApplyOutcome::failed(command_name, error);
             }
             SettingsRuntimeApplyOutcome::applied()
         }
@@ -643,10 +631,9 @@ async fn execute_settings_apply_phase(
                 .await;
             match result {
                 Ok(_) => SettingsRuntimeApplyOutcome::applied(),
-                Err(error) => SettingsRuntimeApplyOutcome::failed_catalog_rebuild(
-                    "update_settings tool settings",
-                    error,
-                ),
+                Err(error) => {
+                    SettingsRuntimeApplyOutcome::failed_catalog_rebuild(command_name, error)
+                }
             }
         }
         SettingsRuntimeApplyPhase::Skills => match state
@@ -657,12 +644,12 @@ async fn execute_settings_apply_phase(
             .await
         {
             Ok(()) => SettingsRuntimeApplyOutcome::applied(),
-            Err(error) => SettingsRuntimeApplyOutcome::failed("update_settings skills", error),
+            Err(error) => SettingsRuntimeApplyOutcome::failed(command_name, error),
         },
         SettingsRuntimeApplyPhase::Logging => {
             match apply_log_level_to_handles(&state.runtime.log_filter_handles, &config.log.level) {
                 Ok(()) => SettingsRuntimeApplyOutcome::applied(),
-                Err(error) => SettingsRuntimeApplyOutcome::failed("update_settings logging", error),
+                Err(error) => SettingsRuntimeApplyOutcome::failed(command_name, error),
             }
         }
         SettingsRuntimeApplyPhase::HotkeyMode => {
@@ -680,10 +667,7 @@ async fn execute_settings_apply_phase(
                 .and_then(|combo| crate::to_tauri_shortcut(&combo))
                 && let Err(error) = app.global_shortcut().unregister(old_shortcut)
             {
-                return SettingsRuntimeApplyOutcome::failed(
-                    "update_settings unregister hotkey",
-                    error,
-                );
+                return SettingsRuntimeApplyOutcome::failed(command_name, error);
             }
             SettingsRuntimeApplyOutcome::applied()
         }
@@ -758,7 +742,7 @@ async fn execute_settings_apply_phase(
                     ),
                     Err(error) => {
                         return SettingsRuntimeApplyOutcome::failed(
-                            "update_settings register hotkey",
+                            command_name,
                             error,
                         );
                     }
@@ -774,11 +758,38 @@ async fn execute_settings_apply_phase(
             },
         ) {
             Ok(()) => SettingsRuntimeApplyOutcome::applied(),
-            Err(error) => {
-                SettingsRuntimeApplyOutcome::warning("update_settings hotkey rebind event", error)
-            }
+            Err(error) => SettingsRuntimeApplyOutcome::warning(command_name, error),
         },
     }
+}
+
+async fn execute_settings_apply_plan(
+    state: Arc<AppState>,
+    app: tauri::AppHandle,
+    snapshot: haven_common::config::ConfigSnapshot,
+    old_hotkey: String,
+    command_name: &'static str,
+    plan: crate::config_runtime::SettingsRuntimeApplyPlan,
+    timing: Arc<SettingsRuntimeApplyTiming>,
+) -> (SettingsRuntimeApplyCoordinator, Result<(), String>) {
+    let snapshot = Arc::new(snapshot);
+    let old_hotkey = Arc::new(old_hotkey);
+    let prepared_router: Arc<std::sync::Mutex<Option<PreparedRouterRuntime>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let apply_context = SettingsRuntimePhaseContext {
+        command_name,
+        state,
+        app,
+        snapshot,
+        old_hotkey,
+        prepared_router,
+        timing,
+    };
+    let mut apply = SettingsRuntimeApplyCoordinator::from_plan(plan);
+    let result = apply
+        .apply(move |phase| execute_settings_apply_phase(phase, apply_context.clone()))
+        .await;
+    (apply, result)
 }
 
 #[tauri::command]
@@ -830,9 +841,12 @@ pub async fn update_settings(
         snapshot,
         change,
     } = update;
-    let mut apply = SettingsRuntimeApplyCoordinator::new(&change, &snapshot, &old_hotkey);
+    let plan = crate::config_runtime::SettingsRuntimeApplyPlan::from_change(
+        &change,
+        &snapshot,
+        &old_hotkey,
+    );
     let (version, live_targets, restart_required_targets, has_router_prepare) = {
-        let plan = apply.plan();
         (
             plan.config_version,
             plan.live_targets.clone(),
@@ -859,32 +873,27 @@ pub async fn update_settings(
     if !has_router_prepare {
         timing.tick("config apply");
     }
+    state
+        .runtime
+        .config_runtime_coordinator
+        .begin_settings_apply(&plan, &old_hotkey);
+    let (apply, result) = execute_settings_apply_plan(
+        state.clone(),
+        app.clone(),
+        snapshot,
+        old_hotkey,
+        "update_settings",
+        plan.clone(),
+        timing.clone(),
+    )
+    .await;
+    let failure = apply.failed_phase().zip(result.as_ref().err().cloned());
+    state
+        .runtime
+        .config_runtime_coordinator
+        .finish_settings_apply(&plan, apply.completed_phases(), failure);
 
-    let snapshot = Arc::new(snapshot);
-    let old_hotkey = Arc::new(old_hotkey);
-    let prepared_router: Arc<std::sync::Mutex<Option<PreparedRouterRuntime>>> =
-        Arc::new(std::sync::Mutex::new(None));
-    let apply_state = state.clone();
-    let apply_app = app.clone();
-    let apply_snapshot = snapshot.clone();
-    let apply_old_hotkey = old_hotkey.clone();
-    let apply_prepared_router = prepared_router.clone();
-    let apply_timing = timing.clone();
-
-    if let Err(error) = apply
-        .apply(move |phase| {
-            execute_settings_apply_phase(
-                phase,
-                apply_state.clone(),
-                apply_app.clone(),
-                apply_snapshot.clone(),
-                apply_old_hotkey.clone(),
-                apply_prepared_router.clone(),
-                apply_timing.clone(),
-            )
-        })
-        .await
-    {
+    if let Err(error) = result {
         let phase = apply.failed_phase_name().unwrap_or("unknown");
         let security_runtime = apply.security_runtime_disposition();
         let security_base_version = state
@@ -903,6 +912,116 @@ pub async fn update_settings(
     timing.tick("hotkey section");
     timing.log_total();
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_settings_runtime_apply_status(
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::config_runtime::SettingsRuntimeTargetStatus>, String> {
+    let state = app.state::<Arc<AppState>>();
+    let _apply_guard = state.runtime.config_runtime_coordinator.lock().await;
+    Ok(state
+        .runtime
+        .config_runtime_coordinator
+        .settings_apply_statuses())
+}
+
+#[tauri::command]
+pub async fn reapply_saved_settings(
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::config_runtime::SettingsRuntimeTargetStatus>, String> {
+    let state = app.state::<Arc<AppState>>();
+    let state = Arc::clone(&*state);
+    let _apply_guard = state.runtime.config_runtime_coordinator.lock().await;
+    let snapshot = state
+        .runtime
+        .config_service
+        .snapshot()
+        .map_err(|error| log_err("reapply_saved_settings", error))?;
+    let Some((plan, old_hotkey)) = state
+        .runtime
+        .config_runtime_coordinator
+        .prepare_settings_reapply(&snapshot)
+    else {
+        return Ok(state
+            .runtime
+            .config_runtime_coordinator
+            .settings_apply_statuses());
+    };
+
+    if plan
+        .live_targets
+        .contains(&crate::config_runtime::RuntimeConfigTarget::Security)
+    {
+        let config = &snapshot.config;
+        for roots in [
+            &config.security.resource_policy.files.write_roots,
+            &config.security.resource_policy.files.path_roots,
+        ] {
+            if let Err(error) = state.runtime.tools.validate_resource_roots(roots) {
+                let error = log_err("reapply_saved_settings resource policy roots", error);
+                state
+                    .runtime
+                    .config_runtime_coordinator
+                    .finish_settings_apply(
+                        &plan,
+                        &[],
+                        Some((SettingsRuntimeApplyPhase::Security, error.clone())),
+                    );
+                return Err(error);
+            }
+        }
+        if let Some(root) = config.security.execution_root.as_deref()
+            && let Err(error) = state.runtime.tools.validate_execution_workspace(root)
+        {
+            let error = log_err("reapply_saved_settings execution workspace", error);
+            state
+                .runtime
+                .config_runtime_coordinator
+                .finish_settings_apply(
+                    &plan,
+                    &[],
+                    Some((SettingsRuntimeApplyPhase::Security, error.clone())),
+                );
+            return Err(error);
+        }
+    }
+
+    let version = snapshot.version;
+    let (apply, result) = execute_settings_apply_plan(
+        state.clone(),
+        app,
+        snapshot,
+        old_hotkey,
+        "reapply_saved_settings",
+        plan.clone(),
+        Arc::new(SettingsRuntimeApplyTiming::new()),
+    )
+    .await;
+    let failure = apply.failed_phase().zip(result.as_ref().err().cloned());
+    state
+        .runtime
+        .config_runtime_coordinator
+        .finish_settings_apply(&plan, apply.completed_phases(), failure);
+    if let Err(error) = result {
+        let phase = apply.failed_phase_name().unwrap_or("unknown");
+        let security_runtime = apply.security_runtime_disposition();
+        let security_base_version = state
+            .last_fully_applied_security_config_version
+            .load(std::sync::atomic::Ordering::Acquire);
+        let error = crate::config_runtime::partial_config_apply_error(
+            error,
+            version,
+            phase,
+            security_runtime,
+            security_base_version,
+        );
+        return Err(log_err("reapply_saved_settings", error));
+    }
+    Ok(state
+        .runtime
+        .config_runtime_coordinator
+        .settings_apply_statuses())
 }
 
 #[derive(Debug, Clone, Serialize)]

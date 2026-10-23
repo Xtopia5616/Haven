@@ -471,6 +471,52 @@ describe('SettingsView diagnostics export', () => {
 		unsubscribe();
 	});
 
+	it('reapplies pending runtime targets from the saved configuration', async () => {
+		invoke.mockClear();
+		const settings = createSettingsFixture();
+		const pending = [
+			{
+				target: 'llm_router',
+				expectedConfigVersion: 4,
+				actualConfigVersion: 3,
+				result: 'retryable',
+				reason: 'Router preparation failed',
+			},
+		];
+		const applied = [
+			{
+				target: 'llm_router',
+				expectedConfigVersion: 4,
+				actualConfigVersion: 4,
+				result: 'applied',
+				reason: null,
+			},
+		];
+		invoke.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'get_settings':
+					return settings;
+				case 'get_settings_runtime_apply_status':
+					return pending;
+				case 'reapply_saved_settings':
+					return applied;
+				case 'get_api_key_status':
+					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
+				case 'is_autostart_enabled':
+					return false;
+				default:
+					return [];
+			}
+		});
+
+		render(SettingsView);
+		const retry = await screen.findByRole('button', { name: '重试已保存配置' });
+		await fireEvent.click(retry);
+
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('reapply_saved_settings'));
+		await waitFor(() => expect(screen.queryByText('模型与媒体路由')).toBeNull());
+	});
+
 	it('preserves backend settings that are outside the visible category during a full save', async () => {
 		invoke.mockClear();
 		const settings = createSettingsFixture();

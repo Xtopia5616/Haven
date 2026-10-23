@@ -52,6 +52,7 @@
 | `get_session_for_resume` | read | session-scoped persisted projection |
 | `get_session_lineage` | read | parent and direct child sessions of the selected session only |
 | `get_settings` | read | config response redacts credentials and MCP environment values |
+| `get_settings_runtime_apply_status` | read | per-runtime-target config versions and sanitized apply status only |
 | `interrupt_session` | mutate | pauses the selected active session without deleting it |
 | `is_autostart_enabled` | read | state boolean only |
 | `list_builtin_tool_manifests` | read | builtin manifest projection; schemas are dynamic extension data |
@@ -74,6 +75,7 @@
 | `pick_execution_workspace_directory` | read | user-selected local directory candidate only; validates but grants no file access |
 | `read_log_tail` | read | bounded tail; file logging must be enabled |
 | `read_mcp_resource` | execute | explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content |
+| `reapply_saved_settings` | mutate | reapplies only pending live targets from the latest saved config snapshot under the shared config apply gate |
 | `reassign_staged_chatgpt_plan_credential` | mutate | moves one exact staged ChatGPT credential reference to another ChatGPT plan provider name without exposing its secret |
 | `recall_memory` | read | bounded and credential-filtered recall |
 | `reconnect_mcp_server` | execute | AuthorizationPort; typed native operation reconnects one existing configured server after final version check |

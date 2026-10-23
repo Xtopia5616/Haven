@@ -130,8 +130,19 @@ snapshot 每次从当前 `PlatformRuntime`、Router config 与 MCP index 重建�
 client；model edit 的完整提交和应用也由它持有。`SettingsRuntimeApplyCoordinator` 从共享 target plan 生成
 Settings 有序阶段，驱动命令提供的执行回调，并唯一记录当前 phase、snapshot version、Router published、
 restart-required targets 与失败/警告。Security、MCP、context、logging、hotkey 等实际副作用仍由既有 owner
-执行；Settings edit/no-op 仍由命令按同一次 `ConfigService::edit` 保留旧 hotkey、snapshot 和 change。该
-coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。审计确认无第二份配置 owner、target mapping 或 Settings payload builder；durable edit 后不增加 compensation/rollback 或显式 retry/restart；失败保留磁盘配置并报告部分 apply failure，重启从磁盘初始化。失败至重启前普通会话和工具调用继续使用各自 runtime owner 当前状态，不等待重启，也不保证所有 consumer 处于同一配置 revision；turn catalog 保持不可变 snapshot，authorization 和执行仍由 live owner 决定（ADR 0372）。`SettingsView` 唯一的 `update_settings` payload builder 使用生成 request `SettingsUpdatePayload`（SettingsPatch DTO）；读取响应使用 `SettingsPayload`（SettingsSnapshot DTO），IPC script 校验 Rust 参数和 UI 直接调用 owner，而完整字段 schema 仍由 Rust 所有（ADR 0372、1298）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 若修改与 Settings/model 相同的运行时配置域，必须进入统一串行配置边界；不相关域仍由原 owner 负责。实现跟进由组合根创建共享 gate，并经窄 AdminContext 注入 Tools AdminServices；gate 覆盖 durable edit 与 live apply/rebuild，Tauri wrapper 不重复 catalog rebuild。MCP Tauri 管理入口将写入委托给 AdminServices；
+执行；Settings edit/no-op 仍由命令按同一次 `ConfigService::edit` 保留旧 hotkey、snapshot 和 change。ADR 1384
+增加按目标记录的进程内期望/最后完整应用版本和结果；显式 retry 在同一 gate 中读取最新已保存快照，只执行
+失败或尚未执行的目标，并跳过已完成 phase。Restart-only target 显示待重启状态，不由 retry 执行。该
+coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。Durable edit 后 apply
+失败仍保留磁盘配置并报告部分 apply failure；重启时 runtime 从磁盘初始化。失败至重启前普通会话和工具调用
+继续使用各自 runtime owner 当前状态，不等待重启，也不保证所有 consumer 处于同一配置 revision；turn catalog
+保持不可变 snapshot，authorization 和执行仍由 live owner 决定（ADR 0372、1384）。`SettingsView` 唯一的
+`update_settings` payload builder 使用生成 request `SettingsUpdatePayload`（SettingsPatch DTO）；读取响应使用
+`SettingsPayload`（SettingsSnapshot DTO），IPC script 校验 Rust 参数和 UI 直接调用 owner，而完整字段 schema
+仍由 Rust 所有（ADR 0372、1298）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 若修改与 Settings/model
+相同的运行时配置域，必须进入统一串行配置边界；不相关域仍由原 owner 负责。实现跟进由组合根创建共享 gate，
+并经窄 AdminContext 注入 Tools AdminServices；gate 覆盖 durable edit 与 live apply/rebuild，Tauri wrapper 不重复
+catalog rebuild。MCP Tauri 管理入口将写入委托给 AdminServices；
 add/update/toggle/remove 的持久化、live 连接和 catalog rebuild 均在 AdminServices 的共享 gate 内完成。renderer 的
 refresh/reconnect 也先经 `AuthorizationEngine`；typed native request 不进入模型可见 MCP schema。Refresh 授权后仅在
 `AdminServices` 内按共享配置 gate 复核版本与完整 diff，reconnect 复核单个已启用 server 与 live client，再执行对应

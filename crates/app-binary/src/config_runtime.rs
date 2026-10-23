@@ -22,11 +22,17 @@ use tracing_subscriber::reload;
 #[derive(Default)]
 pub(crate) struct RuntimeConfigCoordinator {
     apply_gate: Arc<tokio::sync::Mutex<()>>,
+    settings_apply_state: Arc<std::sync::Mutex<SettingsRuntimeApplyState>>,
 }
 
 impl RuntimeConfigCoordinator {
     pub(crate) fn with_shared_gate(apply_gate: Arc<tokio::sync::Mutex<()>>) -> Self {
-        Self { apply_gate }
+        Self {
+            apply_gate,
+            settings_apply_state: Arc::new(std::sync::Mutex::new(
+                SettingsRuntimeApplyState::default(),
+            )),
+        }
     }
 
     pub(crate) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
@@ -79,12 +85,65 @@ impl RuntimeConfigCoordinator {
             RuntimeConfigApplyPlan::from_change(change).contains(RuntimeConfigTarget::LlmRouter)
         });
         if should_apply_router {
-            apply_router(update.snapshot)
-                .await
-                .map_err(partial_router_config_apply_error)
-                .map_err(|error| log_err(ctx, error))?;
+            let snapshot = update.snapshot;
+            let change = update
+                .change
+                .expect("router apply requires a config change");
+            let plan = SettingsRuntimeApplyPlan::from_change(&change, &snapshot, "");
+            self.begin_settings_apply(&plan, "");
+            match apply_router(snapshot).await {
+                Ok(()) => self.finish_settings_apply(&plan, plan.phases(), None),
+                Err(error) => {
+                    let reason = partial_router_config_apply_error(&error);
+                    self.finish_settings_apply(
+                        &plan,
+                        &[],
+                        Some((SettingsRuntimeApplyPhase::RouterPrepare, reason.clone())),
+                    );
+                    return Err(log_err(ctx, reason));
+                }
+            }
         }
         Ok(update.value)
+    }
+
+    pub(crate) fn begin_settings_apply(&self, plan: &SettingsRuntimeApplyPlan, old_hotkey: &str) {
+        self.settings_apply_state
+            .lock()
+            .expect("settings apply state mutex poisoned")
+            .begin(plan, old_hotkey);
+    }
+
+    pub(crate) fn finish_settings_apply(
+        &self,
+        plan: &SettingsRuntimeApplyPlan,
+        completed_phases: &[SettingsRuntimeApplyPhase],
+        failure: Option<(SettingsRuntimeApplyPhase, String)>,
+    ) {
+        self.settings_apply_state
+            .lock()
+            .expect("settings apply state mutex poisoned")
+            .finish(plan, completed_phases, failure);
+    }
+
+    pub(crate) fn settings_apply_statuses(&self) -> Vec<SettingsRuntimeTargetStatus> {
+        self.settings_apply_state
+            .lock()
+            .expect("settings apply state mutex poisoned")
+            .statuses()
+    }
+
+    /// Build a retry plan from the latest durable snapshot. Pending phase sets
+    /// were captured from failed saves so retries do not repeat targets that
+    /// already completed.
+    pub(crate) fn prepare_settings_reapply(
+        &self,
+        snapshot: &ConfigSnapshot,
+    ) -> Option<(SettingsRuntimeApplyPlan, String)> {
+        self.settings_apply_state
+            .lock()
+            .expect("settings apply state mutex poisoned")
+            .prepare_reapply(snapshot)
     }
 
     /// Prepare router and media clients from the exact committed snapshot.
@@ -218,12 +277,14 @@ pub(crate) fn partial_config_apply_error(
     security_base_version: ConfigVersion,
 ) -> String {
     format!(
-        "部分 apply 失败：配置已写入（config_version={config_version}; phase={phase}; security_runtime={security_runtime}; security_base_version={security_base_version}）；重启应用后会从配置重新初始化。{error}"
+        "部分 apply 失败：配置已写入（config_version={config_version}; phase={phase}; security_runtime={security_runtime}; security_base_version={security_base_version}）；可在设置页重试未应用目标；重启应用后会从配置重新初始化。{error}"
     )
 }
 
 fn partial_router_config_apply_error(error: impl std::fmt::Display) -> String {
-    format!("部分 apply 失败：配置已写入；重启应用后会从配置重新初始化。{error}")
+    format!(
+        "部分 apply 失败：配置已写入；可在设置页重试未应用目标；重启应用后会从配置重新初始化。{error}"
+    )
 }
 
 /// Complete router and media runtime derived from one immutable snapshot.
@@ -255,8 +316,9 @@ pub(crate) fn apply_log_level_to_handles(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RuntimeConfigTarget {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeConfigTarget {
     InputPipeline,
     Shell,
     ContextLimits,
@@ -269,6 +331,245 @@ pub(crate) enum RuntimeConfigTarget {
     Skills,
     ToolSettings,
     MemoryInference,
+    SkillsRestart,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsRuntimeTargetStatus {
+    pub target: RuntimeConfigTarget,
+    pub expected_config_version: u64,
+    /// Last fully applied process-local config version; ConfigService starts at 0.
+    pub actual_config_version: u64,
+    pub result: SettingsRuntimeApplyResult,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsRuntimeApplyResult {
+    Applied,
+    Pending,
+    Retryable,
+    PendingRestart,
+}
+
+#[derive(Default)]
+struct SettingsRuntimeApplyState {
+    statuses: std::collections::HashMap<RuntimeConfigTarget, SettingsRuntimeTargetStatus>,
+    pending: std::collections::HashMap<RuntimeConfigTarget, PendingSettingsTarget>,
+}
+
+#[derive(Clone)]
+struct PendingSettingsTarget {
+    phases: Vec<SettingsRuntimeApplyPhase>,
+    old_hotkey: String,
+}
+
+const RUNTIME_CONFIG_TARGET_ORDER: [RuntimeConfigTarget; 13] = [
+    RuntimeConfigTarget::InputPipeline,
+    RuntimeConfigTarget::Shell,
+    RuntimeConfigTarget::ContextLimits,
+    RuntimeConfigTarget::LlmRouter,
+    RuntimeConfigTarget::SessionRuntime,
+    RuntimeConfigTarget::Mcp,
+    RuntimeConfigTarget::Security,
+    RuntimeConfigTarget::Logging,
+    RuntimeConfigTarget::Hotkey,
+    RuntimeConfigTarget::Skills,
+    RuntimeConfigTarget::ToolSettings,
+    RuntimeConfigTarget::MemoryInference,
+    RuntimeConfigTarget::SkillsRestart,
+];
+
+impl SettingsRuntimeApplyState {
+    fn begin(&mut self, plan: &SettingsRuntimeApplyPlan, old_hotkey: &str) {
+        for target in &plan.live_targets {
+            let phases = plan
+                .phases()
+                .iter()
+                .copied()
+                .filter(|phase| phase.target() == *target)
+                .collect::<Vec<_>>();
+            let actual = self.actual_config_version(*target);
+            self.set_status(
+                *target,
+                plan.config_version,
+                SettingsRuntimeApplyResult::Pending,
+                actual,
+                None,
+            );
+            if phases.is_empty() {
+                self.pending.remove(target);
+                self.set_status(
+                    *target,
+                    plan.config_version,
+                    SettingsRuntimeApplyResult::Applied,
+                    plan.config_version,
+                    None,
+                );
+            } else {
+                self.pending.insert(
+                    *target,
+                    PendingSettingsTarget {
+                        phases,
+                        old_hotkey: old_hotkey.to_owned(),
+                    },
+                );
+            }
+        }
+        for target in &plan.restart_required_targets {
+            self.pending.remove(target);
+            let actual = self.actual_config_version(*target);
+            self.set_status(
+                *target,
+                plan.config_version,
+                SettingsRuntimeApplyResult::PendingRestart,
+                actual,
+                None,
+            );
+        }
+    }
+
+    fn finish(
+        &mut self,
+        plan: &SettingsRuntimeApplyPlan,
+        completed_phases: &[SettingsRuntimeApplyPhase],
+        failure: Option<(SettingsRuntimeApplyPhase, String)>,
+    ) {
+        let failed_target = failure.as_ref().map(|(phase, _)| phase.target());
+        for target in &plan.live_targets {
+            let Some(pending) = self.pending.get_mut(target) else {
+                continue;
+            };
+            pending
+                .phases
+                .retain(|phase| !completed_phases.contains(phase));
+            let remaining = !pending.phases.is_empty();
+            if !remaining {
+                self.pending.remove(target);
+                self.set_status(
+                    *target,
+                    plan.config_version,
+                    SettingsRuntimeApplyResult::Applied,
+                    plan.config_version,
+                    None,
+                );
+            } else if failed_target == Some(*target) {
+                let reason = failure
+                    .as_ref()
+                    .map(|(_, reason)| haven_common::error::sanitize_error_text(reason));
+                let actual = self.actual_config_version(*target);
+                self.set_status(
+                    *target,
+                    plan.config_version,
+                    SettingsRuntimeApplyResult::Retryable,
+                    actual,
+                    reason,
+                );
+            } else {
+                let actual = self.actual_config_version(*target);
+                self.set_status(
+                    *target,
+                    plan.config_version,
+                    SettingsRuntimeApplyResult::Pending,
+                    actual,
+                    None,
+                );
+            }
+        }
+    }
+
+    fn prepare_reapply(
+        &mut self,
+        snapshot: &ConfigSnapshot,
+    ) -> Option<(SettingsRuntimeApplyPlan, String)> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let targets = RUNTIME_CONFIG_TARGET_ORDER
+            .into_iter()
+            .filter(|target| self.pending.contains_key(target))
+            .collect::<Vec<_>>();
+        for target in &targets {
+            let actual = self.actual_config_version(*target);
+            self.set_status(
+                *target,
+                snapshot.version,
+                SettingsRuntimeApplyResult::Pending,
+                actual,
+                None,
+            );
+        }
+
+        let mut phases = Vec::new();
+        let mut old_hotkey = None;
+        for target in &targets {
+            if let Some(pending) = self.pending.get(target) {
+                phases.extend(pending.phases.iter().copied());
+                if *target == RuntimeConfigTarget::Hotkey {
+                    old_hotkey = Some(pending.old_hotkey.clone());
+                }
+            }
+        }
+        if targets.contains(&RuntimeConfigTarget::LlmRouter)
+            && phases.contains(&SettingsRuntimeApplyPhase::RouterPublish)
+            && !phases.contains(&SettingsRuntimeApplyPhase::RouterPrepare)
+        {
+            phases.push(SettingsRuntimeApplyPhase::RouterPrepare);
+        }
+        phases.sort_by_key(|phase| {
+            SETTINGS_RUNTIME_APPLY_PHASE_ORDER
+                .iter()
+                .position(|candidate| candidate == phase)
+                .unwrap_or(usize::MAX)
+        });
+        phases.dedup();
+
+        Some((
+            SettingsRuntimeApplyPlan {
+                config_version: snapshot.version,
+                live_targets: targets,
+                restart_required_targets: Vec::new(),
+                phases,
+            },
+            old_hotkey.unwrap_or_else(|| snapshot.config.hotkey.key_binding.clone()),
+        ))
+    }
+
+    fn statuses(&self) -> Vec<SettingsRuntimeTargetStatus> {
+        RUNTIME_CONFIG_TARGET_ORDER
+            .iter()
+            .filter_map(|target| self.statuses.get(target).cloned())
+            .collect()
+    }
+
+    fn set_status(
+        &mut self,
+        target: RuntimeConfigTarget,
+        expected_config_version: u64,
+        result: SettingsRuntimeApplyResult,
+        actual_config_version: u64,
+        reason: Option<String>,
+    ) {
+        self.statuses.insert(
+            target,
+            SettingsRuntimeTargetStatus {
+                target,
+                expected_config_version,
+                actual_config_version,
+                result,
+                reason,
+            },
+        );
+    }
+
+    fn actual_config_version(&self, target: RuntimeConfigTarget) -> u64 {
+        self.statuses
+            .get(&target)
+            .map(|status| status.actual_config_version)
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,7 +606,7 @@ impl RuntimeConfigApplyPlan {
                 }
                 ConfigDomain::Log => plan.push_live(RuntimeConfigTarget::Logging),
                 ConfigDomain::Skills => plan.push_live(RuntimeConfigTarget::Skills),
-                ConfigDomain::SkillsExec => plan.push_restart(RuntimeConfigTarget::Skills),
+                ConfigDomain::SkillsExec => plan.push_restart(RuntimeConfigTarget::SkillsRestart),
                 ConfigDomain::Memory => plan.push_live(RuntimeConfigTarget::MemoryInference),
                 ConfigDomain::Notification => {
                     // Notification settings are read from the current
@@ -339,7 +640,7 @@ impl RuntimeConfigApplyPlan {
 
 /// A named point in the settings runtime-apply sequence. These phases describe
 /// ordering and observability only; they do not imply rollback boundaries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SettingsRuntimeApplyPhase {
     RouterPrepare,
     InputPipeline,
@@ -618,24 +919,47 @@ pub(crate) struct SettingsRuntimeApplyCoordinator {
     phase: Option<SettingsRuntimeApplyPhase>,
     failure_kind: Option<SettingsRuntimeApplyFailureKind>,
     router_published: bool,
+    completed_phases: Vec<SettingsRuntimeApplyPhase>,
 }
 
 impl SettingsRuntimeApplyCoordinator {
+    #[cfg(test)]
     pub(crate) fn new(change: &ConfigChanged, snapshot: &ConfigSnapshot, old_hotkey: &str) -> Self {
         Self {
             plan: SettingsRuntimeApplyPlan::from_change(change, snapshot, old_hotkey),
             phase: None,
             failure_kind: None,
             router_published: false,
+            completed_phases: Vec::new(),
         }
     }
 
+    pub(crate) fn from_plan(plan: SettingsRuntimeApplyPlan) -> Self {
+        Self {
+            plan,
+            phase: None,
+            failure_kind: None,
+            router_published: false,
+            completed_phases: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn plan(&self) -> &SettingsRuntimeApplyPlan {
         &self.plan
     }
 
     pub(crate) fn failed_phase_name(&self) -> Option<&'static str> {
         self.phase.map(SettingsRuntimeApplyPhase::as_str)
+    }
+
+    pub(crate) fn failed_phase(&self) -> Option<SettingsRuntimeApplyPhase> {
+        self.phase
+            .filter(|phase| !self.completed_phases.contains(phase))
+    }
+
+    pub(crate) fn completed_phases(&self) -> &[SettingsRuntimeApplyPhase] {
+        &self.completed_phases
     }
 
     /// State of the security consumer after the most recent failed phase.
@@ -678,6 +1002,7 @@ impl SettingsRuntimeApplyCoordinator {
             self.failure_kind = None;
             match execute(phase).await {
                 SettingsRuntimeApplyOutcome::Applied => {
+                    self.completed_phases.push(phase);
                     if phase == SettingsRuntimeApplyPhase::RouterPublish {
                         self.router_published = true;
                     }
@@ -702,6 +1027,7 @@ impl SettingsRuntimeApplyCoordinator {
                 }
                 SettingsRuntimeApplyOutcome::Warning { command, error } => {
                     self.observation(phase).record(command, &error, None);
+                    self.completed_phases.push(phase);
                 }
             }
         }
@@ -754,6 +1080,7 @@ mod tests {
         let error = partial_config_apply_error("skills refresh failed", 9, "skills", "applied", 9);
         assert!(error.starts_with("部分 apply 失败：配置已写入"));
         assert!(error.contains("config_version=9; phase=skills; security_runtime=applied"));
+        assert!(error.contains("可在设置页重试未应用目标"));
         assert!(error.contains("重启应用后会从配置重新初始化"));
         assert!(error.ends_with("skills refresh failed"));
     }
@@ -842,7 +1169,10 @@ mod tests {
                 RuntimeConfigTarget::Skills,
             ]
         );
-        assert_eq!(plan.restart_required, vec![RuntimeConfigTarget::Skills]);
+        assert_eq!(
+            plan.restart_required,
+            vec![RuntimeConfigTarget::SkillsRestart]
+        );
         assert!(plan.contains(RuntimeConfigTarget::LlmRouter));
         assert!(plan.contains(RuntimeConfigTarget::Skills));
     }
@@ -863,6 +1193,101 @@ mod tests {
             ]
         );
         assert!(plan.restart_required.is_empty());
+    }
+
+    #[test]
+    fn reapply_status_tracks_target_versions_and_skips_completed_phases() {
+        let first_snapshot = ConfigSnapshot {
+            version: 9,
+            config: AppConfig::default(),
+        };
+        let change = ConfigChanged {
+            version: first_snapshot.version,
+            domains: vec![
+                ConfigDomain::Media,
+                ConfigDomain::DefaultShell,
+                ConfigDomain::Security,
+                ConfigDomain::Llm,
+            ],
+        };
+        let plan = SettingsRuntimeApplyPlan::from_change(&change, &first_snapshot, "");
+        let mut state = SettingsRuntimeApplyState::default();
+        state.begin(&plan, "");
+        state.finish(
+            &plan,
+            &[
+                SettingsRuntimeApplyPhase::RouterPrepare,
+                SettingsRuntimeApplyPhase::InputPipeline,
+            ],
+            Some((
+                SettingsRuntimeApplyPhase::Shell,
+                "terminal runtime unavailable".to_owned(),
+            )),
+        );
+
+        let input_status = state
+            .statuses()
+            .into_iter()
+            .find(|status| status.target == RuntimeConfigTarget::InputPipeline)
+            .unwrap();
+        assert_eq!(input_status.result, SettingsRuntimeApplyResult::Applied);
+        assert_eq!(input_status.expected_config_version, 9);
+        assert_eq!(input_status.actual_config_version, 9);
+
+        let latest_snapshot = ConfigSnapshot {
+            version: 10,
+            config: AppConfig::default(),
+        };
+        let (retry_plan, _) = state.prepare_reapply(&latest_snapshot).unwrap();
+        assert_eq!(retry_plan.config_version, 10);
+        assert_eq!(
+            retry_plan.phases(),
+            &[
+                SettingsRuntimeApplyPhase::RouterPrepare,
+                SettingsRuntimeApplyPhase::Shell,
+                SettingsRuntimeApplyPhase::Security,
+                SettingsRuntimeApplyPhase::RouterPublish,
+            ]
+        );
+        assert!(
+            !retry_plan
+                .phases()
+                .contains(&SettingsRuntimeApplyPhase::InputPipeline)
+        );
+        let shell_status = state
+            .statuses()
+            .into_iter()
+            .find(|status| status.target == RuntimeConfigTarget::Shell)
+            .unwrap();
+        assert_eq!(shell_status.result, SettingsRuntimeApplyResult::Pending);
+        assert_eq!(shell_status.expected_config_version, 10);
+        assert_eq!(shell_status.actual_config_version, 0);
+        state.finish(&retry_plan, retry_plan.phases(), None);
+        let statuses = state.statuses();
+        assert!(
+            statuses
+                .iter()
+                .filter(|status| {
+                    [
+                        RuntimeConfigTarget::LlmRouter,
+                        RuntimeConfigTarget::Shell,
+                        RuntimeConfigTarget::Security,
+                    ]
+                    .contains(&status.target)
+                })
+                .all(|status| {
+                    status.result == SettingsRuntimeApplyResult::Applied
+                        && status.actual_config_version == 10
+                })
+        );
+        assert_eq!(
+            statuses
+                .iter()
+                .find(|status| status.target == RuntimeConfigTarget::InputPipeline)
+                .unwrap()
+                .actual_config_version,
+            9
+        );
     }
 
     #[test]
@@ -1003,7 +1428,7 @@ mod tests {
         );
         assert_eq!(
             plan.restart_required_targets,
-            vec![RuntimeConfigTarget::Skills]
+            vec![RuntimeConfigTarget::SkillsRestart]
         );
 
         let unchanged_hotkey = settings_snapshot(18, "Ctrl+Alt+O");
@@ -1041,7 +1466,7 @@ mod tests {
         assert!(plan.live_targets.is_empty());
         assert_eq!(
             plan.restart_required_targets,
-            vec![RuntimeConfigTarget::Skills]
+            vec![RuntimeConfigTarget::SkillsRestart]
         );
         assert!(plan.phases().is_empty());
     }
@@ -1058,7 +1483,7 @@ mod tests {
         assert_eq!(plan.live_targets, vec![RuntimeConfigTarget::Skills]);
         assert_eq!(
             plan.restart_required_targets,
-            vec![RuntimeConfigTarget::Skills]
+            vec![RuntimeConfigTarget::SkillsRestart]
         );
         assert_eq!(plan.phases(), &[SettingsRuntimeApplyPhase::Skills]);
     }
@@ -1094,7 +1519,7 @@ mod tests {
         assert!(successful_metadata.router_published);
         assert_eq!(
             successful_metadata.restart_required_targets,
-            vec![RuntimeConfigTarget::Skills]
+            vec![RuntimeConfigTarget::SkillsRestart]
         );
 
         for (failed_index, failed_phase) in expected_phases.iter().copied().enumerate() {
@@ -1155,7 +1580,7 @@ mod tests {
             );
             assert_eq!(
                 failure.restart_required_targets,
-                vec![RuntimeConfigTarget::Skills]
+                vec![RuntimeConfigTarget::SkillsRestart]
             );
         }
     }
@@ -1245,7 +1670,7 @@ mod tests {
         assert!(!failure.router_published);
         assert_eq!(
             failure.restart_required_targets,
-            vec![RuntimeConfigTarget::Skills]
+            vec![RuntimeConfigTarget::SkillsRestart]
         );
     }
 
@@ -1352,7 +1777,7 @@ mod tests {
         assert!(logs.contains("failure_kind=\"runtime_owner\""));
         assert!(logs.contains("router_published=true"));
         assert!(logs.contains("restart_required=true"));
-        assert!(logs.contains("restart_required_targets=[Skills]"));
+        assert!(logs.contains("restart_required_targets=[SkillsRestart]"));
         assert!(!logs.contains("never-log-this-secret"));
     }
 
@@ -1368,7 +1793,7 @@ mod tests {
         assert_eq!(plan.config_version, snapshot.version);
         assert_eq!(
             plan.restart_required_targets,
-            vec![RuntimeConfigTarget::Skills]
+            vec![RuntimeConfigTarget::SkillsRestart]
         );
         assert_eq!(
             plan.live_targets,
@@ -1495,6 +1920,106 @@ mod tests {
         assert_eq!(retry_result, Ok(()));
         assert_eq!(apply_attempts.load(Ordering::SeqCst), 1);
         assert_eq!(service.snapshot().unwrap().version, 1);
+        let latest_snapshot = service.snapshot().unwrap();
+        let (retry_plan, _) = coordinator
+            .prepare_settings_reapply(&latest_snapshot)
+            .expect("failed model apply remains explicitly retryable");
+        assert_eq!(
+            retry_plan.phases(),
+            &[
+                SettingsRuntimeApplyPhase::RouterPrepare,
+                SettingsRuntimeApplyPhase::RouterPublish,
+            ]
+        );
+        coordinator.finish_settings_apply(&retry_plan, retry_plan.phases(), None);
+        let router_status = coordinator
+            .settings_apply_statuses()
+            .into_iter()
+            .find(|status| status.target == RuntimeConfigTarget::LlmRouter)
+            .unwrap();
+        assert_eq!(router_status.result, SettingsRuntimeApplyResult::Applied);
+        assert_eq!(router_status.expected_config_version, 1);
+        assert_eq!(router_status.actual_config_version, 1);
+    }
+
+    #[tokio::test]
+    async fn explicit_reapply_serializes_with_newer_model_edits() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let service = Arc::new(test_config_service(loader));
+        let coordinator = Arc::new(RuntimeConfigCoordinator::default());
+        let failed = coordinator
+            .edit_model_and_apply_with(
+                &service,
+                "model_test",
+                |config| {
+                    config.llm.models.push(ModelConfig {
+                        id: "saved-model".into(),
+                        ..Default::default()
+                    });
+                    Ok(())
+                },
+                |_| async { Err("router preparation failed".to_owned()) },
+            )
+            .await;
+        assert!(failed.is_err());
+
+        let retry_coordinator = coordinator.clone();
+        let retry_service = service.clone();
+        let (retry_started_tx, retry_started_rx) = tokio::sync::oneshot::channel();
+        let (release_retry_tx, release_retry_rx) = tokio::sync::oneshot::channel();
+        let retry = tokio::spawn(async move {
+            let _guard = retry_coordinator.lock().await;
+            let snapshot = retry_service.snapshot().unwrap();
+            let (plan, _) = retry_coordinator
+                .prepare_settings_reapply(&snapshot)
+                .expect("failed router target remains retryable");
+            retry_started_tx.send(snapshot.version).unwrap();
+            release_retry_rx.await.unwrap();
+            retry_coordinator.finish_settings_apply(&plan, plan.phases(), None);
+        });
+        assert_eq!(retry_started_rx.await.unwrap(), 1);
+
+        let edit_coordinator = coordinator.clone();
+        let edit_service = service.clone();
+        let (edit_started_tx, mut edit_started_rx) = tokio::sync::oneshot::channel();
+        let edit = tokio::spawn(async move {
+            edit_coordinator
+                .edit_model_and_apply_with(
+                    &edit_service,
+                    "model_test",
+                    move |config| {
+                        edit_started_tx.send(()).unwrap();
+                        config.llm.models.push(ModelConfig {
+                            id: "newer-model".into(),
+                            ..Default::default()
+                        });
+                        Ok(())
+                    },
+                    |snapshot| async move {
+                        assert_eq!(snapshot.version, 2);
+                        Ok(())
+                    },
+                )
+                .await
+                .unwrap();
+        });
+        tokio::task::yield_now().await;
+        assert!(edit_started_rx.try_recv().is_err());
+
+        release_retry_tx.send(()).unwrap();
+        retry.await.unwrap();
+        edit.await.unwrap();
+        let status = coordinator
+            .settings_apply_statuses()
+            .into_iter()
+            .find(|status| status.target == RuntimeConfigTarget::LlmRouter)
+            .unwrap();
+        assert_eq!(status.expected_config_version, 2);
+        assert_eq!(status.actual_config_version, 2);
+        assert_eq!(status.result, SettingsRuntimeApplyResult::Applied);
     }
 
     struct ActiveModelOperation(Arc<std::sync::atomic::AtomicUsize>);

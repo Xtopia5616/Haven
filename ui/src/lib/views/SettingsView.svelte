@@ -36,6 +36,7 @@
 		discardStagedCredentials,
 		enableAutostart,
 		isAutostartEnabled,
+		getSettingsRuntimeApplyStatus,
 		listSessionPermissions,
 		loadSettings,
 		pickExecutionWorkspaceDirectory as pickExecutionWorkspaceDirectoryCommand,
@@ -43,6 +44,7 @@
 		resetSessionPermissions as resetSessionPermissionsCommand,
 		revokePermission as revokePermissionCommand,
 		revokeSessionPermission as revokeSessionPermissionCommand,
+		reapplySavedSettings,
 		runMemoryMaintenance,
 		setHotkeyCaptureActive as setHotkeyCaptureActiveCommand,
 		stageIndependentSearchCredential,
@@ -52,7 +54,10 @@
 	} from '$lib/settingsCommands.ts';
 	import { checkShellAvailable, readApiKeyStatus } from '$lib/diagnosticsCommands.ts';
 	import type { ApiKeyStatus } from '$lib/contracts/diagnostics.ts';
-	import { SHELL_CHOICE_INPUT_VALUES } from '$lib/contracts/generatedCommands.ts';
+	import {
+		SHELL_CHOICE_INPUT_VALUES,
+		type TauriCommandResponse,
+	} from '$lib/contracts/generatedCommands.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import type { DiscoveredModelMetadataFill } from '$lib/modelDiscovery.ts';
 	import SettingsBehavior from './SettingsBehavior.svelte';
@@ -435,6 +440,14 @@
 	let leaveSaving = $state(false);
 	let saveState = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
 	let saveError = $state('');
+	let settingsApplyStatuses = $state<
+		TauriCommandResponse<'get_settings_runtime_apply_status'>
+	>([]);
+	let reapplyBusy = $state(false);
+	let reapplyError = $state('');
+	let visibleApplyStatuses = $derived(
+		settingsApplyStatuses.filter((status) => status.result !== 'applied'),
+	);
 	let securityRuntimeStatus = $state<'current' | 'unchanged' | 'incomplete'>('current');
 	let securityRuntimeNotice = $state('安全策略已按当前配置完成运行时应用。');
 	let mounted = true;
@@ -1114,6 +1127,8 @@
 		} catch (e) {
 			reportError(e, { context: 'SettingsView', message: '加载设置失败', log: false });
 		}
+		await refreshSettingsApplyStatus();
+		if (!mounted) return;
 		try {
 			sessionPermissions = await listSessionPermissions();
 			if (!mounted) return;
@@ -1310,6 +1325,63 @@
 		validateSettingsModelDrafts(llmConfig.models, llmConfig.providers);
 	}
 
+	async function refreshSettingsApplyStatus() {
+		try {
+			settingsApplyStatuses = await getSettingsRuntimeApplyStatus();
+		} catch (error) {
+			reportError(error, {
+				context: 'SettingsView',
+				message: '读取运行时配置状态失败',
+				log: false,
+			});
+		}
+	}
+
+	async function reapplySavedRuntimeTargets() {
+		if (reapplyBusy || saveState === 'saving') return;
+		reapplyBusy = true;
+		reapplyError = '';
+		try {
+			settingsApplyStatuses = await reapplySavedSettings();
+			addNotification('已保存配置已重新应用', 'success');
+		} catch (error) {
+			reapplyError = formatError(error);
+			await refreshSettingsApplyStatus();
+			reportError(error, {
+				context: 'SettingsView',
+				message: '重新应用已保存配置失败',
+				log: false,
+			});
+		} finally {
+			reapplyBusy = false;
+		}
+	}
+
+	function runtimeTargetLabel(target: string): string {
+		const labels: Record<string, string> = {
+			input_pipeline: '录音与媒体输入',
+			shell: '默认终端',
+			context_limits: '上下文限制',
+			llm_router: '模型与媒体路由',
+			session_runtime: '会话运行参数',
+			mcp: 'MCP 服务',
+			security: '安全策略',
+			logging: '日志级别',
+			hotkey: '录音快捷键',
+			skills: 'Skills',
+			skills_restart: 'Skills 执行配置',
+			tool_settings: '工具设置',
+			memory_inference: '记忆推断',
+		};
+		return labels[target] ?? target;
+	}
+
+	function runtimeResultLabel(result: string): string {
+		if (result === 'retryable') return '可重试';
+		if (result === 'pending_restart') return '重启后生效';
+		return '等待应用';
+	}
+
 	/** @returns {Promise<boolean>} */
 	async function saveSettings() {
 		if (!settingsLoaded || !savedSnapshot || saveState === 'saving') return false;
@@ -1423,6 +1495,15 @@
 				),
 			) as import('$lib/contracts/settings.ts').SettingsUpdatePayload;
 			await updateSettingsCommand({ settings: settingsPatch });
+			try {
+				settingsApplyStatuses = await getSettingsRuntimeApplyStatus();
+			} catch (statusError) {
+				reportError(statusError, {
+					context: 'SettingsView',
+					message: '读取运行时配置状态失败',
+					log: false,
+				});
+			}
 			if (securityChanged) {
 				securityRuntimeStatus = 'current';
 				securityRuntimeNotice = '安全策略已按当前配置完成运行时应用。';
@@ -1458,6 +1539,7 @@
 			const partialApplyFailure = isPartialConfigApplyError(e);
 			saveError = partialApplyFailure ? PARTIAL_APPLY_SAVE_MESSAGE : formatError(e);
 			if (partialApplyFailure) {
+				await refreshSettingsApplyStatus();
 				try {
 					const persistedSettings = await loadSettings();
 					if (persistedSettings?.notification) {
@@ -1526,6 +1608,39 @@
 			title="设置"
 			description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
 		/>
+		{#if visibleApplyStatuses.length > 0}
+			<section class="settings-runtime-apply" aria-labelledby="settings-runtime-apply-title">
+				<div class="settings-runtime-apply__content">
+					<strong id="settings-runtime-apply-title">已保存配置的运行状态</strong>
+					<p>配置已写入；以下目标尚未完全生效。</p>
+					<ul>
+						{#each visibleApplyStatuses as status (`${status.target}:${status.result}`)}
+							<li>
+								<div class="settings-runtime-apply__row">
+									<strong>{runtimeTargetLabel(status.target)}</strong>
+									<span>{runtimeResultLabel(status.result)}</span>
+								</div>
+								<small>
+									期望版本 {status.expectedConfigVersion}；实际完整应用版本 {status.actualConfigVersion}
+								</small>
+								{#if status.reason}<small class="settings-runtime-apply__reason">{status.reason}</small>{/if}
+							</li>
+						{/each}
+					</ul>
+					{#if reapplyError}
+						<p class="settings-runtime-apply__error" role="alert">{reapplyError}</p>
+					{/if}
+				</div>
+				{#if visibleApplyStatuses.some((status) => status.result === 'retryable' || status.result === 'pending')}
+					<MaterialButton
+						variant="outlined"
+						label={reapplyBusy ? '重新应用中…' : '重试已保存配置'}
+						onclick={reapplySavedRuntimeTargets}
+						disabled={reapplyBusy || saveState === 'saving'}
+					/>
+				{/if}
+			</section>
+		{/if}
 
 		<div class="settings-layout workspace-secondary-layout responsive-layout-transition">
 			<aside class="settings-sidebar workspace-secondary-sidebar responsive-layout-panel">
@@ -1810,6 +1925,62 @@
 		margin-left: auto;
 		justify-content: flex-end;
 	}
+	.settings-runtime-apply {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--md-sys-space-md);
+		margin: 0 0 var(--md-sys-space-lg);
+		padding: var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-low);
+	}
+	.settings-runtime-apply__content {
+		min-width: 0;
+		flex: 1 1 auto;
+	}
+	.settings-runtime-apply__content > strong {
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-title-small-size);
+	}
+	.settings-runtime-apply__content > p {
+		margin: var(--md-sys-space-2xs) 0 var(--md-sys-space-xs);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+	}
+	.settings-runtime-apply ul {
+		display: grid;
+		gap: var(--md-sys-space-xs);
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.settings-runtime-apply li {
+		display: grid;
+		gap: var(--md-sys-space-2xs);
+	}
+	.settings-runtime-apply__row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-sm);
+	}
+	.settings-runtime-apply__row strong {
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-body-small-size);
+	}
+	.settings-runtime-apply__row span,
+	.settings-runtime-apply li small {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+	}
+	.settings-runtime-apply__reason,
+	.settings-runtime-apply__error {
+		overflow-wrap: anywhere;
+	}
+	.settings-runtime-apply__error {
+		color: var(--md-sys-color-error) !important;
+	}
 	.settings-search-area {
 		position: relative;
 		z-index: 2;
@@ -1943,6 +2114,9 @@
 		}
 	}
 	@container settings-page (max-width: 640px) {
+		.settings-runtime-apply {
+			flex-direction: column;
+		}
 		.settings-page :global(.page-heading-actions) {
 			flex: 1 1 100%;
 			width: 100%;

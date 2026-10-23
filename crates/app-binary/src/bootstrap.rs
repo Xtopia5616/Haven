@@ -860,6 +860,8 @@ pub(crate) fn run() {
             commands::settings::stage_ocr_credential,
             commands::settings::discard_staged_credentials,
             commands::settings::update_settings,
+            commands::settings::get_settings_runtime_apply_status,
+            commands::settings::reapply_saved_settings,
             commands::settings::list_session_permissions,
             commands::settings::revoke_permission,
             commands::settings::revoke_session_permission,
