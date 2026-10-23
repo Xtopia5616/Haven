@@ -1,8 +1,13 @@
 /** Settings request and response contracts owned by the Settings UI boundary. */
 
 import type {
+	FileWriteModeInput as GeneratedFileWriteModeInput,
+	NetworkAccessBoundaryInput as GeneratedNetworkAccessBoundaryInput,
+	PermissionResourceScope,
+	SecurityConfigInput,
 	SettingsSnapshot as GeneratedSettingsSnapshot,
 	SessionPermissionGrant as GeneratedSessionPermissionGrant,
+	StoredPermission,
 	TauriCommandRequest,
 } from './generatedCommands.ts';
 import {
@@ -21,6 +26,24 @@ import {
 	isU32,
 } from './valueGuards.ts';
 import { hasOwnWireField, isCanonicalEntityId } from './wireGuards.ts';
+
+export type SecuritySettingsDraft = Omit<
+	SecurityConfigInput,
+	'resource_policy' | 'permissions'
+> & {
+	resource_policy: {
+		files: {
+			write_mode: GeneratedFileWriteModeInput;
+			write_roots: string[];
+			path_roots: string[];
+		};
+		network: {
+			access: GeneratedNetworkAccessBoundaryInput;
+			allowed_domains: string[];
+		};
+	};
+	permissions: Array<StoredPermission & { resource_scope?: PermissionResourceScope[] }>;
+};
 
 const U32_FIELDS = new Set([
 	'context_window',

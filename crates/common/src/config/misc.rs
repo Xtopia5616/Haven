@@ -4,36 +4,149 @@
 
 use super::*;
 
-fn deserialize_execution_mode<'de, D>(
-    deserializer: D,
-) -> Result<crate::types::ExecutionMode, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    match value.as_str() {
-        "analyze" | "plan" => Ok(crate::types::ExecutionMode::Analyze),
-        "collaborative" | "default" | "auto_edit" => Ok(crate::types::ExecutionMode::Collaborative),
-        "unattended" | "autonomous" => Ok(crate::types::ExecutionMode::Unattended),
-        _ => Err(serde::de::Error::custom("unknown execution mode")),
+/// How the resource policy limits local filesystem writes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FileWriteMode {
+    /// Tool-level policy inherits the global setting. Not valid for the global policy.
+    #[default]
+    Inherit,
+    /// No tool may perform a local filesystem mutation.
+    ReadOnly,
+    /// Writes are limited to the active execution workspace or configured roots.
+    Workspace,
+    /// Writes are limited to `write_roots`.
+    Roots,
+    /// No additional Haven-managed path scope.
+    Unrestricted,
+}
+
+/// Filesystem boundaries in the canonical resource policy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct FileResourcePolicy {
+    pub write_mode: FileWriteMode,
+    pub write_roots: Vec<String>,
+    /// Optional tool-local roots that restrict every declared local path,
+    /// including read sources and write targets.
+    pub path_roots: Vec<String>,
+}
+
+impl Default for FileResourcePolicy {
+    fn default() -> Self {
+        Self {
+            write_mode: FileWriteMode::Inherit,
+            write_roots: Vec::new(),
+            path_roots: Vec::new(),
+        }
     }
 }
 
-fn deserialize_network_policy<'de, D>(
-    deserializer: D,
-) -> Result<crate::types::NetworkPolicy, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    match value.as_str() {
-        "deny" => Ok(crate::types::NetworkPolicy::Deny),
-        // The old Ask value mixed consent with the technical resource scope.
-        // Preserve it as the more conservative destination-restricted policy;
-        // ExecutionMode now owns whether approval prompts or stops.
-        "ask" | "restricted" => Ok(crate::types::NetworkPolicy::Restricted),
-        "open" => Ok(crate::types::NetworkPolicy::Open),
-        _ => Err(serde::de::Error::custom("unknown network policy")),
+/// Network boundaries in the canonical resource policy.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NetworkResourcePolicy {
+    /// Tool-level policy inherits the global setting.
+    pub access: NetworkAccessBoundary,
+    /// Optional host allowlist. An empty list adds no host restriction.
+    pub allowed_domains: Vec<String>,
+}
+
+impl Default for NetworkResourcePolicy {
+    fn default() -> Self {
+        Self {
+            access: NetworkAccessBoundary::Inherit,
+            allowed_domains: Vec::new(),
+        }
+    }
+}
+
+/// Network access mode within one resource policy scope.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkAccessBoundary {
+    #[default]
+    Inherit,
+    Deny,
+    Restricted,
+    Open,
+}
+
+/// The canonical typed policy for resources reachable by tools.
+///
+/// Global settings and tool-specific settings use the same schema. Tool rules
+/// only narrow the global policy; `Inherit` is reserved for tool-level values.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResourcePolicy {
+    pub files: FileResourcePolicy,
+    pub network: NetworkResourcePolicy,
+}
+
+impl ResourcePolicy {
+    fn global_default() -> Self {
+        Self {
+            files: FileResourcePolicy {
+                write_mode: FileWriteMode::Workspace,
+                write_roots: Vec::new(),
+                path_roots: Vec::new(),
+            },
+            network: NetworkResourcePolicy {
+                access: NetworkAccessBoundary::Restricted,
+                allowed_domains: Vec::new(),
+            },
+        }
+    }
+
+    fn from_legacy_global(
+        sandbox_mode: Option<SandboxMode>,
+        writable_roots: Option<Vec<String>>,
+        network_policy: Option<NetworkPolicy>,
+    ) -> Self {
+        let mut policy = Self::global_default();
+        if let Some(mode) = sandbox_mode {
+            policy.files.write_mode = match mode {
+                SandboxMode::ReadOnly => FileWriteMode::ReadOnly,
+                SandboxMode::WorkspaceWrite => FileWriteMode::Workspace,
+                SandboxMode::FullAccess => FileWriteMode::Unrestricted,
+            };
+        }
+        if let Some(roots) = writable_roots {
+            policy.files.write_roots = roots;
+            if !policy.files.write_roots.is_empty()
+                && policy.files.write_mode == FileWriteMode::Workspace
+            {
+                policy.files.write_mode = FileWriteMode::Roots;
+            }
+        }
+        if let Some(access) = network_policy {
+            policy.network.access = match access {
+                NetworkPolicy::Deny => NetworkAccessBoundary::Deny,
+                NetworkPolicy::Restricted => NetworkAccessBoundary::Restricted,
+                NetworkPolicy::Open => NetworkAccessBoundary::Open,
+            };
+        }
+        policy
+    }
+
+    pub fn sandbox_mode(&self) -> SandboxMode {
+        match self.files.write_mode {
+            FileWriteMode::ReadOnly => SandboxMode::ReadOnly,
+            FileWriteMode::Workspace | FileWriteMode::Roots | FileWriteMode::Inherit => {
+                SandboxMode::WorkspaceWrite
+            }
+            FileWriteMode::Unrestricted => SandboxMode::FullAccess,
+        }
+    }
+
+    pub fn network_policy(&self) -> NetworkPolicy {
+        match self.network.access {
+            NetworkAccessBoundary::Deny => NetworkPolicy::Deny,
+            NetworkAccessBoundary::Open => NetworkPolicy::Open,
+            NetworkAccessBoundary::Restricted | NetworkAccessBoundary::Inherit => {
+                NetworkPolicy::Restricted
+            }
+        }
     }
 }
 
@@ -536,33 +649,19 @@ pub struct StoredPermission {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, try_from = "SecurityConfigInput")]
 pub struct SecurityConfig {
     /// Initial execution mode captured into new sessions. Existing sessions
     /// keep their durable session_context execution mode.
-    #[serde(
-        default,
-        alias = "permission_mode",
-        deserialize_with = "deserialize_execution_mode"
-    )]
+    #[serde(default)]
     pub execution_mode: crate::types::ExecutionMode,
-    /// Local file-write boundary evaluated independently from prompting and
-    /// network policy. Other effects follow their declared execution boundary
-    /// and network, risk, permission, or confirmation rules.
-    pub sandbox_mode: SandboxMode,
+    /// Canonical typed filesystem and network resource boundaries.
+    pub resource_policy: ResourcePolicy,
     /// Optional persisted default root captured when a session is first
     /// loaded, for its Files-relative paths, default Shell `cwd`, and implicit
     /// WorkspaceWrite boundary. `None` uses startup discovery for new sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_root: Option<PathBuf>,
-    /// Optional absolute roots that WorkspaceWrite operations must remain
-    /// inside. Empty uses the active execution workspace and per-tool path
-    /// policy.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub writable_roots: Vec<String>,
-    /// Destination boundary evaluated before a network-capable tool executes.
-    #[serde(default, deserialize_with = "deserialize_network_policy")]
-    pub network_policy: NetworkPolicy,
     pub encrypt_sensitive: bool,
     /// Permanent allow/deny grants (Always scope). Session-scoped grants are
     /// stored separately with their owning session and expire with it.
@@ -570,14 +669,103 @@ pub struct SecurityConfig {
     pub permissions: Vec<StoredPermission>,
 }
 
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SecurityConfigInput {
+    #[serde(alias = "permission_mode")]
+    execution_mode: Option<String>,
+    resource_policy: Option<ResourcePolicy>,
+    execution_root: Option<PathBuf>,
+    sandbox_mode: Option<SandboxMode>,
+    writable_roots: Option<Vec<String>>,
+    network_policy: Option<String>,
+    encrypt_sensitive: Option<bool>,
+    permissions: Vec<StoredPermission>,
+}
+
+impl Default for SecurityConfigInput {
+    fn default() -> Self {
+        Self {
+            execution_mode: None,
+            resource_policy: None,
+            execution_root: None,
+            sandbox_mode: None,
+            writable_roots: None,
+            network_policy: None,
+            encrypt_sensitive: None,
+            permissions: Vec::new(),
+        }
+    }
+}
+
+impl TryFrom<SecurityConfigInput> for SecurityConfig {
+    type Error = String;
+
+    fn try_from(input: SecurityConfigInput) -> Result<Self, Self::Error> {
+        let has_legacy_resource_fields = input.sandbox_mode.is_some()
+            || input.writable_roots.is_some()
+            || input.network_policy.is_some();
+        if input.resource_policy.is_some() && has_legacy_resource_fields {
+            return Err(
+                "resource_policy cannot be combined with legacy resource boundary fields".into(),
+            );
+        }
+        let execution_mode = match input.execution_mode.as_deref() {
+            None => crate::types::ExecutionMode::default(),
+            Some(value) => deserialize_execution_mode_value(value)
+                .ok_or_else(|| "unknown execution mode".to_owned())?,
+        };
+        let resource_policy = if let Some(policy) = input.resource_policy {
+            policy
+        } else {
+            let network_policy = input
+                .network_policy
+                .as_deref()
+                .map(deserialize_network_policy_value)
+                .transpose()
+                .map_err(str::to_owned)?;
+            ResourcePolicy::from_legacy_global(
+                input.sandbox_mode,
+                input.writable_roots,
+                network_policy,
+            )
+        };
+        Ok(Self {
+            execution_mode,
+            resource_policy,
+            execution_root: input.execution_root,
+            encrypt_sensitive: input.encrypt_sensitive.unwrap_or(true),
+            permissions: input.permissions,
+        })
+    }
+}
+
+fn deserialize_execution_mode_value(value: &str) -> Option<crate::types::ExecutionMode> {
+    match value {
+        "analyze" | "plan" => Some(crate::types::ExecutionMode::Analyze),
+        "collaborative" | "default" | "auto_edit" => {
+            Some(crate::types::ExecutionMode::Collaborative)
+        }
+        "unattended" | "autonomous" => Some(crate::types::ExecutionMode::Unattended),
+        _ => None,
+    }
+}
+
+fn deserialize_network_policy_value(value: &str) -> Result<NetworkPolicy, &'static str> {
+    match value {
+        "deny" => Ok(NetworkPolicy::Deny),
+        "ask" | "restricted" => Ok(NetworkPolicy::Restricted),
+        "open" => Ok(NetworkPolicy::Open),
+        _ => Err("unknown network policy"),
+    }
+}
+
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             execution_mode: crate::types::ExecutionMode::Collaborative,
-            sandbox_mode: SandboxMode::WorkspaceWrite,
+            resource_policy: ResourcePolicy::global_default(),
             execution_root: None,
-            writable_roots: Vec::new(),
-            network_policy: NetworkPolicy::Restricted,
             encrypt_sensitive: true,
             permissions: Vec::new(),
         }
@@ -692,7 +880,7 @@ pub const GENERATED_MEDIA_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Per-tool settings (refine §4.8).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, try_from = "ToolConfigInput")]
 pub struct ToolConfig {
     /// Whether the tool is available to the agent. Disabled tools are
     /// excluded from the tool catalog (and thus the model's schema list) and
@@ -717,19 +905,79 @@ pub struct ToolConfig {
     /// tool's intrinsic policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_backoff_secs: Option<u64>,
-    pub allowed_paths: Vec<String>,
-    /// Optional host allowlist for network-capable tools. An empty list keeps
-    /// public Internet hosts available while the HTTP SSRF policy still
-    /// rejects local/private/link-local destinations.
-    pub allowed_domains: Vec<String>,
+    /// Additional resource restrictions for this tool. They are intersected
+    /// with the global `SecurityConfig.resource_policy`.
+    pub resource_policy: ResourcePolicy,
     pub disabled_operations: Vec<String>,
     /// Optional floor that can only make an operation require more approval;
     /// the typed enum rejects misspelled values during config loading.
     pub risk_override: Option<RiskLevel>,
 }
 
-fn default_true() -> bool {
-    true
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ToolConfigInput {
+    enabled: bool,
+    timeout_secs: Option<u64>,
+    max_output_chars: Option<usize>,
+    max_retries: Option<u32>,
+    retry_backoff_secs: Option<u64>,
+    resource_policy: Option<ResourcePolicy>,
+    allowed_paths: Option<Vec<String>>,
+    allowed_domains: Option<Vec<String>>,
+    disabled_operations: Vec<String>,
+    risk_override: Option<RiskLevel>,
+}
+
+impl Default for ToolConfigInput {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_secs: None,
+            max_output_chars: None,
+            max_retries: None,
+            retry_backoff_secs: None,
+            resource_policy: None,
+            allowed_paths: None,
+            allowed_domains: None,
+            disabled_operations: Vec::new(),
+            risk_override: None,
+        }
+    }
+}
+
+impl TryFrom<ToolConfigInput> for ToolConfig {
+    type Error = String;
+
+    fn try_from(input: ToolConfigInput) -> Result<Self, Self::Error> {
+        if input.resource_policy.is_some()
+            && (input.allowed_paths.is_some() || input.allowed_domains.is_some())
+        {
+            return Err("resource_policy cannot be combined with legacy tool resource fields".into());
+        }
+        let resource_policy = if let Some(policy) = input.resource_policy {
+            policy
+        } else {
+            let mut policy = ResourcePolicy::default();
+            if let Some(paths) = input.allowed_paths {
+                policy.files.path_roots = paths;
+            }
+            if let Some(domains) = input.allowed_domains {
+                policy.network.allowed_domains = domains;
+            }
+            policy
+        };
+        Ok(Self {
+            enabled: input.enabled,
+            timeout_secs: input.timeout_secs,
+            max_output_chars: input.max_output_chars,
+            max_retries: input.max_retries,
+            retry_backoff_secs: input.retry_backoff_secs,
+            resource_policy,
+            disabled_operations: input.disabled_operations,
+            risk_override: input.risk_override,
+        })
+    }
 }
 
 impl Default for ToolConfig {
@@ -740,8 +988,7 @@ impl Default for ToolConfig {
             max_output_chars: None,
             max_retries: None,
             retry_backoff_secs: None,
-            allowed_paths: Vec::new(),
-            allowed_domains: Vec::new(),
+            resource_policy: ResourcePolicy::default(),
             disabled_operations: Vec::new(),
             risk_override: None,
         }

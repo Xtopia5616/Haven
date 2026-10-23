@@ -1,28 +1,25 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import SettingsSecurity from './SettingsSecurity.svelte';
-import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
+import type { SecuritySettingsDraft } from '$lib/contracts/settings.ts';
 import type { SessionPermissionGrant } from '$lib/contracts/settings.ts';
 
-function createSecurity(): SecurityConfigInput & {
-	permissions: Array<{ key: string; effect: string }>;
-} {
+function createSecurity(): SecuritySettingsDraft {
 	return {
 		execution_mode: 'collaborative',
-		sandbox_mode: 'workspace_write',
-		network_policy: 'restricted',
+		resource_policy: {
+			files: { write_mode: 'workspace', write_roots: [], path_roots: [] },
+			network: { access: 'restricted', allowed_domains: [] },
+		},
 		execution_root: null,
-		writable_roots: [],
 		permissions: [{ key: 'files.delete', effect: 'deny' }],
 	};
 }
 
-async function openResourceBoundaries() {
-	await fireEvent.click(screen.getByText('资源边界（高级）'));
-}
+async function openResourceBoundaries() {}
 
 describe('SettingsSecurity', () => {
-	it('edits the new-session default directory independently from writable roots', async () => {
+	it('edits the new-session default directory independently from the resource policy', async () => {
 		const security = createSecurity();
 		const onPickExecutionRoot = vi.fn(async () => 'C:\\Projects\\selected');
 		render(SettingsSecurity, { security, onPickExecutionRoot });
@@ -33,7 +30,7 @@ describe('SettingsSecurity', () => {
 		});
 
 		expect(security.execution_root).toBe('C:\\Projects\\demo');
-		expect(security.writable_roots).toEqual([]);
+		expect(security.resource_policy?.files.write_roots).toEqual([]);
 		expect(screen.getByText(/子进程是否隔离由各自的执行边界决定/)).toBeTruthy();
 
 		await fireEvent.click(screen.getByRole('button', { name: '选择目录' }));
@@ -41,17 +38,18 @@ describe('SettingsSecurity', () => {
 		expect(security.execution_root).toBe('C:\\Projects\\selected');
 	});
 
-	it('shows custom writable roots as the effective workspace-write base', async () => {
+	it('shows configured write roots as part of the effective resource policy', async () => {
 		const security = createSecurity();
 		security.execution_root = 'C:\\Projects\\workspace';
-		security.writable_roots = ['C:\\Projects\\write-a', 'D:\\Shared\\write-b'];
+		security.resource_policy!.files.write_mode = 'roots';
+		security.resource_policy!.files.write_roots = ['C:\\Projects\\write-a', 'D:\\Shared\\write-b'];
 		render(SettingsSecurity, { security });
 		await openResourceBoundaries();
 
-		expect(screen.getByText('工作区可写模式的写入基准')).toBeTruthy();
+		expect(screen.getByText('当前写入边界')).toBeTruthy();
 		expect(screen.getByText('C:\\Projects\\write-a')).toBeTruthy();
 		expect(screen.getByText('D:\\Shared\\write-b')).toBeTruthy();
-		expect(screen.getByText(/allowed_paths 取交集/)).toBeTruthy();
+		expect(screen.getByText(/工具级范围限制/)).toBeTruthy();
 		expect(screen.queryByText('C:\\Projects\\workspace')).toBeNull();
 	});
 
@@ -62,7 +60,7 @@ describe('SettingsSecurity', () => {
 		await openResourceBoundaries();
 
 		expect(screen.getByText('C:\\Projects\\workspace')).toBeTruthy();
-		expect(screen.getByText('工作区可写模式的写入基准')).toBeTruthy();
+		expect(screen.getByText('当前写入边界')).toBeTruthy();
 	});
 
 	it('keeps the execution workspace draft when the native picker is cancelled', async () => {
@@ -169,14 +167,13 @@ describe('SettingsSecurity', () => {
 		expect(security.execution_mode).toBe('unattended');
 	});
 
-	it('lets users choose the open destination boundary from the advanced menu', async () => {
+	it('lets users choose the open network boundary from the resource policy', async () => {
 		const security = createSecurity();
 		render(SettingsSecurity, { security });
 
-		await fireEvent.click(screen.getByText('资源边界（高级）'));
 		await fireEvent.click(screen.getByRole('combobox', { name: '网络策略' }));
 		await fireEvent.click(screen.getByRole('option', { name: '开放网络' }));
-		expect(security.network_policy).toBe('open');
+		expect(security.resource_policy?.network.access).toBe('open');
 	});
 
 	it.each([
@@ -193,7 +190,7 @@ describe('SettingsSecurity', () => {
 		'explains $networkPolicy as a Haven policy rather than an OS firewall rule',
 		async ({ networkPolicy, explanation }) => {
 			const security = createSecurity();
-			security.network_policy = networkPolicy;
+			security.resource_policy!.network.access = networkPolicy;
 			render(SettingsSecurity, { security });
 			await openResourceBoundaries();
 
@@ -206,50 +203,46 @@ describe('SettingsSecurity', () => {
 		render(SettingsSecurity, { security });
 		await openResourceBoundaries();
 
-		expect(security.network_policy).toBe('restricted');
+		expect(security.resource_policy?.network.access).toBe('restricted');
 		expect(screen.getByText(/是否询问由执行方式决定/)).toBeTruthy();
 		expect(screen.getByText('受限网络')).toBeTruthy();
 	});
 
 	it('explains the user-level file access and independent network policy', async () => {
 		const security = createSecurity();
-		security.sandbox_mode = 'full_access';
+		security.resource_policy!.files.write_mode = 'unrestricted';
 		render(SettingsSecurity, { security });
 		await openResourceBoundaries();
 
 		expect(
-			screen.getByText(/子进程以当前 Windows 用户权限访问该用户可访问的文件/),
+			screen.getByText(/移除 Haven 管理的路径范围限制/),
 		).toBeTruthy();
-		expect(screen.getByText(/每棵受管进程树限制为最多 256 个活动进程/)).toBeTruthy();
+		expect(screen.getByText(/仍受授权、风险规则和当前 Windows 用户权限约束/)).toBeTruthy();
 	});
 
 	it('describes the WorkspaceWrite MXC process boundary', async () => {
 		render(SettingsSecurity, { security: createSecurity() });
 		await openResourceBoundaries();
 
-		expect(screen.getByText('文件访问模式')).toBeTruthy();
-		expect(screen.getByText(/不会替其它进程设置 Windows 文件或网络限制/)).toBeTruthy();
-		expect(
-			screen.getByText(/Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写/),
-		).toBeTruthy();
-		expect(screen.getByText(/Skill 与 MCP stdio 子进程仍会被拒绝/)).toBeTruthy();
+		expect(screen.getByText('文件写入范围')).toBeTruthy();
+		expect(screen.getByText(/工具自己的资源限制只会进一步缩小范围/)).toBeTruthy();
+		expect(screen.getByText(/工具自己的路径规则还会进一步收窄范围/)).toBeTruthy();
 	});
 
 	it.each([
 		{
-			sandboxMode: 'read_only',
-			explanation: /不会仅因只读模式而一概拒绝网络请求、打开外链等外部效果/,
+			writeMode: 'read_only',
+			explanation: /拒绝本地文件写入/,
 		},
 		{
-			sandboxMode: 'workspace_write',
-			explanation:
-				/Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写；网络按独立策略执行/,
+			writeMode: 'workspace',
+			explanation: /写入限于当前会话工作目录/,
 		},
 	] as const)(
-		'describes network authorization alongside $sandboxMode filesystem policy',
-		async ({ sandboxMode, explanation }) => {
+		'describes the $writeMode filesystem boundary',
+		async ({ writeMode, explanation }) => {
 			const security = createSecurity();
-			security.sandbox_mode = sandboxMode;
+			security.resource_policy!.files.write_mode = writeMode;
 			render(SettingsSecurity, { security });
 			await openResourceBoundaries();
 

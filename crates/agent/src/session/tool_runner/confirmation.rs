@@ -337,6 +337,51 @@ impl SessionSupervisor {
         }
     }
 
+    pub async fn pending_confirmation_requires_resource_boundary_extension_for_owner(
+        &self,
+        owner: &crate::interaction::InteractionOwner,
+        request_id: &haven_common::types::ConfirmId,
+    ) -> Option<bool> {
+        let request = match owner {
+            crate::interaction::InteractionOwner::ScheduleRun { schedule_run_id } => {
+                self.scheduled_confirmation_request(schedule_run_id, request_id)
+                    .await?
+            }
+            crate::interaction::InteractionOwner::AppCommand => return None,
+            crate::interaction::InteractionOwner::Session { session_id } => {
+                self.pending_session_confirmation_request(session_id, request_id)
+                    .await?
+            }
+        };
+        if !interaction_owner_matches_request(owner, &request) {
+            return None;
+        }
+        match request.details {
+            crate::interaction::InteractionDetails::Confirm {
+                receipt,
+                nested_confirmation,
+                ..
+            } => Some(
+                receipt
+                    .as_ref()
+                    .or_else(|| nested_confirmation.as_ref().map(|nested| &nested.receipt))
+                    .is_some_and(|receipt| receipt.resource_boundary_extension),
+            ),
+            crate::interaction::InteractionDetails::ScheduledConfirm {
+                receipt,
+                nested_confirmation,
+                ..
+            } => Some(
+                nested_confirmation
+                    .as_ref()
+                    .map(|nested| &nested.receipt)
+                    .unwrap_or(&receipt)
+                    .resource_boundary_extension,
+            ),
+            crate::interaction::InteractionDetails::Ask { .. } => None,
+        }
+    }
+
     pub(super) async fn pending_session_confirmation_request(
         &self,
         session_id: &str,

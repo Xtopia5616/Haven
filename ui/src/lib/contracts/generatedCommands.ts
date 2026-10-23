@@ -107,7 +107,7 @@ export interface SessionRecordDto { session_id: string; input_text: string; titl
 export interface SessionResumeMessageDto { message_id: string; session_id: string; role: CanonicalRole; content: string; message_type: TranscriptMessageKind | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: SessionResumeMessageDto[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmUsageRecord[]; interactions: InteractionRequestedEvent[]; working_document: string | null; working_document_sequence: number | null; event_sequence_watermark: number }
 export interface ChatGptPlanLoginComplete { credentialRef: string; accountEmail: string | null; planUsageEnabled: boolean }
-export interface LifecycleHooksSettingsResponse { hooks: LifecycleHooksConfig; trusted_hook_workspaces: string[]; sandbox_mode: SandboxMode; network_policy: NetworkPolicy; config_version: number; diagnostics: LifecycleHookEventDiagnostics[] }
+export interface LifecycleHooksSettingsResponse { hooks: LifecycleHooksConfig; trusted_hook_workspaces: string[]; resource_policy: ResourcePolicy; config_version: number; diagnostics: LifecycleHookEventDiagnostics[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: PermissionTarget; effect: PermissionEffect; resource_scope: PermissionResourceScope[] }
 export interface ShellAvailability { available: boolean }
 export interface SkillExecutionResponse { success: boolean; output: unknown; error: string | null }
@@ -133,7 +133,7 @@ export interface AgentWorkingDocumentEvent { session_id: string; markdown: strin
 export interface AppBootstrapEvent { status: BootstrapStatus }
 export interface HotkeyConflictEvent { binding: string; error: string }
 export interface HotkeyRebindEvent { old_binding: string; new_binding: string }
-export interface InteractionRequestedEvent { request_id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; resources?: DeclaredResource[]; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
+export interface InteractionRequestedEvent { request_id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; resources?: DeclaredResource[]; resource_boundary_extension: boolean; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
 export interface McpResourceChangedEvent { name: string; uri: string | null }
 export interface McpStatusChangedEvent { name: string; status: McpClientStatus }
 export interface MuteChangedEvent { muted: boolean }
@@ -225,6 +225,12 @@ export interface TtsConfigInput { provider_name?: string; model?: string; voice?
 export interface TtsConfig { provider_name: string; model: string; voice: string; timeout_secs: number }
 export interface ContextLimitsConfigInput { compaction_ratio?: number; compaction_reserve_tokens?: number; default_context_window?: number; response_token_floor?: number; max_observation_chars?: number; max_transcript_chars?: number; max_attachment_images?: number; max_attachment_files?: number; max_attachment_image_bytes?: number; max_attachment_file_bytes?: number; max_upload_total_bytes?: number; max_attachment_image_dim_px?: number; attachment_image_jpeg_quality?: number; file_max_full_file_bytes?: number; file_max_patch_bytes?: number; file_line_span?: number; file_line_max_bytes?: number; file_summary_input_chars?: number; file_max_list_entries?: number; file_byte_read_max_bytes?: number; file_write_max_bytes?: number; file_vision_max_bytes?: number; search_snippet_chars?: number; search_max_results?: number; search_max_file_size_bytes?: number; search_window_bytes?: number; notification_summary_chars?: number; tool_run_result_context_chars?: number; partial_checkpoint_min_chars?: number; partial_checkpoint_interval_secs?: number; fact_infer_interval_steps?: number; fact_extraction_min_interval_secs?: number; max_known_facts?: number; sanitize_field_max_chars?: number; file_summary_timeout_secs?: number; turn_deadline_secs?: number; incomplete_tool_args_retries?: number; stream_stall_warn_delay_ms?: number; reasoning_echo_max_chars?: number; foreground_tool_output_tail_max_chars?: number; foreground_tool_output_emit_interval_ms?: number; tool_run_terminal_ttl_secs?: number; mcp_max_binary_base64_bytes?: number; mcp_max_sse_buffer_bytes?: number; skills_max_md_bytes?: number; skills_max_parse_lines?: number; skills_max_line_bytes?: number; self_tool_max_instructions_bytes?: number; self_tool_max_script_bytes?: number; network_max_retries?: number; network_backoff_base_secs?: number; network_max_body_bytes?: number; clipboard_history_entries?: number; clipboard_history_max_entries?: number; clipboard_entry_max_chars?: number; max_running_background_tool_runs?: number; event_chunk_batch_max_bytes?: number; input_ring_buffer_secs?: number; embedding_chunk_size?: number; max_tools_per_request?: number }
 export interface ContextLimitsConfig { compaction_ratio: number; compaction_reserve_tokens: number; default_context_window: number; response_token_floor: number; max_observation_chars: number; max_transcript_chars: number; max_attachment_images: number; max_attachment_files: number; max_attachment_image_bytes: number; max_attachment_file_bytes: number; max_upload_total_bytes: number; max_attachment_image_dim_px: number; attachment_image_jpeg_quality: number; file_max_full_file_bytes: number; file_max_patch_bytes: number; file_line_span: number; file_line_max_bytes: number; file_summary_input_chars: number; file_max_list_entries: number; file_byte_read_max_bytes: number; file_write_max_bytes: number; file_vision_max_bytes: number; search_snippet_chars: number; search_max_results: number; search_max_file_size_bytes: number; search_window_bytes: number; notification_summary_chars: number; tool_run_result_context_chars: number; partial_checkpoint_min_chars: number; partial_checkpoint_interval_secs: number; fact_infer_interval_steps: number; fact_extraction_min_interval_secs: number; max_known_facts: number; sanitize_field_max_chars: number; file_summary_timeout_secs: number; turn_deadline_secs: number; incomplete_tool_args_retries: number; stream_stall_warn_delay_ms: number; reasoning_echo_max_chars: number; foreground_tool_output_tail_max_chars: number; foreground_tool_output_emit_interval_ms: number; tool_run_terminal_ttl_secs: number; mcp_max_binary_base64_bytes: number; mcp_max_sse_buffer_bytes: number; skills_max_md_bytes: number; skills_max_parse_lines: number; skills_max_line_bytes: number; self_tool_max_instructions_bytes: number; self_tool_max_script_bytes: number; network_max_retries: number; network_backoff_base_secs: number; network_max_body_bytes: number; clipboard_history_entries: number; clipboard_history_max_entries: number; clipboard_entry_max_chars: number; max_running_background_tool_runs: number; event_chunk_batch_max_bytes: number; input_ring_buffer_secs: number; embedding_chunk_size: number; max_tools_per_request: number }
+export interface FileResourcePolicyInput { write_mode?: FileWriteModeInput; write_roots?: string[]; path_roots?: string[] }
+export interface FileResourcePolicy { write_mode: FileWriteMode; write_roots: string[]; path_roots: string[] }
+export const FILE_WRITE_MODE_INPUT_VALUES = ['inherit', 'read_only', 'workspace', 'roots', 'unrestricted'] as const;
+export type FileWriteModeInput = (typeof FILE_WRITE_MODE_INPUT_VALUES)[number];
+export const FILE_WRITE_MODE_VALUES = ['inherit', 'read_only', 'workspace', 'roots', 'unrestricted'] as const;
+export type FileWriteMode = (typeof FILE_WRITE_MODE_VALUES)[number];
 export interface HotkeyConfigInput { mode?: HotkeyModeInput; key_binding?: string; mute_hotkey?: string | null }
 export interface HotkeyConfig { mode: HotkeyMode; key_binding: string; mute_hotkey: string | null }
 export interface LogConfigInput { level?: LogLevelInput; file_enabled?: boolean; file_path?: string | null }
@@ -242,19 +248,27 @@ export interface McpServerConfigInput { name?: string; transport?: McpServerTran
 export interface McpServerConfig { name: string; transport: McpServerTransport; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean; exposure: McpExposureConfig }
 export interface MemoryConfigInput { fact_inference_enabled?: boolean }
 export interface MemoryConfig { fact_inference_enabled: boolean }
+export const NETWORK_ACCESS_BOUNDARY_INPUT_VALUES = ['inherit', 'deny', 'restricted', 'open'] as const;
+export type NetworkAccessBoundaryInput = (typeof NETWORK_ACCESS_BOUNDARY_INPUT_VALUES)[number];
+export const NETWORK_ACCESS_BOUNDARY_VALUES = ['inherit', 'deny', 'restricted', 'open'] as const;
+export type NetworkAccessBoundary = (typeof NETWORK_ACCESS_BOUNDARY_VALUES)[number];
+export interface NetworkResourcePolicyInput { access?: NetworkAccessBoundaryInput; allowed_domains?: string[] }
+export interface NetworkResourcePolicy { access: NetworkAccessBoundary; allowed_domains: string[] }
 export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; permission_requested?: NotifyChannelsInput; tool_run_completed?: NotifyChannelsInput }
 export interface NotificationConfig { session_created: NotifyChannels; session_completed: NotifyChannels; session_paused: NotifyChannels; session_resumed: NotifyChannels; session_error: NotifyChannels; permission_requested: NotifyChannels; tool_run_completed: NotifyChannels }
 export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
 export interface NotifyChannels { in_app: boolean; windows: boolean }
-export interface SecurityConfigInput { execution_mode?: ExecutionModeInput; sandbox_mode?: SandboxModeInput; execution_root?: string | null; writable_roots?: string[]; network_policy?: NetworkPolicyInput; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
-export interface SecurityConfig { execution_mode: ExecutionMode; sandbox_mode: SandboxMode; execution_root?: string; writable_roots?: string[]; network_policy: NetworkPolicy; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
+export interface ResourcePolicyInput { files?: FileResourcePolicyInput; network?: NetworkResourcePolicyInput }
+export interface ResourcePolicy { files: FileResourcePolicy; network: NetworkResourcePolicy }
+export interface SecurityConfigInput { execution_mode?: ExecutionModeInput; resource_policy?: ResourcePolicyInput; execution_root?: string | null; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
+export interface SecurityConfig { execution_mode: ExecutionMode; resource_policy: ResourcePolicy; execution_root?: string; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
 export interface SessionConfigInput { max_concurrent?: number; prompt_history_limit?: number; history_retention_days?: number; max_steps_per_run?: number; max_steps_per_session?: number | null }
 export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps_per_run: number; max_steps_per_session?: number }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
 export interface SkillsExecConfig { venv_root: string; work_dir: string; timeout_secs: number; max_output_lines: number }
 export interface StoredPermissionInput { key: string; effect: PermissionEffectInput; resource_scope?: PermissionResourceScopeInput[] }
 export interface StoredPermission { key: string; effect: PermissionEffect; resource_scope?: PermissionResourceScope[] }
-export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_output_chars?: number; max_retries?: number; retry_backoff_secs?: number; allowed_paths: string[]; allowed_domains: string[]; disabled_operations: string[]; risk_override: RiskLevel | null }
+export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_output_chars?: number; max_retries?: number; retry_backoff_secs?: number; resource_policy: ResourcePolicy; disabled_operations: string[]; risk_override: RiskLevel | null }
 export const LIFECYCLE_HOOK_EVENT_VALUES = ['pre_tool_use', 'post_tool_use', 'session_start', 'run_start', 'run_end', 'pre_compact', 'post_compact'] as const;
 export type LifecycleHookEvent = (typeof LIFECYCLE_HOOK_EVENT_VALUES)[number];
 export interface LifecycleHookEventDiagnostics { event: LifecycleHookEvent; event_runs: number; command_runs: number; failures: number; denials: number; last_outcome: LifecycleHookOutcome | null; last_failure_code: string | null }
@@ -367,10 +381,6 @@ export const LOCAL_PATH_ACCESS_VALUES = ['read', 'write'] as const;
 export type LocalPathAccess = (typeof LOCAL_PATH_ACCESS_VALUES)[number];
 export interface MessageAttachmentInput { asset_id?: string | null; media_type: string; data: string; filename?: string | null; path?: string | null; sha256?: string | null; size_bytes?: number | null; expires_at?: string | null; representations?: MediaRepresentationInput[]; preferred_representation?: MediaRepresentationKindInput | null }
 export interface MessageAttachment { asset_id?: string; media_type: string; data: string; filename?: string; path?: string; sha256?: string; size_bytes?: number; expires_at?: string; representations?: MediaRepresentation[]; preferred_representation?: MediaRepresentationKind }
-export const NETWORK_POLICY_INPUT_VALUES = ['deny', 'restricted', 'open'] as const;
-export type NetworkPolicyInput = (typeof NETWORK_POLICY_INPUT_VALUES)[number];
-export const NETWORK_POLICY_VALUES = ['deny', 'restricted', 'open'] as const;
-export type NetworkPolicy = (typeof NETWORK_POLICY_VALUES)[number];
 export const PERMISSION_EFFECT_INPUT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffectInput = (typeof PERMISSION_EFFECT_INPUT_VALUES)[number];
 export const PERMISSION_EFFECT_VALUES = ['allow', 'deny'] as const;
@@ -387,10 +397,6 @@ export const PERMISSION_TARGET_VALUES = ['operation', 'group', 'tool'] as const;
 export type PermissionTarget = (typeof PERMISSION_TARGET_VALUES)[number];
 export const RISK_LEVEL_VALUES = ['safe', 'low', 'medium', 'high', 'critical'] as const;
 export type RiskLevel = (typeof RISK_LEVEL_VALUES)[number];
-export const SANDBOX_MODE_INPUT_VALUES = ['read_only', 'workspace_write', 'full_access'] as const;
-export type SandboxModeInput = (typeof SANDBOX_MODE_INPUT_VALUES)[number];
-export const SANDBOX_MODE_VALUES = ['read_only', 'workspace_write', 'full_access'] as const;
-export type SandboxMode = (typeof SANDBOX_MODE_VALUES)[number];
 export const SHELL_CHOICE_INPUT_VALUES = ['powershell', 'cmd', 'pwsh'] as const;
 export type ShellChoiceInput = (typeof SHELL_CHOICE_INPUT_VALUES)[number];
 export const SHELL_CHOICE_VALUES = ['powershell', 'cmd', 'pwsh'] as const;
@@ -2380,6 +2386,10 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 							}
 						] } },
 					},
+					'resource_boundary_extension': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					},
 					'invocation_step_id': {
 						optional: true,
 						shape: { kind: 'string' },
@@ -2600,13 +2610,49 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 			optional: false,
 			shape: { kind: 'array', items: { kind: 'string' } },
 		},
-		'sandbox_mode': {
+		'resource_policy': {
 			optional: false,
-			shape: { kind: 'enum', values: SANDBOX_MODE_VALUES },
-		},
-		'network_policy': {
-			optional: false,
-			shape: { kind: 'enum', values: NETWORK_POLICY_VALUES },
+			shape: {
+				kind: 'object',
+				fields: {
+					'files': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'write_mode': {
+									optional: false,
+									shape: { kind: 'enum', values: FILE_WRITE_MODE_VALUES },
+								},
+								'write_roots': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'path_roots': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								}
+							}
+						},
+					},
+					'network': {
+						optional: false,
+						shape: {
+							kind: 'object',
+							fields: {
+								'access': {
+									optional: false,
+									shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
+								},
+								'allowed_domains': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								}
+							}
+						},
+					}
+				}
+			},
 		},
 		'config_version': {
 			optional: false,
@@ -4057,6 +4103,10 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 							}
 						] } },
 					},
+					'resource_boundary_extension': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					},
 					'invocation_step_id': {
 						optional: true,
 						shape: { kind: 'string' },
@@ -5015,21 +5065,53 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: EXECUTION_MODE_VALUES },
 					},
-					'sandbox_mode': {
+					'resource_policy': {
 						optional: false,
-						shape: { kind: 'enum', values: SANDBOX_MODE_VALUES },
+						shape: {
+							kind: 'object',
+							fields: {
+								'files': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'write_mode': {
+												optional: false,
+												shape: { kind: 'enum', values: FILE_WRITE_MODE_VALUES },
+											},
+											'write_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'path_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											}
+										}
+									},
+								},
+								'network': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'access': {
+												optional: false,
+												shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
+											},
+											'allowed_domains': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											}
+										}
+									},
+								}
+							}
+						},
 					},
 					'execution_root': {
 						optional: true,
 						shape: { kind: 'string' },
-					},
-					'writable_roots': {
-						optional: true,
-						shape: { kind: 'array', items: { kind: 'string' } },
-					},
-					'network_policy': {
-						optional: false,
-						shape: { kind: 'enum', values: NETWORK_POLICY_VALUES },
 					},
 					'encrypt_sensitive': {
 						optional: false,
@@ -5538,13 +5620,49 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 						optional: true,
 						shape: { kind: 'number' },
 					},
-					'allowed_paths': {
+					'resource_policy': {
 						optional: false,
-						shape: { kind: 'array', items: { kind: 'string' } },
-					},
-					'allowed_domains': {
-						optional: false,
-						shape: { kind: 'array', items: { kind: 'string' } },
+						shape: {
+							kind: 'object',
+							fields: {
+								'files': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'write_mode': {
+												optional: false,
+												shape: { kind: 'enum', values: FILE_WRITE_MODE_VALUES },
+											},
+											'write_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'path_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											}
+										}
+									},
+								},
+								'network': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'access': {
+												optional: false,
+												shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
+											},
+											'allowed_domains': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											}
+										}
+									},
+								}
+							}
+						},
 					},
 					'disabled_operations': {
 						optional: false,
@@ -5706,6 +5824,10 @@ export const INTERACTION_REQUESTED_EVENT_PAYLOAD_SHAPE = {
 					}
 				}
 			] } },
+		},
+		'resource_boundary_extension': {
+			optional: false,
+			shape: { kind: 'boolean' },
 		},
 		'invocation_step_id': {
 			optional: true,
@@ -9417,6 +9539,10 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 							}
 						] } },
 					},
+					'resource_boundary_extension': {
+						optional: false,
+						shape: { kind: 'boolean' },
+					},
 					'invocation_step_id': {
 						optional: true,
 						shape: { kind: 'string' },
@@ -10124,21 +10250,53 @@ export const SETTINGS_RESPONSE_SHAPE = {
 						optional: false,
 						shape: { kind: 'enum', values: EXECUTION_MODE_VALUES },
 					},
-					'sandbox_mode': {
+					'resource_policy': {
 						optional: false,
-						shape: { kind: 'enum', values: SANDBOX_MODE_VALUES },
+						shape: {
+							kind: 'object',
+							fields: {
+								'files': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'write_mode': {
+												optional: false,
+												shape: { kind: 'enum', values: FILE_WRITE_MODE_VALUES },
+											},
+											'write_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'path_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											}
+										}
+									},
+								},
+								'network': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'access': {
+												optional: false,
+												shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
+											},
+											'allowed_domains': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											}
+										}
+									},
+								}
+							}
+						},
 					},
 					'execution_root': {
 						optional: true,
 						shape: { kind: 'string' },
-					},
-					'writable_roots': {
-						optional: true,
-						shape: { kind: 'array', items: { kind: 'string' } },
-					},
-					'network_policy': {
-						optional: false,
-						shape: { kind: 'enum', values: NETWORK_POLICY_VALUES },
 					},
 					'encrypt_sensitive': {
 						optional: false,
@@ -10647,13 +10805,49 @@ export const SETTINGS_RESPONSE_SHAPE = {
 						optional: true,
 						shape: { kind: 'number' },
 					},
-					'allowed_paths': {
+					'resource_policy': {
 						optional: false,
-						shape: { kind: 'array', items: { kind: 'string' } },
-					},
-					'allowed_domains': {
-						optional: false,
-						shape: { kind: 'array', items: { kind: 'string' } },
+						shape: {
+							kind: 'object',
+							fields: {
+								'files': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'write_mode': {
+												optional: false,
+												shape: { kind: 'enum', values: FILE_WRITE_MODE_VALUES },
+											},
+											'write_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'path_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											}
+										}
+									},
+								},
+								'network': {
+									optional: false,
+									shape: {
+										kind: 'object',
+										fields: {
+											'access': {
+												optional: false,
+												shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
+											},
+											'allowed_domains': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											}
+										}
+									},
+								}
+							}
+						},
 					},
 					'disabled_operations': {
 						optional: false,

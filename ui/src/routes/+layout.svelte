@@ -1396,6 +1396,7 @@
 				activeConfirmRequest?.toolName ||
 				''}
 			resources={activeConfirmRequest?.resources || []}
+			resourceBoundaryExtension={activeConfirmRequest?.resourceBoundaryExtension || false}
 			createdAt={activeConfirmRequest?.createdAt || ''}
 			deadlineAt={activeConfirmDeadlineAt ?? Number.NaN}
 			onDismiss={dismissConfirmation}

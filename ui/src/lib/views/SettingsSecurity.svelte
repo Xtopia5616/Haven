@@ -1,7 +1,5 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
-	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import SettingsField from '$lib/SettingsField.svelte';
@@ -12,18 +10,14 @@
 		permissionTargetLabel,
 	} from '$lib/permissionRuleDescription.ts';
 	import { permissionResourceScopeDescription } from '$lib/permissionResourceDescription.ts';
-	import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
-	import type { PermissionResourceScope } from '$lib/contracts/generatedCommands.ts';
-	import type { SessionPermissionGrant } from '$lib/contracts/settings.ts';
+	import type {
+		FileWriteModeInput,
+		NetworkAccessBoundaryInput,
+	} from '$lib/contracts/generatedCommands.ts';
+import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contracts/settings.ts';
 
 	interface Props {
-		security: SecurityConfigInput & {
-			permissions: Array<{
-				key: string;
-				effect: string;
-				resource_scope?: PermissionResourceScope[];
-			}>;
-		};
+		security: SecuritySettingsDraft;
 		sessionPermissions?: SessionPermissionGrant[];
 		securityDirty?: boolean;
 		securityRuntimeStatus?: 'current' | 'unchanged' | 'incomplete';
@@ -86,21 +80,26 @@
 		},
 	] as const;
 
-	const SANDBOX_MODES = [
+	const FILE_WRITE_MODES = [
 		{
 			value: 'read_only',
-			label: '只读模式',
-			detail: '拒绝本地文件写入；不会仅因只读模式而一概拒绝网络请求、打开外链等外部效果，它们仍按网络策略、操作风险与确认规则处理。无法保证只读的工具或子进程仍可能按执行边界规则拒绝。',
+			label: '只读文件',
+			detail: '拒绝本地文件写入。网络和其它外部效果继续按同一资源策略中的对应规则处理。',
 		},
 		{
-			value: 'workspace_write',
-			label: '工作区可写',
-			detail: 'Shell 通过 MXC BaseContainer 运行，只有配置的可写根允许读写；网络按独立策略执行。Skill 与 MCP stdio 子进程仍会被拒绝。',
+			value: 'workspace',
+			label: '工作区范围',
+			detail: '写入限于当前会话工作目录，或下方配置的明确写入目录。工具自己的路径规则还会进一步收窄范围。',
 		},
 		{
-			value: 'full_access',
-			label: '完整用户权限',
-			detail: '允许时，子进程以当前 Windows 用户权限访问该用户可访问的文件；执行工作区只决定默认工作目录，联网仍按单独的网络策略处理。Haven 将每棵受管进程树限制为最多 256 个活动进程。',
+			value: 'roots',
+			label: '指定目录',
+			detail: '写入只允许在下方列出的本地目录中进行；目录必须存在且可安全打开。',
+		},
+		{
+			value: 'unrestricted',
+			label: '不附加路径限制',
+			detail: '移除 Haven 管理的路径范围限制；操作仍受授权、风险规则和当前 Windows 用户权限约束。',
 		},
 	] as const;
 
@@ -218,14 +217,25 @@
 	let resetDialogOpen = $state(false);
 	let resetPending = $state(false);
 	let pendingRule = $state('');
-	let advancedBoundaryOpen = $state(untrack(() => (security.writable_roots?.length ?? 0) > 0));
 	let resetScope = $state<'permanent' | 'session'>('permanent');
 	let permissions = $derived(Array.isArray(security?.permissions) ? security.permissions : []);
 	let storedSessionPermissions = $derived(
 		Array.isArray(sessionPermissions) ? sessionPermissions : [],
 	);
-	let writableRoots = $derived(
-		Array.isArray(security?.writable_roots) ? security.writable_roots.filter(Boolean) : [],
+	let writeRoots = $derived(
+		Array.isArray(security?.resource_policy?.files?.write_roots)
+			? security.resource_policy.files.write_roots.filter(Boolean)
+			: [],
+	);
+	let filePathRoots = $derived(
+		Array.isArray(security?.resource_policy?.files?.path_roots)
+			? security.resource_policy.files.path_roots.filter(Boolean)
+			: [],
+	);
+	let networkAllowedDomains = $derived(
+		Array.isArray(security?.resource_policy?.network?.allowed_domains)
+			? security.resource_policy.network.allowed_domains.filter(Boolean)
+			: [],
 	);
 	let securitySummaryStatus = $derived(
 		securityDirty
@@ -240,11 +250,12 @@
 		EXECUTION_MODES.find((mode) => mode.value === security?.execution_mode) ||
 			EXECUTION_MODES[1],
 	);
-	let selectedSandboxMode = $derived(
-		SANDBOX_MODES.find((mode) => mode.value === security?.sandbox_mode) || SANDBOX_MODES[1],
+	let selectedFileWriteMode = $derived(
+		FILE_WRITE_MODES.find((mode) => mode.value === security?.resource_policy?.files?.write_mode) ||
+			FILE_WRITE_MODES[1],
 	);
 	let selectedNetworkPolicy = $derived(
-		NETWORK_POLICIES.find((policy) => policy.value === security?.network_policy) ||
+		NETWORK_POLICIES.find((policy) => policy.value === security?.resource_policy?.network?.access) ||
 			NETWORK_POLICIES[1],
 	);
 	function isOptionValue<T extends string>(
@@ -364,46 +375,46 @@
 		</div>
 	</div>
 
-	<details class="settings-subsection resource-boundaries">
-		<summary>资源边界（高级）</summary>
+	<div class="settings-subsection resource-boundaries">
 		<div class="subsection-heading">
 			<div>
-				<h3>资源边界</h3>
+				<h3>资源策略</h3>
 				<p>
-					这些边界限制 Haven 管理的文件与网络操作；不会替其它进程设置 Windows
-					文件或网络限制，受管子进程还会遵守各自的执行边界。
+					文件和网络限制由同一策略描述，工具自己的资源限制只会进一步缩小范围。一次确认可临时扩展到弹窗列出的资源；它不会保存为新的策略。
 				</p>
 			</div>
 		</div>
 		<div class="boundary-grid">
 			<div class="boundary-card">
-				<SettingsField label="文件访问模式" id="security-sandbox">
+				<SettingsField label="文件写入范围" id="security-file-write-mode">
 					<MaterialSelect
-						id="security-sandbox"
-						value={security.sandbox_mode || 'workspace_write'}
-						options={SANDBOX_MODES.map((mode) => ({
+						id="security-file-write-mode"
+						value={security.resource_policy.files.write_mode || 'workspace'}
+						options={FILE_WRITE_MODES.map((mode) => ({
 							value: mode.value,
 							label: mode.label,
 						}))}
 						onChange={withStringValue((value) => {
-							if (isOptionValue(SANDBOX_MODES, value)) security.sandbox_mode = value;
+							if (isOptionValue(FILE_WRITE_MODES, value))
+								security.resource_policy.files.write_mode = value as FileWriteModeInput;
 						})}
 					/>
 				</SettingsField>
-				<p class="boundary-detail">{selectedSandboxMode.detail}</p>
+				<p class="boundary-detail">{selectedFileWriteMode.detail}</p>
 			</div>
 			<div class="boundary-card">
 				<SettingsField label="网络策略" id="security-network">
 					<MaterialSelect
 						id="security-network"
-						value={security.network_policy || 'restricted'}
+						value={security.resource_policy.network.access || 'restricted'}
 						options={NETWORK_POLICIES.map((policy) => ({
 							value: policy.value,
 							label: policy.label,
 						}))}
 						onChange={withStringValue((value) => {
 							if (isOptionValue(NETWORK_POLICIES, value))
-								security.network_policy = value;
+								security.resource_policy.network.access =
+									value as NetworkAccessBoundaryInput;
 						})}
 					/>
 				</SettingsField>
@@ -417,9 +428,7 @@
 					<h3>新会话默认工作目录</h3>
 					<p>
 						此目录只用于初始化新会话。每个会话随后独立保存工作目录，Files 的相对路径和
-						Shell 默认目录会跟随该会话。工作区可写模式下，只有 writable_roots
-						留空时它才是默认写入范围；自定义可写目录非空时会覆盖此默认范围。Files
-						工具配置的 allowed_paths 还会进一步收窄写入范围。
+						Shell 默认目录会跟随该会话。工作区范围模式下，未配置写入目录时使用会话工作目录；指定目录模式会完全按目录列表约束写入。
 						已开始的调用继续使用旧工作区；子进程是否隔离由各自的执行边界决定。
 					</p>
 				</div>
@@ -452,59 +461,97 @@
 			</SettingsField>
 		</div>
 
-		<div class="advanced-boundary" data-setting-searchable>
-			<MaterialCollapsible bind:open={advancedBoundaryOpen}>
-				{#snippet header()}
-					<span>高级：自定义可写目录</span>
-					<small>{security.writable_roots?.length || 0} 个目录</small>
-				{/snippet}
-				<div class="advanced-boundary__body">
-					<p>
-						每行填写一个已存在、可安全打开的本地绝对目录。非空时，这些目录覆盖会话工作目录的默认写入范围；为空时使用当前会话工作目录。Files
-						工具配置的 allowed_paths 会与写入基准取交集。
+		<div class="resource-boundary-details" data-setting-searchable>
+			<SettingsField
+				label="写入目录"
+				id="security-write-roots"
+				description="每行一个已存在、可安全打开的本地绝对目录。工具级路径规则会与此范围取交集。"
+				stacked
+			>
+				<textarea
+					id="security-write-roots"
+					class="md-textarea md-textarea--code security-roots"
+					rows="3"
+					value={writeRoots.join('\n')}
+					placeholder="例如：C:\\Users\\me\\Projects\\haven"
+					oninput={(event) => {
+						const roots = inputElementValue(event)
+							.split(/\r?\n/)
+							.map((value) => value.trim())
+							.filter(Boolean);
+						security.resource_policy.files.write_roots = roots;
+						if (roots.length > 0 && security.resource_policy.files.write_mode === 'workspace') {
+							security.resource_policy.files.write_mode = 'roots';
+						} else if (
+							roots.length === 0 && security.resource_policy.files.write_mode === 'roots'
+						) {
+							security.resource_policy.files.write_mode = 'workspace';
+						}
+					}}></textarea>
+			</SettingsField>
+			<SettingsField
+				label="文件访问目录范围"
+				id="security-file-path-roots"
+				description="可选；每行一个已存在的本地绝对目录。它会同时限制声明的文件读取和写入范围，并与写入范围取交集。"
+				stacked
+			>
+				<textarea
+					id="security-file-path-roots"
+					class="md-textarea md-textarea--code security-roots"
+					rows="3"
+					value={filePathRoots.join('\n')}
+					placeholder="留空表示不增加通用文件路径限制"
+					oninput={(event) => {
+						security.resource_policy.files.path_roots = inputElementValue(event)
+							.split(/\r?\n/)
+							.map((value) => value.trim())
+							.filter(Boolean);
+					}}></textarea>
+			</SettingsField>
+			<SettingsField
+				label="网络域名范围"
+				id="security-network-domains"
+				description="可选；每行一个主机名或 *.example.com 通配范围。全局和工具级名单同时配置时必须同时匹配；该范围也会检查 HTTP 重定向。"
+				stacked
+			>
+				<textarea
+					id="security-network-domains"
+					class="md-textarea md-textarea--code security-roots"
+					rows="3"
+					value={networkAllowedDomains.join('\n')}
+					placeholder="留空表示不增加域名限制"
+					oninput={(event) => {
+						security.resource_policy.network.allowed_domains = inputElementValue(event)
+							.split(/\r?\n/)
+							.map((value) => value.trim())
+							.filter(Boolean);
+					}}></textarea>
+			</SettingsField>
+			<div class="effective-write-scope" aria-live="polite">
+				<strong>当前写入边界</strong>
+				{#if security.resource_policy.files.write_mode === 'read_only'}
+					<p>文件修改会被拒绝；下面列出的目录不会覆盖只读策略。</p>
+				{:else if security.resource_policy.files.write_mode === 'unrestricted'}
+					<p>当前不附加路径范围限制，仍受授权和 Windows 用户权限约束。</p>
+				{:else if security.resource_policy.files.write_mode === 'roots'}
+					<p>文件写入只能进入配置的目录，并继续受工具级范围限制。</p>
+				{:else}
+					<p>文件写入限于当前会话工作目录，或工具级规则允许的更小范围。</p>
+				{/if}
+				{#if writeRoots.length > 0}
+					<ul aria-label="策略中的写入目录">
+						{#each writeRoots as root (root)}
+							<li><code>{root}</code></li>
+						{/each}
+					</ul>
+				{:else if security.resource_policy.files.write_mode === 'workspace'}
+					<p class="effective-write-scope__root">
+						{security.execution_root || '启动时发现的项目根'}
 					</p>
-					<textarea
-						id="security-writable-roots"
-						class="md-textarea md-textarea--code security-roots"
-						rows="3"
-						value={(security.writable_roots || []).join('\n')}
-						placeholder="例如：C:\\Users\\me\\Projects\\haven"
-						oninput={(event) => {
-							security.writable_roots = inputElementValue(event)
-								.split(/\r?\n/)
-								.map((value) => value.trim())
-								.filter(Boolean);
-						}}></textarea>
-					<div class="effective-write-scope" aria-live="polite">
-						<strong>工作区可写模式的写入基准</strong>
-						{#if security.sandbox_mode === 'read_only'}
-							<p>
-								当前只读模式会拒绝文件修改；切换为工作区可写模式后，以下基准范围生效。
-							</p>
-						{:else if security.sandbox_mode === 'full_access'}
-							<p>
-								当前完整用户权限模式不使用工作区写入边界；Files 工具的 allowed_paths
-								仍按各自配置生效。
-							</p>
-						{:else}
-							<p>当前工作区写入范围还会与 Files 工具的 allowed_paths 取交集。</p>
-						{/if}
-						{#if writableRoots.length > 0}
-							<ul aria-label="当前自定义写入基准">
-								{#each writableRoots as root (root)}
-									<li><code>{root}</code></li>
-								{/each}
-							</ul>
-						{:else}
-							<p class="effective-write-scope__root">
-								{security.execution_root || '启动时发现的项目根'}
-							</p>
-						{/if}
-					</div>
-				</div>
-			</MaterialCollapsible>
+				{/if}
+			</div>
 		</div>
-	</details>
+	</div>
 
 	<div class="rules-section">
 		<div class="subsection-heading rules-heading">
@@ -764,7 +811,6 @@
 	}
 	.subsection-heading p,
 	.boundary-detail,
-	.advanced-boundary__body p,
 	.effective-write-scope p,
 	.empty-rules p,
 	.reset-dialog-copy {
@@ -832,31 +878,14 @@
 	.boundary-card .boundary-detail {
 		margin-top: var(--md-sys-space-sm);
 	}
-	.advanced-boundary {
+	.resource-boundary-details {
+		display: grid;
+		gap: var(--md-sys-space-md);
 		margin-top: var(--md-sys-space-md);
+		padding: var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-small);
 		background: var(--md-sys-color-surface-container-low);
-	}
-	.advanced-boundary :global(.md-collapsible-header) {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--md-sys-space-md);
-		padding: var(--md-sys-space-md);
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-body-small-size);
-		font-weight: 700;
-	}
-	.advanced-boundary :global(.md-collapsible-header-content) {
-		justify-content: space-between;
-	}
-	.advanced-boundary :global(.md-collapsible-header-content small) {
-		color: var(--md-sys-color-on-surface-variant);
-		font-weight: 400;
-	}
-	.advanced-boundary__body {
-		padding: 0 var(--md-sys-space-md) var(--md-sys-space-md);
 	}
 	.security-roots {
 		margin-top: var(--md-sys-space-sm);

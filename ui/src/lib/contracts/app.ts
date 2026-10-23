@@ -70,6 +70,7 @@ interface InteractionRequestBase {
 	summary?: string;
 	permissionKey?: string;
 	resources?: DeclaredResource[];
+	resourceBoundaryExtension?: boolean;
 	invocationStepId?: string;
 	toolIndex?: number;
 	toolCallId?: string;
@@ -284,6 +285,7 @@ export function mapInteractionRequest(value: unknown): InteractionRequest | null
 		...(wire.summary ? { summary: wire.summary } : {}),
 		...(wire.permission_key ? { permissionKey: wire.permission_key } : {}),
 		...(wire.resources?.length ? { resources: wire.resources } : {}),
+		resourceBoundaryExtension: wire.resource_boundary_extension === true,
 		...(wire.invocation_step_id ? { invocationStepId: wire.invocation_step_id } : {}),
 		...(wire.tool_index != null ? { toolIndex: wire.tool_index } : {}),
 		...(wire.tool_call_id ? { toolCallId: wire.tool_call_id } : {}),

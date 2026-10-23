@@ -425,6 +425,21 @@ pub async fn resolve_confirmation(
         )
         .await;
     }
+    let resource_boundary_extension = state
+        .runtime
+        .executor
+        .pending_confirmation_requires_resource_boundary_extension_for_owner(&owner, &confirm_id)
+        .await
+        .unwrap_or(false);
+    if confirmed
+        && resource_boundary_extension
+        && !matches!(perm_scope, haven_common::types::PermissionScope::Once)
+    {
+        return Err(log_err(
+            "resolve_confirmation",
+            "resource-boundary extensions only authorize the current operation; save a broader resource policy in Settings for reusable access",
+        ));
+    }
     if let Some(capability) = state
         .runtime
         .executor
@@ -899,6 +914,7 @@ mod tests {
             .await
             .unwrap();
         let receipt = ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: authorization_request.policy.capability.clone(),
             resources: Vec::new(),
@@ -1356,6 +1372,7 @@ mod tests {
             .await
             .unwrap();
         let receipt = ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: authorization_request.policy.capability.clone(),
             resources: Vec::new(),

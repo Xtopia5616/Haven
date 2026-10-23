@@ -29,6 +29,7 @@
 		summary?: string;
 		permissionKey?: string;
 		resources?: DeclaredResource[];
+		resourceBoundaryExtension?: boolean;
 		createdAt: string;
 		deadlineAt: number;
 		onDismiss?: (requestId: string) => void;
@@ -54,6 +55,7 @@
 		summary,
 		permissionKey,
 		resources = [],
+		resourceBoundaryExtension = false,
 		createdAt,
 		deadlineAt,
 		onDismiss,
@@ -170,6 +172,7 @@
 		target: PermissionTargetInput = 'operation',
 		selectedResourceTarget?: PermissionResourceTargetInput,
 	) {
+		if (resourceBoundaryExtension && effect === 'allow' && scope !== 'once') return;
 		const activeRequestId = requestId;
 		if (!activeRequestId || submittedRequestId === activeRequestId) {
 			return;
@@ -196,7 +199,7 @@
 	}
 
 	function requestPersistentAllow(target: PermissionTargetInput) {
-		if (!hasPersistentResources) return;
+		if (!hasPersistentResources || resourceBoundaryExtension) return;
 		const needsWarning =
 			target !== 'operation' ||
 			normalizedRisk === 'high' ||
@@ -320,14 +323,16 @@
 	{#snippet footer()}
 		<footer class="dialog-footer">
 			<div class="action-heading">
-				<span>选择允许范围和期限</span>
+				<span>{resourceBoundaryExtension ? '只扩展本次操作' : '选择允许范围和期限'}</span>
 				<span class="action-hint">
-					{allowSessionScope
+					{resourceBoundaryExtension
+						? '临时扩展只适用于上方列出的资源；不会保存授权或更改设置'
+						: allowSessionScope
 						? '本会话授权不会按时间自动到期；撤销、清除授权或删除会话后失效'
 						: '永久授权跨会话生效，关键操作仍可能继续要求确认'}
 				</span>
 			</div>
-			{#if hasPersistentResources && hasLocalPathResource}
+			{#if hasPersistentResources && hasLocalPathResource && !resourceBoundaryExtension}
 				<label class="resource-target-choice">
 					<span>保存的路径范围</span>
 					<select bind:value={resourceTarget} aria-label="保存的路径范围">
@@ -336,7 +341,7 @@
 					</select>
 				</label>
 			{/if}
-			{#if pendingPersistentTarget}
+			{#if pendingPersistentTarget && !resourceBoundaryExtension}
 				<div class="always-warning" role="alert">
 					<Icon name="alertTriangle" size={16} />
 					<div class="warning-copy">
@@ -369,10 +374,10 @@
 					<MaterialButton
 						variant="filled"
 						className="btn-once"
-						label="本次允许"
+						label={resourceBoundaryExtension ? '临时扩展并允许本次' : '本次允许'}
 						onclick={() => decide('allow', 'once', 'operation')}
 					/>
-					{#if allowSessionScope && hasPersistentResources}
+					{#if !resourceBoundaryExtension && allowSessionScope && hasPersistentResources}
 						<MaterialButton
 							variant="tonal"
 							className="btn-session"
@@ -381,7 +386,7 @@
 							onclick={() => decide('allow', 'session', 'operation', resourceTarget)}
 						/>
 					{/if}
-					{#if hasPersistentResources}
+					{#if !resourceBoundaryExtension && hasPersistentResources}
 						<div class="more-allow">
 							<MaterialButton
 								variant="text"

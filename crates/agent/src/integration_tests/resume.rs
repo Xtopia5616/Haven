@@ -489,6 +489,7 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
         0,
         haven_common::types::RiskLevel::Safe,
         Some(haven_tools::ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("haven.test").unwrap(),
             resources: Vec::new(),

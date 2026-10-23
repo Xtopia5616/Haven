@@ -4363,6 +4363,7 @@ mod tests {
             0,
             haven_common::types::RiskLevel::Safe,
             Some(haven_tools::ConfirmationReceipt {
+                resource_boundary_extension: false,
                 confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("test.operation")
                     .unwrap(),
@@ -4474,6 +4475,7 @@ mod tests {
                 0,
                 haven_common::types::RiskLevel::High,
                 Some(haven_tools::ConfirmationReceipt {
+                    resource_boundary_extension: false,
                     confirmation_id: haven_common::types::ConfirmId::new(),
                     capability: haven_common::types::CapabilityScope::try_new("test.operation")
                         .unwrap(),
@@ -4658,6 +4660,7 @@ mod tests {
             0,
             haven_common::types::RiskLevel::High,
             Some(haven_tools::ConfirmationReceipt {
+                resource_boundary_extension: false,
                 confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("test.operation")
                     .unwrap(),
@@ -4743,6 +4746,7 @@ mod tests {
             )
         };
         let receipt = || haven_tools::ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("test.operation").unwrap(),
             resources: Vec::new(),
@@ -4893,6 +4897,7 @@ mod tests {
             2,
             haven_common::types::RiskLevel::High,
             Some(haven_tools::ConfirmationReceipt {
+                resource_boundary_extension: false,
                 confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("files.write").unwrap(),
                 resources: Vec::new(),

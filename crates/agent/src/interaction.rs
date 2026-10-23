@@ -647,6 +647,7 @@ mod tests {
             0,
             haven_common::types::RiskLevel::Safe,
             Some(haven_tools::ConfirmationReceipt {
+                resource_boundary_extension: false,
                 confirmation_id: haven_common::types::ConfirmId::new(),
                 capability: haven_common::types::CapabilityScope::try_new("haven.test").unwrap(),
                 resources: Vec::new(),
@@ -735,6 +736,7 @@ mod tests {
         );
 
         let receipt = haven_tools::ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("admin.test").unwrap(),
             resources: Vec::new(),
@@ -767,6 +769,7 @@ mod tests {
     #[test]
     fn direct_ui_confirmation_uses_the_canonical_confirm_shape() {
         let receipt = haven_tools::ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("admin.test").unwrap(),
             resources: Vec::new(),
@@ -875,6 +878,7 @@ mod tests {
         assert!(error.to_string().contains("interaction correlation ID"));
 
         let receipt = haven_tools::ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("haven.test").unwrap(),
             resources: Vec::new(),

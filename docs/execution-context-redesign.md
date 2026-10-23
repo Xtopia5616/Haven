@@ -1,6 +1,6 @@
 # 会话、工作区、权限与执行环境重设计
 
-> 日期：2026-10-22，状态更新：Slice 1 已按 [ADR 1373](adr/1373-session-scoped-execution-workspace.md) 完成；Slice 2 的执行预设、网络 Ask 拆分、Files 本地路径与 HTTP origin typed resource 已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 实施；Slice 5 的会话执行方式选择已部分实施。其余设计只在对应切片完成后替代当前契约。
+> 日期：2026-10-23，状态更新：Slice 1 已按 [ADR 1373](adr/1373-session-scoped-execution-workspace.md) 完成；Slice 2 的执行预设、网络 Ask 拆分、Files 本地路径与 HTTP origin typed resource 已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 实施；Slice 5 的会话执行方式选择已部分实施。规范 `ResourcePolicy` 与当前支持的文件边界扩展已按 [ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md) 完成。其余设计只在对应切片完成后替代当前契约。
 > 决策入口：[ADR 1367](adr/1367-session-scoped-execution-policy-design.md)。实施状态只在[架构重构路线图](architecture-refactor-roadmap.md)维护。
 
 ## 1. 建议采用的模型
@@ -131,7 +131,7 @@ Shell 命令如果只能作为不透明脚本文本处理，就不能从一个�
 
 ### 5.4 边界扩展和批准当前动作分开
 
-已有范围内的确认只批准该项操作。确需写入另一个目录或访问新增域名时，用 typed 的边界扩展请求显示具体资源、动作和有效期；获准后为该次操作/会话产生受限扩展，再重新授权和执行。全局硬禁止、显式 deny 和 Analyze 限制不可由普通确认覆盖。
+已有范围内的确认只批准该项操作。当前只有 `WorkspaceWrite` 文件目标支持临时边界扩展：越出工作区或配置写入根时，确认展示确切目标、动作和有效期；获准后只为该次调用生成受限 capability，再重新授权和执行。网络域名限制、工具级文件路径限制、全局硬禁止、显式 deny 和 Analyze 限制都不可由普通确认覆盖；未实现扩展的资源边界必须 fail closed。
 
 因此“保存这个文件到另一个文件夹”不需要用户先切到 Full Access；“允许本次执行”也不能偷偷改写全局安全设置。若失败发生在副作用启动之后且结果未知，不能通过扩展权限自动重跑。
 
@@ -195,12 +195,12 @@ HTTP MCP 按远程 endpoint、账户和目标对象授权，不要求本机进�
 | 顺序 | 状态 | 完整切片 | 随切片删除的旧设计 | 验收重点 |
 |---|---|---|---|---|
 | 1 | 已完成（ADR 1373） | Session 创建/恢复 → 工作绑定 → Files/Shell/prompt 使用同一 run context | 全局活动 workspace 对会话的隐式影响 | 双会话、恢复、失效目录、切目录期间的 attempt 与后台任务 |
-| 2 | 进行中（ADR 1374） | typed 资源契约 → 单一授权 → 文件/HTTP 执行 | 参数名猜路径；network 中的 Ask；Plan 与审批偏好的混合 | Files 源/目标与 HTTP origin 已声明；其它资源类型、范围授权与边界扩展仍待完成 |
+| 2 | 核心完成（ADR 1374、1376） | typed 资源契约 → 单一授权 → 文件/HTTP 执行 | 参数名猜路径；network 中的 Ask；Plan 与审批偏好的混合；分散的资源配置字段 | Files 源/目标与 HTTP origin 已声明；全局/工具级策略已统一为 `ResourcePolicy`；WorkspaceWrite 越界可对本次调用确认扩展；网络域名扩展与其它资源类型仍待完成 |
 | 3 | 部分完成（ADR 1368） | 将已有 MXC 工作接入统一执行环境，并盘点其他进程路径 | 将静态隔离声明视作已实施证明；隔离失败后的宽权限回退 | Shell 隔离已独立实现；其余子进程路径与统一 capability 报告待盘点 |
 | 4 | 部分完成 | 拆解 MCP exposure → 原生/Code Mode 共用资源契约与 journal | server 级 Legacy/CodeMode 常规选择及重复授权分支 | CodeMode 子调用已复用授权和 durable journal；exposure 枚举拆分及资源合同仍待完成 |
-| 5 | 部分完成（ADR 1374） | 标题区两项选择、权限明细和具体边界扩展 | 旧 permission/sandbox/network 三组模式及重复目录入口 | 会话工作目录/执行方式已分开；资源扩展交互和设置边界合并仍待完成 |
+| 5 | 已完成（ADR 1374、1376） | 标题区执行方式、权限明细、规范资源策略和具体边界扩展 | 旧 permission/sandbox/network 三组模式及重复目录入口 | 设置页统一编辑全局文件/网络策略；边界扩展仅对当前 WorkspaceWrite typed 调用生效 |
 
-切片 1 已落地；Slice 2 的核心调用链已将旧 `PermissionMode` 收敛为会话级执行预设，并将网络 `Ask` 移出资源策略。完整资源类型、范围授权与边界扩展仍在 Slice 2 跟踪。MXC 的 Shell 支持已按 ADR 1368 独立完成；剩余进程路径盘点仍属于 Slice 3。
+切片 1 已落地；Slice 2 的核心调用链已将旧 `PermissionMode` 收敛为会话级执行预设，将网络 `Ask` 移出资源策略，并按 ADR 1376 完成规范策略和当前支持的文件边界扩展。尚未实现扩展的资源类型仍需后续切片补齐。MXC 的 Shell 支持已按 ADR 1368 独立完成；剩余进程路径盘点仍属于 Slice 3。
 
 会话目录和执行方式都复用 `session_events`，未改数据库 schema，**无需重置任何数据**。Slice 2 的配置与授权改动已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 记录；后续切片仍需逐片记录契约处理：
 

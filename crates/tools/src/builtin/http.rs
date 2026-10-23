@@ -6,6 +6,7 @@ use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -28,11 +29,14 @@ pub struct HttpTool {
     /// Optional host allowlist. Empty means public hosts are allowed after
     /// destination validation has rejected local/private hosts.
     pub allowed_domains: Vec<String>,
+    /// Live resource policy so global and per-tool domain restrictions remain
+    /// effective after settings change, including on redirect targets.
+    pub authorization: Option<Arc<crate::security::AuthorizationEngine>>,
 }
 
 #[derive(Debug, Clone, Default)]
 struct HttpDestinationPolicy {
-    allowed_domains: Vec<String>,
+    allowed_domain_groups: Vec<Vec<String>>,
     /// Only enabled by unit tests so the canned loopback HTTP servers can be
     /// exercised without weakening production policy.
     #[cfg(test)]
@@ -113,6 +117,7 @@ impl HttpTool {
         let as_html = params.as_html.unwrap_or(false);
         let headers: Vec<(String, String)> =
             params.headers.unwrap_or_default().into_iter().collect();
+        let allowed_domain_groups = self.effective_domain_constraints().await;
 
         if cancel.is_cancelled() {
             return Ok(ToolResult::cancelled("HTTP request cancelled"));
@@ -129,7 +134,7 @@ impl HttpTool {
                 as_html,
                 timeout_secs,
                 self.max_body_bytes,
-                &self.allowed_domains,
+                &allowed_domain_groups,
                 true,
                 cancel.clone(),
             ) => result,
@@ -151,6 +156,7 @@ impl HttpTool {
         if url.len() > MAX_HTTP_URL_BYTES {
             anyhow::bail!("HTTP URL exceeds the {MAX_HTTP_URL_BYTES} byte limit");
         }
+        let allowed_domain_groups = self.effective_domain_constraints().await;
         let result = execute_once_mode(
             url,
             "GET",
@@ -159,12 +165,22 @@ impl HttpTool {
             false,
             15,
             self.max_body_bytes,
-            &self.allowed_domains,
+            &allowed_domain_groups,
             true,
             cancel,
         )
         .await?;
         Ok(result.output)
+    }
+
+    async fn effective_domain_constraints(&self) -> Vec<Vec<String>> {
+        if let Some(authorization) = &self.authorization {
+            authorization.network_domain_constraints("http").await
+        } else if self.allowed_domains.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.allowed_domains.clone()]
+        }
     }
 }
 
@@ -225,6 +241,7 @@ impl Default for HttpTool {
             backoff_base_secs: 1,
             max_body_bytes: 1024 * 1024,
             allowed_domains: Vec::new(),
+            authorization: None,
         }
     }
 }
@@ -375,12 +392,12 @@ async fn execute_once_mode(
     as_html: bool,
     timeout_secs: u64,
     max_body_bytes: usize,
-    allowed_domains: &[String],
+    allowed_domain_groups: &[Vec<String>],
     extract_known_content: bool,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
     let destination_policy = HttpDestinationPolicy {
-        allowed_domains: allowed_domains.to_vec(),
+        allowed_domain_groups: allowed_domain_groups.to_vec(),
         #[cfg(test)]
         allow_loopback: true,
     };
@@ -589,15 +606,26 @@ async fn resolve_http_destination(
     raw_url: &str,
     destination_policy: &HttpDestinationPolicy,
 ) -> anyhow::Result<ResolvedHttpDestination> {
+    let parsed = reqwest::Url::parse(raw_url)?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("HTTP URL has no destination host"))?;
+    if destination_policy
+        .allowed_domain_groups
+        .iter()
+        .any(|domains| !domains.is_empty() && !network::http_domain_allowed(host, domains))
+    {
+        anyhow::bail!("HTTP destination is outside the configured resource policy");
+    }
     #[cfg(test)]
     if destination_policy.allow_loopback {
         return network::resolve_http_destination_for_test(
             raw_url,
-            &destination_policy.allowed_domains,
+            &[],
         )
         .await;
     }
-    network::resolve_http_destination(raw_url, &destination_policy.allowed_domains).await
+    network::resolve_http_destination(raw_url, &[]).await
 }
 
 fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
@@ -865,6 +893,7 @@ mod tests {
             backoff_base_secs: 0,
             max_body_bytes: 5,
             allowed_domains: Vec::new(),
+            authorization: None,
         };
         let result = tool
             .execute(
@@ -1017,7 +1046,7 @@ mod tests {
             false,
             1024 * 1024,
             &HttpDestinationPolicy {
-                allowed_domains: Vec::new(),
+                allowed_domain_groups: Vec::new(),
                 allow_loopback: true,
             },
         )
@@ -1190,7 +1219,7 @@ mod tests {
     #[tokio::test]
     async fn http_destination_policy_allows_loopback_only_for_test_configuration() {
         let destination_policy = HttpDestinationPolicy {
-            allowed_domains: Vec::new(),
+            allowed_domain_groups: Vec::new(),
             allow_loopback: true,
         };
         assert!(
@@ -1216,7 +1245,7 @@ mod tests {
         );
 
         let allowlist = HttpDestinationPolicy {
-            allowed_domains: vec!["example.com".into()],
+            allowed_domain_groups: vec![vec!["example.com".into()]],
             allow_loopback: false,
         };
         assert!(

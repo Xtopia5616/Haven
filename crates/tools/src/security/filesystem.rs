@@ -31,6 +31,9 @@ pub(crate) struct FileReadPolicy {
 #[derive(Clone, Default)]
 pub(crate) struct FileWritePolicy {
     pub(super) root_constraints: Vec<Vec<DirectoryCapability>>,
+    /// One-call extension roots created only from the exact typed write
+    /// resources bound into an accepted confirmation receipt.
+    pub(super) extension_roots: Vec<DirectoryCapability>,
     pub(super) ambient: bool,
 }
 
@@ -39,6 +42,7 @@ impl FileWritePolicy {
     pub(crate) fn ambient_for_test() -> Self {
         Self {
             root_constraints: Vec::new(),
+            extension_roots: Vec::new(),
             ambient: true,
         }
     }
@@ -47,6 +51,7 @@ impl FileWritePolicy {
     pub(crate) fn for_test_roots(roots: &[PathBuf]) -> Self {
         Self {
             root_constraints: vec![open_directory_roots(roots, "test roots").unwrap()],
+            extension_roots: Vec::new(),
             ambient: false,
         }
     }
@@ -66,6 +71,20 @@ impl FileWritePolicy {
         })?;
 
         let mut selected = Vec::new();
+        if !self.extension_roots.is_empty() {
+            let capability = self
+                .extension_roots
+                .iter()
+                .filter(|candidate| candidate.relative_path(&resolved).is_some())
+                .max_by_key(|candidate| candidate.root().components().count())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "file mutation path is outside its temporary resource extension",
+                    )
+                })?;
+            selected.push(capability.clone());
+        }
         for candidates in &self.root_constraints {
             let capability = candidates
                 .iter()

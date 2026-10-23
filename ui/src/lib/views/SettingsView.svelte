@@ -80,7 +80,6 @@
 		NotificationConfigInput,
 		OcrConfigInput,
 		ExecutionModeInput,
-		SandboxModeInput,
 		SecurityConfigInput,
 		SessionConfigInput,
 		ShellChoiceInput,
@@ -95,7 +94,7 @@
 		TtsConfigDraft,
 	} from '$lib/mediaConfigDraft.ts';
 	import type { StoredPermission } from '$lib/contracts/generatedCommands.ts';
-	import type { SessionPermissionGrant } from '$lib/contracts/settings.ts';
+	import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contracts/settings.ts';
 	import {
 		settingsLlmInputFromState,
 		settingsLlmStateFromConfig,
@@ -255,12 +254,13 @@
 		running: false,
 		lastCount: null,
 	});
-	let security = $state<Omit<SecurityConfigInput, 'permissions'> & { permissions: StoredPermission[] }>({
+	let security = $state<SecuritySettingsDraft>({
 		execution_mode: 'collaborative',
-		sandbox_mode: 'workspace_write',
-		network_policy: 'restricted',
+		resource_policy: {
+			files: { write_mode: 'workspace', write_roots: [], path_roots: [] },
+			network: { access: 'restricted', allowed_domains: [] },
+		},
 		execution_root: null,
-		writable_roots: [],
 		permissions: [],
 	});
 	let sessionPermissions = $state<SessionPermissionGrant[]>([]);
@@ -496,10 +496,8 @@
 			},
 			security: {
 				execution_mode: security.execution_mode,
-				sandbox_mode: security.sandbox_mode,
-				network_policy: security.network_policy,
+				resource_policy: security.resource_policy,
 				execution_root: security.execution_root,
-				writable_roots: security.writable_roots,
 				permissions: security.permissions,
 			},
 			context_limits: contextLimits,
@@ -911,6 +909,16 @@
 				security = {
 					...security,
 					...snapshot.security,
+					resource_policy: {
+						files: {
+							...security.resource_policy.files,
+							...(snapshot.security.resource_policy?.files || {}),
+						},
+						network: {
+							...security.resource_policy.network,
+							...(snapshot.security.resource_policy?.network || {}),
+						},
+					},
 					permissions: Array.isArray(snapshot.security.permissions)
 						? snapshot.security.permissions
 						: security.permissions,
@@ -1056,12 +1064,11 @@
 			memory = { ...memory, ...(settings.memory || {}) };
 			security = {
 				execution_mode: settings.security?.execution_mode || 'collaborative',
-				sandbox_mode: settings.security?.sandbox_mode || 'workspace_write',
-				network_policy: settings.security?.network_policy || 'restricted',
+				resource_policy: settings.security?.resource_policy || {
+					files: { write_mode: 'workspace', write_roots: [], path_roots: [] },
+					network: { access: 'restricted', allowed_domains: [] },
+				},
 				execution_root: settings.security?.execution_root ?? null,
-				writable_roots: Array.isArray(settings.security?.writable_roots)
-					? settings.security.writable_roots
-					: [],
 				permissions: Array.isArray(settings.security?.permissions)
 					? settings.security.permissions
 					: [],
@@ -1335,10 +1342,8 @@
 				},
 				security: {
 					execution_mode: security.execution_mode,
-					sandbox_mode: security.sandbox_mode,
-					network_policy: security.network_policy,
+					resource_policy: security.resource_policy,
 					execution_root: security.execution_root,
-					writable_roots: security.writable_roots,
 					permissions: security.permissions,
 				},
 				context_limits: contextLimits,

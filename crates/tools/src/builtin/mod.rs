@@ -184,8 +184,9 @@ pub(crate) async fn register_builtin_tools(
         max_body_bytes: limits.network_max_body_bytes,
         allowed_domains: settings
             .get("http")
-            .map(|config| config.allowed_domains.clone())
+            .map(|config| config.resource_policy.network.allowed_domains.clone())
             .unwrap_or_default(),
+        authorization: Some(authorization.clone()),
     });
     let mut admin_operations: Option<Arc<admin::AdminOperationSet>> = None;
     let audio_runtime = Arc::new(

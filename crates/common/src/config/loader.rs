@@ -989,11 +989,14 @@ mod tests {
             ExecutionMode::Collaborative
         );
         assert_eq!(
-            SecurityConfig::default().network_policy,
-            NetworkPolicy::Restricted
+            SecurityConfig::default().resource_policy.network.access,
+            NetworkAccessBoundary::Restricted
         );
         let legacy: SecurityConfig = toml::from_str(r#"network_policy = "ask""#).unwrap();
-        assert_eq!(legacy.network_policy, NetworkPolicy::Restricted);
+        assert_eq!(
+            legacy.resource_policy.network.access,
+            NetworkAccessBoundary::Restricted
+        );
         assert_eq!(SecurityConfig::default().execution_root, None);
     }
 

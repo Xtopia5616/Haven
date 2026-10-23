@@ -73,7 +73,8 @@
 	);
 
 	const hookExecutionAllowed = $derived(
-		settings?.sandbox_mode === 'full_access' && settings.network_policy === 'open',
+		settings?.resource_policy.files.write_mode === 'unrestricted' &&
+			settings.resource_policy.network.access === 'open',
 	);
 
 	async function reload() {

@@ -272,6 +272,7 @@ mod scheduled_authorization_tests {
         capability: &str,
     ) -> haven_tools::ConfirmationReceipt {
         haven_tools::ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id,
             capability: haven_common::types::CapabilityScope::try_new(capability).unwrap(),
             resources: Vec::new(),
@@ -1935,6 +1936,7 @@ mod interaction_owner_route_tests {
 
     fn future_receipt(capability: &str) -> haven_tools::ConfirmationReceipt {
         haven_tools::ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new(capability).unwrap(),
             resources: Vec::new(),

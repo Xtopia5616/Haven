@@ -102,7 +102,7 @@ impl ToolRuntimeCoordinator {
             .bind_config_service(admin_context.config_service.clone())?;
         self.builtins
             .mcp_manager
-            .set_network_policy(security.network_policy)
+            .set_network_policy(security.resource_policy.network_policy())
             .await;
         self.builtins
             .mcp_manager
@@ -149,7 +149,7 @@ impl ToolRuntimeCoordinator {
             .await;
         let applied = self.runtime.platform().await;
         tracing::debug!(
-            network_policy = ?applied.security.network_policy,
+            network_policy = ?applied.security.resource_policy.network_policy(),
             "startup platform snapshot published"
         );
         self.rebuild_catalog_scoped(CatalogRebuildScope::All)
@@ -161,7 +161,7 @@ impl ToolRuntimeCoordinator {
         let authorization_result = self.core.authorization.apply_security(security).await;
         self.builtins
             .mcp_manager
-            .set_network_policy(security.network_policy)
+            .set_network_policy(security.resource_policy.network_policy())
             .await;
         self.builtins
             .mcp_manager
@@ -184,7 +184,7 @@ impl ToolRuntimeCoordinator {
             .await;
         let applied = self.runtime.platform().await;
         tracing::debug!(
-            network_policy = ?applied.security.network_policy,
+            network_policy = ?applied.security.resource_policy.network_policy(),
             "applied security configuration to the platform snapshot"
         );
         authorization_result

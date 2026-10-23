@@ -55,6 +55,7 @@ pub(crate) fn project_interaction(
         summary: None,
         permission_key: None,
         resources: Vec::new(),
+        resource_boundary_extension: false,
         invocation_step_id: None,
         tool_index: None,
         tool_call_id: None,
@@ -78,9 +79,17 @@ pub(crate) fn project_interaction(
         } => {
             event.tool_name = Some(tool_name.clone());
             event.risk_level = Some(*risk_level);
-            event.summary = Some(haven_tools::permission_prompt_summary(
-                tool_name, tool_input,
-            ));
+            let mut summary = haven_tools::permission_prompt_summary(tool_name, tool_input);
+            let confirmation_receipt = receipt
+                .as_ref()
+                .or_else(|| nested_confirmation.as_ref().map(|nested| &nested.receipt));
+            if confirmation_receipt
+                .is_some_and(|receipt| receipt.resource_boundary_extension)
+            {
+                summary.push_str("\n\n此操作超出当前资源策略范围。允许后只会为弹窗列出的资源临时扩展本次调用，不会修改已保存的策略。");
+                event.resource_boundary_extension = true;
+            }
+            event.summary = Some(summary);
             event.permission_key = receipt
                 .as_ref()
                 .or_else(|| nested_confirmation.as_ref().map(|nested| &nested.receipt))
@@ -110,10 +119,16 @@ pub(crate) fn project_interaction(
                 .map(|nested| &nested.input)
                 .unwrap_or(tool_input);
             event.tool_name = Some(display_name.clone());
-            event.summary = Some(haven_tools::permission_prompt_summary(
-                display_name,
-                display_input,
-            ));
+            let mut summary = haven_tools::permission_prompt_summary(display_name, display_input);
+            let confirmation_receipt = nested_confirmation
+                .as_ref()
+                .map(|nested| &nested.receipt)
+                .unwrap_or(receipt);
+            if confirmation_receipt.resource_boundary_extension {
+                summary.push_str("\n\n此操作超出当前资源策略范围。允许后只会为弹窗列出的资源临时扩展本次调用，不会修改已保存的策略。");
+                event.resource_boundary_extension = true;
+            }
+            event.summary = Some(summary);
             event.permission_key = Some(
                 nested_confirmation
                     .as_ref()

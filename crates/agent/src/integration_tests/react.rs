@@ -2290,6 +2290,7 @@ async fn continue_from_error_clears_stale_confirmation_requests() {
         0,
         haven_common::types::RiskLevel::High,
         Some(haven_tools::ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: haven_common::types::CapabilityScope::try_new("test.operation").unwrap(),
             resources: Vec::new(),

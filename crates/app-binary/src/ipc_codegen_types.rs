@@ -25,8 +25,20 @@ const IPC_CUSTOM_DESERIALIZE_REQUEST_FIELDS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Config DTOs accept legacy spellings while IPC only exposes their canonical
+/// fields. These explicit mappings allow the generated request shape to use
+/// the public struct fields without reflecting the legacy config loader.
+const IPC_CUSTOM_DESERIALIZE_TYPES: &[&str] = &[
+    "haven_common::config::misc::SecurityConfig",
+    "haven_common::config::misc::ToolConfig",
+];
+
 fn has_explicit_request_mapping(type_key: &str, field_name: &str) -> bool {
     IPC_CUSTOM_DESERIALIZE_REQUEST_FIELDS.contains(&(type_key, field_name))
+}
+
+fn has_explicit_type_request_mapping(type_key: &str) -> bool {
+    IPC_CUSTOM_DESERIALIZE_TYPES.contains(&type_key)
 }
 
 #[derive(Clone)]
@@ -1143,6 +1155,15 @@ impl RustTypeGraph {
     fn render_definition(&mut self, key: &str, usage: TypeUse) -> Result<String, String> {
         let definition = self.definitions.get(key).cloned().expect("known key");
         let name = emitted_name(&definition.name, usage);
+        if matches!(usage, TypeUse::Request)
+            && definition.serde.custom_deserialize
+            && !has_explicit_type_request_mapping(&definition.key)
+        {
+            return Err(format!(
+                "Rust IPC DTO {} uses custom deserialization and needs an explicit request mapping",
+                definition.key
+            ));
+        }
         if definition.serde.flatten {
             return Err(format!(
                 "{} uses unsupported serde(flatten)",
@@ -1752,11 +1773,15 @@ fn serde_options(attrs: &[syn::Attribute]) -> Result<SerdeOptions, String> {
                 // rejects the marker explicitly.
                 options.custom_deserialize = true;
                 let _ = meta.value()?.parse::<syn::Expr>()?;
+            } else if meta.path.is_ident("try_from") {
+                // The generated IPC input shape uses the canonical public DTO.
+                // The explicit type mapping is checked during request emission.
+                options.custom_deserialize = true;
+                let _ = meta.value()?.parse::<syn::Expr>()?;
             } else if meta.path.is_ident("serialize_with")
                 || meta.path.is_ident("with")
                 || meta.path.is_ident("remote")
                 || meta.path.is_ident("from")
-                || meta.path.is_ident("try_from")
                 || meta.path.is_ident("into")
             {
                 return Err(

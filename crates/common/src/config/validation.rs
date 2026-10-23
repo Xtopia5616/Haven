@@ -1,8 +1,9 @@
 //! Shared validation for values that cross the config and JavaScript boundary.
 
 use super::{
-    AppConfig, MAX_SESSION_STEPS_PER_RUN, MAX_SESSION_STEPS_PER_SESSION, MIN_SESSION_STEPS_PER_RUN,
-    MIN_SESSION_STEPS_PER_SESSION, SettingsSnapshot,
+    AppConfig, FileWriteMode, MAX_SESSION_STEPS_PER_RUN, MAX_SESSION_STEPS_PER_SESSION,
+    MIN_SESSION_STEPS_PER_RUN, MIN_SESSION_STEPS_PER_SESSION, NetworkAccessBoundary,
+    SettingsSnapshot,
 };
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -44,14 +45,35 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     {
         anyhow::bail!("security.execution_root must be an absolute local directory path");
     }
-    if let Some((index, _)) = config
-        .security
-        .writable_roots
+    let resource_policy = &config.security.resource_policy;
+    if matches!(resource_policy.files.write_mode, FileWriteMode::Inherit) {
+        anyhow::bail!("security.resource_policy.files.write_mode cannot inherit");
+    }
+    if matches!(resource_policy.network.access, NetworkAccessBoundary::Inherit) {
+        anyhow::bail!("security.resource_policy.network.access cannot inherit");
+    }
+    if matches!(resource_policy.files.write_mode, FileWriteMode::Roots)
+        && resource_policy.files.write_roots.is_empty()
+    {
+        anyhow::bail!("security.resource_policy.files.write_roots must not be empty for roots mode");
+    }
+    if let Some((index, _)) = resource_policy
+        .files
+        .write_roots
         .iter()
         .enumerate()
         .find(|(_, root)| !crate::path::is_absolute_local_path(std::path::Path::new(root)))
     {
-        anyhow::bail!("security.writable_roots[{index}] must be an absolute local directory path");
+        anyhow::bail!("security.resource_policy.files.write_roots[{index}] must be an absolute local directory path");
+    }
+    if let Some((index, _)) = resource_policy
+        .files
+        .path_roots
+        .iter()
+        .enumerate()
+        .find(|(_, root)| !crate::path::is_absolute_local_path(std::path::Path::new(root)))
+    {
+        anyhow::bail!("security.resource_policy.files.path_roots[{index}] must be an absolute local directory path");
     }
     validate_session_step_budgets(
         config.session.max_steps_per_run,
@@ -62,6 +84,21 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     validate_skills_exec(&config.skills_exec)?;
     validate_context_windows(config)?;
     for (name, tool) in &config.tool_settings {
+        if matches!(tool.resource_policy.files.write_mode, FileWriteMode::Roots)
+            && tool.resource_policy.files.write_roots.is_empty()
+        {
+            anyhow::bail!("tool_settings.{name}.resource_policy.files.write_roots must not be empty for roots mode");
+        }
+        for (index, root) in tool.resource_policy.files.write_roots.iter().enumerate() {
+            if !crate::path::is_absolute_local_path(std::path::Path::new(root)) {
+                anyhow::bail!("tool_settings.{name}.resource_policy.files.write_roots[{index}] must be an absolute local directory path");
+            }
+        }
+        for (index, root) in tool.resource_policy.files.path_roots.iter().enumerate() {
+            if !crate::path::is_absolute_local_path(std::path::Path::new(root)) {
+                anyhow::bail!("tool_settings.{name}.resource_policy.files.path_roots[{index}] must be an absolute local directory path");
+            }
+        }
         if tool
             .timeout_secs
             .is_some_and(|timeout| timeout == 0 || timeout > super::MAX_TOOL_TIMEOUT_SECS)
@@ -1169,10 +1206,13 @@ mod tests {
     #[test]
     fn configured_writable_roots_must_be_absolute_local_paths() {
         let mut config = AppConfig::default();
-        config.security.writable_roots = vec!["relative/project".into()];
+        config.security.resource_policy.files.write_mode = FileWriteMode::Roots;
+        config.security.resource_policy.files.write_roots = vec!["relative/project".into()];
 
         let error = validate_app_config(&config).unwrap_err();
-        assert!(error.to_string().contains("security.writable_roots[0]"));
+        assert!(error
+            .to_string()
+            .contains("security.resource_policy.files.write_roots[0]"));
         assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
     }
 
@@ -1181,10 +1221,13 @@ mod tests {
     fn configured_writable_roots_reject_unc_and_device_paths() {
         for path in [r"\\server\share\projects", r"\\?\C:\projects"] {
             let mut config = AppConfig::default();
-            config.security.writable_roots = vec![path.into()];
+            config.security.resource_policy.files.write_mode = FileWriteMode::Roots;
+            config.security.resource_policy.files.write_roots = vec![path.into()];
 
             let error = validate_app_config(&config).unwrap_err();
-            assert!(error.to_string().contains("security.writable_roots[0]"));
+            assert!(error
+                .to_string()
+                .contains("security.resource_policy.files.write_roots[0]"));
         }
     }
 

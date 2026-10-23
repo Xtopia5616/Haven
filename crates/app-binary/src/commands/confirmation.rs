@@ -462,6 +462,15 @@ pub(super) async fn accept_ui_confirmation(
         "resolving renderer-triggered confirmation"
     );
     let allowed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
+    if allowed
+        && pending.receipt.resource_boundary_extension
+        && !matches!(perm_scope, haven_common::types::PermissionScope::Once)
+    {
+        return Err(log_err(
+            "resolve_ui_confirmation",
+            "resource-boundary extensions only authorize the current operation; save a broader resource policy in Settings for reusable access",
+        ));
+    }
     if allowed {
         let authorization_request = &pending.authorization_request;
         state

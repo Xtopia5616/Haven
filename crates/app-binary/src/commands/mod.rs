@@ -170,6 +170,7 @@ mod tests {
 
     fn receipt() -> ConfirmationReceipt {
         ConfirmationReceipt {
+            resource_boundary_extension: false,
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: CapabilityScope::try_new("haven.mcp.refresh").unwrap(),
             resources: Vec::new(),

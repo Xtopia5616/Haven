@@ -1040,16 +1040,11 @@ impl ToolsFacade {
     }
 
     /// Return the policy currently enforced by the Hook process authorization gate.
-    pub async fn lifecycle_hook_security_policy(
-        &self,
-    ) -> (
-        haven_common::types::SandboxMode,
-        haven_common::types::NetworkPolicy,
-    ) {
+    pub async fn lifecycle_hook_resource_policy(&self) -> haven_common::config::ResourcePolicy {
         self.coordinator
             .core
             .authorization
-            .lifecycle_hook_security_policy()
+            .lifecycle_hook_resource_policy()
             .await
     }
 
@@ -1229,11 +1224,11 @@ impl ToolsFacade {
             .ok_or_else(|| "workspace root is not an available local directory".to_string())
     }
 
-    /// Validate every configured writable root without changing active policy.
+    /// Validate configured resource directories without changing active policy.
     /// Settings commands call this before committing the configuration patch.
-    pub fn validate_writable_roots(&self, roots: &[String]) -> Result<(), String> {
+    pub fn validate_resource_roots(&self, roots: &[String]) -> Result<(), String> {
         let paths = roots.iter().map(PathBuf::from).collect::<Vec<_>>();
-        crate::security::open_directory_roots(&paths, "security.writable_roots").map(|_| ())
+        crate::security::open_directory_roots(&paths, "resource_policy directory roots").map(|_| ())
     }
 
     /// Replace the active backend execution workspace after validating and
@@ -1399,14 +1394,14 @@ mod capability_tests {
     }
 
     #[test]
-    fn writable_root_validation_checks_every_root() {
+    fn resource_root_validation_checks_every_root() {
         let valid = tempfile::tempdir().unwrap();
         let second_valid = tempfile::tempdir().unwrap();
         let tools = ToolsFacade::new();
 
         assert!(
             tools
-                .validate_writable_roots(&[
+                .validate_resource_roots(&[
                     valid.path().to_string_lossy().into_owned(),
                     second_valid.path().to_string_lossy().into_owned(),
                 ])
@@ -1415,12 +1410,12 @@ mod capability_tests {
 
         let missing = valid.path().join("missing");
         let error = tools
-            .validate_writable_roots(&[
+            .validate_resource_roots(&[
                 valid.path().to_string_lossy().into_owned(),
                 missing.to_string_lossy().into_owned(),
             ])
             .unwrap_err();
-        assert!(error.contains("security.writable_roots[1]"));
+        assert!(error.contains("resource_policy directory roots[1]"));
     }
 
     #[tokio::test]

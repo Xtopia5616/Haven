@@ -91,8 +91,7 @@ pub async fn get_settings(
 pub struct LifecycleHooksSettingsResponse {
     pub hooks: haven_common::config::LifecycleHooksConfig,
     pub trusted_hook_workspaces: Vec<String>,
-    pub sandbox_mode: haven_common::types::SandboxMode,
-    pub network_policy: haven_common::types::NetworkPolicy,
+    pub resource_policy: haven_common::config::ResourcePolicy,
     pub config_version: u64,
     pub diagnostics: Vec<haven_common::hooks::LifecycleHookEventDiagnostics>,
 }
@@ -107,7 +106,7 @@ pub async fn get_lifecycle_hooks_settings(
         .snapshot()
         .map_err(|error| log_err("get_lifecycle_hooks_settings", error))?;
     let config = &snapshot.config;
-    let (sandbox_mode, network_policy) = state.runtime.tools.lifecycle_hook_security_policy().await;
+    let resource_policy = state.runtime.tools.lifecycle_hook_resource_policy().await;
     Ok(LifecycleHooksSettingsResponse {
         hooks: config.hooks.clone(),
         trusted_hook_workspaces: config
@@ -115,8 +114,7 @@ pub async fn get_lifecycle_hooks_settings(
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
             .collect(),
-        sandbox_mode,
-        network_policy,
+        resource_policy,
         config_version: snapshot.version,
         diagnostics: state.runtime.tools.lifecycle_hook_diagnostics(),
     })
@@ -793,11 +791,16 @@ pub async fn update_settings(
     let state = Arc::clone(&*state);
     let _apply_guard = state.runtime.config_runtime_coordinator.lock().await;
     if let Some(security) = settings.security.as_ref() {
-        state
-            .runtime
-            .tools
-            .validate_writable_roots(&security.writable_roots)
-            .map_err(|error| log_err("update_settings writable roots", error))?;
+        for roots in [
+            &security.resource_policy.files.write_roots,
+            &security.resource_policy.files.path_roots,
+        ] {
+            state
+                .runtime
+                .tools
+                .validate_resource_roots(roots)
+                .map_err(|error| log_err("update_settings resource policy roots", error))?;
+        }
     }
     let current_execution_root = state
         .runtime

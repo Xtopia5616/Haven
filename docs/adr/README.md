@@ -1279,3 +1279,4 @@
 - [1373：将执行工作目录绑定到会话](1373-session-scoped-execution-workspace.md)
 - [1374：会话级执行方式与 typed 资源合同](1374-session-execution-mode-and-resource-contracts.md)
 - [1375：将可复用授权绑定到资源范围](1375-resource-scoped-persistent-permissions.md)
+- [1376：统一资源策略与本次边界扩展](1376-canonical-resource-policy-and-boundary-extension.md)

@@ -16,6 +16,10 @@ use std::path::{Path, PathBuf};
 pub struct ConfirmationReceipt {
     pub confirmation_id: haven_common::types::ConfirmId,
     pub capability: CapabilityScope,
+    /// True only when the request requires a one-time exception to an
+    /// otherwise user-configurable resource boundary.
+    #[serde(default)]
+    pub resource_boundary_extension: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<DeclaredResource>,
     pub canonical_input_hash: String,
@@ -38,6 +42,7 @@ pub enum AuthorizationReasonCode {
     CriticalOperation,
     ApprovalPolicy,
     SensitiveData,
+    ResourceBoundaryExtension,
 }
 
 impl AuthorizationReasonCode {
@@ -52,6 +57,7 @@ impl AuthorizationReasonCode {
             Self::CriticalOperation => "critical_operation",
             Self::ApprovalPolicy => "approval_policy",
             Self::SensitiveData => "sensitive_data",
+            Self::ResourceBoundaryExtension => "resource_boundary_extension",
         }
     }
 }
