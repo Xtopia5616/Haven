@@ -140,7 +140,8 @@
 		text-align: left;
 		cursor: pointer;
 		transition:
-			background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			background-color var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.welcome-examples__list button:hover {
@@ -180,12 +181,28 @@
 		font-weight: 650;
 		cursor: pointer;
 	}
-	@media screen and (max-width: 640px) {
+	@container conversation (max-width: 560px) {
+		.welcome {
+			padding: var(--md-sys-space-lg) var(--md-sys-space-xs);
+			gap: var(--md-sys-space-sm);
+		}
 		.welcome-examples__list {
 			grid-template-columns: 1fr;
 		}
 		.welcome-examples__list button {
 			min-height: 44px;
+		}
+	}
+	@media screen and (max-height: 560px) {
+		.welcome {
+			min-height: 0;
+			padding-block: var(--md-sys-space-md);
+			gap: var(--md-sys-space-sm);
+		}
+		.welcome-mark,
+		.welcome-kicker,
+		.welcome-hints {
+			display: none;
 		}
 	}
 </style>

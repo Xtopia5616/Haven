@@ -1108,7 +1108,8 @@
 				type: 'session/run-ended',
 				sessionId,
 				status: historicalRunEndStatus,
-				outcome: historical.run_end_kind === 'turn_completed' ? 'turn_completed' : undefined,
+				outcome:
+					historical.run_end_kind === 'turn_completed' ? 'turn_completed' : undefined,
 				reason:
 					historical.run_end_reason ||
 					sessionReducer.getSessionErrorReason(sessionId) ||
@@ -1488,6 +1489,8 @@
 		color: var(--md-sys-color-on-surface);
 	}
 	.chat-page {
+		--md-sys-chat-max-width: 960px;
+		--chat-inline-gutter: var(--md-sys-space-md);
 		position: relative;
 		display: grid;
 		grid-template-columns: minmax(0, 0px) minmax(0, 1fr);
@@ -1520,6 +1523,7 @@
 			visibility 0s linear var(--md-sys-motion-duration-short);
 	}
 	.session-column {
+		container: conversation / inline-size;
 		position: relative;
 		display: flex;
 		grid-column: 1 / -1;
@@ -1547,7 +1551,7 @@
 		overflow-x: clip;
 		overscroll-behavior-x: none;
 		touch-action: pan-y;
-		padding: var(--md-sys-space-lg) var(--md-sys-space-md)
+		padding: var(--md-sys-space-lg) var(--chat-inline-gutter)
 			calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-sm));
 	}
 	:global(.messages-area.drag-scroll--active) {
@@ -1555,7 +1559,7 @@
 	}
 	.jump-bottom-anchor {
 		position: absolute;
-		right: var(--md-sys-space-md);
+		right: var(--chat-inline-gutter);
 		bottom: calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-sm));
 		display: flex;
 		z-index: 5;
@@ -1576,7 +1580,8 @@
 		transform: translateY(var(--md-sys-space-2xs));
 	}
 
-	@media screen and (min-width: 840px) {
+	/* Leave at least 688px for conversation even with the widest sidebar. */
+	@media screen and (min-width: 1200px) {
 		.chat-page {
 			grid-template-columns: auto minmax(0, 1fr);
 			--md-sys-chat-max-width: 960px;
@@ -1612,20 +1617,19 @@
 		.messages-wrap {
 			max-width: min(100%, var(--md-sys-chat-max-width));
 		}
-		.messages-area {
-			padding: var(--md-sys-space-2xl) var(--md-sys-space-2xl)
-				calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-xl));
-		}
 		:global(.chat-page .session-switch),
 		:global(.chat-page .session-header__new) {
 			display: none;
 		}
 	}
 
-	@media screen and (orientation: landscape) and (max-height: 560px) and (min-width: 840px) {
-		.chat-page {
-			grid-template-columns: auto minmax(0, 1fr);
+	@container conversation (min-width: 760px) {
+		.messages-wrap {
+			--chat-inline-gutter: var(--md-sys-space-2xl);
 		}
+	}
+
+	@media screen and (max-height: 560px) {
 		.messages-area {
 			padding-top: var(--md-sys-space-sm);
 			padding-bottom: calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-sm));

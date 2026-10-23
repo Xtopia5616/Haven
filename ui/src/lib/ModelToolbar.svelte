@@ -237,8 +237,12 @@
 		right: 0;
 		bottom: calc(100% + 8px);
 		z-index: 1000;
-		min-width: var(--md-comp-settings-control-width);
-		max-height: 360px;
+		min-width: min(
+			var(--md-comp-settings-control-width),
+			calc(100vw - 2 * var(--md-sys-space-2xl))
+		);
+		max-width: calc(100vw - 2 * var(--md-sys-space-2xl));
+		max-height: min(360px, 50dvh);
 		overflow-y: auto;
 		background: var(--md-sys-color-surface-container-high);
 		border: 1px solid var(--md-sys-color-outline-variant);
@@ -372,9 +376,17 @@
 		background: var(--md-sys-color-surface-container-low);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	@media (max-width: 640px) {
+	@container conversation (max-width: 640px) {
+		.model-menu {
+			/* Reserve the send button and the composer's outer/inner insets. */
+			min-width: min(
+				var(--md-comp-settings-control-width),
+				calc(100cqi - var(--md-comp-toolbar-height) - 4 * var(--md-sys-space-md))
+			);
+			max-width: calc(100cqi - var(--md-comp-toolbar-height) - 4 * var(--md-sys-space-md));
+		}
 		:global(.md-btn.model-switch-btn) {
-			max-width: min(170px, 34vw);
+			max-width: min(170px, 30cqi);
 		}
 	}
 </style>

@@ -1313,7 +1313,7 @@
 		margin-top: var(--md-sys-space-xs);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	@media (max-width: 640px) {
+	@container conversation (max-width: 640px) {
 		.bubble {
 			padding-inline: var(--md-sys-space-md);
 		}

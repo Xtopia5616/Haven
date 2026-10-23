@@ -893,8 +893,10 @@
 		/* Match the message column's horizontal inset so the composer edge,
 		 * message bubbles, and the jump-to-bottom control share one guide. */
 		max-width: min(
-			calc(var(--md-sys-chat-max-width) - 2 * var(--md-sys-space-md)),
-			calc(100% - 2 * var(--md-sys-space-md))
+			calc(
+				var(--md-sys-chat-max-width) - 2 * var(--chat-inline-gutter, var(--md-sys-space-md))
+			),
+			calc(100% - 2 * var(--chat-inline-gutter, var(--md-sys-space-md)))
 		);
 		margin: 0;
 		width: 100%;
@@ -922,10 +924,12 @@
 
 	.image-preview-row {
 		display: flex;
-		flex-wrap: wrap;
+		overflow-x: auto;
+		max-height: 96px;
 		gap: var(--md-sys-space-sm);
 	}
 	.image-preview {
+		flex-shrink: 0;
 		position: relative;
 		width: 64px;
 		height: 64px;
@@ -954,10 +958,12 @@
 
 	.file-preview-row {
 		display: flex;
-		flex-wrap: wrap;
+		overflow-x: auto;
+		max-height: min(160px, 20dvh);
 		gap: var(--md-sys-space-sm);
 	}
 	.file-preview {
+		flex-shrink: 0;
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
@@ -1023,6 +1029,7 @@
 		min-width: 0;
 	}
 	.chat-input {
+		max-height: min(240px, 28dvh);
 		--chat-pad: 10px;
 		background: transparent;
 		border: none;
@@ -1076,6 +1083,9 @@
 		align-items: center;
 		gap: var(--md-comp-toolbar-gap);
 		margin-left: auto;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		max-width: 100%;
 	}
 	.toolbar-row :global(.md-btn) {
 		height: var(--md-comp-toolbar-height);
@@ -1084,7 +1094,7 @@
 		line-height: var(--md-sys-typescale-label-large-line-height);
 	}
 
-	@media (max-width: 700px) {
+	@container conversation (max-width: 700px) {
 		.input-area {
 			padding-inline: var(--md-sys-space-md);
 		}
@@ -1101,7 +1111,7 @@
 		}
 	}
 
-	@media (max-width: 455px) {
+	@container conversation (max-width: 455px) {
 		.toolbar-left,
 		.toolbar-right {
 			width: 100%;
@@ -1113,7 +1123,13 @@
 		}
 	}
 
-	@media screen and (orientation: landscape) and (max-height: 560px) and (min-width: 560px) {
+	@container conversation (min-width: 760px) {
+		.input-area {
+			--chat-inline-gutter: var(--md-sys-space-2xl);
+		}
+	}
+
+	@media screen and (max-height: 560px) {
 		.input-area {
 			bottom: var(--md-sys-space-xs);
 			gap: var(--md-sys-space-2xs);
@@ -1129,7 +1145,7 @@
 			padding-block: var(--md-sys-space-sm);
 		}
 		.toolbar-row {
-			flex-wrap: nowrap;
+			flex-wrap: wrap;
 			align-items: center;
 			gap: var(--md-sys-space-xs);
 			padding-top: 0;
@@ -1137,7 +1153,7 @@
 		}
 		.toolbar-left {
 			flex: 0 1 auto;
-			flex-wrap: nowrap;
+			flex-wrap: wrap;
 		}
 		.toolbar-right {
 			flex: 0 0 auto;

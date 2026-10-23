@@ -104,7 +104,8 @@
 					title="仅移除工作区快捷项，不会删除磁盘目录"
 					disabled={executionWorkspaceSwitching || !selectedWorkspaceIsSaved}
 					onclick={() => {
-						if (executionWorkspaceRoot) onRemoveExecutionWorkspace?.(executionWorkspaceRoot);
+						if (executionWorkspaceRoot)
+							onRemoveExecutionWorkspace?.(executionWorkspaceRoot);
 					}}
 				/>
 				<MaterialIconButton
@@ -188,14 +189,16 @@
 		align-items: center;
 	}
 	.session-header__title-row {
+		width: 100%;
 		display: flex;
 		align-items: center;
 		gap: var(--md-sys-space-md);
 		min-width: 0;
 	}
 	.session-header h1 {
+		flex: 1;
 		min-width: 0;
-		max-width: min(52vw, 520px);
+		max-width: 100%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -231,74 +234,46 @@
 	.session-header__lifecycle {
 		flex-shrink: 0;
 	}
-	@media (max-width: 640px) {
+	@container conversation (max-width: 900px) {
 		.session-header {
 			grid-template-columns: minmax(0, 1fr);
 			gap: var(--md-sys-space-sm);
 			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		}
-		.session-header__title-row {
-			align-items: center;
-			flex-direction: row;
-			flex-wrap: wrap;
-			gap: var(--md-sys-space-sm);
-		}
-		.session-header h1 {
-			max-width: min(92vw, 520px);
-			font-size: var(--md-sys-typescale-title-medium-size);
-		}
 		.session-header__actions {
 			flex-wrap: wrap;
-			justify-content: flex-start;
-			gap: var(--md-sys-space-xs) var(--md-sys-space-sm);
-			padding-top: var(--md-sys-space-sm);
-			border-top: 1px solid var(--md-sys-color-outline-variant);
+			justify-content: space-between;
 		}
-		.session-header__toolbar {
-			flex: 1 1 100%;
-		}
+		.session-header__toolbar,
 		.session-header__lifecycle {
-			display: flex;
-			width: auto;
-			gap: var(--md-sys-space-xs);
+			flex-wrap: wrap;
 		}
 	}
-	@media screen and (min-width: 641px) and (max-width: 1024px),
-		screen and (orientation: landscape) and (max-height: 560px) and (min-width: 560px) and (max-width: 1024px) {
-		.session-header {
-			grid-template-columns: minmax(0, 1fr);
-			gap: var(--md-sys-space-xs);
-			padding: var(--md-sys-space-xs) var(--md-sys-space-md);
-		}
+	@container conversation (max-width: 455px) {
 		.session-header__title-row {
-			flex-wrap: nowrap;
 			gap: var(--md-sys-space-sm);
 		}
 		.session-header h1 {
-			max-width: 28vw;
 			font-size: var(--md-sys-typescale-title-medium-size);
 		}
-		.session-header__workspace-controls {
-			flex: 0 1 auto;
-		}
-		:global(.session-header__workspace-controls .md-select-container[data-icon-only='true']) {
-			flex-basis: auto;
-			min-width: 0;
-		}
 		.session-header__actions {
-			flex-wrap: nowrap;
-			justify-content: space-between;
-			gap: var(--md-sys-space-sm);
-			padding-top: 0;
-			border-top: 0;
+			gap: var(--md-sys-space-xs);
 		}
 		.session-header__toolbar {
 			flex: 1 1 auto;
 		}
 		.session-header__lifecycle {
-			width: auto;
-			display: flex;
+			flex: 0 1 auto;
+		}
+		.session-header__lifecycle :global(.md-btn) {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+	}
+	@media screen and (max-height: 560px) {
+		.session-header {
 			gap: var(--md-sys-space-xs);
+			padding-block: var(--md-sys-space-xs);
 		}
 	}
 </style>
