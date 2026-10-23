@@ -23,3 +23,11 @@ ADR 1368 为 WorkspaceWrite Shell 建立了 MXC ProcessContainer 路径。仓库
 ## 验收与限制
 
 静态审核 `Command` / `tokio::process` / Win32 spawn 使用点及对应调用链，核对 spawn authorization、`ProcessContainment`、MXC、资源策略和调用触发方式。该审核没有替代 Windows Job Object/MXC 的运行时负向验收，也没有测试每个第三方子进程的 OS 访问行为。
+
+### Windows 部分验收（2026-10-24；Acceptance Open）
+
+在 Windows 11 Insider 29683、Rust 1.99.0、Node 24.21.0、pnpm 12.12.1 上，以 `527bcd3336cc6d6526c3ce6a172f778918b0dbae` 为基线，通过 `cargo tauri dev --config crates/app-binary/tauri.dev.conf.json` 在独立 `HAVEN_DATA_DIR` 启动开发版。AppState、Tauri 初始化和 bootstrap ready 均完成；数据库 schema v61，SQLite integrity check 返回 `ok`。未配置模型 endpoint，未使用真实 Haven 数据或凭据。
+
+真实 Windows/MXC 负向测试命令 `cargo test -p haven-tools --locked workspace_write_shell_is_confined_to_configured_roots_by_mxc -- --ignored --nocapture --test-threads=1` 通过（1 passed）。该测试走生产 Shell/MXC 路径，配置根内写入成功，兄弟目录写入被拒绝。
+
+完整授权/确认、网络策略、子进程后代、取消/撤权及 backend 不可用时无 host fallback 的 UI/平台场景尚未验收。开发版 GUI 被 Node.js Windows 防火墙权限提示阻挡；自动化未处理该安全提示。Slice 3 保持 Acceptance Open。

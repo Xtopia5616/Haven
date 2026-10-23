@@ -39,3 +39,9 @@
 ## 验收与限制
 
 覆盖三维策略序列化、exact/wildcard override、native/deferred/codemode/both 路由、availability fail-closed、stale native/Code Mode 调用撤销和 legacy config 转换。跨端 DTO 由 Rust command contract 生成；Settings UI 对新对象作运行时 shape 校验。未改数据库 schema，源代码回滚即可恢复实现；已迁移配置可从迁移前备份恢复，或按[仅重建配置](../release-and-reset.md#仅重建配置)重建，无需清除用户数据。
+
+### Windows 部分验收（2026-10-24；Acceptance Open）
+
+在 Windows 11 Insider 29683、Rust 1.99.0、Node 24.21.0、pnpm 12.12.1 上，以 `527bcd3336cc6d6526c3ce6a172f778918b0dbae` 为基线，通过 `cargo tauri dev --config crates/app-binary/tauri.dev.conf.json` 在独立 `HAVEN_DATA_DIR` 启动开发版。禁用的旧配置 fixture 覆盖五种 exposure 值；启动迁移将 `deferred` 转为 `enabled + deferred + native`，`direct` / `model_only` 转为 `enabled + direct + native`，`hidden` 转为 `disabled + hidden + none`，`codemode` 转为 `enabled + hidden + codemode`。五种结果均通过精确持久化断言；测试 server 保持 disabled，未启动 MCP 进程或访问网络。数据库 schema v61，SQLite integrity check 返回 `ok`。
+
+Node.js Windows 防火墙权限提示挡住了 GUI；自动化未处理安全提示，也未通过 UI 修改应用内安全/隐私设置。因此 Settings 保存/重启、native/Code Mode stale-call 行为和未知旧值恢复仍未实测，Slice 4 保持 Acceptance Open。

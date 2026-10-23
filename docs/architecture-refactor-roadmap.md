@@ -92,6 +92,8 @@
 
 可以提前准备隔离 profile、安装器和物理盘耗尽环境；最终验收必须使用交互生命周期等 IPC/UI 变更完成后的最新构建。此项是发布签核门，不阻塞不影响发布路径的独立模块整理。
 
+**2026-10-24 部分 Windows 证据：** 在 R03 提交 `527bcd3` 的独立开发 profile 上，bootstrap ready、schema v61、SQLite integrity check 和旧 MCP exposure 五值迁移均通过；生产 Shell/MXC 路径的根内写入成功、兄弟目录写入拒绝测试通过。Settings GUI 被 Node.js 防火墙权限提示挡住；安装/升级/卸载、用户数据保留与物理 ENOSPC 未运行。详细环境、命令和范围见 [ADR 1382](adr/1382-execution-path-capability-audit.md) 与 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)。这只是开发版部分验收，不关闭 Slice 3/4 Acceptance 或 Windows Gate；最终门禁仍须在隔离环境的最新构建上完成。
+
 ### 5.2 交互生命周期所有权（行为已收口；恢复覆盖纳入新一轮）
 
 Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request identity 路由；Session grant、resolve event/status 与 actor 唤醒顺序有明确的持久化和失败契约。交互 replay 失败保持 fail-closed，pending session 恢复有界并可取消地重试。当前行为契约与逐项验证见 ADR 0423/0424、0507–0522。2026-10-17 源码审计当时发现 AppCommand pending 状态、入队/过期和 resolve continuation 分散于 `app_state.rs`、`commands/mod.rs`、`commands/session.rs`；该 owner 已按 ADR 1302 收拢，且未重定义既有交互契约。
