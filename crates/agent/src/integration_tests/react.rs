@@ -791,10 +791,10 @@ async fn media_tool_usage_flows_to_event_and_database() {
     tools
         .share_services()
         .authorization
-        .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
+        .set_execution_mode(haven_common::types::ExecutionMode::Unattended)
         .await;
     // `media.describe` delegates to a configured vision provider, so the
-    // external-network disclosure gate still applies in Autonomous mode.
+    // external-network disclosure gate still applies in unattended mode.
     // This test exercises usage propagation after that explicit approval.
     tools
         .share_services()

@@ -3,6 +3,8 @@
 //! the config_snapshot_pair! macro so the runtime and read snapshot cannot drift.
 
 use super::*;
+#[cfg(test)]
+use crate::types::ExecutionMode;
 
 macro_rules! config_snapshot_pair {
     ($settings:ident; $(
@@ -946,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn security_explicit_permission_mode_uses_named_profile() {
+    fn security_execution_mode_reads_new_and_legacy_defaults_conservatively() {
         let parsed: SecurityConfig = toml::from_str(
             r#"
                 permission_mode = "default"
@@ -954,22 +956,29 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(parsed.permission_mode, PermissionMode::Default);
-    }
-
-    #[test]
-    fn security_explicit_auto_edit_mode_wins() {
+        assert_eq!(parsed.execution_mode, ExecutionMode::Collaborative);
         let parsed: SecurityConfig = toml::from_str(r#"permission_mode = "auto_edit""#).unwrap();
-        assert_eq!(parsed.permission_mode, PermissionMode::AutoEdit);
+        assert_eq!(parsed.execution_mode, ExecutionMode::Collaborative);
+        let parsed: SecurityConfig = toml::from_str(r#"permission_mode = "plan""#).unwrap();
+        assert_eq!(parsed.execution_mode, ExecutionMode::Analyze);
+        let parsed: SecurityConfig = toml::from_str(r#"permission_mode = "autonomous""#).unwrap();
+        assert_eq!(parsed.execution_mode, ExecutionMode::Unattended);
+        let parsed: SecurityConfig = toml::from_str(r#"execution_mode = "analyze""#).unwrap();
+        assert_eq!(parsed.execution_mode, ExecutionMode::Analyze);
     }
 
     #[test]
     fn security_missing_table_uses_default_mode() {
         assert_eq!(
-            SecurityConfig::default().permission_mode,
-            PermissionMode::Default
+            SecurityConfig::default().execution_mode,
+            ExecutionMode::Collaborative
         );
-        assert_eq!(SecurityConfig::default().network_policy, NetworkPolicy::Ask);
+        assert_eq!(
+            SecurityConfig::default().network_policy,
+            NetworkPolicy::Restricted
+        );
+        let legacy: SecurityConfig = toml::from_str(r#"network_policy = "ask""#).unwrap();
+        assert_eq!(legacy.network_policy, NetworkPolicy::Restricted);
         assert_eq!(SecurityConfig::default().execution_root, None);
     }
 

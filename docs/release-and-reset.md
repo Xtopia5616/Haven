@@ -68,7 +68,7 @@ Session prompt 首次上下文条数目前配置在 `[session].prompt_history_li
 
 配置解析或语义校验失败时，Haven 将原文件复制到带时间戳的 `config.toml.*.bak`，并在当前进程以默认值提供运行时配置；该恢复态为只读，Settings 加载和配置修改、凭据暂存都会返回恢复错误，避免把默认值写回并覆盖原文件。若自动备份失败，原文件仍保留，恢复态也仍然只读。需要继续使用时，先从备份恢复并修正原文件，或按下文“仅重建配置”删除 `config.toml`，然后重启应用；启动时重新加载有效文件或创建新默认配置后，Settings 才恢复可写。无需删除数据库。
 
-当前会话保留期配置位于 `[session].history_retention_days`，默认 90 天，设为 `0` 可禁用自动删除；旧 `[memory]` 位置不迁移。`security.permission_mode` 支持 `plan`、`default`、`auto_edit`、`autonomous`，文件沙箱和网络策略分别使用 `sandbox_mode` 与 `network_policy`；旧确认模式字段不再解释。权限 key 使用点号 operation 名（如 `files.read`）；旧冒号 key 不转换，无法解析的持久权限规则在运行时被忽略并 fail-closed。
+当前会话保留期配置位于 `[session].history_retention_days`，默认 90 天，设为 `0` 可禁用自动删除；旧 `[memory]` 位置不迁移。新配置使用 `security.execution_mode`：`analyze`、`collaborative`、`unattended`。旧 `permission_mode` 字段和值保守映射：`plan`→`analyze`，`default` / `auto_edit`→`collaborative`，`autonomous`→`unattended`；保存后只写新字段。`network_policy` 只接受 `deny`、`restricted`、`open`，旧 `ask` 映射为 `restricted`，审批由执行方式决定。执行方式在会话首次装载时写入事件流，既有会话不会因默认值变更而改绑。数据库 schema 未变化，无需重置；权限 key 使用点号 operation 名（如 `files.read`），旧冒号 key 不转换，无法解析的持久权限规则在运行时被忽略并 fail-closed。
 
 API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque reference 持久化。TOML 中的明文凭据会使配置加载失败并备份原文件；启动只从现有引用读取凭据，不再导入旧明文值。若引用在操作系统凭据存储中不存在，需要重新输入对应凭据。当前 provider `api_style` 仅接受 canonical wire protocol id；无效值和指向不存在 provider 的媒体配置会走同一备份与默认配置恢复。Deepgram 凭据只填写原始 API key，不要包含 `Token ` 或 `Deepgram ` 前缀；已保存前缀的凭据需要在模型设置中重新输入。
 

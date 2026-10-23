@@ -82,9 +82,13 @@ impl SessionStore {
             let has_timeline_events: bool = conn.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM session_events
-                    WHERE session_id = ?1 AND event_type != ?2
+                    WHERE session_id = ?1 AND event_type NOT IN (?2, ?3)
                 )",
-                rusqlite::params![session_id, super::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE],
+                rusqlite::params![
+                    session_id,
+                    super::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE,
+                    super::SESSION_EXECUTION_MODE_EVENT_TYPE
+                ],
                 |row| row.get(0),
             )?;
             if !has_timeline_events {
@@ -503,15 +507,16 @@ impl SessionStore {
         // branch history. Preserve its latest value across rollback and
         // compaction even when the original event falls before the active root.
         let retained_context =
-            Self::read_latest_session_execution_workspace_in_connection(conn, session_id)?;
-        if let Some(event) = retained_context
-            && !active
+            Self::read_latest_session_execution_context_in_connection(conn, session_id)?;
+        for event in retained_context {
+            if !active
                 .iter()
                 .any(|active_event| active_event.sequence == event.sequence)
-        {
-            active.push(event);
-            active.sort_by_key(|event| event.sequence);
+            {
+                active.push(event);
+            }
         }
+        active.sort_by_key(|event| event.sequence);
         tracing::debug!(
             session_id,
             after_sequence,
@@ -522,23 +527,33 @@ impl SessionStore {
         Ok(active)
     }
 
-    fn read_latest_session_execution_workspace_in_connection(
+    fn read_latest_session_execution_context_in_connection(
         conn: &rusqlite::Connection,
         session_id: &str,
-    ) -> anyhow::Result<Option<SessionEvent>> {
+    ) -> anyhow::Result<Vec<SessionEvent>> {
         ensure_session_id(session_id)?;
-        let event = conn
-            .query_row(
-                "SELECT session_id, sequence, event_type, payload,
-                        created_at, run_id, step_number
-                 FROM session_events
-                 WHERE session_id = ?1 AND event_type = ?2
-                 ORDER BY sequence DESC LIMIT 1",
-                rusqlite::params![session_id, super::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE],
-                session_event_from_row,
-            )
-            .optional()?;
-        Ok(event)
+        let mut statement = conn.prepare(
+            "SELECT session_id, sequence, event_type, payload,
+                    created_at, run_id, step_number
+             FROM session_events
+             WHERE session_id = ?1
+               AND event_type IN (?2, ?3)
+               AND sequence IN (
+                    SELECT MAX(sequence) FROM session_events
+                    WHERE session_id = ?1 AND event_type IN (?2, ?3)
+                    GROUP BY event_type
+               )
+             ORDER BY sequence ASC",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![
+                session_id,
+                super::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE,
+                super::SESSION_EXECUTION_MODE_EVENT_TYPE
+            ],
+            session_event_from_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     fn active_replay_boundary_in_connection(

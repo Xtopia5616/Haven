@@ -405,6 +405,24 @@ impl Tool for ShellTool {
         crate::prompts::SHELL_DESCRIPTION.into()
     }
 
+    fn authorization_resources(
+        &self,
+        input: &Value,
+    ) -> Result<Vec<crate::security::DeclaredResource>, String> {
+        let params = crate::tool_contract::parse_tool_input::<ShellParams>("shell", input.clone())
+            .map_err(|error| error.to_string())?;
+        Ok(params
+            .cwd
+            .filter(|cwd| !cwd.trim().is_empty())
+            .map(|cwd| {
+                vec![crate::security::DeclaredResource::LocalPath {
+                    path: PathBuf::from(cwd),
+                    access: crate::security::LocalPathAccess::Read,
+                }]
+            })
+            .unwrap_or_default())
+    }
+
     fn catalog_group(&self) -> ToolCatalogGroup {
         ToolCatalogGroup::Shell
     }
@@ -898,6 +916,30 @@ mod tests {
     }
 
     #[test]
+    fn shell_authorization_declares_only_an_explicit_working_directory() {
+        let tool = ShellTool::default();
+        assert!(
+            tool.authorization_resources(&serde_json::json!({
+                "command": "Get-ChildItem",
+                "path": "ignored.txt"
+            }))
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(
+            tool.authorization_resources(&serde_json::json!({
+                "command": "Get-ChildItem",
+                "cwd": "C:\\Projects\\demo"
+            }))
+            .unwrap(),
+            vec![crate::security::DeclaredResource::LocalPath {
+                path: PathBuf::from("C:\\Projects\\demo"),
+                access: crate::security::LocalPathAccess::Read,
+            }]
+        );
+    }
+
+    #[test]
     fn shell_default_cwd_uses_execution_workspace_and_keeps_explicit_override() {
         let temp = tempdir().unwrap();
         let workspace = ExecutionWorkspace::from_root(temp.path()).unwrap();
@@ -1163,7 +1205,7 @@ mod tests {
             .expect("Shell child must start a descendant before revocation");
 
         authorization
-            .set_permission_mode(haven_common::types::PermissionMode::Plan)
+            .set_execution_mode(haven_common::types::ExecutionMode::Analyze)
             .await;
         let result = tokio::time::timeout(Duration::from_secs(10), run)
             .await

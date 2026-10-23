@@ -1103,7 +1103,7 @@ mod tests {
         .unwrap_or(None);
 
         authorization
-            .set_permission_mode(haven_common::types::PermissionMode::Plan)
+            .set_execution_mode(haven_common::types::ExecutionMode::Analyze)
             .await;
         let result = tokio::time::timeout(Duration::from_secs(10), execution)
             .await

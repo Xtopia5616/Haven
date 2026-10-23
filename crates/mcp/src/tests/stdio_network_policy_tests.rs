@@ -57,7 +57,7 @@ async fn non_open_network_policies_reject_stdio_before_spawning_the_command() {
     std::fs::remove_file(probe.path()).expect("remove spawn-probe marker before policy checks");
 
     for policy in [
-        NetworkPolicy::Ask,
+        NetworkPolicy::Restricted,
         NetworkPolicy::Restricted,
         NetworkPolicy::Deny,
     ] {

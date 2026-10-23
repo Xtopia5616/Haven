@@ -186,14 +186,14 @@ async fn authorization_contract_uses_trusted_transport_and_network_policy_stays_
         contract.policy.execution_boundary,
         crate::ExecutionBoundary::InProcess
     );
-    assert_eq!(contract.policy.network_access, crate::NetworkAccess::Opaque);
+    assert_eq!(contract.policy.network_access, crate::NetworkAccess::Public);
 
     let engine = crate::AuthorizationEngine::new();
     engine
         .set_boundaries(
             haven_common::types::SandboxMode::WorkspaceWrite,
             Vec::new(),
-            haven_common::types::NetworkPolicy::Ask,
+            haven_common::types::NetworkPolicy::Restricted,
         )
         .await;
     let request =

@@ -38,6 +38,8 @@
 		listRuntimeSessions,
 		getSessionExecutionWorkspace,
 		setSessionExecutionWorkspace,
+		getSessionExecutionMode,
+		setSessionExecutionMode,
 		reopenSession,
 		rollbackSession,
 		forkSessionFromMessage,
@@ -80,6 +82,7 @@
 	} from '$lib/toolRunStore.ts';
 	import { mediaPlanStore } from '$lib/mediaPlanStore.ts';
 	import { executionWorkspaceStore } from '$lib/executionWorkspaceStore.ts';
+	import type { ExecutionMode } from '$lib/contracts/generatedCommands.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
@@ -154,9 +157,13 @@
 	});
 	let initialLoading = $state(true);
 	let defaultExecutionWorkspaceRoot = $state<string | null>(null);
+	let defaultExecutionMode = $state<ExecutionMode>('collaborative');
 	let executionWorkspaceRoot = $state<string | null>(null);
 	let executionWorkspaceSwitching = $state(false);
 	let executionWorkspaceRequestSequence = 0;
+	let executionMode = $state<ExecutionMode>('collaborative');
+	let executionModeSwitching = $state(false);
+	let executionModeRequestSequence = 0;
 	let deleteTarget = $state<{ sessionId: string; title: string } | null>(null);
 	let deletingSession = $state(false);
 	const sessionReducer = appSessionReducer;
@@ -224,6 +231,7 @@
 		const sessionId = activeSessionId;
 		if (!sessionId) {
 			executionWorkspaceRoot = defaultExecutionWorkspaceRoot;
+			executionMode = defaultExecutionMode;
 			return;
 		}
 		executionWorkspaceRoot = null;
@@ -242,6 +250,34 @@
 			.catch((error) => {
 				if (!cancelled) {
 					reportError(error, { context: '+page', message: '读取会话工作目录失败' });
+				}
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
+	$effect(() => {
+		const sessionId = activeSessionId;
+		if (!sessionId) {
+			executionMode = defaultExecutionMode;
+			return;
+		}
+		executionMode = 'collaborative';
+		const requestSequence = ++executionModeRequestSequence;
+		let cancelled = false;
+		void getSessionExecutionMode({ sessionId })
+			.then((mode) => {
+				if (
+					!cancelled &&
+					requestSequence === executionModeRequestSequence &&
+					activeSessionId === sessionId
+				) {
+					executionMode = mode;
+				}
+			})
+			.catch((error) => {
+				if (!cancelled) {
+					reportError(error, { context: '+page', message: '读取会话执行方式失败' });
 				}
 			});
 		return () => {
@@ -946,6 +982,7 @@
 			.then((s) => {
 				applyDefaultModelFromSettings(s);
 				defaultExecutionWorkspaceRoot = s?.security?.execution_root ?? null;
+				defaultExecutionMode = s?.security?.execution_mode ?? 'collaborative';
 				if (s?.hotkey?.key_binding) {
 					hotkeyBinding = s.hotkey.key_binding;
 				}
@@ -1279,6 +1316,27 @@
 			executionWorkspaceSwitching = false;
 		}
 	}
+	async function selectExecutionMode(selectedMode: ExecutionMode) {
+		if (executionModeSwitching) return;
+		executionModeSwitching = true;
+		try {
+			if (activeSessionId) {
+				executionMode = await setSessionExecutionMode({
+					sessionId: activeSessionId,
+					mode: selectedMode,
+				});
+			} else {
+				await updateSettings({ settings: { security: { execution_mode: selectedMode } } });
+				defaultExecutionMode = selectedMode;
+				executionMode = selectedMode;
+			}
+			addNotification('会话执行方式已更新', 'success', 3000);
+		} catch (error) {
+			reportError(error, { context: '+page', message: '切换会话执行方式失败' });
+		} finally {
+			executionModeSwitching = false;
+		}
+	}
 	async function addExecutionWorkspace() {
 		if (executionWorkspaceSwitching) return;
 		executionWorkspaceSwitching = true;
@@ -1395,8 +1453,11 @@
 			canEndSession={activeSessionStatus !== 'completed'}
 			{executionWorkspaceRoot}
 			{executionWorkspaceSwitching}
+			{executionMode}
+			executionModeSwitching={executionModeSwitching || activeSession?.status === 'running'}
 			savedExecutionWorkspaces={$executionWorkspaceStore}
 			onSelectExecutionWorkspace={selectExecutionWorkspace}
+			onSelectExecutionMode={selectExecutionMode}
 			onAddExecutionWorkspace={addExecutionWorkspace}
 			onRemoveExecutionWorkspace={executionWorkspaceStore.remove}
 			onNew={newSession}

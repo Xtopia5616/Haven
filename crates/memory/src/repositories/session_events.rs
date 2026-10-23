@@ -64,6 +64,9 @@ pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
 /// The payload remains Agent-owned; Memory only preserves its latest event.
 pub const SESSION_EXECUTION_WORKSPACE_EVENT_TYPE: &str =
     "session_context.execution_workspace_bound";
+/// Durable session execution preset. Like the workspace binding, this is
+/// stable context and survives timeline rollback and compaction.
+pub const SESSION_EXECUTION_MODE_EVENT_TYPE: &str = "session_context.execution_mode_bound";
 /// Agent-owned durable signal for memory work. Memory stores the event
 /// without depending on Agent payload types.
 pub const MEMORY_TRIGGER_EVENT_TYPE: &str = "memory_trigger";
@@ -3157,6 +3160,15 @@ mod tests {
                 None,
             )
             .unwrap();
+        let mode_binding = store
+            .append(
+                &session_id,
+                SESSION_EXECUTION_MODE_EVENT_TYPE,
+                r#"{"mode":"unattended"}"#,
+                None,
+                None,
+            )
+            .unwrap();
         store
             .append_transcript(&session_id, r#"{"type":"first"}"#, 1, 1)
             .unwrap();
@@ -3175,10 +3187,15 @@ mod tests {
             event.sequence == binding.sequence
                 && event.event_type == SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
         }));
+        assert!(active_after_rollback.iter().any(|event| {
+            event.sequence == mode_binding.sequence
+                && event.event_type == SESSION_EXECUTION_MODE_EVENT_TYPE
+        }));
         assert!(
-            active_after_rollback
-                .iter()
-                .all(|event| event.event_type == SESSION_EXECUTION_WORKSPACE_EVENT_TYPE),
+            active_after_rollback.iter().all(|event| matches!(
+                event.event_type.as_str(),
+                SESSION_EXECUTION_WORKSPACE_EVENT_TYPE | SESSION_EXECUTION_MODE_EVENT_TYPE
+            )),
             "rollback markers are audit history and do not appear in the active replay"
         );
 
@@ -3194,6 +3211,10 @@ mod tests {
         assert!(active_after_compaction.iter().any(|event| {
             event.sequence == binding.sequence
                 && event.event_type == SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+        }));
+        assert!(active_after_compaction.iter().any(|event| {
+            event.sequence == mode_binding.sequence
+                && event.event_type == SESSION_EXECUTION_MODE_EVENT_TYPE
         }));
         assert!(
             active_after_compaction
@@ -3986,6 +4007,14 @@ mod tests {
             )
             .await
             .unwrap();
+        store
+            .append_domain_event(
+                &session_id,
+                SESSION_EXECUTION_MODE_EVENT_TYPE,
+                r#"{"mode":"collaborative"}"#,
+            )
+            .await
+            .unwrap();
 
         assert!(
             store
@@ -4005,11 +4034,12 @@ mod tests {
         let events = store.read_all(&session_id).unwrap();
         assert_eq!(
             events.len(),
-            2,
-            "the workspace event is preserved beside the seed"
+            3,
+            "stable session context events are preserved beside the seed"
         );
         assert_eq!(events[0].event_type, SESSION_EXECUTION_WORKSPACE_EVENT_TYPE);
-        assert_eq!(events[1].event_type, TRANSCRIPT_EVENT_TYPE);
+        assert_eq!(events[1].event_type, SESSION_EXECUTION_MODE_EVENT_TYPE);
+        assert_eq!(events[2].event_type, TRANSCRIPT_EVENT_TYPE);
         let replay = store
             .load_replay_state_async(&session_id)
             .await

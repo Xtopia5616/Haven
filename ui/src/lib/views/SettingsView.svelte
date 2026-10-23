@@ -79,7 +79,7 @@
 		MemoryConfigInput,
 		NotificationConfigInput,
 		OcrConfigInput,
-		PermissionModeInput,
+		ExecutionModeInput,
 		SandboxModeInput,
 		SecurityConfigInput,
 		SessionConfigInput,
@@ -256,9 +256,9 @@
 		lastCount: null,
 	});
 	let security = $state<SecurityConfigInput & { permissions: StoredPermission[] }>({
-		permission_mode: 'default',
+		execution_mode: 'collaborative',
 		sandbox_mode: 'workspace_write',
-		network_policy: 'ask',
+		network_policy: 'restricted',
 		execution_root: null,
 		writable_roots: [],
 		permissions: [],
@@ -495,7 +495,7 @@
 				fact_inference_enabled: memory.fact_inference_enabled,
 			},
 			security: {
-				permission_mode: security.permission_mode,
+				execution_mode: security.execution_mode,
 				sandbox_mode: security.sandbox_mode,
 				network_policy: security.network_policy,
 				execution_root: security.execution_root,
@@ -1055,9 +1055,9 @@
 			contextLimits = settings.context_limits || contextLimits;
 			memory = { ...memory, ...(settings.memory || {}) };
 			security = {
-				permission_mode: settings.security?.permission_mode || 'default',
+				execution_mode: settings.security?.execution_mode || 'collaborative',
 				sandbox_mode: settings.security?.sandbox_mode || 'workspace_write',
-				network_policy: settings.security?.network_policy || 'ask',
+				network_policy: settings.security?.network_policy || 'restricted',
 				execution_root: settings.security?.execution_root ?? null,
 				writable_roots: Array.isArray(settings.security?.writable_roots)
 					? settings.security.writable_roots
@@ -1334,7 +1334,7 @@
 					fact_inference_enabled: memory.fact_inference_enabled,
 				},
 				security: {
-					permission_mode: security.permission_mode,
+					execution_mode: security.execution_mode,
 					sandbox_mode: security.sandbox_mode,
 					network_policy: security.network_policy,
 					execution_root: security.execution_root,

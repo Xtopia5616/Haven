@@ -89,6 +89,22 @@ export async function setSessionExecutionWorkspace(
 	return response.root;
 }
 
+/** Read the durable execution preset captured for one session. */
+export async function getSessionExecutionMode(
+	request: TauriCommandRequest<'get_session_execution_mode'>,
+): Promise<import('./contracts/generatedCommands.ts').ExecutionMode> {
+	const response = await invoke('get_session_execution_mode', request);
+	return response.mode;
+}
+
+/** Bind an execution preset to one session. */
+export async function setSessionExecutionMode(
+	request: TauriCommandRequest<'set_session_execution_mode'>,
+): Promise<import('./contracts/generatedCommands.ts').ExecutionMode> {
+	const response = await invoke('set_session_execution_mode', request);
+	return response.mode;
+}
+
 /** Delete one persisted session and release its runtime state. */
 export function deleteSession(request: TauriCommandRequest<'delete_session'>): Promise<void> {
 	return invoke('delete_session', request);

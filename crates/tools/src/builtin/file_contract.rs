@@ -71,6 +71,101 @@ impl Tool for FilesTool {
         }
     }
 
+    fn authorization_resources(
+        &self,
+        input: &Value,
+    ) -> Result<Vec<crate::security::DeclaredResource>, String> {
+        use crate::security::{DeclaredResource, LocalPathAccess};
+        use std::path::PathBuf;
+
+        fn add_path(
+            resources: &mut Vec<DeclaredResource>,
+            path: Option<&str>,
+            access: LocalPathAccess,
+            required: bool,
+            label: &str,
+        ) -> Result<(), String> {
+            let Some(path) = path.filter(|path| !path.trim().is_empty()) else {
+                return if required {
+                    Err(format!("files operation is missing its {label} resource"))
+                } else {
+                    Ok(())
+                };
+            };
+            resources.push(DeclaredResource::LocalPath {
+                path: PathBuf::from(path),
+                access,
+            });
+            Ok(())
+        }
+
+        let params = crate::tool_contract::parse_tool_input::<FilesParams>("files", input.clone())
+            .map_err(|error| error.to_string())?;
+        let operation = params
+            .operation
+            .ok_or_else(|| "files operation is missing its operation selector".to_owned())?;
+        let mut resources = Vec::with_capacity(2);
+        match operation {
+            super::FilesOperation::Read => add_path(
+                &mut resources,
+                params.path.as_deref(),
+                LocalPathAccess::Read,
+                params.asset_id.is_none(),
+                "source",
+            )?,
+            super::FilesOperation::Inspect
+            | super::FilesOperation::List
+            | super::FilesOperation::Outline => add_path(
+                &mut resources,
+                params.path.as_deref(),
+                LocalPathAccess::Read,
+                true,
+                "path",
+            )?,
+            super::FilesOperation::Search => add_path(
+                &mut resources,
+                params.root.as_deref(),
+                LocalPathAccess::Read,
+                true,
+                "search root",
+            )?,
+            super::FilesOperation::Summary => add_path(
+                &mut resources,
+                params.path.as_deref(),
+                LocalPathAccess::Read,
+                params.asset_id.is_none(),
+                "source",
+            )?,
+            super::FilesOperation::Write
+            | super::FilesOperation::CreateDir
+            | super::FilesOperation::Patch
+            | super::FilesOperation::Delete => add_path(
+                &mut resources,
+                params.path.as_deref(),
+                LocalPathAccess::Write,
+                true,
+                "destination",
+            )?,
+            super::FilesOperation::Copy | super::FilesOperation::Move => {
+                add_path(
+                    &mut resources,
+                    params.path.as_deref(),
+                    LocalPathAccess::Read,
+                    true,
+                    "source",
+                )?;
+                add_path(
+                    &mut resources,
+                    params.destination.as_deref(),
+                    LocalPathAccess::Write,
+                    true,
+                    "destination",
+                )?;
+            }
+        }
+        Ok(resources)
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",

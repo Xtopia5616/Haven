@@ -571,6 +571,14 @@ impl Tool for OperationViewTool {
     fn authorization_input(&self, input: &Value) -> Value {
         self.routed_input(input)
     }
+
+    fn authorization_resources(
+        &self,
+        input: &Value,
+    ) -> Result<Vec<crate::security::DeclaredResource>, String> {
+        self.handler
+            .authorization_resources(&self.routed_input(input))
+    }
 }
 
 #[cfg(test)]

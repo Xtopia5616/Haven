@@ -758,6 +758,8 @@ pub(crate) fn run() {
             commands::session::reopen_session,
             commands::session::get_session_execution_workspace,
             commands::session::set_session_execution_workspace,
+            commands::session::get_session_execution_mode,
+            commands::session::set_session_execution_mode,
             commands::session::get_latest_session_for_resume,
             commands::session::list_runtime_sessions,
             commands::session::get_session_lineage,

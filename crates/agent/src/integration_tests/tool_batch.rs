@@ -208,7 +208,7 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
     tools
         .share_services()
         .authorization
-        .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
+        .set_execution_mode(haven_common::types::ExecutionMode::Collaborative)
         .await;
     let gated_authorization = tools
         .resolve_authorization_request(
@@ -653,7 +653,7 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     tools
         .share_services()
         .authorization
-        .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
+        .set_execution_mode(haven_common::types::ExecutionMode::Unattended)
         .await;
     tools
         .share_services()

@@ -255,7 +255,7 @@ async fn mcp_client_new_initial_state() {
     assert!(client.enabled());
     assert_eq!(
         client.network_policy().await,
-        haven_common::types::NetworkPolicy::Ask
+        haven_common::types::NetworkPolicy::Restricted
     );
     let status = client.status().await;
     assert!(matches!(status, McpClientStatus::Disconnected));
@@ -296,7 +296,7 @@ async fn mcp_manager_new() {
     let mgr = McpManager::new();
     assert_eq!(
         mgr.network_policy().await,
-        haven_common::types::NetworkPolicy::Ask
+        haven_common::types::NetworkPolicy::Restricted
     );
     assert!(mgr.list_clients().await.is_empty());
 }
@@ -415,7 +415,7 @@ async fn mcp_stdio_requires_open_network_policy() {
         2 * 1024 * 1024,
     );
     client
-        .set_network_policy(haven_common::types::NetworkPolicy::Ask)
+        .set_network_policy(haven_common::types::NetworkPolicy::Restricted)
         .await;
 
     let error = client

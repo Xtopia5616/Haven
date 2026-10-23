@@ -57,30 +57,24 @@
 		}
 	}
 
-	const PERMISSION_MODES = [
+	const EXECUTION_MODES = [
 		{
-			value: 'default',
-			label: '默认',
-			shortLabel: '日常使用',
-			detail: '普通只读操作自动完成；敏感读取、出网和编辑等操作按边界询问。',
+			value: 'analyze',
+			label: '只分析',
+			shortLabel: '不修改',
+			detail: '只允许只读分析；需要确认的敏感读取仍会询问。',
 		},
 		{
-			value: 'plan',
-			label: '计划',
-			shortLabel: '只分析不修改',
-			detail: '仅允许只读分析，任何修改或副作用都会被拦截。',
+			value: 'collaborative',
+			label: '协作执行',
+			shortLabel: '日常工作',
+			detail: '在授权范围内执行普通操作；需要额外批准时会询问。',
 		},
 		{
-			value: 'auto_edit',
-			label: '自动编辑',
-			shortLabel: '放心编辑工作区',
-			detail: '明确的工作区文件编辑可自动接受；命令、网络、界面和高风险操作仍需确认。',
-		},
-		{
-			value: 'autonomous',
-			label: '自动',
-			shortLabel: '少打断',
-			detail: '非关键操作自动执行，高风险与关键操作仍需确认。',
+			value: 'unattended',
+			label: '无人值守',
+			shortLabel: '需要确认时停止',
+			detail: '只执行无需追加确认且已获准的操作；遇到需要确认的操作会停止。',
 		},
 	] as const;
 
@@ -109,19 +103,14 @@
 			detail: 'Haven 拒绝声明需要网络的工具；这不是 Windows 防火墙规则，不会限制其它程序或已经运行的进程。',
 		},
 		{
-			value: 'ask',
-			label: '请求确认',
-			detail: '可验证的公网请求先询问；工作区可写模式下，获准的 Shell 命令由 MXC 按此网络策略限制。Skill 与 MCP stdio 子进程仍会被拒绝；完整访问模式下的子进程按当前 Windows 用户权限联网。',
-		},
-		{
 			value: 'restricted',
 			label: '受限网络',
-			detail: '只允许 Haven 能验证目的地的公共网络请求；无法按目的地检查的 MCP、技能和命令子进程会被拒绝。这不会限制其它程序或已运行进程的 OS 网络权限。',
+			detail: '只允许 Haven 能验证目的地的公共网络请求；无法按目的地检查的 MCP、技能和命令子进程会被拒绝。是否询问由执行方式决定。',
 		},
 		{
 			value: 'open',
 			label: '开放网络',
-			detail: 'Haven 不添加全局网络封锁或确认，工具自身授权仍会执行；工作区可写模式下，MXC Shell 按开放网络策略运行；完整访问模式下的子进程按当前 Windows 用户权限联网。',
+			detail: 'Haven 不添加目的地限制；工具自身校验仍会执行，操作是否需要确认由执行方式决定。',
 		},
 	] as const;
 
@@ -239,9 +228,9 @@
 					? '安全更新未完成'
 					: '已应用',
 	);
-	let selectedPermissionMode = $derived(
-		PERMISSION_MODES.find((mode) => mode.value === security?.permission_mode) ||
-			PERMISSION_MODES[0],
+	let selectedExecutionMode = $derived(
+		EXECUTION_MODES.find((mode) => mode.value === security?.execution_mode) ||
+			EXECUTION_MODES[1],
 	);
 	let selectedSandboxMode = $derived(
 		SANDBOX_MODES.find((mode) => mode.value === security?.sandbox_mode) || SANDBOX_MODES[1],
@@ -310,13 +299,13 @@
 
 <SettingsSection
 	title="权限中心"
-	description="管理默认安全边界、跨会话永久规则和仅对指定会话生效的授权。"
+	description="设置新会话的执行方式，并查看明确授权与资源边界。当前会话的执行方式在标题栏单独选择。"
 >
 	<div class="security-summary">
 		<div>
 			<span class="summary-eyebrow">当前默认策略</span>
-			<strong>{selectedPermissionMode.label} · {selectedPermissionMode.shortLabel}</strong>
-			<p>{selectedPermissionMode.detail}</p>
+			<strong>{selectedExecutionMode.label} · {selectedExecutionMode.shortLabel}</strong>
+			<p>{selectedExecutionMode.detail}</p>
 		</div>
 		<div class="summary-runtime-wrap">
 			<span
@@ -339,23 +328,23 @@
 	<div class="settings-subsection">
 		<div class="subsection-heading">
 			<div>
-				<h3>默认行为</h3>
-				<p>只决定 Haven 遇到需要授权的操作时的默认处理方式，关键安全底线不会被关闭。</p>
+				<h3>新会话默认执行方式</h3>
+				<p>更改只影响之后创建的会话；每个会话可在标题栏单独选择。</p>
 			</div>
 		</div>
-		<div class="policy-grid" role="radiogroup" aria-label="默认权限策略">
-			{#each PERMISSION_MODES as mode (mode.value)}
+		<div class="policy-grid" role="radiogroup" aria-label="新会话默认执行方式">
+			{#each EXECUTION_MODES as mode (mode.value)}
 				<label
 					class="policy-option"
-					class:selected={security.permission_mode === mode.value}
+					class:selected={security.execution_mode === mode.value}
 				>
 					<input
 						type="radio"
 						name="security-mode"
 						value={mode.value}
-						checked={security.permission_mode === mode.value}
+						checked={security.execution_mode === mode.value}
 						onchange={() => {
-							security.permission_mode = mode.value;
+							security.execution_mode = mode.value;
 						}}
 					/>
 					<span class="policy-option__body">
@@ -367,12 +356,13 @@
 		</div>
 	</div>
 
-	<div class="settings-subsection">
+	<details class="settings-subsection resource-boundaries">
+		<summary>资源边界（高级）</summary>
 		<div class="subsection-heading">
 			<div>
-				<h3>安全边界</h3>
+				<h3>资源边界</h3>
 				<p>
-					这些策略由 Haven 授权网关执行；不会替其它进程设置 Windows
+					这些边界限制 Haven 管理的文件与网络操作；不会替其它进程设置 Windows
 					文件或网络限制，受管子进程还会遵守各自的执行边界。
 				</p>
 			</div>
@@ -398,7 +388,7 @@
 				<SettingsField label="网络策略" id="security-network">
 					<MaterialSelect
 						id="security-network"
-						value={security.network_policy || 'ask'}
+					value={security.network_policy || 'restricted'}
 						options={NETWORK_POLICIES.map((policy) => ({
 							value: policy.value,
 							label: policy.label,
@@ -507,7 +497,7 @@
 				</div>
 			</MaterialCollapsible>
 		</div>
-	</div>
+	</details>
 
 	<div class="rules-section">
 		<div class="subsection-heading rules-heading">

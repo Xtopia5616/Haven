@@ -153,12 +153,10 @@ async fn file_mutation_rejects_a_policy_change_after_proof_capture() {
     use crate::security::AuthorizationEngine;
     use crate::{
         AuthorizationDecision, AuthorizationRequest, ConfirmationRequirement, DataSensitivity,
-        NetworkAccess, OperationEffect, OperationIdempotency, OperationPolicy, ToolConcurrency,
-        ToolOperationScope,
+        DeclaredResource, LocalPathAccess, NetworkAccess, OperationEffect, OperationIdempotency,
+        OperationPolicy, ToolConcurrency, ToolOperationScope,
     };
-    use haven_common::types::{
-        CapabilityScope, NetworkPolicy, PermissionMode, SandboxMode,
-    };
+    use haven_common::types::{CapabilityScope, ExecutionMode, NetworkPolicy, SandboxMode};
 
     let tmp = TempDir::new().unwrap();
     let file = tmp.path().join("must-not-write.txt");
@@ -185,7 +183,11 @@ async fn file_mutation_rejects_a_policy_change_after_proof_capture() {
         "files.write",
         input.clone(),
         policy,
-    );
+    )
+    .with_resources(vec![DeclaredResource::LocalPath {
+        path: file.clone(),
+        access: LocalPathAccess::Write,
+    }]);
     let engine = Arc::new(AuthorizationEngine::new());
     engine
         .set_boundaries(
@@ -194,7 +196,7 @@ async fn file_mutation_rejects_a_policy_change_after_proof_capture() {
             NetworkPolicy::Open,
         )
         .await;
-    engine.set_permission_mode(PermissionMode::Autonomous).await;
+    engine.set_execution_mode(ExecutionMode::Unattended).await;
     let check = engine.authorize_for_execution(&request).await;
     assert!(matches!(
         check.decision,

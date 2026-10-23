@@ -77,4 +77,16 @@ describe('SessionHeader', () => {
 		await fireEvent.click(screen.getByRole('button', { name: '选择目录并保存为快捷项' }));
 		expect(onAddExecutionWorkspace).toHaveBeenCalledOnce();
 	});
+
+	it('binds an execution mode to the active session', async () => {
+		const onSelectExecutionMode = vi.fn();
+		render(SessionHeader as any, {
+			executionMode: 'analyze',
+			onSelectExecutionMode,
+		});
+
+		await fireEvent.click(screen.getByRole('combobox', { name: '会话执行方式' }));
+		await fireEvent.click(screen.getByRole('option', { name: '无人值守' }));
+		expect(onSelectExecutionMode).toHaveBeenCalledWith('unattended');
+	});
 });

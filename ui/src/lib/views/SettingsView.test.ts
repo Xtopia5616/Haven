@@ -535,9 +535,9 @@ describe('SettingsView diagnostics export', () => {
 			max_running_background_tool_runs: 29,
 		});
 		settings.memory.fact_inference_enabled = false;
-		settings.security.permission_mode = 'default';
+		settings.security.execution_mode = 'collaborative';
 		settings.security.sandbox_mode = 'workspace_write';
-		settings.security.network_policy = 'ask';
+		settings.security.network_policy = 'restricted';
 		settings.security.execution_root = 'C:\\Haven\\Projects\\demo';
 		settings.media.stt.provider_name = 'deepgram-voice';
 		settings.media.stt.model = 'nova-3';

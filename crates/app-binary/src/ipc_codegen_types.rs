@@ -11,6 +11,24 @@ use std::path::{Path, PathBuf};
 use quote::ToTokens;
 use syn::{Fields, Item, Type};
 
+/// Config files accept retired security-policy spellings, while IPC exposes
+/// only canonical enum values. Keep these wire exceptions explicit so
+/// arbitrary custom deserializers cannot leak into generated request types.
+const IPC_CUSTOM_DESERIALIZE_REQUEST_FIELDS: &[(&str, &str)] = &[
+    (
+        "haven_common::config::misc::SecurityConfig",
+        "execution_mode",
+    ),
+    (
+        "haven_common::config::misc::SecurityConfig",
+        "network_policy",
+    ),
+];
+
+fn has_explicit_request_mapping(type_key: &str, field_name: &str) -> bool {
+    IPC_CUSTOM_DESERIALIZE_REQUEST_FIELDS.contains(&(type_key, field_name))
+}
+
 #[derive(Clone)]
 pub(crate) struct TypeContext {
     crate_name: String,
@@ -1159,7 +1177,10 @@ impl RustTypeGraph {
                     if matches!(usage, TypeUse::Request) && field.skip_deserializing {
                         continue;
                     }
-                    if matches!(usage, TypeUse::Request) && field.custom_deserialize {
+                    if matches!(usage, TypeUse::Request)
+                        && field.custom_deserialize
+                        && !has_explicit_request_mapping(&definition.key, &field.name)
+                    {
                         return Err(format!(
                             "Rust IPC DTO {} field {} uses custom deserialization and needs an explicit request mapping",
                             definition.key, field.name

@@ -197,7 +197,7 @@ mod tests {
 
         let authorization = ToolsFacade::new().share_services().authorization;
         authorization
-            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         authorization
             .grant(

@@ -667,7 +667,7 @@ mod tests {
         let (execution_authorization, authorization) =
             crate::security::ExecutionPolicyAuthorization::for_test_with_engine();
         authorization
-            .set_permission_mode(haven_common::types::PermissionMode::Plan)
+            .set_execution_mode(haven_common::types::ExecutionMode::Analyze)
             .await;
         let context = crate::ToolExecutionContext {
             execution_workspace: None,

@@ -207,8 +207,8 @@ pub use schedule_service::{ScheduleRestoreSummary, ScheduleRunTriggered, Schedul
 pub(crate) use security::AuthorizationEngine;
 pub use security::{
     AuthorizationCheck, AuthorizationDecision, AuthorizationExecutionProof, AuthorizationPort,
-    AuthorizationReasonCode, AuthorizationRequest, ConfirmationReceipt, is_safe_local_path,
-    permission_prompt_summary,
+    AuthorizationReasonCode, AuthorizationRequest, ConfirmationReceipt, DeclaredResource,
+    LocalPathAccess, is_safe_local_path, permission_prompt_summary,
 };
 #[cfg(windows)]
 pub(crate) use shell_runtime::CREATE_NO_WINDOW;

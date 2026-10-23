@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use haven_common::config::{SecurityConfig, StoredPermission};
 use haven_common::types::{
-    CapabilityScope, MessageAttachment, NetworkPolicy, PermissionEffect, PermissionMode,
+    CapabilityScope, ExecutionMode, MessageAttachment, NetworkPolicy, PermissionEffect,
     PermissionScope, RiskLevel, SandboxMode,
 };
 #[cfg(test)]
@@ -91,6 +91,10 @@ pub trait ToolAuthorizationPort: Send + Sync {
         root: Option<&std::path::Path>,
     ) -> Result<haven_tools::ExecutionWorkspaceSnapshot, String>;
 
+    async fn bind_session_execution_mode(&self, session_id: &str, mode: ExecutionMode);
+
+    async fn session_execution_mode(&self, session_id: &str) -> ExecutionMode;
+
     async fn forget_session_execution_workspaces(&self, session_ids: &[String]);
 
     async fn risk_level(
@@ -162,7 +166,7 @@ pub trait ToolAuthorizationPort: Send + Sync {
 
     async fn apply_security(&self, security: &SecurityConfig);
 
-    async fn set_permission_mode(&self, mode: PermissionMode);
+    async fn set_execution_mode(&self, mode: ExecutionMode);
 
     async fn set_boundaries(
         &self,
@@ -401,6 +405,16 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
             .await
     }
 
+    async fn bind_session_execution_mode(&self, session_id: &str, mode: ExecutionMode) {
+        self.authorization
+            .bind_session_execution_mode(session_id, mode)
+            .await;
+    }
+
+    async fn session_execution_mode(&self, session_id: &str) -> ExecutionMode {
+        self.authorization.session_execution_mode(session_id).await
+    }
+
     async fn forget_session_execution_workspaces(&self, session_ids: &[String]) {
         self.authorization
             .forget_session_execution_workspaces(session_ids)
@@ -514,8 +528,8 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
         }
     }
 
-    async fn set_permission_mode(&self, mode: PermissionMode) {
-        self.authorization.set_permission_mode(mode).await;
+    async fn set_execution_mode(&self, mode: ExecutionMode) {
+        self.authorization.set_execution_mode(mode).await;
     }
 
     async fn set_boundaries(

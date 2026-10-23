@@ -308,6 +308,16 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "canonical session id; local directory is validated and bound to that session",
     },
     CommandContract {
+        name: "get_session_execution_mode",
+        boundary: CommandBoundary::Read,
+        security: "canonical session id; reads its durable execution mode",
+    },
+    CommandContract {
+        name: "set_session_execution_mode",
+        boundary: CommandBoundary::Mutate,
+        security: "canonical session id; binds one execution preset to that session",
+    },
+    CommandContract {
         name: "list_runtime_sessions",
         boundary: CommandBoundary::Read,
         security: "resident nonterminal runtime sessions only",

@@ -6,10 +6,10 @@ pub(crate) struct BuiltMcpHttpClient {
 }
 
 /// Validate and resolve an MCP HTTP endpoint before a client is created.
-/// Ask and Restricted modes pin the first validated public address in reqwest
-/// so a later DNS answer cannot silently redirect the connection to a private
-/// host. Ask is the normal user-facing default; the authorization gateway is
-/// responsible for the confirmation prompt before an MCP tool call runs.
+/// Restricted mode pins the first validated public address in reqwest so a
+/// later DNS answer cannot silently redirect the connection to a private host.
+/// Approval prompts are owned by the authorization gateway, separately from
+/// this destination boundary.
 pub(crate) async fn build_http_client(
     raw_url: &str,
     policy: NetworkPolicy,
@@ -20,14 +20,14 @@ pub(crate) async fn build_http_client(
             let url = parse_open_endpoint(raw_url)?;
             (url, None)
         }
-        NetworkPolicy::Ask | NetworkPolicy::Restricted => {
+        NetworkPolicy::Restricted => {
             let destination = haven_common::network::resolve_http_destination(raw_url, &[]).await?;
             (destination.url, destination.pinned_address)
         }
     };
 
     let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
-    if matches!(policy, NetworkPolicy::Ask | NetworkPolicy::Restricted) {
+    if matches!(policy, NetworkPolicy::Restricted) {
         // A system proxy can resolve the destination on Haven's behalf,
         // defeating the public-IP validation above.
         builder = builder.no_proxy();
@@ -76,7 +76,7 @@ mod tests {
 
     #[tokio::test]
     async fn restricted_http_client_rejects_special_use_ipv4_before_connecting() {
-        let result = build_http_client("http://100.64.0.1:1/mcp", NetworkPolicy::Ask).await;
+        let result = build_http_client("http://100.64.0.1:1/mcp", NetworkPolicy::Restricted).await;
         assert!(result.is_err());
     }
 }

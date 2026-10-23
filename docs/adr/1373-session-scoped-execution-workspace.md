@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实施 — 2026-10-23。完成 ADR 1367 / `execution-context-redesign.md` 的第一切片；其余权限模型、资源契约、工具通道和 UI 预设仍是提案。
+已实施 — 2026-10-23。完成 ADR 1367 / `execution-context-redesign.md` 的第一切片。后续执行预设和核心资源合同见 ADR 1374；完整资源范围、进程路径盘点、MCP exposure 拆分及边界扩展仍待后续切片。
 
 ## 背景
 

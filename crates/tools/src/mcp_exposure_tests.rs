@@ -148,7 +148,7 @@ async fn load_mcp_authorization_resolves_transport_from_config_before_connecting
     let facade = ToolsFacade::new();
     let authorization = facade.share_services().authorization;
     authorization
-        .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Ask)
+        .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
         .await;
 
     let http_config = McpServerConfig {
@@ -176,7 +176,7 @@ async fn load_mcp_authorization_resolves_transport_from_config_before_connecting
     );
     assert_eq!(
         http_request.policy.network_access,
-        crate::NetworkAccess::Opaque
+        crate::NetworkAccess::Public
     );
     assert!(http_request.target_binding.is_some());
     assert!(matches!(

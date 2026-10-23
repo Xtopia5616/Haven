@@ -1548,11 +1548,11 @@ mod tests {
 
     #[tokio::test]
     async fn diagnostics_status_confirms_network_access_but_errors_does_not() {
-        use haven_common::types::PermissionMode;
+        use haven_common::types::ExecutionMode;
 
         let authorization = crate::security::AuthorizationEngine::new();
         authorization
-            .set_permission_mode(PermissionMode::Default)
+            .set_execution_mode(ExecutionMode::Collaborative)
             .await;
 
         let request_for = |name: &'static str| {

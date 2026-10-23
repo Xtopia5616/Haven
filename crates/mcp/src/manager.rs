@@ -218,7 +218,7 @@ impl Clone for McpManager {
 
 impl McpManager {
     pub fn new() -> Self {
-        Self::new_with_network_policy(haven_common::types::NetworkPolicy::Ask)
+        Self::new_with_network_policy(haven_common::types::NetworkPolicy::Restricted)
     }
 
     /// Construct a manager with an explicit transport policy. The regular

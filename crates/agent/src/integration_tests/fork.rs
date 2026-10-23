@@ -1,4 +1,5 @@
 use super::support::make_test_agent;
+use haven_common::types::ExecutionMode;
 
 #[tokio::test]
 async fn forked_session_inherits_parent_execution_workspace() {
@@ -7,6 +8,10 @@ async fn forked_session_inherits_parent_execution_workspace() {
     let workspace = tempfile::tempdir().unwrap();
     executor
         .set_session_execution_workspace(&parent.session_id, Some(workspace.path().to_path_buf()))
+        .await
+        .unwrap();
+    executor
+        .set_session_execution_mode(&parent.session_id, ExecutionMode::Unattended)
         .await
         .unwrap();
     let message = executor
@@ -39,5 +44,12 @@ async fn forked_session_inherits_parent_execution_workspace() {
             .unwrap()
             .as_deref(),
         Some(workspace.path())
+    );
+    assert_eq!(
+        executor
+            .session_execution_mode(&child_session_id)
+            .await
+            .unwrap(),
+        ExecutionMode::Unattended
     );
 }

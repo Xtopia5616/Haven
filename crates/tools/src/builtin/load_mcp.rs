@@ -491,10 +491,19 @@ impl Tool for LoadMcpTool {
         }
 
         let mut policy = self.try_operation_policy(input)?;
-        policy.execution_boundary = match snapshot.server.transport {
-            haven_common::mcp::McpServerTransport::Http => crate::ExecutionBoundary::InProcess,
-            haven_common::mcp::McpServerTransport::Stdio => crate::ExecutionBoundary::HostProcess,
-        };
+        match snapshot.server.transport {
+            haven_common::mcp::McpServerTransport::Http => {
+                // The configured endpoint is validated and DNS-pinned by the
+                // HTTP transport under Restricted policy. It is an inspectable
+                // public destination, not an opaque local-process network path.
+                policy.execution_boundary = crate::ExecutionBoundary::InProcess;
+                policy.network_access = crate::NetworkAccess::Public;
+            }
+            haven_common::mcp::McpServerTransport::Stdio => {
+                policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
+                policy.network_access = crate::NetworkAccess::Opaque;
+            }
+        }
         Ok(crate::ToolAuthorizationContract {
             policy,
             target_binding: Some(snapshot.authorization_target_binding()),

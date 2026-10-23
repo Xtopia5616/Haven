@@ -189,26 +189,72 @@ pub enum RiskLevel {
     Critical,
 }
 
-/// User-facing authorization policy for agent tools.
+/// The task and approval behavior selected for a session.
 ///
-/// Prompting mode is deliberately separate from the technical sandbox and
-/// network boundary. These values mirror the four useful states exposed by
-/// current coding agents: inspect-only planning, normal prompting, edit
-/// convenience, and explicit autonomous execution.
+/// This is the user-facing preset. It deliberately does not describe file or
+/// network resources, which remain governed by the resource policy.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum PermissionMode {
-    /// Read-only inspection is automatic; changes and external effects ask.
+pub enum ExecutionMode {
+    /// Inspect and explain only; user-visible mutations are denied.
+    Analyze,
+    /// Perform ordinary work and ask when an operation needs approval.
     #[default]
-    Default,
-    /// Only read-only operations are allowed. Mutations are blocked.
-    Plan,
-    /// Automatically accept edits within the configured boundary; commands,
-    /// network access and higher-risk effects still ask.
-    AutoEdit,
-    /// Run non-critical operations without prompting; Critical operations
-    /// still require explicit confirmation.
-    Autonomous,
+    Collaborative,
+    /// Perform pre-authorized work and stop when additional approval is needed.
+    Unattended,
+}
+
+impl ExecutionMode {
+    pub const fn task_intent(self) -> TaskIntent {
+        match self {
+            Self::Analyze => TaskIntent::Analyze,
+            Self::Collaborative | Self::Unattended => TaskIntent::Act,
+        }
+    }
+
+    pub const fn approval_policy(self) -> ApprovalPolicy {
+        match self {
+            Self::Analyze | Self::Collaborative => ApprovalPolicy::AskWhenNeeded,
+            Self::Unattended => ApprovalPolicy::DenyIfRequired,
+        }
+    }
+}
+
+/// Whether a session may perform externally visible or user-visible changes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskIntent {
+    Analyze,
+    #[default]
+    Act,
+}
+
+impl TaskIntent {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Analyze => "analyze",
+            Self::Act => "act",
+        }
+    }
+}
+
+/// How an otherwise valid operation proceeds when it needs user approval.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalPolicy {
+    #[default]
+    AskWhenNeeded,
+    DenyIfRequired,
+}
+
+impl ApprovalPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AskWhenNeeded => "ask_when_needed",
+            Self::DenyIfRequired => "deny_if_required",
+        }
+    }
 }
 
 /// Local file-write boundary applied by Haven's authorization gateway. This
@@ -246,15 +292,10 @@ pub enum SandboxMode {
 pub enum NetworkPolicy {
     /// No network-capable tool may run.
     Deny,
-    /// Keep network operations on the normal confirmation path, including
-    /// opaque adapter capabilities. Inspectable public destinations still
-    /// receive the tool-level SSRF/DNS checks; an explicit permission grant
-    /// can avoid repeated prompts after the first confirmation.
-    #[default]
-    Ask,
     /// Public destinations are allowed subject to each tool's SSRF and
     /// allowlist checks. Opaque child-process network access is blocked because
     /// Haven cannot validate its destination.
+    #[default]
     Restricted,
     /// Do not add a global network restriction. Tool-level checks still run.
     Open,
@@ -1397,19 +1438,36 @@ mod tests {
     }
 
     #[test]
-    fn permission_mode_has_only_named_profiles() {
-        assert!(serde_json::from_str::<PermissionMode>("\"always\"").is_err());
-        let mode: PermissionMode = serde_json::from_str("\"default\"").unwrap();
-        assert_eq!(mode, PermissionMode::Default);
+    fn execution_mode_is_a_closed_three_value_preset() {
+        assert_eq!(
+            serde_json::to_string(&ExecutionMode::Analyze).unwrap(),
+            "\"analyze\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ExecutionMode>("\"collaborative\"").unwrap(),
+            ExecutionMode::Collaborative
+        );
+        assert_eq!(
+            serde_json::from_str::<ExecutionMode>("\"unattended\"").unwrap(),
+            ExecutionMode::Unattended
+        );
+        assert!(serde_json::from_str::<ExecutionMode>("\"default\"").is_err());
+        assert!(serde_json::from_str::<ExecutionMode>("\"always\"").is_err());
+        assert_eq!(
+            ExecutionMode::Unattended.approval_policy(),
+            ApprovalPolicy::DenyIfRequired
+        );
+        assert_eq!(ExecutionMode::Analyze.task_intent(), TaskIntent::Analyze);
     }
 
     #[test]
-    fn network_policy_defaults_to_confirmation() {
-        assert_eq!(NetworkPolicy::default(), NetworkPolicy::Ask);
+    fn network_policy_defaults_to_destination_restriction() {
+        assert_eq!(NetworkPolicy::default(), NetworkPolicy::Restricted);
         assert_eq!(
-            serde_json::from_str::<NetworkPolicy>("\"ask\"").unwrap(),
-            NetworkPolicy::Ask
+            serde_json::from_str::<NetworkPolicy>("\"restricted\"").unwrap(),
+            NetworkPolicy::Restricted
         );
+        assert!(serde_json::from_str::<NetworkPolicy>("\"ask\"").is_err());
     }
 
     #[test]

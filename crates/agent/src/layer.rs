@@ -1413,7 +1413,7 @@ impl AgentLayer {
         // the complete new session or none of it.
         let _lifecycle = self.executor.lifecycle_guard().await;
         self.executor.ensure_lifecycle_open()?;
-        let inherited_workspace = match (&creation.method, &creation.source) {
+        let inherited_execution_context = match (&creation.method, &creation.source) {
             (
                 haven_memory::SessionCreationMethod::AgentSpawn,
                 haven_memory::SessionCreationSource::Session { session_id },
@@ -1426,7 +1426,11 @@ impl AgentLayer {
                     .executor
                     .ensure_session_execution_workspace_bound(session_id)
                     .await?;
-                Some(root)
+                let mode = self
+                    .executor
+                    .ensure_session_execution_mode_bound(session_id)
+                    .await?;
+                Some((root, mode))
             }
             _ => None,
         };
@@ -1455,22 +1459,28 @@ impl AgentLayer {
                 return Err(e);
             }
         };
-        if let Some(root) = inherited_workspace
-            && let Err(error) = self
-                .executor
-                .bind_new_session_execution_workspace_locked(&record.session_id, root)
-                .await
-        {
-            let session_id = record.session_id.clone();
-            let _ = self
-                .executor
-                .session_store()
-                .delete_session(&session_id)
-                .await;
-            self.executor
-                .forget_session_execution_workspaces(&[session_id])
-                .await;
-            return Err(error);
+        if let Some((root, mode)) = inherited_execution_context {
+            let binding_result = async {
+                self.executor
+                    .bind_new_session_execution_workspace_locked(&record.session_id, root)
+                    .await?;
+                self.executor
+                    .bind_new_session_execution_mode_locked(&record.session_id, mode)
+                    .await
+            }
+            .await;
+            if let Err(error) = binding_result {
+                let session_id = record.session_id.clone();
+                let _ = self
+                    .executor
+                    .session_store()
+                    .delete_session(&session_id)
+                    .await;
+                self.executor
+                    .forget_session_execution_workspaces(&[session_id])
+                    .await;
+                return Err(error);
+            }
         }
         self.executor
             .ensure_session_loaded_locked(&record.session_id)

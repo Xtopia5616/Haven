@@ -1277,3 +1277,4 @@
 - [1371：扩展生命周期 Hooks 的管理与事件覆盖](1371-expand-lifecycle-hooks.md)
 - [1372：完善 Lifecycle Hook 编写、复用与排错流程](1372-lifecycle-hook-authoring-workflow.md)
 - [1373：将执行工作目录绑定到会话](1373-session-scoped-execution-workspace.md)
+- [1374：会话级执行方式与 typed 资源合同](1374-session-execution-mode-and-resource-contracts.md)

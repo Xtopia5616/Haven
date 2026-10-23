@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话级执行上下文第一切片已完成（ADR 1373），其余权限分层仍是候选。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
+> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1 已完成（ADR 1373）；Slice 2 的执行预设与 Files/HTTP 核心 typed 资源合同已实施（ADR 1374），完整资源范围、边界扩展、MCP exposure 拆分和其它进程路径盘点仍待后续切片。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
 > 更新日期：2026-10-23
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -75,7 +75,7 @@
 | 状态 | 当前项 |
 |---|---|
 | **Next** | 新一轮 R02：提供已保存配置的显式 reapply；模型/媒体组合发布与会话工作绑定的后续顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
-| **Candidate** | ADR 1367 的第一切片已实现：会话目录持久绑定，并由 Files、Shell、prompt 和 ToolRun proof 共享；见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)。其余权限分层、资源契约与调用通道收敛仍是候选设计，见 [ADR 1367](adr/1367-session-scoped-execution-policy-design.md) 与[设计提案](execution-context-redesign.md)。 |
+| **Active** | ADR 1367 的 Slice 1 已实现；当前 Slice 2 已完成会话级执行预设、Ask 与网络范围分离、Files 本地资源和 HTTP origin 声明，并接入会话 IPC/UI。剩余 typed 资源覆盖、MCP exposure 与范围化授权仍需完成；见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)、[ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 和[设计提案](execution-context-redesign.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）

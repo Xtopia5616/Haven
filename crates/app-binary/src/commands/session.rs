@@ -6,6 +6,7 @@ use crate::commands::{
 use crate::events::{InteractionRequestedEvent, SESSION_LIFECYCLE_EVENT, SessionLifecycleEvent};
 use haven_agent::InteractionStatus;
 use haven_common::error::sanitize_error_text;
+use haven_common::types::ExecutionMode;
 use haven_memory::SessionStep;
 use haven_memory::{Session, SessionCreation, SessionCreationSource};
 use serde::Serialize;
@@ -72,6 +73,44 @@ pub async fn reopen_session(
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionExecutionWorkspaceResponse {
     pub root: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct SessionExecutionModeResponse {
+    pub mode: ExecutionMode,
+}
+
+#[tauri::command]
+pub async fn get_session_execution_mode(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<SessionExecutionModeResponse, String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("get_session_execution_mode", error))?;
+    let mode = state
+        .runtime
+        .executor
+        .session_execution_mode(&session_id)
+        .await
+        .map_err(|error| log_err("get_session_execution_mode", error))?;
+    Ok(SessionExecutionModeResponse { mode })
+}
+
+#[tauri::command]
+pub async fn set_session_execution_mode(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    mode: ExecutionMode,
+) -> Result<SessionExecutionModeResponse, String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("set_session_execution_mode", error))?;
+    let mode = state
+        .runtime
+        .executor
+        .set_session_execution_mode(&session_id, mode)
+        .await
+        .map_err(|error| log_err("set_session_execution_mode", error))?;
+    Ok(SessionExecutionModeResponse { mode })
 }
 
 #[tauri::command]

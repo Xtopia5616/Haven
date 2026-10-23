@@ -4,6 +4,39 @@
 
 use super::*;
 
+fn deserialize_execution_mode<'de, D>(
+    deserializer: D,
+) -> Result<crate::types::ExecutionMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    match value.as_str() {
+        "analyze" | "plan" => Ok(crate::types::ExecutionMode::Analyze),
+        "collaborative" | "default" | "auto_edit" => Ok(crate::types::ExecutionMode::Collaborative),
+        "unattended" | "autonomous" => Ok(crate::types::ExecutionMode::Unattended),
+        _ => Err(serde::de::Error::custom("unknown execution mode")),
+    }
+}
+
+fn deserialize_network_policy<'de, D>(
+    deserializer: D,
+) -> Result<crate::types::NetworkPolicy, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    match value.as_str() {
+        "deny" => Ok(crate::types::NetworkPolicy::Deny),
+        // The old Ask value mixed consent with the technical resource scope.
+        // Preserve it as the more conservative destination-restricted policy;
+        // ExecutionMode now owns whether approval prompts or stops.
+        "ask" | "restricted" => Ok(crate::types::NetworkPolicy::Restricted),
+        "open" => Ok(crate::types::NetworkPolicy::Open),
+        _ => Err(serde::de::Error::custom("unknown network policy")),
+    }
+}
+
 /// Hard ceiling for the number of stored facts inserted into a fact-extraction
 /// prompt. The default remains lower so users can reduce prompt cost.
 pub const MAX_FACTS_IN_EXTRACTION_PROMPT: usize = 64;
@@ -501,8 +534,14 @@ pub struct StoredPermission {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SecurityConfig {
-    /// Single source of truth for when an agent action needs approval.
-    pub permission_mode: PermissionMode,
+    /// Initial execution mode captured into new sessions. Existing sessions
+    /// keep their durable session_context execution mode.
+    #[serde(
+        default,
+        alias = "permission_mode",
+        deserialize_with = "deserialize_execution_mode"
+    )]
+    pub execution_mode: crate::types::ExecutionMode,
     /// Local file-write boundary evaluated independently from prompting and
     /// network policy. Other effects follow their declared execution boundary
     /// and network, risk, permission, or confirmation rules.
@@ -517,7 +556,8 @@ pub struct SecurityConfig {
     /// policy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub writable_roots: Vec<String>,
-    /// Network boundary evaluated before a network-capable tool executes.
+    /// Destination boundary evaluated before a network-capable tool executes.
+    #[serde(default, deserialize_with = "deserialize_network_policy")]
     pub network_policy: NetworkPolicy,
     pub encrypt_sensitive: bool,
     /// Permanent allow/deny grants (Always scope). Session-scoped grants are
@@ -529,11 +569,11 @@ pub struct SecurityConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            permission_mode: PermissionMode::Default,
+            execution_mode: crate::types::ExecutionMode::Collaborative,
             sandbox_mode: SandboxMode::WorkspaceWrite,
             execution_root: None,
             writable_roots: Vec::new(),
-            network_policy: NetworkPolicy::Ask,
+            network_policy: NetworkPolicy::Restricted,
             encrypt_sensitive: true,
             permissions: Vec::new(),
         }

@@ -8,7 +8,7 @@ function createSecurity(): SecurityConfigInput & {
 	permissions: Array<{ key: string; effect: string }>;
 } {
 	return {
-		permission_mode: 'default',
+		execution_mode: 'collaborative',
 		sandbox_mode: 'workspace_write',
 		network_policy: 'restricted',
 		execution_root: null,
@@ -17,11 +17,16 @@ function createSecurity(): SecurityConfigInput & {
 	};
 }
 
+async function openResourceBoundaries() {
+	await fireEvent.click(screen.getByText('资源边界（高级）'));
+}
+
 describe('SettingsSecurity', () => {
 	it('edits the new-session default directory independently from writable roots', async () => {
 		const security = createSecurity();
 		const onPickExecutionRoot = vi.fn(async () => 'C:\\Projects\\selected');
 		render(SettingsSecurity, { security, onPickExecutionRoot });
+		await openResourceBoundaries();
 
 		await fireEvent.input(screen.getByLabelText('新会话默认目录'), {
 			target: { value: 'C:\\Projects\\demo' },
@@ -36,11 +41,12 @@ describe('SettingsSecurity', () => {
 		expect(security.execution_root).toBe('C:\\Projects\\selected');
 	});
 
-	it('shows custom writable roots as the effective workspace-write base', () => {
+	it('shows custom writable roots as the effective workspace-write base', async () => {
 		const security = createSecurity();
 		security.execution_root = 'C:\\Projects\\workspace';
 		security.writable_roots = ['C:\\Projects\\write-a', 'D:\\Shared\\write-b'];
 		render(SettingsSecurity, { security });
+		await openResourceBoundaries();
 
 		expect(screen.getByText('工作区可写模式的写入基准')).toBeTruthy();
 		expect(screen.getByText('C:\\Projects\\write-a')).toBeTruthy();
@@ -49,10 +55,11 @@ describe('SettingsSecurity', () => {
 		expect(screen.queryByText('C:\\Projects\\workspace')).toBeNull();
 	});
 
-	it('shows the execution workspace as the write base when custom roots are empty', () => {
+	it('shows the execution workspace as the write base when custom roots are empty', async () => {
 		const security = createSecurity();
 		security.execution_root = 'C:\\Projects\\workspace';
 		render(SettingsSecurity, { security });
+		await openResourceBoundaries();
 
 		expect(screen.getByText('C:\\Projects\\workspace')).toBeTruthy();
 		expect(screen.getByText('工作区可写模式的写入基准')).toBeTruthy();
@@ -63,6 +70,7 @@ describe('SettingsSecurity', () => {
 		security.execution_root = 'C:\\Projects\\existing';
 		const onPickExecutionRoot = vi.fn(async () => null);
 		render(SettingsSecurity, { security, onPickExecutionRoot });
+		await openResourceBoundaries();
 
 		await fireEvent.click(screen.getByRole('button', { name: '选择目录' }));
 
@@ -144,61 +152,61 @@ describe('SettingsSecurity', () => {
 		expect(onResetSessionPermissions).toHaveBeenCalledOnce();
 	});
 
-	it('lets users switch the default policy from the visible choices', async () => {
+	it('lets users switch the default execution preset', async () => {
 		const security = createSecurity();
 		render(SettingsSecurity, { security });
 
-		await fireEvent.click(screen.getByRole('radio', { name: /自动 少打断/ }));
-		expect(security.permission_mode).toBe('autonomous');
+		await fireEvent.click(screen.getByRole('radio', { name: /无人值守 需要确认时停止/ }));
+		expect(security.execution_mode).toBe('unattended');
 	});
 
-	it('lets users choose Ask from the network policy menu', async () => {
+	it('lets users choose the open destination boundary from the advanced menu', async () => {
 		const security = createSecurity();
 		render(SettingsSecurity, { security });
 
+		await fireEvent.click(screen.getByText('资源边界（高级）'));
 		await fireEvent.click(screen.getByRole('combobox', { name: '网络策略' }));
-		await fireEvent.click(screen.getByRole('option', { name: '请求确认' }));
-		expect(security.network_policy).toBe('ask');
+		await fireEvent.click(screen.getByRole('option', { name: '开放网络' }));
+		expect(security.network_policy).toBe('open');
 	});
 
 	it.each([
 		{ networkPolicy: 'deny', explanation: /这不是 Windows 防火墙规则/ },
-		{ networkPolicy: 'ask', explanation: /获准的 Shell 命令由 MXC 按此网络策略限制/ },
 		{
 			networkPolicy: 'restricted',
 			explanation: /无法按目的地检查的 MCP、技能和命令子进程会被拒绝/,
 		},
 		{
 			networkPolicy: 'open',
-			explanation: /MXC Shell 按开放网络策略运行/,
+			explanation: /Haven 不添加目的地限制/,
 		},
 	] as const)(
 		'explains $networkPolicy as a Haven policy rather than an OS firewall rule',
-		({ networkPolicy, explanation }) => {
+		async ({ networkPolicy, explanation }) => {
 			const security = createSecurity();
 			security.network_policy = networkPolicy;
 			render(SettingsSecurity, { security });
+			await openResourceBoundaries();
 
 			expect(screen.getByText(explanation)).toBeTruthy();
 		},
 	);
 
-	it('describes Ask behavior across workspace and full-access modes', () => {
+	it('describes restricted destinations independently from approval behavior', async () => {
 		const security = createSecurity();
-		security.network_policy = 'ask';
 		render(SettingsSecurity, { security });
+		await openResourceBoundaries();
 
-		expect(security.network_policy).toBe('ask');
-		expect(
-			screen.getByText(/工作区可写模式下，获准的 Shell 命令由 MXC 按此网络策略限制/),
-		).toBeTruthy();
-		expect(screen.getAllByText(/Skill 与 MCP stdio 子进程仍会被拒绝/)).toHaveLength(2);
+		expect(security.network_policy).toBe('restricted');
+		expect(screen.getByText(/是否询问由执行方式决定/)).toBeTruthy();
+		expect(screen.getByText('受限网络')).toBeTruthy();
 	});
 
-	it('explains the user-level file access and independent network policy', () => {
+	it('explains the user-level file access and independent network policy', async () => {
 		const security = createSecurity();
 		security.sandbox_mode = 'full_access';
 		render(SettingsSecurity, { security });
+		await openResourceBoundaries();
 
 		expect(
 			screen.getByText(/子进程以当前 Windows 用户权限访问该用户可访问的文件/),
@@ -206,8 +214,9 @@ describe('SettingsSecurity', () => {
 		expect(screen.getByText(/每棵受管进程树限制为最多 256 个活动进程/)).toBeTruthy();
 	});
 
-	it('describes the WorkspaceWrite MXC process boundary', () => {
+	it('describes the WorkspaceWrite MXC process boundary', async () => {
 		render(SettingsSecurity, { security: createSecurity() });
+		await openResourceBoundaries();
 
 		expect(screen.getByText('文件访问模式')).toBeTruthy();
 		expect(screen.getByText(/不会替其它进程设置 Windows 文件或网络限制/)).toBeTruthy();
@@ -226,10 +235,11 @@ describe('SettingsSecurity', () => {
 		},
 	] as const)(
 		'describes network authorization alongside $sandboxMode filesystem policy',
-		({ sandboxMode, explanation }) => {
+		async ({ sandboxMode, explanation }) => {
 			const security = createSecurity();
 			security.sandbox_mode = sandboxMode;
 			render(SettingsSecurity, { security });
+			await openResourceBoundaries();
 
 			expect(screen.getAllByText(explanation).length).toBeGreaterThan(0);
 		},

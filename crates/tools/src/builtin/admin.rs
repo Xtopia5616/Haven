@@ -2183,7 +2183,7 @@ mod tests {
                 .set_boundaries(
                     haven_common::types::SandboxMode::FullAccess,
                     Vec::new(),
-                    haven_common::types::NetworkPolicy::Ask,
+                    haven_common::types::NetworkPolicy::Open,
                 )
                 .await;
             assert!(matches!(

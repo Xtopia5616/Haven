@@ -2,7 +2,7 @@ use super::engine::{canonical_authorization_hash, execution_proof_expiry};
 use crate::OperationPolicy;
 use haven_common::config::{SecurityConfig, StoredPermission};
 use haven_common::types::{
-    CapabilityScope, NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel,
+    CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect, PermissionScope, RiskLevel,
     SandboxMode,
 };
 use serde_json::Value;
@@ -29,7 +29,7 @@ pub enum AuthorizationReasonCode {
     DisabledOperation,
     NetworkPolicy,
     SandboxBoundary,
-    PlanMode,
+    AnalyzeMode,
     PermanentDeny,
     SessionDeny,
     CriticalOperation,
@@ -43,7 +43,7 @@ impl AuthorizationReasonCode {
             Self::DisabledOperation => "disabled_operation",
             Self::NetworkPolicy => "network_policy",
             Self::SandboxBoundary => "sandbox_boundary",
-            Self::PlanMode => "plan_mode",
+            Self::AnalyzeMode => "analyze_mode",
             Self::PermanentDeny => "permanent_deny",
             Self::SessionDeny => "session_deny",
             Self::CriticalOperation => "critical_operation",
@@ -78,9 +78,32 @@ pub struct AuthorizationRequest {
     pub tool_name: String,
     pub input: Value,
     pub policy: OperationPolicy,
+    /// Concrete resources declared by the trusted tool contract. These are
+    /// included in the request hash and revalidated immediately before use.
+    pub resources: Vec<DeclaredResource>,
     /// Opaque, non-secret identity of the concrete execution target. MCP
     /// adapters use this to bind consent to one live server generation.
     pub target_binding: Option<String>,
+}
+
+/// A resource named by a trusted operation contract, with its access intent.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum DeclaredResource {
+    LocalPath {
+        path: std::path::PathBuf,
+        access: LocalPathAccess,
+    },
+    NetworkDestination {
+        scheme: String,
+        host: String,
+        port: Option<u16>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum LocalPathAccess {
+    Read,
+    Write,
 }
 
 #[derive(Debug)]
@@ -92,6 +115,7 @@ pub(super) struct AuthorizationExecutionBinding {
     pub(super) target_binding: Option<String>,
     pub(super) policy: OperationPolicy,
     pub(super) policy_revision: u64,
+    pub(super) session_execution_mode_revision: u64,
     pub(super) workspace_generation: u64,
     pub(super) expires_at: u64,
 }
@@ -131,6 +155,7 @@ impl AuthorizationCheck {
     pub(super) fn auto_approved(
         request: &AuthorizationRequest,
         policy_revision: u64,
+        session_execution_mode_revision: u64,
         workspace_generation: u64,
     ) -> Self {
         Self {
@@ -144,6 +169,7 @@ impl AuthorizationCheck {
                     target_binding: request.target_binding.clone(),
                     policy: request.policy.clone(),
                     policy_revision,
+                    session_execution_mode_revision,
                     workspace_generation,
                     expires_at: execution_proof_expiry(),
                 },
@@ -175,7 +201,11 @@ pub trait AuthorizationPort: Send + Sync {
 
     async fn forget_session_execution_workspaces(&self, session_ids: &[String]);
 
-    async fn set_permission_mode(&self, mode: PermissionMode);
+    async fn bind_session_execution_mode(&self, session_id: &str, mode: ExecutionMode);
+
+    async fn session_execution_mode(&self, session_id: &str) -> ExecutionMode;
+
+    async fn set_execution_mode(&self, mode: ExecutionMode);
 
     async fn set_boundaries(
         &self,
@@ -244,8 +274,14 @@ impl AuthorizationRequest {
             tool_name: tool_name.into(),
             input,
             policy,
+            resources: Vec::new(),
             target_binding: None,
         }
+    }
+
+    pub(crate) fn with_resources(mut self, resources: Vec<DeclaredResource>) -> Self {
+        self.resources = resources;
+        self
     }
 
     pub fn with_target_binding(mut self, target_binding: Option<String>) -> Self {

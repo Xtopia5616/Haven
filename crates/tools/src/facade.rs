@@ -1316,7 +1316,7 @@ mod capability_tests {
             )
             .await;
         authorization
-            .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
+            .set_execution_mode(haven_common::types::ExecutionMode::Unattended)
             .await;
         let tool_name = crate::skill_tool_name(skill_name);
         let capability = haven_common::types::CapabilityScope::try_new(&tool_name).unwrap();

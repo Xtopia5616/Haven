@@ -11,7 +11,7 @@
 `OperationEffect::WorkspaceWrite` 的本地文件写操作；其它 `ExternalEffect` 仍按各自的执行边界、
 网络策略、风险、权限和确认规则处理。`WorkspaceWrite` 下 Shell 必须通过 MXC BaseContainer；
 MXC 无法验证完整策略时 fail closed。Skill、MCP stdio 及其它未接入隔离 capability 仍拒绝。
-回归覆盖外链目标位于 writable roots 之外、`NetworkPolicy::Ask` 时，ReadOnly 与
+回归覆盖外链目标位于 writable roots 之外、`NetworkPolicy::Restricted` 时，ReadOnly 与
 WorkspaceWrite 都进入确认流程；本地文件写入仍分别受只读拒绝与工作区根限制。
 
 ## 风险与入口矩阵

@@ -22,7 +22,7 @@ pub(crate) use step_persistence::{ToolStepMetadata, ToolStepPersistenceError};
 #[cfg(test)]
 mod scheduled_authorization_tests {
     use super::*;
-    use haven_common::types::PermissionMode;
+    use haven_common::types::ExecutionMode;
     use haven_memory::Database;
     use haven_memory::{SchedulePlanInput, ScheduleType};
     use haven_tools::{AuthorizationDecision, AuthorizationReasonCode};
@@ -157,6 +157,23 @@ mod scheduled_authorization_tests {
 
         fn risk_level(&self, _input: &Value) -> RiskLevel {
             self.risk_level
+        }
+
+        fn authorization_resources(
+            &self,
+            input: &Value,
+        ) -> Result<Vec<haven_tools::DeclaredResource>, String> {
+            if self.name != "files.write" {
+                return Ok(Vec::new());
+            }
+            let path = input
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "files.write test input requires a path".to_owned())?;
+            Ok(vec![haven_tools::DeclaredResource::LocalPath {
+                path: path.into(),
+                access: haven_tools::LocalPathAccess::Write,
+            }])
         }
 
         async fn execute(
@@ -506,15 +523,15 @@ mod scheduled_authorization_tests {
         ));
 
         supervisor
-            .authorization
-            .set_permission_mode(PermissionMode::Plan)
-            .await;
+            .set_session_execution_mode(session_id, ExecutionMode::Analyze)
+            .await
+            .unwrap();
         assert!(matches!(
             supervisor
                 .authorize_scheduled_tool(Some(session_id), tool_name, &input)
                 .await,
             AuthorizationDecision::Blocked {
-                reason_code: AuthorizationReasonCode::PlanMode,
+                reason_code: AuthorizationReasonCode::AnalyzeMode,
                 ..
             }
         ));

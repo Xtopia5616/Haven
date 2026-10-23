@@ -257,9 +257,12 @@ pub(crate) fn operation_attributes(
         OperationEffect::ExternalEffect
     };
     let effect = match name {
-        "files.write" | "files.patch" | "files.create_directory" | "files.copy" | "files.move" => {
-            OperationEffect::WorkspaceWrite
-        }
+        "files.write"
+        | "files.patch"
+        | "files.create_directory"
+        | "files.copy"
+        | "files.move"
+        | "files.delete" => OperationEffect::WorkspaceWrite,
         _ => effect,
     };
     let data = match name {
@@ -1418,6 +1421,17 @@ pub trait Tool: Send + Sync {
     async fn authorization_target_binding(&self, input: &Value) -> Result<Option<String>, String> {
         let _ = input;
         Ok(None)
+    }
+
+    /// Declare the concrete resources this invocation will access. The
+    /// authorization owner evaluates these declarations; it never infers
+    /// resource meaning from arbitrary JSON field names.
+    fn authorization_resources(
+        &self,
+        input: &Value,
+    ) -> Result<Vec<crate::security::DeclaredResource>, String> {
+        let _ = input;
+        Ok(Vec::new())
     }
 
     /// Resolve policy and target identity together before the authorization

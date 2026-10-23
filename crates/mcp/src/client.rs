@@ -744,7 +744,7 @@ impl McpClient {
             tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
             max_binary_base64_bytes,
             max_sse_buffer,
-            network_policy: Arc::new(RwLock::new(NetworkPolicy::Ask)),
+            network_policy: Arc::new(RwLock::new(NetworkPolicy::Restricted)),
             stdio_process_authorization,
             stdio_launch_spec: McpStdioLaunchSpec::new(
                 config.name.clone(),

@@ -4,7 +4,8 @@ use haven_common::lifecycle::SessionStatus;
 use haven_common::lifecycle::SessionStepStatus;
 use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::{
-    CapabilityScope, MessageAttachment, PermissionEffect, PermissionTarget, RiskLevel,
+    CapabilityScope, ExecutionMode, MessageAttachment, PermissionEffect, PermissionTarget,
+    RiskLevel,
 };
 #[cfg(test)]
 use haven_memory::Database;
@@ -747,6 +748,64 @@ impl SessionSupervisor {
         Ok(root)
     }
 
+    /// Read or initialize the durable execution preset for one session.
+    pub async fn session_execution_mode(&self, session_id: &str) -> anyhow::Result<ExecutionMode> {
+        crate::session_execution_workspace::validate_session_id(session_id)?;
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_lifecycle_open()?;
+        anyhow::ensure!(
+            !self.is_session_closing(session_id),
+            "session is closing; its execution mode cannot be read"
+        );
+        self.ensure_session_execution_mode_bound(session_id).await?;
+        Ok(self.authorization.session_execution_mode(session_id).await)
+    }
+
+    /// Change one session's task intent and approval behavior as an atomic
+    /// preset. The running turn must finish before the new context is bound.
+    pub async fn set_session_execution_mode(
+        &self,
+        session_id: &str,
+        mode: ExecutionMode,
+    ) -> anyhow::Result<ExecutionMode> {
+        crate::session_execution_workspace::validate_session_id(session_id)?;
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_lifecycle_open()?;
+        anyhow::ensure!(
+            !self.is_session_closing(session_id),
+            "session is closing; its execution mode cannot be changed"
+        );
+        if let Some(actor) = self.actor_for(session_id).await {
+            anyhow::ensure!(
+                !actor.is_running().await,
+                "session is running; wait for the current turn to finish before changing its execution mode"
+            );
+        }
+        let previous = self.ensure_session_execution_mode_bound(session_id).await?;
+        self.authorization
+            .bind_session_execution_mode(session_id, mode)
+            .await;
+        let payload =
+            serde_json::to_string(&crate::session_execution_mode::SessionExecutionModeEvent {
+                mode,
+            })?;
+        if let Err(error) = self
+            .store
+            .append_domain_event(
+                session_id,
+                haven_memory::SESSION_EXECUTION_MODE_EVENT_TYPE,
+                &payload,
+            )
+            .await
+        {
+            self.authorization
+                .bind_session_execution_mode(session_id, previous)
+                .await;
+            return Err(error);
+        }
+        Ok(mode)
+    }
+
     pub(crate) async fn ensure_session_execution_workspace_bound(
         &self,
         session_id: &str,
@@ -787,6 +846,42 @@ impl SessionSupervisor {
         Ok(default_root)
     }
 
+    pub(crate) async fn ensure_session_execution_mode_bound(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<ExecutionMode> {
+        let events = self
+            .store
+            .read_active_domain_events_async(session_id)
+            .await?;
+        if let Some(mode) = crate::session_execution_mode_from_events(&events)? {
+            self.authorization
+                .bind_session_execution_mode(session_id, mode)
+                .await;
+            return Ok(mode);
+        }
+
+        // Legacy sessions capture the current default once. This preserves
+        // existing behavior while later settings changes apply only to new
+        // sessions.
+        let default_mode = self.authorization.session_execution_mode(session_id).await;
+        let payload =
+            serde_json::to_string(&crate::session_execution_mode::SessionExecutionModeEvent {
+                mode: default_mode,
+            })?;
+        self.store
+            .append_domain_event(
+                session_id,
+                haven_memory::SESSION_EXECUTION_MODE_EVENT_TYPE,
+                &payload,
+            )
+            .await?;
+        self.authorization
+            .bind_session_execution_mode(session_id, default_mode)
+            .await;
+        Ok(default_mode)
+    }
+
     /// Bind the inherited workspace of a newly created child session before
     /// its actor is installed. The caller must hold the lifecycle gate.
     pub(crate) async fn bind_new_session_execution_workspace_locked(
@@ -821,6 +916,29 @@ impl SessionSupervisor {
                 .await;
             return Err(anyhow::Error::msg(error));
         }
+        Ok(())
+    }
+
+    pub(crate) async fn bind_new_session_execution_mode_locked(
+        &self,
+        session_id: &str,
+        mode: ExecutionMode,
+    ) -> anyhow::Result<()> {
+        crate::session_execution_workspace::validate_session_id(session_id)?;
+        let payload =
+            serde_json::to_string(&crate::session_execution_mode::SessionExecutionModeEvent {
+                mode,
+            })?;
+        self.store
+            .append_domain_event(
+                session_id,
+                haven_memory::SESSION_EXECUTION_MODE_EVENT_TYPE,
+                &payload,
+            )
+            .await?;
+        self.authorization
+            .bind_session_execution_mode(session_id, mode)
+            .await;
         Ok(())
     }
 
@@ -1164,6 +1282,8 @@ impl SessionSupervisor {
     ) -> anyhow::Result<actor::SessionActorHandle> {
         self.ensure_session_execution_workspace_bound(&info.session_id)
             .await?;
+        self.ensure_session_execution_mode_bound(&info.session_id)
+            .await?;
         // Interaction state is authoritative in the active durable event
         // stream. Do not apply this session's grants or register an actor
         // until that state has been reconstructed successfully.
@@ -1255,6 +1375,11 @@ mod tests {
         p
     }
 
+    fn is_session_execution_context_event(event_type: &str) -> bool {
+        event_type == haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+            || event_type == haven_memory::SESSION_EXECUTION_MODE_EVENT_TYPE
+    }
+
     fn make_executor_with_db(max_concurrent: usize) -> (Arc<SessionSupervisor>, Arc<Database>) {
         let path = temp_db_path();
         let db = Arc::new(Database::open(&path).unwrap());
@@ -1271,11 +1396,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_workspace_binding_is_persisted_and_restored() {
+    async fn session_execution_context_is_persisted_and_default_changes_only_affect_new_sessions() {
         let directory = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&directory.path().join("workspace.db")).unwrap());
         let first_tools = Arc::new(ToolsFacade::new());
-        let first = Arc::new(SessionSupervisor::new_for_test(db.clone(), first_tools, 2));
+        let first = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            first_tools.clone(),
+            2,
+        ));
+        first
+            .authorization
+            .set_execution_mode(ExecutionMode::Analyze)
+            .await;
         let record = first
             .store
             .create_session_with_creation(
@@ -1289,6 +1422,13 @@ mod tests {
             .await
             .unwrap();
         assert!(original_default.is_some());
+        assert_eq!(
+            first
+                .session_execution_mode(&record.session_id)
+                .await
+                .unwrap(),
+            ExecutionMode::Analyze
+        );
 
         let selected = tempfile::tempdir().unwrap();
         let updated = first
@@ -1299,8 +1439,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.as_deref(), Some(selected.path()));
+        first
+            .set_session_execution_mode(&record.session_id, ExecutionMode::Collaborative)
+            .await
+            .unwrap();
+        first
+            .authorization
+            .set_execution_mode(ExecutionMode::Unattended)
+            .await;
 
-        let second = SessionSupervisor::new_for_test(db, Arc::new(ToolsFacade::new()), 2);
+        let second = Arc::new(SessionSupervisor::new_for_test(db, first_tools, 2));
         assert_eq!(
             second
                 .session_execution_workspace(&record.session_id)
@@ -1318,6 +1466,23 @@ mod tests {
                 .root
                 .as_deref(),
             Some(selected.path())
+        );
+        assert_eq!(
+            second
+                .session_execution_mode(&record.session_id)
+                .await
+                .unwrap(),
+            ExecutionMode::Collaborative,
+            "an existing session retains the execution mode last bound to it"
+        );
+        let new_session = second.create_session("new default mode").await.unwrap();
+        assert_eq!(
+            second
+                .session_execution_mode(&new_session.session_id)
+                .await
+                .unwrap(),
+            ExecutionMode::Unattended,
+            "new sessions capture the updated global default exactly once"
         );
     }
 
@@ -1381,17 +1546,24 @@ mod tests {
 
     fn high_risk_session_request(session_id: &str) -> haven_tools::AuthorizationRequest {
         let capability = CapabilityScope::try_new("files.write").unwrap();
-        haven_tools::AuthorizationRequest::new(
+        let mut request = haven_tools::AuthorizationRequest::new(
             Some(session_id),
             "files.write",
-            serde_json::json!({}),
+            serde_json::json!({"path": "notes.txt"}),
             haven_tools::OperationPolicy::native(
                 "files.write",
                 capability,
                 RiskLevel::High,
                 haven_common::tools::NetworkAccess::None,
             ),
-        )
+        );
+        request
+            .resources
+            .push(haven_tools::DeclaredResource::LocalPath {
+                path: PathBuf::from("notes.txt"),
+                access: haven_tools::LocalPathAccess::Write,
+            });
+        request
     }
 
     #[tokio::test]
@@ -4087,9 +4259,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter(|event| {
-                event.event_type != haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
-            })
+            .filter(|event| !is_session_execution_context_event(&event.event_type))
             .collect::<Vec<_>>();
         assert_eq!(events.len(), 1);
         assert_eq!(
@@ -4174,9 +4344,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .filter(|event| {
-                event.event_type != haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
-            })
+            .filter(|event| !is_session_execution_context_event(&event.event_type))
             .collect::<Vec<_>>();
         assert_eq!(events.len(), 4);
         assert_eq!(
@@ -4556,9 +4724,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|event| {
-                    event.event_type == haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
-                })
+                .all(|event| is_session_execution_context_event(&event.event_type))
         );
 
         assert!(
@@ -4576,9 +4742,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|event| {
-                    event.event_type == haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
-                })
+                .all(|event| is_session_execution_context_event(&event.event_type))
         );
 
         db.conn()
@@ -4624,9 +4788,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|event| {
-                    event.event_type == haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
-                })
+                .all(|event| is_session_execution_context_event(&event.event_type))
         );
 
         exec.request_confirm_batch(
@@ -4728,9 +4890,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .all(|event| {
-                    event.event_type == haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
-                })
+                .all(|event| is_session_execution_context_event(&event.event_type))
         );
 
         db.conn()
@@ -4751,9 +4911,7 @@ mod tests {
             .unwrap();
         let events = events
             .into_iter()
-            .filter(|event| {
-                event.event_type != haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
-            })
+            .filter(|event| !is_session_execution_context_event(&event.event_type))
             .collect::<Vec<_>>();
         assert_eq!(events.len(), 2);
         assert_eq!(

@@ -198,6 +198,20 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
             .await
     }
 
+    async fn bind_session_execution_mode(
+        &self,
+        session_id: &str,
+        mode: haven_common::types::ExecutionMode,
+    ) {
+        self.authorization
+            .bind_session_execution_mode(session_id, mode)
+            .await;
+    }
+
+    async fn session_execution_mode(&self, session_id: &str) -> haven_common::types::ExecutionMode {
+        self.authorization.session_execution_mode(session_id).await
+    }
+
     async fn forget_session_execution_workspaces(&self, session_ids: &[String]) {
         self.authorization
             .forget_session_execution_workspaces(session_ids)
@@ -353,8 +367,8 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
         }
     }
 
-    async fn set_permission_mode(&self, mode: haven_common::types::PermissionMode) {
-        self.authorization.set_permission_mode(mode).await;
+    async fn set_execution_mode(&self, mode: haven_common::types::ExecutionMode) {
+        self.authorization.set_execution_mode(mode).await;
     }
 
     async fn set_boundaries(

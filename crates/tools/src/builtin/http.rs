@@ -238,6 +238,32 @@ impl Tool for HttpTool {
         crate::prompts::HTTP_DESCRIPTION.into()
     }
 
+    fn authorization_resources(
+        &self,
+        input: &Value,
+    ) -> Result<Vec<crate::security::DeclaredResource>, String> {
+        let params =
+            crate::tool_contract::parse_tool_input::<HttpRequestParams>("http", input.clone())
+                .map_err(|error| error.to_string())?;
+        let url = url::Url::parse(&params.url)
+            .map_err(|_| "HTTP request has an invalid destination".to_owned())?;
+        let scheme = url.scheme();
+        if !matches!(scheme, "http" | "https") {
+            return Err("HTTP request destination must use http or https".into());
+        }
+        let host = url
+            .host_str()
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| "HTTP request has no destination host".to_owned())?;
+        Ok(vec![
+            crate::security::DeclaredResource::NetworkDestination {
+                scheme: scheme.to_owned(),
+                host: host.to_ascii_lowercase(),
+                port: url.port_or_known_default(),
+            },
+        ])
+    }
+
     fn catalog_group(&self) -> ToolCatalogGroup {
         ToolCatalogGroup::Network
     }
@@ -671,6 +697,25 @@ mod tests {
     #[test]
     fn test_network_tool_name() {
         assert_eq!(HttpTool::default().name(), "http");
+    }
+
+    #[test]
+    fn http_authorization_declares_the_destination_origin() {
+        let resources = HttpTool::default()
+            .authorization_resources(&json!({
+                "method": "POST",
+                "url": "https://Example.COM:8443/api/items?token=private",
+                "body": "payload"
+            }))
+            .unwrap();
+        assert_eq!(
+            resources,
+            vec![crate::security::DeclaredResource::NetworkDestination {
+                scheme: "https".into(),
+                host: "example.com".into(),
+                port: Some(8443),
+            }]
+        );
     }
 
     #[test]

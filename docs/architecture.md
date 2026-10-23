@@ -613,30 +613,27 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 
 决策顺序（fail-closed）：
 
-1. `NetworkPolicy` / `SandboxMode` / `tool_settings.disabled_operations` / `allowed_paths` → **Blocked**
-2. 操作契约的 `Required` 或 `Critical` → 保留强制确认底线
-3. 永久拒绝（`SecurityConfig.permissions`，Always）→ **Blocked**
+1. `NetworkPolicy` / `SandboxMode` / `tool_settings.disabled_operations` / typed resource declarations → **Blocked** on hard-boundary failure
+2. 会话 `ExecutionMode::Analyze` → 非只读操作 **Blocked**，早于任何 allow
+3. 永久拒绝 → **Blocked**
 4. 会话拒绝 → **Blocked**
-5. 永久允许 / 会话允许 → **AutoApproved**（但不能越过强制确认底线）
-6. `PermissionMode`：`Plan`（仅显式只读操作）/ `Default`（编辑、命令和外部效果询问）/
-   `AutoEdit`（安全编辑自动执行）/ `Autonomous`（High/Critical 仍询问）
-7. 否则 → `RequiresConfirmation`（事件只带后端生成的安全摘要 + `permission_key`）
+5. 操作契约的 `Required` / `Critical` → 强制确认底线，不可由 allow 绕过
+6. 永久允许 / 会话允许 → **AutoApproved**（仅对不触发强制确认的操作）
+7. 其余按 `ExecutionMode` 处理：`Collaborative` 可请求确认，`Unattended` 对需要确认的操作返回 **Blocked**
 
 决策细化：永久拒绝 → 会话拒绝 → 永久允许 → 会话允许。拒绝授权写工具根键（覆盖同工具全部子操作）；允许写精确键。
 
 能力标识：`permission_key(tool, params)` → `tool` / `tool.operation` / `system.power.lock`；授予父键可覆盖子操作。冒号 operation key 不再参与运行时匹配，配置加载发现这类 key 时备份并按重置策略处理。
-操作 view 的 `OperationPolicy.permission_key` 是权威身份；契约另外声明 `effect`、`data_sensitivity`、
-`network_access` 和执行并发，不能由风险等级、并发属性或前端字段推断。`SecurityConfig` 另外保存
-`sandbox_mode`（`read_only` / `workspace_write` / `full_access`，可选 `writable_roots`）与
-`network_policy`（`deny` / `ask` / `restricted` / `open`，默认为 `ask`）。ReadOnly 和 WorkspaceWrite
+操作 view 的 `OperationPolicy.capability` 是权威身份；授权请求另外携带工具合同声明的 `LocalPath` 读/写资源或 HTTP destination origin，并将它们绑定到确认收据和执行 proof。`effect`、`data_sensitivity`、
+`network_access` 和执行并发不能由风险等级、并发属性或前端字段推断。`SecurityConfig` 保存新会话默认 `execution_mode`（`analyze` / `collaborative` / `unattended`）、`sandbox_mode`（`read_only` / `workspace_write` / `full_access`，可选 `writable_roots`）与
+`network_policy`（`deny` / `restricted` / `open`，默认为 `restricted`）。旧 `permission_mode` 和 `network_policy=ask` 只在配置读取边界按 ADR 1374 保守映射；会话自己的执行方式由 `session_context.execution_mode_bound` 事件持久化。ReadOnly 和 WorkspaceWrite
 的文件路径边界只作用于声明为 `OperationEffect::WorkspaceWrite` 的本地文件写操作；其它
 `ExternalEffect` 不会仅因只读模式或目标位于可写根之外而被拒绝，而是继续按执行边界、网络策略、
-操作风险、权限规则和确认流程处理；无法保证只读效果的工具仍可按各自执行边界被拒绝。
+操作风险、权限规则和执行方式处理；无法保证只读效果的工具仍可按各自执行边界被拒绝。
 WorkspaceWrite 仍会单独拒绝无法约束文件访问的宿主子进程；Shell 必须使用 MXC BaseContainer，受管隔离执行则由其自身边界控制。`deny` / 不可验证
-目的地的 `restricted` 仍直接拒绝对应网络能力；`ask` 将符合执行边界的网络操作交给确认流程，
+目的地的 `restricted` 仍直接拒绝对应网络能力；是否需要确认由会话执行方式、操作合同和授权规则决定，
 `open` 不添加全局网络限制。Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过
-SSRF/DNS 校验并固定地址的 HTTP/MCP 目的地，禁止跨源重定向。`ask` 与 `restricted` 共用可验证
-目的地边界，但默认将普通公网请求交给确认流程，不会因为默认配置而静默拒绝。
+SSRF/DNS 校验并固定地址的 HTTP/MCP 目的地，禁止跨源重定向。`Restricted` 表示目的地必须能由工具验证；是否询问由会话执行方式和操作授权决定。
 
 独立 `web_search_api` 可按调用设置结果数、时效、国家、语言和域名；provider 不支持的筛选在结果中列为 ignored。默认只返回搜索结果，显式设置 `fetch_top_results` 后最多读取 3 个来源页，并继续复用 HTTP 的 SSRF/DNS 固定、同源重定向、响应体限额与取消约束。HTML、JSON、RSS/Atom 和可解析 PDF 会转换为有界文本，抓取正文按不可信网页内容处理（ADR 1350）。
 

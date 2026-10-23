@@ -5,6 +5,7 @@
 	import MaterialSelect from './MaterialSelect.svelte';
 	import { sameExecutionWorkspacePath } from './executionWorkspaceStore.ts';
 	import type { SelectOption } from './selectOption.ts';
+	import type { ExecutionMode } from './contracts/generatedCommands.ts';
 
 	interface Props {
 		title?: string;
@@ -17,6 +18,9 @@
 		executionWorkspaceSwitching?: boolean;
 		savedExecutionWorkspaces?: string[];
 		onSelectExecutionWorkspace?: (root: string | null) => void;
+		executionMode?: ExecutionMode;
+		executionModeSwitching?: boolean;
+		onSelectExecutionMode?: (mode: ExecutionMode) => void;
 		onAddExecutionWorkspace?: () => void;
 		onRemoveExecutionWorkspace?: (root: string) => void;
 		children?: Snippet;
@@ -37,6 +41,9 @@
 		executionWorkspaceSwitching = false,
 		savedExecutionWorkspaces = [],
 		onSelectExecutionWorkspace,
+		executionMode = 'collaborative',
+		executionModeSwitching = false,
+		onSelectExecutionMode,
 		onAddExecutionWorkspace,
 		onRemoveExecutionWorkspace,
 		children,
@@ -77,13 +84,23 @@
 				) ?? executionWorkspaceRoot)
 			: '',
 	);
+	const executionModeOptions: SelectOption[] = [
+		{ value: 'analyze', label: '只分析', group: '执行方式' },
+		{ value: 'collaborative', label: '协作执行', group: '执行方式' },
+		{ value: 'unattended', label: '无人值守', group: '执行方式' },
+	];
+	const executionModeLabels: Record<ExecutionMode, string> = {
+		analyze: '只分析',
+		collaborative: '协作执行',
+		unattended: '无人值守',
+	};
 </script>
 
 <header class="session-header">
 	<div class="session-header__identity">
 		<div class="session-header__title-row">
 			<h1 {title}>{title}</h1>
-			<div class="session-header__workspace-controls" role="group" aria-label="会话工作目录">
+			<div class="session-header__workspace-controls" role="group" aria-label="会话执行上下文">
 				<MaterialSelect
 					id="session-execution-workspace"
 					ariaLabel="会话工作目录"
@@ -116,6 +133,19 @@
 					title="选择当前会话的工作目录，并保存快捷项"
 					onclick={() => onAddExecutionWorkspace?.()}
 				/>
+			<MaterialSelect
+				id="session-execution-mode"
+				ariaLabel="会话执行方式"
+				width="standard"
+				value={executionMode}
+				options={executionModeOptions}
+				title={`执行方式：${executionModeLabels[executionMode]}`}
+				disabled={executionModeSwitching || !onSelectExecutionMode}
+				onChange={(mode) => {
+					if (mode === 'analyze' || mode === 'collaborative' || mode === 'unattended')
+						onSelectExecutionMode?.(mode);
+				}}
+			/>
 			</div>
 		</div>
 	</div>

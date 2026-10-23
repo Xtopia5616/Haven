@@ -249,9 +249,13 @@ impl SessionStore {
             let has_timeline_events: bool = conn.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM session_events
-                    WHERE session_id = ?1 AND event_type != ?2
+                    WHERE session_id = ?1 AND event_type NOT IN (?2, ?3)
                 )",
-                rusqlite::params![session_id, super::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE],
+                rusqlite::params![
+                    session_id,
+                    super::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE,
+                    super::SESSION_EXECUTION_MODE_EVENT_TYPE
+                ],
                 |row| row.get(0),
             )?;
             if has_timeline_events {

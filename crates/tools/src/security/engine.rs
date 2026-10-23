@@ -18,15 +18,16 @@ use super::filesystem::{path_is_within, resolve_path_without_reparse};
 use super::prompt::{LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase};
 use crate::execution_workspace::{ExecutionWorkspace, ExecutionWorkspaceSnapshot};
 use crate::{
-    ConfirmationRequirement, DataSensitivity, NetworkAccess, OperationEffect, OperationPolicy,
-    ToolExecutionContext,
+    ConfirmationRequirement, NetworkAccess, OperationEffect, OperationPolicy, ToolExecutionContext,
 };
 #[cfg(test)]
-use crate::{StructuredToolError, ToolConcurrency, ToolErrorClass, ToolRetryability};
+use crate::{
+    DataSensitivity, StructuredToolError, ToolConcurrency, ToolErrorClass, ToolRetryability,
+};
 use haven_common::config::{SecurityConfig, StoredPermission, ToolConfig};
 use haven_common::types::{
-    CapabilityScope, NetworkPolicy, PermissionEffect, PermissionMode, PermissionScope, RiskLevel,
-    SandboxMode,
+    ApprovalPolicy, CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect,
+    PermissionScope, RiskLevel, SandboxMode,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -46,7 +47,9 @@ struct SessionGrants {
 /// Combined safety config under a single RwLock so `check` reads atomically.
 #[derive(Clone)]
 pub(super) struct SafetyConfig {
-    permission_mode: PermissionMode,
+    execution_mode: ExecutionMode,
+    session_execution_modes: HashMap<String, ExecutionMode>,
+    session_execution_mode_revisions: HashMap<String, u64>,
     pub(super) sandbox_mode: SandboxMode,
     writable_roots: Vec<PathBuf>,
     pub(super) execution_workspace: ExecutionWorkspace,
@@ -70,6 +73,20 @@ pub(super) struct SafetyConfig {
 }
 
 impl SafetyConfig {
+    pub(super) fn execution_mode_for(&self, session_id: Option<&str>) -> ExecutionMode {
+        session_id
+            .and_then(|session_id| self.session_execution_modes.get(session_id))
+            .copied()
+            .unwrap_or(self.execution_mode)
+    }
+
+    pub(super) fn execution_mode_revision_for(&self, session_id: Option<&str>) -> u64 {
+        session_id
+            .and_then(|session_id| self.session_execution_mode_revisions.get(session_id))
+            .copied()
+            .unwrap_or_default()
+    }
+
     pub(super) fn execution_workspace_for(&self, session_id: Option<&str>) -> ExecutionWorkspace {
         session_id
             .and_then(|session_id| self.session_workspaces.get(session_id))
@@ -135,12 +152,14 @@ impl AuthorizationEngine {
             tokio::sync::watch::channel(Arc::new(()));
         Self {
             config: Arc::new(RwLock::new(SafetyConfig {
-                permission_mode: PermissionMode::Default,
+                execution_mode: ExecutionMode::Collaborative,
+                session_execution_modes: HashMap::new(),
+                session_execution_mode_revisions: HashMap::new(),
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 writable_roots: Vec::new(),
                 execution_workspace,
                 session_workspaces: HashMap::new(),
-                network_policy: NetworkPolicy::Ask,
+                network_policy: NetworkPolicy::Restricted,
                 policy_revision: 0,
                 process_boundary_revision: 0,
                 permanent: HashMap::new(),
@@ -361,8 +380,34 @@ impl AuthorizationEngine {
         let mut cfg = self.config.write().await;
         for session_id in session_ids {
             cfg.session_workspaces.remove(session_id);
+            cfg.session_execution_modes.remove(session_id);
+            cfg.session_execution_mode_revisions.remove(session_id);
             self.cancel_session_processes(session_id);
         }
+    }
+
+    /// Bind one session to its durable execution preset. A session update
+    /// invalidates existing proofs and stops managed work under the old mode.
+    pub async fn bind_session_execution_mode(&self, session_id: &str, mode: ExecutionMode) {
+        let mut cfg = self.config.write().await;
+        if cfg.session_execution_modes.get(session_id) == Some(&mode) {
+            return;
+        }
+        cfg.session_execution_modes
+            .insert(session_id.to_owned(), mode);
+        let revision = cfg
+            .session_execution_mode_revisions
+            .entry(session_id.to_owned())
+            .or_default();
+        *revision = revision.saturating_add(1);
+        self.cancel_session_processes(session_id);
+    }
+
+    pub async fn session_execution_mode(&self, session_id: &str) -> ExecutionMode {
+        self.config
+            .read()
+            .await
+            .execution_mode_for(Some(session_id))
     }
 
     pub(crate) async fn switch_execution_workspace(
@@ -446,13 +491,13 @@ impl AuthorizationEngine {
                 }
             }
         }
-        let policy_changed = cfg.permission_mode != security.permission_mode
+        let policy_changed = cfg.execution_mode != security.execution_mode
             || cfg.sandbox_mode != security.sandbox_mode
             || cfg.writable_roots != writable_roots
             || cfg.network_policy != security.network_policy
             || cfg.permanent != permanent;
         cfg.execution_workspace = workspace;
-        cfg.permission_mode = security.permission_mode;
+        cfg.execution_mode = security.execution_mode;
         cfg.sandbox_mode = security.sandbox_mode;
         cfg.writable_roots = writable_roots;
         cfg.network_policy = security.network_policy;
@@ -481,9 +526,9 @@ impl AuthorizationEngine {
     }
 
     /// Update the policy profile. Clears session grants.
-    pub async fn set_permission_mode(&self, mode: PermissionMode) {
+    pub async fn set_execution_mode(&self, mode: ExecutionMode) {
         let mut cfg = self.config.write().await;
-        cfg.permission_mode = mode;
+        cfg.execution_mode = mode;
         cfg.session_grants.clear();
         self.bump_global_policy_revision(&mut cfg);
     }
@@ -549,7 +594,7 @@ impl AuthorizationEngine {
             .sum::<usize>();
         format!(
             "mode={:?}; sandbox={:?}; network={:?}; always_allowed={always_allowed}; always_denied={always_denied}; disabled_tools={disabled_tools}; disabled_operations={disabled_operations}; operation contracts decide read-only access; higher-risk operations may require confirmation",
-            cfg.permission_mode, cfg.sandbox_mode, cfg.network_policy
+            cfg.execution_mode, cfg.sandbox_mode, cfg.network_policy
         )
     }
 
@@ -640,6 +685,7 @@ impl AuthorizationEngine {
             execution_authorization: Some(ExecutionPolicyAuthorization {
                 authorization: Arc::clone(self),
                 policy_revision: proof.binding.policy_revision,
+                session_execution_mode_revision: proof.binding.session_execution_mode_revision,
                 execution_workspace_generation: execution_workspace.generation(),
                 session_id: proof.binding.session_id.clone(),
                 execution_boundary: request.policy.execution_boundary,
@@ -663,7 +709,6 @@ impl AuthorizationEngine {
     ) -> AuthorizationCheck {
         let session_id = request.session_id.as_deref();
         let tool_name = &request.tool_name;
-        let params = &request.input;
         let policy = &request.policy;
         let key = request.capability();
         let cfg = self.config.read().await;
@@ -671,7 +716,7 @@ impl AuthorizationEngine {
         let workspace = cfg.execution_workspace_for(session_id);
 
         if let Err(failure) =
-            check_policy_boundaries(&cfg, &workspace, tool_name, key, params, policy)
+            check_policy_boundaries(&cfg, &workspace, tool_name, key, &request.resources, policy)
         {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: failure.reason,
@@ -682,10 +727,13 @@ impl AuthorizationEngine {
         // Plan is a capability boundary, not a prompting preference. It must
         // run before permanent/session allows so an old Always grant cannot
         // silently turn Plan back into an execution mode.
-        if matches!(cfg.permission_mode, PermissionMode::Plan) && !policy.is_read_only() {
+        let execution_mode = cfg.execution_mode_for(session_id);
+        if execution_mode.task_intent() == haven_common::types::TaskIntent::Analyze
+            && !policy.is_read_only()
+        {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
-                reason: "plan mode only permits read-only operations".into(),
-                reason_code: AuthorizationReasonCode::PlanMode,
+                reason: "analyze mode only permits read-only operations".into(),
+                reason_code: AuthorizationReasonCode::AnalyzeMode,
             });
         }
 
@@ -717,6 +765,7 @@ impl AuthorizationEngine {
                 return AuthorizationCheck::auto_approved(
                     request,
                     cfg.policy_revision,
+                    cfg.execution_mode_revision_for(session_id),
                     workspace.generation(),
                 );
             }
@@ -727,27 +776,24 @@ impl AuthorizationEngine {
                 return AuthorizationCheck::auto_approved(
                     request,
                     cfg.policy_revision,
+                    cfg.execution_mode_revision_for(session_id),
                     workspace.generation(),
                 );
             }
         }
 
-        let needs_prompt = match cfg.permission_mode {
-            PermissionMode::Plan => hard_confirmation || policy.requires_disclosure_confirmation(),
-            PermissionMode::Default => {
+        let needs_prompt = match execution_mode {
+            ExecutionMode::Analyze => {
+                hard_confirmation || policy.requires_disclosure_confirmation()
+            }
+            ExecutionMode::Collaborative => {
                 hard_confirmation
                     || policy.requires_disclosure_confirmation()
                     || (!policy.is_read_only()
                         && (risk > RiskLevel::Safe
                             || policy.confirmation != ConfirmationRequirement::None))
             }
-            PermissionMode::AutoEdit => {
-                hard_confirmation
-                    || policy.requires_disclosure_confirmation()
-                    || (!policy.is_read_only()
-                        && (!is_auto_edit_safe(key, policy) || risk >= RiskLevel::High))
-            }
-            PermissionMode::Autonomous => {
+            ExecutionMode::Unattended => {
                 hard_confirmation
                     || policy.requires_disclosure_confirmation()
                     || risk >= RiskLevel::High
@@ -758,8 +804,17 @@ impl AuthorizationEngine {
             return AuthorizationCheck::auto_approved(
                 request,
                 cfg.policy_revision,
+                cfg.execution_mode_revision_for(session_id),
                 workspace.generation(),
             );
+        }
+
+        if execution_mode.approval_policy() == ApprovalPolicy::DenyIfRequired {
+            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
+                reason: "approval is required, but unattended mode cannot request confirmation"
+                    .into(),
+                reason_code: AuthorizationReasonCode::ApprovalPolicy,
+            });
         }
 
         let reason_code = if hard_confirmation {
@@ -776,6 +831,7 @@ impl AuthorizationEngine {
             canonical_input_hash: canonical_authorization_hash_for_workspace(
                 request,
                 workspace.generation(),
+                cfg.execution_mode_revision_for(session_id),
             ),
             effective_risk: risk,
             policy_revision: cfg.policy_revision,
@@ -804,7 +860,6 @@ impl AuthorizationEngine {
     ) -> Result<(), String> {
         let session_id = request.session_id.as_deref();
         let tool_name = &request.tool_name;
-        let params = &request.input;
         let policy = &request.policy;
         let key = request.capability();
         let cfg = self.config.read().await;
@@ -813,7 +868,11 @@ impl AuthorizationEngine {
             return Err("confirmation receipt does not match the capability scope".into());
         }
         if receipt.canonical_input_hash
-            != canonical_authorization_hash_for_workspace(request, workspace.generation())
+            != canonical_authorization_hash_for_workspace(
+                request,
+                workspace.generation(),
+                cfg.execution_mode_revision_for(session_id),
+            )
         {
             return Err("confirmation receipt does not match the tool input".into());
         }
@@ -833,9 +892,14 @@ impl AuthorizationEngine {
         }
         let mut effective_policy = policy.clone();
         effective_policy.risk_level = risk;
-        if let Err(failure) =
-            check_policy_boundaries(&cfg, &workspace, tool_name, key, params, &effective_policy)
-        {
+        if let Err(failure) = check_policy_boundaries(
+            &cfg,
+            &workspace,
+            tool_name,
+            key,
+            &request.resources,
+            &effective_policy,
+        ) {
             return Err(failure.reason);
         }
         if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
@@ -859,6 +923,7 @@ impl AuthorizationEngine {
         receipt: &ConfirmationReceipt,
     ) -> Result<AuthorizationExecutionProof, String> {
         self.verify_receipt(request, receipt).await?;
+        let cfg = self.config.read().await;
         Ok(AuthorizationExecutionProof {
             binding: AuthorizationExecutionBinding {
                 session_id: request.session_id.clone(),
@@ -868,10 +933,9 @@ impl AuthorizationEngine {
                 target_binding: request.target_binding.clone(),
                 policy: request.policy.clone(),
                 policy_revision: receipt.policy_revision,
-                workspace_generation: self
-                    .config
-                    .read()
-                    .await
+                session_execution_mode_revision: cfg
+                    .execution_mode_revision_for(request.session_id.as_deref()),
+                workspace_generation: cfg
                     .execution_workspace_for(request.session_id.as_deref())
                     .generation(),
                 expires_at: execution_proof_expiry().min(receipt.expires_at),
@@ -901,22 +965,23 @@ impl AuthorizationEngine {
         if confirmation_now() >= binding.expires_at {
             return Err("execution proof has expired".into());
         }
-        let workspace_generation = self
-            .config
-            .read()
-            .await
-            .execution_workspace_for(request.session_id.as_deref())
-            .generation();
-        if binding.workspace_generation != workspace_generation {
+        let cfg = self.config.read().await;
+        let workspace = cfg.execution_workspace_for(request.session_id.as_deref());
+        if binding.workspace_generation != workspace.generation() {
             return Err("execution proof was issued for an older execution workspace".into());
+        }
+        if binding.session_execution_mode_revision
+            != cfg.execution_mode_revision_for(request.session_id.as_deref())
+        {
+            return Err("execution proof was issued for an older session execution mode".into());
         }
         if let ExecutionAuthorizationKind::Confirmed(receipt) = &proof.authorization {
             if receipt.policy_revision != binding.policy_revision {
                 return Err("execution proof receipt has a mismatched policy revision".into());
             }
+            drop(cfg);
             return self.verify_receipt(request, receipt).await;
         }
-        let cfg = self.config.read().await;
         if binding.policy_revision != cfg.policy_revision {
             return Err("execution proof was issued under an older policy".into());
         }
@@ -933,13 +998,16 @@ impl AuthorizationEngine {
             &workspace,
             tool_name,
             key,
-            &request.input,
+            &request.resources,
             &request.policy,
         ) {
             return Err(failure.reason);
         }
-        if matches!(cfg.permission_mode, PermissionMode::Plan) && !request.policy.is_read_only() {
-            return Err("plan mode only permits read-only operations".into());
+        if cfg.execution_mode_for(session_id).task_intent()
+            == haven_common::types::TaskIntent::Analyze
+            && !request.policy.is_read_only()
+        {
+            return Err("analyze mode only permits read-only operations".into());
         }
         if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
             return Err(format!("permanently denied: {key}"));
@@ -1119,8 +1187,16 @@ impl AuthorizationPort for AuthorizationEngine {
         AuthorizationEngine::forget_session_execution_workspaces(self, session_ids).await
     }
 
-    async fn set_permission_mode(&self, mode: PermissionMode) {
-        AuthorizationEngine::set_permission_mode(self, mode).await;
+    async fn bind_session_execution_mode(&self, session_id: &str, mode: ExecutionMode) {
+        AuthorizationEngine::bind_session_execution_mode(self, session_id, mode).await;
+    }
+
+    async fn session_execution_mode(&self, session_id: &str) -> ExecutionMode {
+        AuthorizationEngine::session_execution_mode(self, session_id).await
+    }
+
+    async fn set_execution_mode(&self, mode: ExecutionMode) {
+        AuthorizationEngine::set_execution_mode(self, mode).await;
     }
 
     async fn set_boundaries(
@@ -1259,31 +1335,25 @@ pub(super) fn canonical_authorization_hash(request: &AuthorizationRequest) -> St
         Some(target_binding) => canonical_input_hash(&serde_json::json!({
             "input": &request.input,
             "target_binding": target_binding,
+            "resources": &request.resources,
         })),
-        None => canonical_input_hash(&request.input),
+        None => canonical_input_hash(&serde_json::json!({
+            "input": &request.input,
+            "resources": &request.resources,
+        })),
     }
 }
 
 fn canonical_authorization_hash_for_workspace(
     request: &AuthorizationRequest,
     workspace_generation: u64,
+    session_execution_mode_revision: u64,
 ) -> String {
     canonical_input_hash(&serde_json::json!({
         "operation": canonical_authorization_hash(request),
+        "session_execution_mode_revision": session_execution_mode_revision,
         "workspace_generation": workspace_generation,
     }))
-}
-
-fn is_auto_edit_safe(key: &CapabilityScope, policy: &OperationPolicy) -> bool {
-    // AutoEdit is intentionally a narrow convenience mode for ordinary
-    // workspace mutations. UI effects, scheduling, subprocesses, network
-    // calls and destructive deletes must never inherit edit auto-approval.
-    matches!(
-        key.as_str(),
-        "files.write" | "files.patch" | "files.create_directory" | "files.copy" | "files.move"
-    ) && matches!(policy.effect, OperationEffect::WorkspaceWrite)
-        && matches!(policy.data_sensitivity, DataSensitivity::None)
-        && matches!(policy.network_access, NetworkAccess::None)
 }
 
 fn network_policy_block(
@@ -1297,10 +1367,6 @@ fn network_policy_block(
         (NetworkPolicy::Deny, _) => {
             Some(format!("network access is disabled for tool '{tool_name}'"))
         }
-        // Ask is the explicit user-consent path for opaque network adapters.
-        // The local process boundary is evaluated separately, so network
-        // consent cannot make an unbounded child process safe for WorkspaceWrite.
-        (NetworkPolicy::Ask, NetworkAccess::Opaque) => None,
         // Restricted is the technical network boundary: Haven must be able to
         // inspect and validate the destination before an opaque adapter runs.
         (NetworkPolicy::Restricted, NetworkAccess::Opaque) => Some(format!(
@@ -1398,7 +1464,7 @@ fn check_policy_boundaries(
     execution_workspace: &ExecutionWorkspace,
     tool_name: &str,
     capability: &CapabilityScope,
-    params: &Value,
+    resources: &[super::DeclaredResource],
     policy: &OperationPolicy,
 ) -> Result<(), PolicyBoundaryFailure> {
     if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, capability) {
@@ -1425,7 +1491,7 @@ fn check_policy_boundaries(
         &cfg.writable_roots,
         execution_workspace,
         tool_name,
-        params,
+        resources,
         policy,
     ) {
         return Err(PolicyBoundaryFailure {
@@ -1442,7 +1508,7 @@ fn path_sandbox_block(
     writable_roots: &[PathBuf],
     execution_workspace: &ExecutionWorkspace,
     tool_name: &str,
-    params: &Value,
+    resources: &[super::DeclaredResource],
     policy: &OperationPolicy,
 ) -> Option<String> {
     if matches!(sandbox_mode, SandboxMode::ReadOnly)
@@ -1452,8 +1518,37 @@ fn path_sandbox_block(
             "read-only sandbox blocks mutating operation '{tool_name}'"
         ));
     }
-    let paths = collect_path_params(params);
+    let paths = resources
+        .iter()
+        .filter_map(|resource| match resource {
+            super::DeclaredResource::LocalPath { path, access } => Some((path, access)),
+            super::DeclaredResource::NetworkDestination { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if matches!(policy.effect, OperationEffect::WorkspaceWrite)
+        && !paths.is_empty()
+        && !paths
+            .iter()
+            .any(|(_, access)| **access == super::LocalPathAccess::Write)
+    {
+        return Some(format!(
+            "mutating operation '{tool_name}' did not declare its writable resources"
+        ));
+    }
     if paths.is_empty() {
+        let has_tool_path_policy = tool_setting_names(tool_name).any(|name| {
+            settings
+                .get(name)
+                .is_some_and(|setting| !setting.allowed_paths.is_empty())
+        });
+        if (matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
+            && matches!(policy.effect, OperationEffect::WorkspaceWrite))
+            || has_tool_path_policy
+        {
+            return Some(format!(
+                "operation '{tool_name}' did not declare its local path resources"
+            ));
+        }
         return None;
     }
     for name in tool_setting_names(tool_name) {
@@ -1464,8 +1559,8 @@ fn path_sandbox_block(
             continue;
         }
         let allowed: Vec<PathBuf> = cfg.allowed_paths.iter().map(PathBuf::from).collect();
-        for path in &paths {
-            let path = resolve_relative_sandbox_path(path.clone(), execution_workspace);
+        for (path, _) in &paths {
+            let path = resolve_relative_sandbox_path((*path).clone(), execution_workspace);
             if !path_is_allowed(&path, &allowed) {
                 return Some(format!(
                     "operation '{tool_name}' is blocked by the allowed_paths policy"
@@ -1490,8 +1585,11 @@ fn path_sandbox_block(
                 "workspace-write sandbox has no execution root for '{tool_name}'"
             ));
         }
-        if paths.iter().any(|path| {
-            let path = resolve_relative_sandbox_path(path.clone(), execution_workspace);
+        if paths.iter().any(|(path, access)| {
+            if **access != super::LocalPathAccess::Write {
+                return false;
+            }
+            let path = resolve_relative_sandbox_path((*path).clone(), execution_workspace);
             !path_is_allowed(&path, &allowed)
         }) {
             return Some(format!(
@@ -1512,44 +1610,10 @@ fn resolve_relative_sandbox_path(
     execution_workspace.resolve_relative(&path).unwrap_or(path)
 }
 
-fn collect_path_params(params: &Value) -> Vec<PathBuf> {
-    const KEYS: &[&str] = &[
-        "path",
-        "paths",
-        "source",
-        "destination",
-        "target",
-        "cwd",
-        "file",
-        "file_path",
-        "files",
-        "dir",
-        "directory",
-    ];
-    let mut out = Vec::new();
-    let Some(obj) = params.as_object() else {
-        return out;
-    };
-    for key in KEYS {
-        match obj.get(*key) {
-            Some(Value::String(s)) if !s.is_empty() => out.push(PathBuf::from(s)),
-            Some(Value::Array(arr)) => {
-                for v in arr {
-                    if let Some(s) = v.as_str().filter(|s| !s.is_empty()) {
-                        out.push(PathBuf::from(s));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ToolExecutionOutcome;
+    use crate::{DeclaredResource, LocalPathAccess, ToolExecutionOutcome};
     use haven_common::types::permission_key;
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -1659,9 +1723,57 @@ mod tests {
         params: &Value,
         policy: &OperationPolicy,
     ) -> AuthorizationDecision {
-        let request =
-            AuthorizationRequest::new(session_id, tool_name, params.clone(), policy.clone());
+        let request = fixture_request(session_id, tool_name, params, policy);
         engine.authorize(&request).await
+    }
+
+    /// Build the explicit resource contract used by policy-engine fixtures.
+    /// Production requests get these from `Tool::authorization_resources`.
+    fn fixture_request(
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+        policy: &OperationPolicy,
+    ) -> AuthorizationRequest {
+        let mut resources = Vec::new();
+        if let Some(object) = input.as_object() {
+            for (field, access) in [
+                (
+                    "path",
+                    if matches!(policy.effect, OperationEffect::WorkspaceWrite) {
+                        LocalPathAccess::Write
+                    } else {
+                        LocalPathAccess::Read
+                    },
+                ),
+                ("source", LocalPathAccess::Read),
+                ("destination", LocalPathAccess::Write),
+                ("file_path", LocalPathAccess::Read),
+            ] {
+                if let Some(path) = object.get(field).and_then(Value::as_str) {
+                    resources.push(DeclaredResource::LocalPath {
+                        path: PathBuf::from(path),
+                        access,
+                    });
+                }
+            }
+            for field in ["paths", "files"] {
+                if let Some(paths) = object.get(field).and_then(Value::as_array) {
+                    resources.extend(paths.iter().filter_map(Value::as_str).map(|path| {
+                        DeclaredResource::LocalPath {
+                            path: PathBuf::from(path),
+                            access: if matches!(policy.effect, OperationEffect::WorkspaceWrite) {
+                                LocalPathAccess::Write
+                            } else {
+                                LocalPathAccess::Read
+                            },
+                        }
+                    }));
+                }
+            }
+        }
+        AuthorizationRequest::new(session_id, tool_name, input.clone(), policy.clone())
+            .with_resources(resources)
     }
 
     #[tokio::test]
@@ -1772,7 +1884,7 @@ mod tests {
         let mut policy = fixture_policy("files.write", &input, RiskLevel::Safe);
         policy.effect = OperationEffect::WorkspaceWrite;
         policy.confirmation = ConfirmationRequirement::None;
-        let request = AuthorizationRequest::new(None, "files.write", input, policy);
+        let request = fixture_request(None, "files.write", &input, &policy);
         let check = engine.authorize_for_execution(&request).await;
         let proof = check
             .execution_proof
@@ -1881,7 +1993,7 @@ mod tests {
             "a grant must not revoke already-authorized work"
         );
 
-        engine.set_permission_mode(PermissionMode::Plan).await;
+        engine.set_execution_mode(ExecutionMode::Analyze).await;
 
         tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
             .await
@@ -1991,7 +2103,7 @@ mod tests {
             "clear-all trust should not stop a session that had no trust grant"
         );
 
-        engine.set_permission_mode(PermissionMode::Plan).await;
+        engine.set_execution_mode(ExecutionMode::Analyze).await;
         tokio::time::timeout(std::time::Duration::from_secs(1), no_trust_waiter)
             .await
             .expect("global mode changes should still stop every proof-bound process")
@@ -2160,7 +2272,11 @@ mod tests {
         drop(permit);
 
         engine
-            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .set_boundaries(
+                SandboxMode::FullAccess,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
             .await;
 
         assert!(
@@ -2211,7 +2327,7 @@ mod tests {
             .expect("open network policy permits an MCP stdio snapshot");
         let mut process_changes = engine.subscribe_stdio_process_changes();
 
-        engine.set_permission_mode(PermissionMode::Plan).await;
+        engine.set_execution_mode(ExecutionMode::Analyze).await;
         assert!(
             authorization.acquire().await.is_ok(),
             "permission mode changes affect tool calls, not the lifetime of an already-open stdio server"
@@ -2243,7 +2359,7 @@ mod tests {
         );
 
         let security = SecurityConfig {
-            permission_mode: PermissionMode::Autonomous,
+            execution_mode: ExecutionMode::Unattended,
             sandbox_mode: SandboxMode::FullAccess,
             network_policy: NetworkPolicy::Open,
             ..SecurityConfig::default()
@@ -2264,7 +2380,11 @@ mod tests {
         );
 
         engine
-            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .set_boundaries(
+                SandboxMode::FullAccess,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
             .await;
         tokio::time::timeout(std::time::Duration::from_secs(1), process_changes.changed())
             .await
@@ -2317,7 +2437,7 @@ mod tests {
         let (update_started_tx, update_started_rx) = tokio::sync::oneshot::channel();
         let update = tokio::spawn(async move {
             let _ = update_started_tx.send(());
-            engine.set_permission_mode(PermissionMode::Autonomous).await;
+            engine.set_execution_mode(ExecutionMode::Unattended).await;
         });
         update_started_rx
             .await
@@ -2448,17 +2568,19 @@ mod tests {
         };
         let first_input = json!({ "path": first_root.path().join("note.txt") });
         let second_input = json!({ "path": second_root.path().join("note.txt") });
-        let first_request = AuthorizationRequest::new(
+        let first_policy = policy_for();
+        let first_request = fixture_request(
             Some(first_session),
             "files.write",
-            first_input.clone(),
-            policy_for(),
+            &first_input,
+            &first_policy,
         );
-        let second_request = AuthorizationRequest::new(
+        let second_policy = policy_for();
+        let second_request = fixture_request(
             Some(second_session),
             "files.write",
-            second_input.clone(),
-            policy_for(),
+            &second_input,
+            &second_policy,
         );
         let first_proof = engine
             .authorize_for_execution(&first_request)
@@ -2470,11 +2592,12 @@ mod tests {
             .await
             .execution_proof
             .expect("the second session can write inside its own workspace");
-        let outside_first = AuthorizationRequest::new(
+        let outside_policy = policy_for();
+        let outside_first = fixture_request(
             Some(first_session),
             "files.write",
-            second_input,
-            policy_for(),
+            &second_input,
+            &outside_policy,
         );
         assert!(matches!(
             engine.authorize(&outside_first).await,
@@ -2564,23 +2687,20 @@ mod tests {
             .unwrap();
         assert_eq!(available.root.as_deref(), Some(selected_root.as_path()));
 
-        let request = AuthorizationRequest::new(
-            Some(session_id),
-            "files.write",
-            json!({ "path": selected_root.join("note.txt") }),
-            OperationPolicy {
-                risk_level: RiskLevel::Safe,
-                capability: CapabilityScope::try_new("files.write").unwrap(),
-                confirmation: ConfirmationRequirement::None,
-                idempotency: crate::OperationIdempotency::Unknown,
-                scope: crate::ToolOperationScope::Session,
-                concurrency: ToolConcurrency::Exclusive,
-                effect: OperationEffect::WorkspaceWrite,
-                data_sensitivity: DataSensitivity::None,
-                network_access: NetworkAccess::None,
-                execution_boundary: crate::ExecutionBoundary::InProcess,
-            },
-        );
+        let input = json!({ "path": selected_root.join("note.txt") });
+        let policy = OperationPolicy {
+            risk_level: RiskLevel::Safe,
+            capability: CapabilityScope::try_new("files.write").unwrap(),
+            confirmation: ConfirmationRequirement::None,
+            idempotency: crate::OperationIdempotency::Unknown,
+            scope: crate::ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+            effect: OperationEffect::WorkspaceWrite,
+            data_sensitivity: DataSensitivity::None,
+            network_access: NetworkAccess::None,
+            execution_boundary: crate::ExecutionBoundary::InProcess,
+        };
+        let request = fixture_request(Some(session_id), "files.write", &input, &policy);
         assert!(matches!(
             engine.authorize(&request).await,
             AuthorizationDecision::AutoApproved
@@ -2813,7 +2933,7 @@ mod tests {
             risk_level: RiskLevel,
         ) -> ConfirmationResult {
             let policy = fixture_policy(tool_name, params, risk_level);
-            let request = AuthorizationRequest::new(session_id, tool_name, params.clone(), policy);
+            let request = fixture_request(session_id, tool_name, params, &policy);
             let result = self.engine.authorize(&request).await;
             if risk_level < self.threshold
                 && matches!(result, ConfirmationResult::RequiresConfirmation { .. })
@@ -2840,9 +2960,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn permission_modes_have_predictable_prompt_boundaries() {
+    async fn execution_modes_have_predictable_prompt_boundaries() {
         let gw = ThresholdFixture::new(RiskLevel::Safe);
-        gw.set_permission_mode(PermissionMode::Default).await;
+        gw.set_execution_mode(ExecutionMode::Collaborative).await;
         assert!(matches!(
             gw.check(None, "tool", &json!({}), RiskLevel::Safe).await,
             ConfirmationResult::AutoApproved
@@ -2852,7 +2972,7 @@ mod tests {
             ConfirmationResult::RequiresConfirmation { .. }
         ));
 
-        gw.set_permission_mode(PermissionMode::Plan).await;
+        gw.set_execution_mode(ExecutionMode::Analyze).await;
         assert!(matches!(
             gw.check(None, "tool", &json!({}), RiskLevel::Safe).await,
             ConfirmationResult::Blocked { .. }
@@ -2860,7 +2980,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn operation_contract_drives_plan_and_auto_edit_modes() {
+    async fn changing_one_session_execution_mode_revokes_only_that_sessions_authority() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let first_session = "ses-11111111111111111111111111111111";
+        let second_session = "ses-22222222222222222222222222222222";
+        let ask_input = json!({});
+        let ask_policy = fixture_policy("ask", &ask_input, RiskLevel::Safe);
+        let first_request = fixture_request(Some(first_session), "ask", &ask_input, &ask_policy);
+        let second_request = fixture_request(Some(second_session), "ask", &ask_input, &ask_policy);
+        let first_proof = engine
+            .authorize_for_execution(&first_request)
+            .await
+            .execution_proof
+            .expect("the first session receives an auto-approved proof");
+        let second_proof = engine
+            .authorize_for_execution(&second_request)
+            .await
+            .execution_proof
+            .expect("the second session receives an auto-approved proof");
+
+        let network_input = json!({ "url": "https://example.com/resource" });
+        let network_policy = fixture_policy("http", &network_input, RiskLevel::Medium);
+        let first_network_request =
+            fixture_request(Some(first_session), "http", &network_input, &network_policy);
+        let first_receipt = match engine.authorize(&first_network_request).await {
+            AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
+            decision => panic!("public network request should require confirmation: {decision:?}"),
+        };
+        let second_network_request = fixture_request(
+            Some(second_session),
+            "http",
+            &network_input,
+            &network_policy,
+        );
+        let second_receipt = match engine.authorize(&second_network_request).await {
+            AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
+            decision => panic!("public network request should require confirmation: {decision:?}"),
+        };
+
+        let global_policy_revision = engine.config.read().await.policy_revision;
+        engine
+            .bind_session_execution_mode(first_session, ExecutionMode::Analyze)
+            .await;
+        assert_eq!(
+            engine.config.read().await.policy_revision,
+            global_policy_revision,
+            "a session preset change does not advance the global policy revision"
+        );
+        assert!(
+            engine
+                .verify_execution_proof(&first_request, &first_proof)
+                .await
+                .is_err()
+        );
+        engine
+            .verify_execution_proof(&second_request, &second_proof)
+            .await
+            .expect("the other session's proof remains valid");
+        assert!(
+            engine
+                .confirm_for_execution(&first_network_request, &first_receipt)
+                .await
+                .is_err()
+        );
+        let second_network_proof = engine
+            .confirm_for_execution(&second_network_request, &second_receipt)
+            .await
+            .expect("the other session's confirmation receipt remains valid");
+        engine
+            .verify_execution_proof(&second_network_request, &second_network_proof)
+            .await
+            .expect("the other session's confirmed proof remains valid");
+    }
+
+    #[tokio::test]
+    async fn operation_contract_enforces_analyze_and_prompts_in_collaborative_mode() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let read_policy = OperationPolicy {
             risk_level: RiskLevel::Low,
@@ -2879,8 +3076,8 @@ mod tests {
             ConfirmationResult::AutoApproved
         ));
 
-        gateway.set_permission_mode(PermissionMode::Plan).await;
-        let write_policy = OperationPolicy {
+        gateway.set_execution_mode(ExecutionMode::Analyze).await;
+        let mut write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
             capability: capability_scope!("files.write"),
             confirmation: ConfirmationRequirement::SecurityPolicy,
@@ -2897,15 +3094,26 @@ mod tests {
             ConfirmationResult::Blocked { .. }
         ));
 
-        gateway.set_permission_mode(PermissionMode::AutoEdit).await;
+        gateway
+            .set_execution_mode(ExecutionMode::Collaborative)
+            .await;
         assert!(matches!(
             authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
-            ConfirmationResult::AutoApproved
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+        write_policy.confirmation = ConfirmationRequirement::Required;
+        gateway.set_execution_mode(ExecutionMode::Unattended).await;
+        assert!(matches!(
+            authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
+            ConfirmationResult::Blocked {
+                reason_code: AuthorizationReasonCode::ApprovalPolicy,
+                ..
+            }
         ));
     }
 
     #[tokio::test]
-    async fn plan_mode_cannot_be_bypassed_by_permanent_allow() {
+    async fn analyze_mode_cannot_be_bypassed_by_permanent_allow() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
@@ -2927,7 +3135,7 @@ mod tests {
                 PermissionScope::Always,
             )
             .await;
-        gateway.set_permission_mode(PermissionMode::Plan).await;
+        gateway.set_execution_mode(ExecutionMode::Analyze).await;
         assert!(matches!(
             authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
             ConfirmationResult::Blocked { .. }
@@ -2976,7 +3184,7 @@ mod tests {
     async fn default_network_policy_requests_public_network_confirmation() {
         let gateway = AuthorizationEngine::new();
         let default_security = SecurityConfig::default();
-        assert_eq!(default_security.network_policy, NetworkPolicy::Ask);
+        assert_eq!(default_security.network_policy, NetworkPolicy::Restricted);
         gateway
             .apply_security(&default_security)
             .await
@@ -3014,7 +3222,7 @@ mod tests {
         ));
 
         gateway
-            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         for (tool_name, policy) in [
             ("mcp::remote::search", opaque_policy),
@@ -3030,7 +3238,9 @@ mod tests {
     #[tokio::test]
     async fn auto_edit_does_not_auto_approve_ui_schedule_or_process_effects() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
-        gateway.set_permission_mode(PermissionMode::AutoEdit).await;
+        gateway
+            .set_execution_mode(ExecutionMode::Collaborative)
+            .await;
         gateway
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
@@ -3105,7 +3315,11 @@ mod tests {
             ConfirmationResult::RequiresConfirmation { .. }
         ));
         gateway
-            .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Ask)
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
             .await;
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
@@ -3134,11 +3348,18 @@ mod tests {
             ConfirmationResult::Blocked { .. }
         ));
         gateway
-            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .set_boundaries(
+                SandboxMode::FullAccess,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
             .await;
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
-            ConfirmationResult::RequiresConfirmation { .. }
+            ConfirmationResult::Blocked {
+                reason_code: AuthorizationReasonCode::NetworkPolicy,
+                ..
+            }
         ));
         gateway
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
@@ -3292,7 +3513,7 @@ mod tests {
                 .set_boundaries(
                     sandbox_mode,
                     vec![writable_root.path().to_path_buf()],
-                    NetworkPolicy::Ask,
+                    NetworkPolicy::Open,
                 )
                 .await;
 
@@ -3469,7 +3690,9 @@ mod tests {
                 .is_err()
         );
 
-        gateway.set_permission_mode(PermissionMode::Default).await;
+        gateway
+            .set_execution_mode(ExecutionMode::Collaborative)
+            .await;
         assert!(
             gateway
                 .verify_receipt(&safe_request, &receipt)
@@ -3883,7 +4106,7 @@ mod tests {
             ConfirmationResult::AutoApproved
         ));
 
-        gw.set_permission_mode(PermissionMode::Default).await;
+        gw.set_execution_mode(ExecutionMode::Collaborative).await;
         assert!(matches!(
             gw.check(
                 Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
@@ -3956,14 +4179,17 @@ mod tests {
             network_access: NetworkAccess::Public,
             execution_boundary: crate::ExecutionBoundary::HostProcess,
         };
-        let params = json!({"path": outside.path().join("blocked.txt")});
+        let resources = vec![crate::security::DeclaredResource::LocalPath {
+            path: outside.path().join("blocked.txt"),
+            access: crate::security::LocalPathAccess::Write,
+        }];
         let check = |cfg: &SafetyConfig| {
             check_policy_boundaries(
                 cfg,
                 &cfg.execution_workspace,
                 "files.write",
                 &capability,
-                &params,
+                &resources,
                 &policy,
             )
             .unwrap_err()
@@ -4095,7 +4321,7 @@ mod tests {
     async fn autonomous_mode_still_blocks_workspace_host_processes() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         let security = SecurityConfig {
-            permission_mode: PermissionMode::Autonomous,
+            execution_mode: ExecutionMode::Unattended,
             ..SecurityConfig::default()
         };
         gw.apply_security(&security)
@@ -4113,7 +4339,10 @@ mod tests {
                 RiskLevel::Critical
             )
             .await,
-            ConfirmationResult::RequiresConfirmation { .. }
+            ConfirmationResult::Blocked {
+                reason_code: AuthorizationReasonCode::ApprovalPolicy,
+                ..
+            }
         ));
     }
 

@@ -1,6 +1,6 @@
 # 会话、工作区、权限与执行环境重设计
 
-> 日期：2026-10-22。状态：总体设计提案；第一切片已按 [ADR 1373](adr/1373-session-scoped-execution-workspace.md) 实施，其余内容仍不替代当前运行契约。
+> 日期：2026-10-22，状态更新：Slice 1 已按 [ADR 1373](adr/1373-session-scoped-execution-workspace.md) 完成；Slice 2 的执行预设、网络 Ask 拆分、Files 本地路径与 HTTP origin typed resource 已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 实施；Slice 5 的会话执行方式选择已部分实施。其余设计只在对应切片完成后替代当前契约。
 > 决策入口：[ADR 1367](adr/1367-session-scoped-execution-policy-design.md)。实施状态只在[架构重构路线图](architecture-refactor-roadmap.md)维护。
 
 ## 1. 建议采用的模型
@@ -39,12 +39,12 @@ Haven 是 Windows 助手，工作区允许为空。打开应用、控制窗口�
 
 | 现状证据 | 职责交叠或理解成本 | 目标 |
 |---|---|---|
-| `common::types::PermissionMode` 同时包含 `Plan`、`Default`、`AutoEdit`、`Autonomous` | Plan 是操作限制，其他值主要改变确认行为 | 将“只分析”的任务约束与审批策略分开 |
+| `common::types::PermissionMode` 曾同时包含 `Plan`、`Default`、`AutoEdit`、`Autonomous` | Analyze 是操作限制，其他旧值主要改变确认行为 | 用会话级 `ExecutionMode` 绑定任务意图和是否能请求审批 |
 | `SecurityConfig` 同时保存 `execution_root`、`sandbox_mode`、`network_policy` 和授权列表 | 工作位置、资源范围、审批和加密设置共处一层 | 全局只存默认值和硬限制，会话保存自己的工作绑定 |
 | `AuthorizationEngine::SafetyConfig` 拥有单个活动 `ExecutionWorkspace` | 标题区切目录会更新全局 `security.execution_root`；新 attempt 使用新根 | 切换 A 会话的目录不改变 B 会话或已创建后台任务 |
-| `SandboxMode` 实际主要控制本地写入，`NetworkPolicy` 又包含 `Ask` | “只读”不是整个任务无副作用；网络边界夹带审批语义 | 资源限制描述可访问对象；询问只由审批规则决定 |
-| `McpToolExposure` 包含 direct / model_only / deferred / codemode / hidden | 可发现性、是否禁用和调用通道混在一个枚举 | 能力可用性、目录展示和调用适配分别表达 |
-| `path_sandbox_block` 从动态参数收集路径；ADR 1334 已修复 URL 被当成本地写入的问题 | 参数字段名不足以说明资源类型 | 工具契约返回 typed 本地路径、网络目的地或远程对象 |
+| `SandboxMode` 实际主要控制本地写入，`NetworkPolicy` 曾包含 `Ask` | “只读”不是整个任务无副作用；网络边界夹带审批语义 | 资源限制描述可访问对象；询问只由执行方式决定 |
+| `McpToolExposure` 包含 direct / model_only / deferred / codemode / hidden | 可发现性、是否禁用和调用通道混在一个枚举 | 后续切片分开表达能力可用性、目录展示和调用适配 |
+| `path_sandbox_block` 曾从动态参数收集路径；ADR 1334 已修复 URL 被当成本地写入的问题 | 参数字段名不足以说明资源类型 | Files 与 HTTP 已声明 typed 本地路径和网络 origin；其它资源类型仍待扩展 |
 
 已有的统一授权 owner、proof、目标绑定、执行前重检、DirectoryCapability、进程撤销及 durable nested journal 都有保留价值。需要改变的是它们的组合与所有权，不是重新建立一套安全系统。
 
@@ -192,17 +192,17 @@ HTTP MCP 按远程 endpoint、账户和目标对象授权，不要求本机进�
 
 每个切片保持可验证、可回退，不通过先重命名全部类型制造大 diff；只推进一条 Active 垂直链。
 
-| 顺序 | 完整切片 | 随切片删除的旧设计 | 验收重点 |
-|---|---|---|---|
-| 1 | Session 创建/恢复 → 工作绑定 → Files/Shell/prompt 使用同一 run context | 全局活动 workspace 对会话的隐式影响 | 双会话、恢复、失效目录、切目录期间的 attempt 与后台任务 |
-| 2 | typed 资源契约 → 单一授权 → 文件/HTTP 执行 | 参数名猜路径；network 中的 Ask；Plan 与审批偏好的混合 | 源/目标、URL、目的地、敏感数据、deny 优先与 proof 重检 |
-| 3 | 将已有 MXC 工作接入统一执行环境，并盘点其他进程路径 | 将静态隔离声明视作已实施证明；隔离失败后的宽权限回退 | 文件越界、子进程逃逸、网络不支持、取消、撤权与真实 Windows |
-| 4 | 拆解 MCP exposure → 原生/Code Mode 共用资源契约与 journal | server 级 Legacy/CodeMode 常规选择及重复授权分支 | hidden/model_only 不放宽、子确认、恢复不重复副作用 |
-| 5 | 标题区两项选择、权限明细和具体边界扩展 | 旧 permission/sandbox/network 三组模式及重复目录入口 | 预设原子应用、自定义状态、拒绝原因、无目录的桌面场景 |
+| 顺序 | 状态 | 完整切片 | 随切片删除的旧设计 | 验收重点 |
+|---|---|---|---|---|
+| 1 | 已完成（ADR 1373） | Session 创建/恢复 → 工作绑定 → Files/Shell/prompt 使用同一 run context | 全局活动 workspace 对会话的隐式影响 | 双会话、恢复、失效目录、切目录期间的 attempt 与后台任务 |
+| 2 | 进行中（ADR 1374） | typed 资源契约 → 单一授权 → 文件/HTTP 执行 | 参数名猜路径；network 中的 Ask；Plan 与审批偏好的混合 | Files 源/目标与 HTTP origin 已声明；其它资源类型、范围授权与边界扩展仍待完成 |
+| 3 | 部分完成（ADR 1368） | 将已有 MXC 工作接入统一执行环境，并盘点其他进程路径 | 将静态隔离声明视作已实施证明；隔离失败后的宽权限回退 | Shell 隔离已独立实现；其余子进程路径与统一 capability 报告待盘点 |
+| 4 | 部分完成 | 拆解 MCP exposure → 原生/Code Mode 共用资源契约与 journal | server 级 Legacy/CodeMode 常规选择及重复授权分支 | CodeMode 子调用已复用授权和 durable journal；exposure 枚举拆分及资源合同仍待完成 |
+| 5 | 部分完成（ADR 1374） | 标题区两项选择、权限明细和具体边界扩展 | 旧 permission/sandbox/network 三组模式及重复目录入口 | 会话工作目录/执行方式已分开；资源扩展交互和设置边界合并仍待完成 |
 
-切片 1 先承载当前策略语义，不提前改变风险阈值；切片 2 才切换新审批/资源模型。已有 MXC 实现可先独立完成其原范围，后续按切片 3 接入本方案，不要求丢弃现有工作或等待整轮重构。
+切片 1 已落地；Slice 2 的核心调用链已将旧 `PermissionMode` 收敛为会话级执行预设，并将网络 `Ask` 移出资源策略。完整资源类型、范围授权与边界扩展仍在 Slice 2 跟踪。MXC 的 Shell 支持已按 ADR 1368 独立完成；剩余进程路径盘点仍属于 Slice 3。
 
-原设计提案阶段只更新文档。会话工作目录第一切片现按 [ADR 1373](adr/1373-session-scoped-execution-workspace.md) 实施，复用 `session_events` 且未改 schema，**无需重置任何数据**；其余切片仍需逐片记录契约处理：
+会话目录和执行方式都复用 `session_events`，未改数据库 schema，**无需重置任何数据**。Slice 2 的配置与授权改动已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 记录；后续切片仍需逐片记录契约处理：
 
 - 会话绑定和新增事件按仓库 schema/事件规则版本化；若变更 schema，遵守现有“不做运行时迁移”的数据库完整备份/重置流程，不能在本提案中承诺升级保留历史。
 - 替换安全配置时只转换能保守映射的值；无法确定资源范围的旧 allow 必须失效并要求重新授权，旧 deny 保守保留。`full_access` 不能直接变成永久的无范围本机授权，`autonomous` 不能映射成自动批准所有操作。

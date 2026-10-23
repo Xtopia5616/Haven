@@ -47,6 +47,7 @@
 | `get_log_info` | read | path is optional; no environment details |
 | `get_mcp_prompt` | execute | explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages |
 | `get_performance_metrics` | read | bounded content-free backend counters plus renderer stream counters |
+| `get_session_execution_mode` | read | canonical session id; reads its durable execution mode |
 | `get_session_execution_workspace` | read | canonical session id; reads its durable workspace binding |
 | `get_session_for_resume` | read | session-scoped persisted projection |
 | `get_session_lineage` | read | parent and direct child sessions of the selected session only |
@@ -94,6 +95,7 @@
 | `search_session_history_filtered` | read | bounded page and date-filtered projection |
 | `set_hotkey_capture_active` | mutate | transient renderer key-capture state only; not persisted |
 | `set_reasoning_effort` | mutate | request kind selects the assigned model; validated before config save |
+| `set_session_execution_mode` | mutate | canonical session id; binds one execution preset to that session |
 | `set_session_execution_workspace` | mutate | canonical session id; local directory is validated and bound to that session |
 | `set_skill_enabled` | mutate | AuthorizationPort; typed native admin operation persists the toggle |
 | `set_tool_enabled` | mutate | AuthorizationPort; typed native admin operation persists the toggle |

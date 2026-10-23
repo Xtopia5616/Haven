@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct ExecutionPolicyAuthorization {
     pub(super) authorization: Arc<AuthorizationEngine>,
     pub(super) policy_revision: u64,
+    pub(super) session_execution_mode_revision: u64,
     pub(super) execution_workspace_generation: u64,
     pub(super) session_id: Option<String>,
     pub(super) execution_boundary: crate::ExecutionBoundary,
@@ -175,6 +176,11 @@ impl ExecutionPolicyAuthorization {
         if config.policy_revision != self.policy_revision {
             return Err("execution policy changed before the side effect".into());
         }
+        if config.execution_mode_revision_for(self.session_id.as_deref())
+            != self.session_execution_mode_revision
+        {
+            return Err("session execution mode changed before the side effect".into());
+        }
         if config
             .execution_workspace_for(self.session_id.as_deref())
             .generation()
@@ -225,6 +231,13 @@ impl ExecutionPolicyAuthorization {
         if config.policy_revision != self.policy_revision {
             return Err(format!(
                 "execution policy changed before {process_name} process start"
+            ));
+        }
+        if config.execution_mode_revision_for(self.session_id.as_deref())
+            != self.session_execution_mode_revision
+        {
+            return Err(format!(
+                "session execution mode changed before {process_name} process start"
             ));
         }
         if config
@@ -344,9 +357,15 @@ impl ExecutionPolicyAuthorization {
             authorization.register_tool_settings_cancellation(tool_name);
         let session_trust_cancellation =
             authorization.register_session_trust_cancellation(session_id);
+        let session_execution_mode_revision = authorization
+            .config
+            .try_read()
+            .expect("test authorization config must be idle")
+            .execution_mode_revision_for(session_id);
         Self {
             authorization,
             policy_revision: 0,
+            session_execution_mode_revision,
             execution_workspace_generation: 1,
             execution_boundary: crate::ExecutionBoundary::HostProcess,
             session_id: session_id.map(ToOwned::to_owned),
@@ -428,7 +447,11 @@ mod tests {
         );
 
         engine
-            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Ask)
+            .set_boundaries(
+                SandboxMode::FullAccess,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
             .await;
         assert!(
             engine
@@ -484,7 +507,7 @@ mod tests {
             ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
                 SandboxMode::FullAccess,
             );
-        for network_policy in [NetworkPolicy::Ask, NetworkPolicy::Open] {
+        for network_policy in [NetworkPolicy::Open] {
             engine
                 .config
                 .try_write()

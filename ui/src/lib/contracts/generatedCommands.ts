@@ -99,6 +99,7 @@ export type ReasoningEffortSelectionInput = (typeof REASONING_EFFORT_SELECTION_I
 export interface SchedulePlanDto { schedule_id: string; owner_session_id: string; schedule_type: ScheduleType; title: string; body: string; mode: ScheduleMode; due_at: string | null; watch_tool_run_id: string | null; interval_seconds: number | null; anchor_at: string | null; next_due_at: string | null; active_schedule_run_id: string | null; created_at: string; updated_at: string }
 export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'stale'] as const;
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
+export interface SessionExecutionModeResponse { mode: ExecutionMode }
 export interface SessionExecutionWorkspaceResponse { root: string | null }
 export interface SessionLineageChildDto { session: SessionRecordDto; parent_session_id: string }
 export interface SessionLineageResponse { session_id: string; parent_session_id: string | null; parent: SessionRecordDto | null; children: SessionLineageChildDto[] }
@@ -245,8 +246,8 @@ export interface NotificationConfigInput { session_created?: NotifyChannelsInput
 export interface NotificationConfig { session_created: NotifyChannels; session_completed: NotifyChannels; session_paused: NotifyChannels; session_resumed: NotifyChannels; session_error: NotifyChannels; permission_requested: NotifyChannels; tool_run_completed: NotifyChannels }
 export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
 export interface NotifyChannels { in_app: boolean; windows: boolean }
-export interface SecurityConfigInput { permission_mode?: PermissionModeInput; sandbox_mode?: SandboxModeInput; execution_root?: string | null; writable_roots?: string[]; network_policy?: NetworkPolicyInput; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
-export interface SecurityConfig { permission_mode: PermissionMode; sandbox_mode: SandboxMode; execution_root?: string; writable_roots?: string[]; network_policy: NetworkPolicy; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
+export interface SecurityConfigInput { execution_mode?: ExecutionModeInput; sandbox_mode?: SandboxModeInput; execution_root?: string | null; writable_roots?: string[]; network_policy?: NetworkPolicyInput; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
+export interface SecurityConfig { execution_mode: ExecutionMode; sandbox_mode: SandboxMode; execution_root?: string; writable_roots?: string[]; network_policy: NetworkPolicy; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
 export interface SessionConfigInput { max_concurrent?: number; prompt_history_limit?: number; history_retention_days?: number; max_steps_per_run?: number; max_steps_per_session?: number | null }
 export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps_per_run: number; max_steps_per_session?: number }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
@@ -348,6 +349,10 @@ export const TOOL_SOURCE_VALUES = ['builtin', 'skill', 'mcp'] as const;
 export type ToolSource = (typeof TOOL_SOURCE_VALUES)[number];
 export const CANONICAL_ROLE_VALUES = ['system', 'user', 'assistant', 'tool'] as const;
 export type CanonicalRole = (typeof CANONICAL_ROLE_VALUES)[number];
+export const EXECUTION_MODE_INPUT_VALUES = ['analyze', 'collaborative', 'unattended'] as const;
+export type ExecutionModeInput = (typeof EXECUTION_MODE_INPUT_VALUES)[number];
+export const EXECUTION_MODE_VALUES = ['analyze', 'collaborative', 'unattended'] as const;
+export type ExecutionMode = (typeof EXECUTION_MODE_VALUES)[number];
 export const HOTKEY_MODE_INPUT_VALUES = ['toggle', 'hold'] as const;
 export type HotkeyModeInput = (typeof HOTKEY_MODE_INPUT_VALUES)[number];
 export const HOTKEY_MODE_VALUES = ['toggle', 'hold'] as const;
@@ -358,18 +363,14 @@ export const INPUT_DELIVERY_MODE_INPUT_VALUES = ['auto', 'steering', 'follow_up'
 export type InputDeliveryModeInput = (typeof INPUT_DELIVERY_MODE_INPUT_VALUES)[number];
 export interface MessageAttachmentInput { asset_id?: string | null; media_type: string; data: string; filename?: string | null; path?: string | null; sha256?: string | null; size_bytes?: number | null; expires_at?: string | null; representations?: MediaRepresentationInput[]; preferred_representation?: MediaRepresentationKindInput | null }
 export interface MessageAttachment { asset_id?: string; media_type: string; data: string; filename?: string; path?: string; sha256?: string; size_bytes?: number; expires_at?: string; representations?: MediaRepresentation[]; preferred_representation?: MediaRepresentationKind }
-export const NETWORK_POLICY_INPUT_VALUES = ['deny', 'ask', 'restricted', 'open'] as const;
+export const NETWORK_POLICY_INPUT_VALUES = ['deny', 'restricted', 'open'] as const;
 export type NetworkPolicyInput = (typeof NETWORK_POLICY_INPUT_VALUES)[number];
-export const NETWORK_POLICY_VALUES = ['deny', 'ask', 'restricted', 'open'] as const;
+export const NETWORK_POLICY_VALUES = ['deny', 'restricted', 'open'] as const;
 export type NetworkPolicy = (typeof NETWORK_POLICY_VALUES)[number];
 export const PERMISSION_EFFECT_INPUT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffectInput = (typeof PERMISSION_EFFECT_INPUT_VALUES)[number];
 export const PERMISSION_EFFECT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffect = (typeof PERMISSION_EFFECT_VALUES)[number];
-export const PERMISSION_MODE_INPUT_VALUES = ['default', 'plan', 'auto_edit', 'autonomous'] as const;
-export type PermissionModeInput = (typeof PERMISSION_MODE_INPUT_VALUES)[number];
-export const PERMISSION_MODE_VALUES = ['default', 'plan', 'auto_edit', 'autonomous'] as const;
-export type PermissionMode = (typeof PERMISSION_MODE_VALUES)[number];
 export const PERMISSION_SCOPE_INPUT_VALUES = ['once', 'session', 'always'] as const;
 export type PermissionScopeInput = (typeof PERMISSION_SCOPE_INPUT_VALUES)[number];
 export const PERMISSION_TARGET_INPUT_VALUES = ['operation', 'group', 'tool'] as const;
@@ -3002,6 +3003,15 @@ export const GET_PERFORMANCE_METRICS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const GET_SESSION_EXECUTION_MODE_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'mode': {
+			optional: false,
+			shape: { kind: 'enum', values: EXECUTION_MODE_VALUES },
+		}
+	}
+} as const;
 export const GET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -4906,9 +4916,9 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 			shape: {
 				kind: 'object',
 				fields: {
-					'permission_mode': {
+					'execution_mode': {
 						optional: false,
-						shape: { kind: 'enum', values: PERMISSION_MODE_VALUES },
+						shape: { kind: 'enum', values: EXECUTION_MODE_VALUES },
 					},
 					'sandbox_mode': {
 						optional: false,
@@ -9788,9 +9798,9 @@ export const SETTINGS_RESPONSE_SHAPE = {
 			shape: {
 				kind: 'object',
 				fields: {
-					'permission_mode': {
+					'execution_mode': {
 						optional: false,
-						shape: { kind: 'enum', values: PERMISSION_MODE_VALUES },
+						shape: { kind: 'enum', values: EXECUTION_MODE_VALUES },
 					},
 					'sandbox_mode': {
 						optional: false,
@@ -10291,6 +10301,15 @@ export const SETTINGS_RESPONSE_SHAPE = {
 } as const;
 export const SET_HOTKEY_CAPTURE_ACTIVE_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SET_REASONING_EFFORT_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const SET_SESSION_EXECUTION_MODE_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'mode': {
+			optional: false,
+			shape: { kind: 'enum', values: EXECUTION_MODE_VALUES },
+		}
+	}
+} as const;
 export const SET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -10641,6 +10660,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_log_info: GET_LOG_INFO_RESPONSE_SHAPE,
 	get_mcp_prompt: GET_MCP_PROMPT_RESPONSE_SHAPE,
 	get_performance_metrics: GET_PERFORMANCE_METRICS_RESPONSE_SHAPE,
+	get_session_execution_mode: GET_SESSION_EXECUTION_MODE_RESPONSE_SHAPE,
 	get_session_execution_workspace: GET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE,
 	get_session_for_resume: GET_SESSION_FOR_RESUME_RESPONSE_SHAPE,
 	get_session_lineage: GET_SESSION_LINEAGE_RESPONSE_SHAPE,
@@ -10688,6 +10708,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	search_session_history_filtered: SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE,
 	set_hotkey_capture_active: SET_HOTKEY_CAPTURE_ACTIVE_RESPONSE_SHAPE,
 	set_reasoning_effort: SET_REASONING_EFFORT_RESPONSE_SHAPE,
+	set_session_execution_mode: SET_SESSION_EXECUTION_MODE_RESPONSE_SHAPE,
 	set_session_execution_workspace: SET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE,
 	set_skill_enabled: SET_SKILL_ENABLED_RESPONSE_SHAPE,
 	set_tool_enabled: SET_TOOL_ENABLED_RESPONSE_SHAPE,
@@ -10828,6 +10849,7 @@ export interface TauriCommandMap {
 	get_log_info: { request: undefined; response: LogInfo };
 	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpFeatureCallOutcome };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
+	get_session_execution_mode: { request: { sessionId: string }; response: SessionExecutionModeResponse };
 	get_session_execution_workspace: { request: { sessionId: string }; response: SessionExecutionWorkspaceResponse };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
@@ -10875,6 +10897,7 @@ export interface TauriCommandMap {
 	search_session_history_filtered: { request: { query?: string | null; status?: SessionHistoryStatusFilterInput | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: ReasoningEffortSelectionInput | null }; response: void };
+	set_session_execution_mode: { request: { sessionId: string; mode: ExecutionModeInput }; response: SessionExecutionModeResponse };
 	set_session_execution_workspace: { request: { sessionId: string; root?: string | null }; response: SessionExecutionWorkspaceResponse };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };
@@ -10954,6 +10977,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_log_info: { boundary: 'read', security: "path is optional; no environment details" },
 	get_mcp_prompt: { boundary: 'execute', security: "explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages" },
 	get_performance_metrics: { boundary: 'read', security: "bounded content-free backend counters plus renderer stream counters" },
+	get_session_execution_mode: { boundary: 'read', security: "canonical session id; reads its durable execution mode" },
 	get_session_execution_workspace: { boundary: 'read', security: "canonical session id; reads its durable workspace binding" },
 	get_session_for_resume: { boundary: 'read', security: "session-scoped persisted projection" },
 	get_session_lineage: { boundary: 'read', security: "parent and direct child sessions of the selected session only" },
@@ -11001,6 +11025,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	search_session_history_filtered: { boundary: 'read', security: "bounded page and date-filtered projection" },
 	set_hotkey_capture_active: { boundary: 'mutate', security: "transient renderer key-capture state only; not persisted" },
 	set_reasoning_effort: { boundary: 'mutate', security: "request kind selects the assigned model; validated before config save" },
+	set_session_execution_mode: { boundary: 'mutate', security: "canonical session id; binds one execution preset to that session" },
 	set_session_execution_workspace: { boundary: 'mutate', security: "canonical session id; local directory is validated and bound to that session" },
 	set_skill_enabled: { boundary: 'mutate', security: "AuthorizationPort; typed native admin operation persists the toggle" },
 	set_tool_enabled: { boundary: 'mutate', security: "AuthorizationPort; typed native admin operation persists the toggle" },

@@ -101,6 +101,32 @@ use super::*;
     }
 
     #[test]
+    fn file_authorization_declares_typed_source_and_destination_resources() {
+        let tool = FilesTool::default();
+        let resources = tool
+            .authorization_resources(&json!({
+                "operation": "copy",
+                "path": "source.txt",
+                "destination": "destination.txt",
+                "target": "ignored-by-the-resource-contract"
+            }))
+            .unwrap();
+        assert_eq!(
+            resources,
+            vec![
+                crate::security::DeclaredResource::LocalPath {
+                    path: std::path::PathBuf::from("source.txt"),
+                    access: crate::security::LocalPathAccess::Read,
+                },
+                crate::security::DeclaredResource::LocalPath {
+                    path: std::path::PathBuf::from("destination.txt"),
+                    access: crate::security::LocalPathAccess::Write,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn test_file_input_schema() {
         let tool = FilesTool::default();
         let schema = tool.input_schema();

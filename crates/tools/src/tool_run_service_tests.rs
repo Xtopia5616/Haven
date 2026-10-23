@@ -1346,7 +1346,7 @@ async fn test_policy_revocation_terminates_background_shell_descendants() {
     let descendant_pid = descendant.pid().expect("descendant PID should be numeric");
 
     authorization
-        .set_permission_mode(haven_common::types::PermissionMode::Plan)
+        .set_execution_mode(haven_common::types::ExecutionMode::Analyze)
         .await;
     let terminal = wait_terminal(&service, &tool_run_id, 10).await;
     assert_eq!(terminal["status"], "cancelled");
