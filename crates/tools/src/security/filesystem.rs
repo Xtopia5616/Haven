@@ -34,6 +34,10 @@ pub(crate) struct FileWritePolicy {
     /// One-call extension roots created only from the exact typed write
     /// resources bound into an accepted confirmation receipt.
     pub(super) extension_roots: Vec<DirectoryCapability>,
+    /// Exact targets bound into that receipt. The directory capability is
+    /// required for safe handle-relative writes, while this list prevents it
+    /// from authorizing sibling paths in the same parent directory.
+    pub(super) extension_targets: Vec<PathBuf>,
     pub(super) ambient: bool,
 }
 
@@ -43,6 +47,7 @@ impl FileWritePolicy {
         Self {
             root_constraints: Vec::new(),
             extension_roots: Vec::new(),
+            extension_targets: Vec::new(),
             ambient: true,
         }
     }
@@ -52,6 +57,7 @@ impl FileWritePolicy {
         Self {
             root_constraints: vec![open_directory_roots(roots, "test roots").unwrap()],
             extension_roots: Vec::new(),
+            extension_targets: Vec::new(),
             ambient: false,
         }
     }
@@ -69,6 +75,18 @@ impl FileWritePolicy {
                 "file mutation path changed or contains a reparse point",
             )
         })?;
+
+        if !self.extension_targets.is_empty()
+            && !self
+                .extension_targets
+                .iter()
+                .any(|target| extension_path_matches(target, &resolved))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file mutation path is outside the exact temporary resource extension targets",
+            ));
+        }
 
         let mut selected = Vec::new();
         if !self.extension_roots.is_empty() {
@@ -119,6 +137,24 @@ impl FileWritePolicy {
             io::ErrorKind::PermissionDenied,
             "file mutation has no authorized directory capability",
         ))
+    }
+}
+
+fn extension_path_matches(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        fn ordinary_local_path(path: &Path) -> std::borrow::Cow<'_, str> {
+            let value = path.to_string_lossy();
+            match value.strip_prefix(r"\\?\") {
+                Some(ordinary) => std::borrow::Cow::Owned(ordinary.to_owned()),
+                None => value,
+            }
+        }
+        ordinary_local_path(left).eq_ignore_ascii_case(&ordinary_local_path(right))
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
     }
 }
 
@@ -351,6 +387,26 @@ mod tests {
         assert_eq!(
             policy.open_read(&path).unwrap_err().kind(),
             std::io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn temporary_write_extension_does_not_authorize_sibling_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("approved.txt");
+        let sibling = root.path().join("sibling.txt");
+        let policy = FileWritePolicy {
+            root_constraints: Vec::new(),
+            extension_roots: open_directory_roots(&[root.path().to_path_buf()], "test root")
+                .unwrap(),
+            extension_targets: vec![resolve_path_without_reparse(&target).unwrap()],
+            ambient: false,
+        };
+
+        assert!(policy.resolve(&target).is_ok());
+        assert_eq!(
+            policy.resolve(&sibling).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
         );
     }
 

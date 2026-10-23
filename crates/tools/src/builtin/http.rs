@@ -619,11 +619,7 @@ async fn resolve_http_destination(
     }
     #[cfg(test)]
     if destination_policy.allow_loopback {
-        return network::resolve_http_destination_for_test(
-            raw_url,
-            &[],
-        )
-        .await;
+        return network::resolve_http_destination_for_test(raw_url, &[]).await;
     }
     network::resolve_http_destination(raw_url, &[]).await
 }

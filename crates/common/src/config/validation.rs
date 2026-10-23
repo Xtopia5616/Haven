@@ -49,13 +49,18 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
     if matches!(resource_policy.files.write_mode, FileWriteMode::Inherit) {
         anyhow::bail!("security.resource_policy.files.write_mode cannot inherit");
     }
-    if matches!(resource_policy.network.access, NetworkAccessBoundary::Inherit) {
+    if matches!(
+        resource_policy.network.access,
+        NetworkAccessBoundary::Inherit
+    ) {
         anyhow::bail!("security.resource_policy.network.access cannot inherit");
     }
     if matches!(resource_policy.files.write_mode, FileWriteMode::Roots)
         && resource_policy.files.write_roots.is_empty()
     {
-        anyhow::bail!("security.resource_policy.files.write_roots must not be empty for roots mode");
+        anyhow::bail!(
+            "security.resource_policy.files.write_roots must not be empty for roots mode"
+        );
     }
     if let Some((index, _)) = resource_policy
         .files
@@ -64,7 +69,9 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         .enumerate()
         .find(|(_, root)| !crate::path::is_absolute_local_path(std::path::Path::new(root)))
     {
-        anyhow::bail!("security.resource_policy.files.write_roots[{index}] must be an absolute local directory path");
+        anyhow::bail!(
+            "security.resource_policy.files.write_roots[{index}] must be an absolute local directory path"
+        );
     }
     if let Some((index, _)) = resource_policy
         .files
@@ -73,7 +80,9 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         .enumerate()
         .find(|(_, root)| !crate::path::is_absolute_local_path(std::path::Path::new(root)))
     {
-        anyhow::bail!("security.resource_policy.files.path_roots[{index}] must be an absolute local directory path");
+        anyhow::bail!(
+            "security.resource_policy.files.path_roots[{index}] must be an absolute local directory path"
+        );
     }
     validate_session_step_budgets(
         config.session.max_steps_per_run,
@@ -87,16 +96,22 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         if matches!(tool.resource_policy.files.write_mode, FileWriteMode::Roots)
             && tool.resource_policy.files.write_roots.is_empty()
         {
-            anyhow::bail!("tool_settings.{name}.resource_policy.files.write_roots must not be empty for roots mode");
+            anyhow::bail!(
+                "tool_settings.{name}.resource_policy.files.write_roots must not be empty for roots mode"
+            );
         }
         for (index, root) in tool.resource_policy.files.write_roots.iter().enumerate() {
             if !crate::path::is_absolute_local_path(std::path::Path::new(root)) {
-                anyhow::bail!("tool_settings.{name}.resource_policy.files.write_roots[{index}] must be an absolute local directory path");
+                anyhow::bail!(
+                    "tool_settings.{name}.resource_policy.files.write_roots[{index}] must be an absolute local directory path"
+                );
             }
         }
         for (index, root) in tool.resource_policy.files.path_roots.iter().enumerate() {
             if !crate::path::is_absolute_local_path(std::path::Path::new(root)) {
-                anyhow::bail!("tool_settings.{name}.resource_policy.files.path_roots[{index}] must be an absolute local directory path");
+                anyhow::bail!(
+                    "tool_settings.{name}.resource_policy.files.path_roots[{index}] must be an absolute local directory path"
+                );
             }
         }
         if tool
@@ -1151,8 +1166,8 @@ mod tests {
         validate_app_config_numbers, validate_settings_contract, validate_settings_numbers,
     };
     use crate::config::{
-        AppConfig, IndependentSearchConfig, McpServerConfig, PerplexitySearchType, ProviderConfig,
-        SettingsSnapshot,
+        AppConfig, FileWriteMode, IndependentSearchConfig, McpServerConfig, PerplexitySearchType,
+        ProviderConfig, SettingsSnapshot,
     };
 
     type NumericConfigContractCase = (&'static str, u64, u64, fn(&mut AppConfig, u64));
@@ -1210,9 +1225,11 @@ mod tests {
         config.security.resource_policy.files.write_roots = vec!["relative/project".into()];
 
         let error = validate_app_config(&config).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("security.resource_policy.files.write_roots[0]"));
+        assert!(
+            error
+                .to_string()
+                .contains("security.resource_policy.files.write_roots[0]")
+        );
         assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
     }
 
@@ -1225,9 +1242,11 @@ mod tests {
             config.security.resource_policy.files.write_roots = vec![path.into()];
 
             let error = validate_app_config(&config).unwrap_err();
-            assert!(error
-                .to_string()
-                .contains("security.resource_policy.files.write_roots[0]"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("security.resource_policy.files.write_roots[0]")
+            );
         }
     }
 

@@ -669,7 +669,7 @@ pub struct SecurityConfig {
     pub permissions: Vec<StoredPermission>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct SecurityConfigInput {
     #[serde(alias = "permission_mode")]
@@ -681,21 +681,6 @@ struct SecurityConfigInput {
     network_policy: Option<String>,
     encrypt_sensitive: Option<bool>,
     permissions: Vec<StoredPermission>,
-}
-
-impl Default for SecurityConfigInput {
-    fn default() -> Self {
-        Self {
-            execution_mode: None,
-            resource_policy: None,
-            execution_root: None,
-            sandbox_mode: None,
-            writable_roots: None,
-            network_policy: None,
-            encrypt_sensitive: None,
-            permissions: Vec::new(),
-        }
-    }
 }
 
 impl TryFrom<SecurityConfigInput> for SecurityConfig {
@@ -953,7 +938,9 @@ impl TryFrom<ToolConfigInput> for ToolConfig {
         if input.resource_policy.is_some()
             && (input.allowed_paths.is_some() || input.allowed_domains.is_some())
         {
-            return Err("resource_policy cannot be combined with legacy tool resource fields".into());
+            return Err(
+                "resource_policy cannot be combined with legacy tool resource fields".into(),
+            );
         }
         let resource_policy = if let Some(policy) = input.resource_policy {
             policy

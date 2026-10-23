@@ -1635,7 +1635,13 @@ mod tests {
         // supervisor restores the durable per-session set without widening it
         // to a global grant.
         let changed_security = haven_common::config::SecurityConfig {
-            network_policy: haven_common::types::NetworkPolicy::Open,
+            resource_policy: haven_common::config::ResourcePolicy {
+                network: haven_common::config::NetworkResourcePolicy {
+                    access: haven_common::config::NetworkAccessBoundary::Open,
+                    ..haven_common::config::NetworkResourcePolicy::default()
+                },
+                ..haven_common::config::ResourcePolicy::default()
+            },
             ..haven_common::config::SecurityConfig::default()
         };
         first.authorization.apply_security(&changed_security).await;

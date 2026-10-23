@@ -83,9 +83,7 @@ pub(crate) fn project_interaction(
             let confirmation_receipt = receipt
                 .as_ref()
                 .or_else(|| nested_confirmation.as_ref().map(|nested| &nested.receipt));
-            if confirmation_receipt
-                .is_some_and(|receipt| receipt.resource_boundary_extension)
-            {
+            if confirmation_receipt.is_some_and(|receipt| receipt.resource_boundary_extension) {
                 summary.push_str("\n\n此操作超出当前资源策略范围。允许后只会为弹窗列出的资源临时扩展本次调用，不会修改已保存的策略。");
                 event.resource_boundary_extension = true;
             }

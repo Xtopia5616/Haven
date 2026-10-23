@@ -697,18 +697,20 @@ impl AuthorizationEngine {
         if !cfg.global_file_roots.is_empty() {
             allowed_roots.push(cfg.global_file_roots.clone());
         }
-        allowed_roots.extend(tool_setting_names(tool_name)
-            .filter_map(|name| cfg.tool_settings.get(name))
-            .filter(|setting| !setting.resource_policy.files.path_roots.is_empty())
-            .map(|setting| {
-                setting
-                    .resource_policy
-                    .files
-                    .path_roots
-                    .iter()
-                    .map(PathBuf::from)
-                    .collect()
-            }));
+        allowed_roots.extend(
+            tool_setting_names(tool_name)
+                .filter_map(|name| cfg.tool_settings.get(name))
+                .filter(|setting| !setting.resource_policy.files.path_roots.is_empty())
+                .map(|setting| {
+                    setting
+                        .resource_policy
+                        .files
+                        .path_roots
+                        .iter()
+                        .map(PathBuf::from)
+                        .collect()
+                }),
+        );
         FileReadPolicy { allowed_roots }
     }
 
@@ -746,18 +748,15 @@ impl AuthorizationEngine {
             && matches!(request.policy.effect, OperationEffect::WorkspaceWrite)
         {
             let mut root_constraints = Vec::new();
-            let resource_boundary_extension = match &proof.authorization {
+            let resource_boundary_extension = matches!(
+                &proof.authorization,
                 ExecutionAuthorizationKind::Confirmed(receipt)
-                    if receipt.resource_boundary_extension =>
-                {
-                    true
-                }
-                _ => false,
-            };
-            let extension_roots = if resource_boundary_extension {
+                    if receipt.resource_boundary_extension
+            );
+            let (extension_roots, extension_targets) = if resource_boundary_extension {
                 resource_extension_write_roots(request, &execution_workspace)?
             } else {
-                Vec::new()
+                (Vec::new(), Vec::new())
             };
             let ambient = match cfg.sandbox_mode {
                 SandboxMode::ReadOnly => {
@@ -797,9 +796,12 @@ impl AuthorizationEngine {
                         return Err("tool resource policy is read-only".into());
                     }
                     FileWriteMode::Workspace => {
-                        let root = execution_workspace.root().ok_or_else(|| {
-                            "tool workspace resource policy has no execution root".to_owned()
-                        })?.to_path_buf();
+                        let root = execution_workspace
+                            .root()
+                            .ok_or_else(|| {
+                                "tool workspace resource policy has no execution root".to_owned()
+                            })?
+                            .to_path_buf();
                         root_constraints.push(open_directory_roots(
                             &[root],
                             "tool resource_policy.files.workspace",
@@ -838,6 +840,7 @@ impl AuthorizationEngine {
             Some(FileWritePolicy {
                 root_constraints,
                 extension_roots,
+                extension_targets,
                 ambient,
             })
         } else {
@@ -972,23 +975,24 @@ impl AuthorizationEngine {
             }
         }
 
-        let needs_prompt = resource_boundary_extension || match execution_mode {
-            ExecutionMode::Analyze => {
-                hard_confirmation || policy.requires_disclosure_confirmation()
-            }
-            ExecutionMode::Collaborative => {
-                hard_confirmation
-                    || policy.requires_disclosure_confirmation()
-                    || (!policy.is_read_only()
-                        && (risk > RiskLevel::Safe
-                            || policy.confirmation != ConfirmationRequirement::None))
-            }
-            ExecutionMode::Unattended => {
-                hard_confirmation
-                    || policy.requires_disclosure_confirmation()
-                    || risk >= RiskLevel::High
-            }
-        };
+        let needs_prompt = resource_boundary_extension
+            || match execution_mode {
+                ExecutionMode::Analyze => {
+                    hard_confirmation || policy.requires_disclosure_confirmation()
+                }
+                ExecutionMode::Collaborative => {
+                    hard_confirmation
+                        || policy.requires_disclosure_confirmation()
+                        || (!policy.is_read_only()
+                            && (risk > RiskLevel::Safe
+                                || policy.confirmation != ConfirmationRequirement::None))
+                }
+                ExecutionMode::Unattended => {
+                    hard_confirmation
+                        || policy.requires_disclosure_confirmation()
+                        || risk >= RiskLevel::High
+                }
+            };
 
         if !needs_prompt {
             return AuthorizationCheck::auto_approved(
@@ -1098,7 +1102,9 @@ impl AuthorizationEngine {
             &effective_policy,
         ) {
             Ok(()) if receipt.resource_boundary_extension => {
-                return Err("confirmation receipt requested an unnecessary resource extension".into());
+                return Err(
+                    "confirmation receipt requested an unnecessary resource extension".into(),
+                );
             }
             Ok(()) => {}
             Err(failure)
@@ -1726,10 +1732,13 @@ fn network_resource_block(
     let settings = tool_setting_names(tool_name)
         .filter_map(|name| cfg.tool_settings.get(name))
         .collect::<Vec<_>>();
-    if settings.iter().any(|setting| {
-        setting.resource_policy.network.access == NetworkAccessBoundary::Deny
-    }) {
-        return Some(format!("tool resource policy denies network access for '{tool_name}'"));
+    if settings
+        .iter()
+        .any(|setting| setting.resource_policy.network.access == NetworkAccessBoundary::Deny)
+    {
+        return Some(format!(
+            "tool resource policy denies network access for '{tool_name}'"
+        ));
     }
     if operation.network_access == NetworkAccess::Opaque
         && settings.iter().any(|setting| {
@@ -1989,32 +1998,22 @@ fn check_policy_boundaries(
             resource_extension_allowed: false,
         });
     }
-    if let Some(failure) = path_sandbox_block(
-        &cfg.tool_settings,
-        cfg.sandbox_mode,
-        &cfg.writable_roots,
-        &cfg.global_file_roots,
-        execution_workspace,
-        tool_name,
-        resources,
-        policy,
-    ) {
+    if let Some(failure) =
+        path_sandbox_block(cfg, execution_workspace, tool_name, resources, policy)
+    {
         return Err(failure);
     }
     Ok(())
 }
 
 fn path_sandbox_block(
-    settings: &HashMap<String, ToolConfig>,
-    sandbox_mode: SandboxMode,
-    writable_roots: &[PathBuf],
-    global_file_roots: &[PathBuf],
+    cfg: &SafetyConfig,
     execution_workspace: &ExecutionWorkspace,
     tool_name: &str,
     resources: &[super::DeclaredResource],
     policy: &OperationPolicy,
 ) -> Option<PolicyBoundaryFailure> {
-    if matches!(sandbox_mode, SandboxMode::ReadOnly)
+    if matches!(cfg.sandbox_mode, SandboxMode::ReadOnly)
         && matches!(policy.effect, OperationEffect::WorkspaceWrite)
     {
         return Some(PolicyBoundaryFailure {
@@ -2046,24 +2045,20 @@ fn path_sandbox_block(
     }
     if paths.is_empty() {
         let has_tool_path_policy = tool_setting_names(tool_name).any(|name| {
-            settings
-                .get(name)
-                .is_some_and(|setting| {
-                    !setting.resource_policy.files.path_roots.is_empty()
-                        || !matches!(
-                            setting.resource_policy.files.write_mode,
-                            FileWriteMode::Inherit | FileWriteMode::Unrestricted
-                        )
-                })
+            cfg.tool_settings.get(name).is_some_and(|setting| {
+                !setting.resource_policy.files.path_roots.is_empty()
+                    || !matches!(
+                        setting.resource_policy.files.write_mode,
+                        FileWriteMode::Inherit | FileWriteMode::Unrestricted
+                    )
+            })
         });
-        if (matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
+        if (matches!(cfg.sandbox_mode, SandboxMode::WorkspaceWrite)
             && matches!(policy.effect, OperationEffect::WorkspaceWrite))
             || has_tool_path_policy
         {
             return Some(PolicyBoundaryFailure {
-                reason: format!(
-                    "operation '{tool_name}' did not declare its local path resources"
-                ),
+                reason: format!("operation '{tool_name}' did not declare its local path resources"),
                 reason_code: AuthorizationReasonCode::SandboxBoundary,
                 resource_extension_allowed: false,
             });
@@ -2071,9 +2066,9 @@ fn path_sandbox_block(
         return None;
     }
     for (path, _) in &paths {
-        if !global_file_roots.is_empty() {
+        if !cfg.global_file_roots.is_empty() {
             let path = resolve_relative_sandbox_path((*path).clone(), execution_workspace);
-            if !path_is_allowed(&path, global_file_roots) {
+            if !path_is_allowed(&path, &cfg.global_file_roots) {
                 return Some(PolicyBoundaryFailure {
                     reason: format!(
                         "operation '{tool_name}' is blocked by the global file resource path policy"
@@ -2085,13 +2080,13 @@ fn path_sandbox_block(
         }
     }
     for name in tool_setting_names(tool_name) {
-        let Some(cfg) = settings.get(name) else {
+        let Some(tool_cfg) = cfg.tool_settings.get(name) else {
             continue;
         };
-        if cfg.resource_policy.files.path_roots.is_empty() {
+        if tool_cfg.resource_policy.files.path_roots.is_empty() {
             continue;
         }
-        let allowed: Vec<PathBuf> = cfg
+        let allowed: Vec<PathBuf> = tool_cfg
             .resource_policy
             .files
             .path_roots
@@ -2113,14 +2108,16 @@ fn path_sandbox_block(
     }
     if matches!(policy.effect, OperationEffect::WorkspaceWrite) {
         for name in tool_setting_names(tool_name) {
-            let Some(setting) = settings.get(name) else {
+            let Some(setting) = cfg.tool_settings.get(name) else {
                 continue;
             };
             let allowed = match setting.resource_policy.files.write_mode {
                 FileWriteMode::Inherit | FileWriteMode::Unrestricted => continue,
                 FileWriteMode::ReadOnly => {
                     return Some(PolicyBoundaryFailure {
-                        reason: format!("tool resource policy blocks file mutation for '{tool_name}'"),
+                        reason: format!(
+                            "tool resource policy blocks file mutation for '{tool_name}'"
+                        ),
                         reason_code: AuthorizationReasonCode::SandboxBoundary,
                         resource_extension_allowed: false,
                     });
@@ -2128,7 +2125,9 @@ fn path_sandbox_block(
                 FileWriteMode::Workspace => {
                     let Some(root) = execution_workspace.root() else {
                         return Some(PolicyBoundaryFailure {
-                            reason: format!("tool resource policy has no workspace for '{tool_name}'"),
+                            reason: format!(
+                                "tool resource policy has no workspace for '{tool_name}'"
+                            ),
                             reason_code: AuthorizationReasonCode::SandboxBoundary,
                             resource_extension_allowed: false,
                         });
@@ -2138,7 +2137,9 @@ fn path_sandbox_block(
                 FileWriteMode::Roots => {
                     if setting.resource_policy.files.write_roots.is_empty() {
                         return Some(PolicyBoundaryFailure {
-                            reason: format!("tool resource policy has no write roots for '{tool_name}'"),
+                            reason: format!(
+                                "tool resource policy has no write roots for '{tool_name}'"
+                            ),
                             reason_code: AuthorizationReasonCode::SandboxBoundary,
                             resource_extension_allowed: false,
                         });
@@ -2167,17 +2168,17 @@ fn path_sandbox_block(
             }
         }
     }
-    if matches!(sandbox_mode, SandboxMode::WorkspaceWrite)
+    if matches!(cfg.sandbox_mode, SandboxMode::WorkspaceWrite)
         && matches!(policy.effect, OperationEffect::WorkspaceWrite)
     {
-        let allowed: Vec<PathBuf> = if writable_roots.is_empty() {
+        let allowed: Vec<PathBuf> = if cfg.writable_roots.is_empty() {
             execution_workspace
                 .root()
                 .map(Path::to_path_buf)
                 .into_iter()
                 .collect()
         } else {
-            writable_roots.to_vec()
+            cfg.writable_roots.clone()
         };
         if allowed.is_empty() {
             return Some(PolicyBoundaryFailure {
@@ -2220,8 +2221,15 @@ fn resolve_relative_sandbox_path(
 fn resource_extension_write_roots(
     request: &AuthorizationRequest,
     execution_workspace: &ExecutionWorkspace,
-) -> Result<Vec<haven_platform::filesystem::DirectoryCapability>, String> {
+) -> Result<
+    (
+        Vec<haven_platform::filesystem::DirectoryCapability>,
+        Vec<PathBuf>,
+    ),
+    String,
+> {
     let mut roots = Vec::new();
+    let mut targets = Vec::new();
     for resource in &request.resources {
         let super::DeclaredResource::LocalPath {
             path,
@@ -2234,22 +2242,29 @@ fn resource_extension_write_roots(
         if is_unc_or_device_path(&path) {
             return Err("temporary resource extension does not support UNC or device paths".into());
         }
-        let is_existing_directory = std::fs::metadata(&path)
+        let target = resolve_path_without_reparse(&path)
+            .ok_or_else(|| "temporary resource extension target is unavailable".to_owned())?;
+        let target = persisted_local_resource_path(target)?;
+        let is_existing_directory = std::fs::metadata(&target)
             .map(|metadata| metadata.is_dir())
             .unwrap_or(false);
         let root = if is_existing_directory {
-            path
+            target.clone()
         } else {
-            path.parent()
-                .map(Path::to_path_buf)
-                .ok_or_else(|| "temporary resource extension has no containing directory".to_owned())?
+            target.parent().map(Path::to_path_buf).ok_or_else(|| {
+                "temporary resource extension has no containing directory".to_owned()
+            })?
         };
-        roots.push(root);
+        roots.push(persisted_local_resource_path(root)?);
+        targets.push(target);
     }
     if roots.is_empty() {
         return Err("temporary resource extension has no declared write resource".into());
     }
-    open_directory_roots(&roots, "temporary resource extension")
+    Ok((
+        open_directory_roots(&roots, "temporary resource extension")?,
+        targets,
+    ))
 }
 
 #[cfg(test)]
@@ -3230,8 +3245,16 @@ mod tests {
 
         let security = SecurityConfig {
             execution_mode: ExecutionMode::Unattended,
-            sandbox_mode: SandboxMode::FullAccess,
-            network_policy: NetworkPolicy::Open,
+            resource_policy: ResourcePolicy {
+                files: FileResourcePolicy {
+                    write_mode: FileWriteMode::Unrestricted,
+                    ..FileResourcePolicy::default()
+                },
+                network: NetworkResourcePolicy {
+                    access: NetworkAccessBoundary::Open,
+                    ..NetworkResourcePolicy::default()
+                },
+            },
             ..SecurityConfig::default()
         };
         engine.apply_security(&security).await.unwrap();
@@ -3469,10 +3492,19 @@ mod tests {
             &second_input,
             &outside_policy,
         );
-        assert!(matches!(
-            engine.authorize(&outside_first).await,
-            AuthorizationDecision::Blocked { .. }
-        ));
+        let outside_decision = engine.authorize(&outside_first).await;
+        assert!(
+            matches!(
+                &outside_decision,
+                AuthorizationDecision::RequiresConfirmation {
+                    receipt,
+                    reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
+                    ..
+                } if receipt.resource_boundary_extension
+                    && receipt.resources == outside_first.resources
+            ),
+            "unexpected outside-workspace decision: {outside_decision:?}"
+        );
 
         engine
             .bind_session_execution_workspace(first_session, Some(next_first_root.path()))
@@ -3510,8 +3542,6 @@ mod tests {
         engine
             .apply_security(&SecurityConfig {
                 execution_root: Some(next_first_root.path().to_path_buf()),
-                sandbox_mode: SandboxMode::WorkspaceWrite,
-                network_policy: NetworkPolicy::Restricted,
                 ..SecurityConfig::default()
             })
             .await
@@ -3637,10 +3667,8 @@ mod tests {
         assert_eq!(after.generation, before.generation + 1);
         assert_eq!(after.root, None);
 
-        let follow_up = SecurityConfig {
-            sandbox_mode: SandboxMode::ReadOnly,
-            ..security
-        };
+        let mut follow_up = security;
+        follow_up.resource_policy.files.write_mode = FileWriteMode::ReadOnly;
         engine
             .apply_security(&follow_up)
             .await
@@ -3657,10 +3685,17 @@ mod tests {
             ExecutionWorkspace::from_root(initial_root.path()).unwrap(),
         );
         let security = SecurityConfig {
-            writable_roots: vec![
-                valid_root.path().to_string_lossy().into_owned(),
-                missing_root.to_string_lossy().into_owned(),
-            ],
+            resource_policy: ResourcePolicy {
+                files: FileResourcePolicy {
+                    write_mode: FileWriteMode::Roots,
+                    write_roots: vec![
+                        valid_root.path().to_string_lossy().into_owned(),
+                        missing_root.to_string_lossy().into_owned(),
+                    ],
+                    ..FileResourcePolicy::default()
+                },
+                ..ResourcePolicy::default()
+            },
             ..SecurityConfig::default()
         };
 
@@ -3668,7 +3703,10 @@ mod tests {
             .apply_security(&security)
             .await
             .expect_err("every configured writable root must open safely");
-        assert!(error.contains("security.writable_roots[1]"));
+        assert!(
+            error.contains("security.resource_policy.files.write_roots[1]"),
+            "unexpected invalid writable-root error: {error}"
+        );
 
         let config = engine.config.read().await;
         assert_eq!(
@@ -4284,7 +4322,13 @@ mod tests {
     async fn network_deny_is_a_hard_boundary_for_http_and_adapters() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let security = SecurityConfig {
-            network_policy: NetworkPolicy::Deny,
+            resource_policy: ResourcePolicy {
+                network: NetworkResourcePolicy {
+                    access: NetworkAccessBoundary::Deny,
+                    ..NetworkResourcePolicy::default()
+                },
+                ..ResourcePolicy::default()
+            },
             ..SecurityConfig::default()
         };
         gateway
@@ -4337,7 +4381,13 @@ mod tests {
     async fn sandbox_boundaries_block_writes_and_enforce_writable_roots() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let read_only = SecurityConfig {
-            sandbox_mode: SandboxMode::ReadOnly,
+            resource_policy: ResourcePolicy {
+                files: FileResourcePolicy {
+                    write_mode: FileWriteMode::ReadOnly,
+                    ..FileResourcePolicy::default()
+                },
+                ..ResourcePolicy::default()
+            },
             ..SecurityConfig::default()
         };
         gateway
@@ -4381,17 +4431,30 @@ mod tests {
             execution_boundary: crate::ExecutionBoundary::InProcess,
         };
         let outside = std::env::temp_dir().join("haven-permission-outside.txt");
-        assert!(matches!(
-            authorize(
-                &gateway,
-                None,
-                "files.write",
-                &json!({"path": outside}),
-                &write_policy,
-            )
-            .await,
-            ConfirmationResult::Blocked { .. }
-        ));
+        let outside_decision = authorize(
+            &gateway,
+            None,
+            "files.write",
+            &json!({"path": outside}),
+            &write_policy,
+        )
+        .await;
+        assert!(
+            matches!(
+                &outside_decision,
+                ConfirmationResult::RequiresConfirmation {
+                    receipt,
+                    reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
+                    ..
+                } if receipt.resource_boundary_extension
+                    && receipt.resources.iter().any(|resource| matches!(
+                        resource,
+                        DeclaredResource::LocalPath { path, access: LocalPathAccess::Write }
+                            if path == &outside
+                    ))
+            ),
+            "unexpected outside-root decision: {outside_decision:?}"
+        );
         assert!(matches!(
             authorize(
                 &gateway,
@@ -4403,6 +4466,65 @@ mod tests {
             .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn confirmed_workspace_write_extension_is_bound_to_the_exact_target() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("approved.txt");
+        let sibling = outside.path().join("sibling.txt");
+        let engine = Arc::new(AuthorizationEngine::new_with_workspace(
+            ExecutionWorkspace::from_root(workspace.path()).unwrap(),
+        ));
+        engine
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
+            .await;
+        let input = json!({"path": target});
+        let mut policy = fixture_policy("files.write", &input, RiskLevel::Medium);
+        policy.effect = OperationEffect::WorkspaceWrite;
+        policy.idempotency = crate::OperationIdempotency::NonIdempotent;
+        policy.network_access = NetworkAccess::None;
+        let request = fixture_request(None, "files.write", &input, &policy);
+        let check = engine.authorize_for_execution(&request).await;
+        let AuthorizationDecision::RequiresConfirmation {
+            receipt,
+            reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
+            ..
+        } = check.decision
+        else {
+            panic!("outside workspace writes must request one-call boundary extension");
+        };
+        assert!(receipt.resource_boundary_extension);
+        assert_eq!(
+            receipt.resources,
+            vec![DeclaredResource::LocalPath {
+                path: target.clone(),
+                access: LocalPathAccess::Write,
+            }]
+        );
+
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .expect("the confirmed exact request should produce a proof");
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .expect("the matching proof should produce an execution context");
+        let file_policy = context
+            .file_write_policy
+            .expect("file writes carry a proof-derived path policy");
+        assert!(file_policy.resolve(&target).is_ok());
+        assert_eq!(
+            file_policy.resolve(&sibling).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "the parent directory capability must not authorize a sibling file"
+        );
     }
 
     #[tokio::test]
@@ -4457,17 +4579,30 @@ mod tests {
         policy.idempotency = crate::OperationIdempotency::NonIdempotent;
         policy.network_access = NetworkAccess::None;
 
-        assert!(matches!(
-            authorize(
-                &gateway,
-                None,
-                "files.write",
-                &json!({"path": outside}),
-                &policy,
-            )
-            .await,
-            ConfirmationResult::Blocked { .. }
-        ));
+        let outside_decision = authorize(
+            &gateway,
+            None,
+            "files.write",
+            &json!({"path": outside}),
+            &policy,
+        )
+        .await;
+        assert!(
+            matches!(
+                &outside_decision,
+                ConfirmationResult::RequiresConfirmation {
+                    receipt,
+                    reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
+                    ..
+                } if receipt.resource_boundary_extension
+                    && receipt.resources.iter().any(|resource| matches!(
+                        resource,
+                        DeclaredResource::LocalPath { path, access: LocalPathAccess::Write }
+                            if path == &outside
+                    ))
+            ),
+            "unexpected outside-workspace decision: {outside_decision:?}"
+        );
 
         let inside_path = root.join("notes.md");
         let canonical_root = resolve_path_without_reparse(workspace.root().unwrap())
@@ -5086,7 +5221,13 @@ mod tests {
             "files.write".into(),
             ToolConfig {
                 disabled_operations: vec!["files.write".into()],
-                allowed_paths: vec![allowed.path().to_string_lossy().into_owned()],
+                resource_policy: ResourcePolicy {
+                    files: FileResourcePolicy {
+                        path_roots: vec![allowed.path().to_string_lossy().into_owned()],
+                        ..FileResourcePolicy::default()
+                    },
+                    ..ResourcePolicy::default()
+                },
                 ..ToolConfig::default()
             },
         );
@@ -6164,7 +6305,13 @@ mod tests {
         settings.insert(
             "files".into(),
             ToolConfig {
-                allowed_paths: vec![allowed.path().to_string_lossy().into_owned()],
+                resource_policy: ResourcePolicy {
+                    files: FileResourcePolicy {
+                        path_roots: vec![allowed.path().to_string_lossy().into_owned()],
+                        ..FileResourcePolicy::default()
+                    },
+                    ..ResourcePolicy::default()
+                },
                 ..ToolConfig::default()
             },
         );
@@ -6194,7 +6341,13 @@ mod tests {
         settings.insert(
             "media".into(),
             ToolConfig {
-                allowed_paths: vec![allowed.path().to_string_lossy().into_owned()],
+                resource_policy: ResourcePolicy {
+                    files: FileResourcePolicy {
+                        path_roots: vec![allowed.path().to_string_lossy().into_owned()],
+                        ..FileResourcePolicy::default()
+                    },
+                    ..ResourcePolicy::default()
+                },
                 ..ToolConfig::default()
             },
         );
@@ -6222,7 +6375,13 @@ mod tests {
         settings.insert(
             "files".into(),
             ToolConfig {
-                allowed_paths: vec!["C:\\allowed".into()],
+                resource_policy: ResourcePolicy {
+                    files: FileResourcePolicy {
+                        path_roots: vec!["C:\\allowed".into()],
+                        ..FileResourcePolicy::default()
+                    },
+                    ..ResourcePolicy::default()
+                },
                 ..ToolConfig::default()
             },
         );
@@ -6246,7 +6405,13 @@ mod tests {
         settings.insert(
             "files".into(),
             ToolConfig {
-                allowed_paths: vec![root.to_string_lossy().into_owned()],
+                resource_policy: ResourcePolicy {
+                    files: FileResourcePolicy {
+                        path_roots: vec![root.to_string_lossy().into_owned()],
+                        ..FileResourcePolicy::default()
+                    },
+                    ..ResourcePolicy::default()
+                },
                 ..ToolConfig::default()
             },
         );
