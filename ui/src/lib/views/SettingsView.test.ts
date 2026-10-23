@@ -83,9 +83,9 @@ describe('SettingsView diagnostics export', () => {
 		expect(result.textContent).toContain('对话与行为');
 		await fireEvent.click(result);
 
-		expect(
-			screen.getByRole('tab', { name: '对话与行为' }).getAttribute('aria-selected'),
-		).toBe('true');
+		expect(screen.getByRole('tab', { name: '对话与行为' }).getAttribute('aria-selected')).toBe(
+			'true',
+		);
 	});
 
 	it('syncs the selected chat model into the matching model settings card', async () => {
@@ -341,7 +341,13 @@ describe('SettingsView diagnostics export', () => {
 		});
 		await fireEvent.click(inApp);
 		await waitFor(() => expect(screen.getByRole('button', { name: /保存/ })).toBeTruthy());
-		expect(container.querySelector('.save-bar')).toBeTruthy();
+		expect(container.querySelector('.workspace-page-header .save-bar')).toBeNull();
+		expect(container.querySelectorAll('.save-bar')).toHaveLength(1);
+		const toolbar = screen.getByRole('toolbar', { name: '界面与通知操作' });
+		expect(within(toolbar).getByText('有未保存更改')).toBeTruthy();
+		expect(within(toolbar).getByRole('button', { name: /保存/ })).toBeTruthy();
+		expect(within(toolbar).getByRole('button', { name: '放弃' })).toBeTruthy();
+		expect(screen.queryByText('有未保存修改')).toBeNull();
 		expect(container.querySelectorAll('.save-actions .save-action-btn')).toHaveLength(2);
 		expect((windows as HTMLInputElement).checked).toBe(true);
 		await fireEvent.click(windows);
@@ -536,8 +542,10 @@ describe('SettingsView diagnostics export', () => {
 		});
 		settings.memory.fact_inference_enabled = false;
 		settings.security.execution_mode = 'collaborative';
-		settings.security.sandbox_mode = 'workspace_write';
-		settings.security.network_policy = 'restricted';
+		settings.security.resource_policy = {
+			files: { write_mode: 'workspace', write_roots: [], path_roots: [] },
+			network: { access: 'restricted', allowed_domains: [] },
+		};
 		settings.security.execution_root = 'C:\\Haven\\Projects\\demo';
 		settings.media.stt.provider_name = 'deepgram-voice';
 		settings.media.stt.model = 'nova-3';

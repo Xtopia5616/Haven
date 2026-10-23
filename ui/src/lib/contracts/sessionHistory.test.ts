@@ -181,6 +181,7 @@ function resumeResponse(): ResumeFixture {
 				owner: { kind: 'session', session_id: sessionId },
 				kind: 'ask',
 				status: 'pending',
+				resource_boundary_extension: false,
 				created_at: '2026-10-12T08:00:03Z',
 			},
 			{
@@ -189,6 +190,7 @@ function resumeResponse(): ResumeFixture {
 				owner: { kind: 'session', session_id: sessionId },
 				kind: 'confirm',
 				status: 'pending',
+				resource_boundary_extension: false,
 				invocation_step_id: stepId,
 				tool_name: 'read_file',
 				tool_index: 0,
@@ -421,6 +423,7 @@ describe('session history and resume contracts', () => {
 				kind: 'ask',
 				status: 'pending',
 				options: [],
+				resourceBoundaryExtension: false,
 				createdAt: '2026-10-12T08:00:03Z',
 			},
 			{
@@ -430,6 +433,7 @@ describe('session history and resume contracts', () => {
 				kind: 'confirm',
 				status: 'pending',
 				options: [],
+				resourceBoundaryExtension: false,
 				invocationStepId: stepId,
 				toolName: 'read_file',
 				summary: 'Read the project instructions',

@@ -65,7 +65,6 @@
 	import SettingsSaveBar from './SettingsSaveBar.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
-	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import WorkspaceSearch from '$lib/WorkspaceSearch.svelte';
 	import WorkspaceSurface from '$lib/WorkspaceSurface.svelte';
 	import type {
@@ -1526,18 +1525,7 @@
 		<WorkspacePageHeader
 			title="设置"
 			description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
-		>
-			{#snippet children()}
-				<SettingsSaveBar
-					dirty={anySettingsDirty}
-					dirtySectionLabels={dirtySettingsSectionLabels}
-					{saveState}
-					{saveError}
-					onDiscard={discardAndReset}
-					onSave={handleSaveClick}
-				/>
-			{/snippet}
-		</WorkspacePageHeader>
+		/>
 
 		<div class="settings-layout workspace-secondary-layout responsive-layout-transition">
 			<aside class="settings-sidebar workspace-secondary-sidebar responsive-layout-panel">
@@ -1558,10 +1546,15 @@
 						title={activeSettingsSection.label}
 						description={activeSettingsSection.description}
 					>
-						{#snippet status()}
-							{#if dirtySettingsSectionIds.includes(settingsTab)}
-								<MaterialBadge text="有未保存修改" variant="tertiary" />
-							{/if}
+						{#snippet children()}
+							<SettingsSaveBar
+								dirty={anySettingsDirty}
+								dirtySectionLabels={dirtySettingsSectionLabels}
+								{saveState}
+								{saveError}
+								onDiscard={discardAndReset}
+								onSave={handleSaveClick}
+							/>
 						{/snippet}
 					</WorkspaceSectionHeader>
 					<div class="settings-search-area">

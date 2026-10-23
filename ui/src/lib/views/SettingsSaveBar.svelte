@@ -11,14 +11,7 @@
 		onSave: () => Promise<void>;
 	}
 
-	let {
-		dirty,
-		dirtySectionLabels,
-		saveState,
-		saveError,
-		onDiscard,
-		onSave,
-	}: Props = $props();
+	let { dirty, dirtySectionLabels, saveState, saveError, onDiscard, onSave }: Props = $props();
 </script>
 
 <div class="save-bar">
@@ -35,6 +28,7 @@
 		{#if dirty}
 			<MaterialButton
 				variant="text"
+				width="compact"
 				className="save-action-btn"
 				label="放弃"
 				onclick={onDiscard}
@@ -44,6 +38,7 @@
 		<div class="save-button-status" aria-live="polite" aria-busy={saveState === 'saving'}>
 			<MaterialButton
 				variant="outlined"
+				width="compact"
 				className="save-action-btn save-btn--dirty"
 				label={saveState === 'saving' ? '保存中…' : dirty ? '保存更改' : '保存'}
 				ariaLabel={saveState === 'saving' ? '正在保存设置' : '保存设置更改'}
@@ -61,6 +56,7 @@
 		justify-content: flex-end;
 		flex-wrap: wrap;
 		gap: var(--md-sys-space-sm) var(--md-comp-toolbar-gap);
+		max-width: 100%;
 		min-width: 0;
 	}
 	.save-error {
@@ -103,6 +99,7 @@
 	}
 	.save-button-status {
 		display: flex;
+		flex: 0 0 auto;
 		min-width: 0;
 	}
 	.save-actions {

@@ -432,8 +432,7 @@
 			display: none;
 		}
 		.rail-footer {
-			display: grid;
-			grid-template-columns: repeat(2, minmax(0, 1fr));
+			display: flex;
 			align-items: center;
 			gap: var(--md-sys-space-sm);
 			flex-shrink: 0;
@@ -442,14 +441,17 @@
 			border-top: 1px solid var(--md-sys-color-outline-variant);
 		}
 		.rail-footer :global(.status-switch) {
-			display: contents;
+			display: flex;
+			align-items: center;
+			flex: 1 1 auto;
+			gap: var(--md-sys-space-xs);
+			min-width: 0;
 		}
 		.rail-footer :global(.status-chip) {
-			grid-column: 1 / -1;
-			grid-row: 1;
+			flex: 1 1 auto;
 			justify-content: flex-start;
 			min-width: 0;
-			width: 100%;
+			width: auto;
 			height: var(--rail-control-size);
 			padding-inline: var(--md-sys-space-sm);
 		}
@@ -460,14 +462,10 @@
 			white-space: nowrap;
 		}
 		.rail-footer :global(.task-action) {
-			grid-column: 1;
-			grid-row: 2;
-			justify-self: start;
+			flex-shrink: 0;
 		}
 		.rail-footer :global(.rail-theme-button[data-size='toolbar']) {
-			grid-column: 2;
-			grid-row: 2;
-			justify-self: end;
+			flex-shrink: 0;
 		}
 		.rail-footer :global(.md-icon-btn[data-size='toolbar']) {
 			width: var(--rail-control-size);
@@ -531,11 +529,17 @@
 			display: none;
 		}
 		.rail-footer {
+			display: grid;
 			grid-template-columns: minmax(0, 1fr);
 			justify-items: center;
+			gap: var(--md-sys-space-xs);
+		}
+		.rail-footer :global(.status-switch) {
+			display: contents;
 		}
 		.rail-footer :global(.status-chip) {
 			justify-content: center;
+			width: var(--rail-control-size);
 			padding-inline: var(--md-sys-space-xs);
 		}
 		.rail-footer :global(.task-action),

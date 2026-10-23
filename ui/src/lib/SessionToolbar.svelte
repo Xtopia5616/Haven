@@ -669,6 +669,9 @@
 		justify-content: space-between;
 		gap: var(--md-sys-space-sm);
 	}
+	.token-detail-line {
+		flex-wrap: nowrap;
+	}
 	.token-details-heading {
 		padding-bottom: var(--md-sys-space-sm);
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
@@ -688,6 +691,14 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.token-details-count,
+	.token-detail-line > span,
+	.token-detail-line > strong,
+	.token-detail-grid > span,
+	.token-detail-grid > strong,
+	.token-detail-muted {
+		white-space: nowrap;
 	}
 	.token-details-heading > div > span {
 		overflow: hidden;
