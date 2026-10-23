@@ -1,10 +1,8 @@
 use std::path::{Path, PathBuf};
 
-/// Process-scoped execution root owned by the Tools security boundary.
-///
-/// This is separate from any renderer navigation state. It is discovered
-/// once, canonicalized, and then shared by file path resolution and sandbox
-/// authorization for the lifetime of the Tools facade.
+/// Execution root owned by the Tools security boundary: the global default
+/// or a session-specific override. It is separate from renderer navigation
+/// state and shared by file path resolution and sandbox authorization.
 #[derive(Debug, Clone)]
 pub(crate) struct ExecutionWorkspace {
     root: Option<PathBuf>,
@@ -61,7 +59,7 @@ impl ExecutionWorkspace {
     }
 
     pub(crate) fn same_root(&self, other: &Self) -> bool {
-        match (&self.root, &other.root) {
+        let same_path = match (&self.root, &other.root) {
             (Some(left), Some(right)) => {
                 #[cfg(windows)]
                 {
@@ -75,7 +73,8 @@ impl ExecutionWorkspace {
             }
             (None, None) => true,
             _ => false,
-        }
+        };
+        same_path && self.directory.is_some() == other.directory.is_some()
     }
 
     pub(crate) fn unavailable() -> Self {
@@ -83,6 +82,18 @@ impl ExecutionWorkspace {
             root: None,
             directory: None,
             generation: 1,
+        }
+    }
+
+    /// Preserve a previously selected path for diagnostics while keeping its
+    /// directory capability unavailable. Session restoration uses this when
+    /// a bound directory has been removed or disconnected; writes then fail
+    /// closed at the directory-capability boundary.
+    pub(crate) fn unavailable_for(root: &Path, generation: u64) -> Self {
+        Self {
+            root: Some(root.to_path_buf()),
+            directory: None,
+            generation,
         }
     }
 

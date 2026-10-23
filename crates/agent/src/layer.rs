@@ -1413,6 +1413,23 @@ impl AgentLayer {
         // the complete new session or none of it.
         let _lifecycle = self.executor.lifecycle_guard().await;
         self.executor.ensure_lifecycle_open()?;
+        let inherited_workspace = match (&creation.method, &creation.source) {
+            (
+                haven_memory::SessionCreationMethod::AgentSpawn,
+                haven_memory::SessionCreationSource::Session { session_id },
+            ) if creation.creator == haven_memory::SessionCreator::Agent => {
+                anyhow::ensure!(
+                    !self.executor.is_session_closing(session_id),
+                    "parent session is closing; retry after deletion"
+                );
+                let root = self
+                    .executor
+                    .ensure_session_execution_workspace_bound(session_id)
+                    .await?;
+                Some(root)
+            }
+            _ => None,
+        };
         let record = self
             .executor
             .session_store()
@@ -1438,6 +1455,23 @@ impl AgentLayer {
                 return Err(e);
             }
         };
+        if let Some(root) = inherited_workspace
+            && let Err(error) = self
+                .executor
+                .bind_new_session_execution_workspace_locked(&record.session_id, root)
+                .await
+        {
+            let session_id = record.session_id.clone();
+            let _ = self
+                .executor
+                .session_store()
+                .delete_session(&session_id)
+                .await;
+            self.executor
+                .forget_session_execution_workspaces(&[session_id])
+                .await;
+            return Err(error);
+        }
         self.executor
             .ensure_session_loaded_locked(&record.session_id)
             .await?;
@@ -1982,6 +2016,14 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let (agent, executor) = make_agent(db.clone());
         let parent = executor.create_session("parent").await.unwrap();
+        let parent_workspace = tempfile::tempdir().unwrap();
+        executor
+            .set_session_execution_workspace(
+                &parent.session_id,
+                Some(parent_workspace.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
         let events = Arc::new(EventCollector::default());
         agent.events.set_emitter(events.clone());
         let inbox_dir = tempfile::tempdir().unwrap();
@@ -2035,6 +2077,15 @@ mod tests {
             assert_eq!(
                 stored_peer.creation,
                 haven_memory::SessionCreation::agent_spawn(parent.session_id.clone())
+            );
+            assert_eq!(
+                executor
+                    .session_execution_workspace(&result.session_id)
+                    .await
+                    .unwrap()
+                    .as_deref(),
+                Some(parent_workspace.path()),
+                "Agent child sessions inherit the parent's session-bound workspace"
             );
             if let Some(title) = title.filter(|_| !fail_write) {
                 expected_title_events.push((result.session_id.clone(), title.to_string()));

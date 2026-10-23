@@ -912,7 +912,7 @@ mod tests {
             .create_session("app-owned memory runtime")
             .await
             .unwrap();
-        runtime
+        let usage_event = runtime
             .session_store
             .append(&session.session_id, "usage_recorded", "{}", None, None)
             .unwrap();
@@ -934,7 +934,7 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            if cursor == Some(1) {
+            if cursor == Some(usage_event.sequence) {
                 break;
             }
             assert!(

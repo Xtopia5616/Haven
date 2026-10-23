@@ -17,6 +17,7 @@ pub(crate) struct ExecutionPolicyAuthorization {
     pub(super) authorization: Arc<AuthorizationEngine>,
     pub(super) policy_revision: u64,
     pub(super) execution_workspace_generation: u64,
+    pub(super) session_id: Option<String>,
     pub(super) execution_boundary: crate::ExecutionBoundary,
     pub(super) expires_at: u64,
     pub(super) process_revocation_signal: Arc<()>,
@@ -75,7 +76,10 @@ impl LifecycleHookProcessStartAuthorization {
         if config.network_policy != NetworkPolicy::Open {
             return Err("lifecycle hook commands require Open network policy".into());
         }
-        Ok(ExecutionPolicyPermit { _config: config })
+        Ok(ExecutionPolicyPermit {
+            _config: config,
+            session_id: None,
+        })
     }
 
     /// Wait for any policy or process-boundary change so the caller can stop
@@ -118,6 +122,7 @@ pub(crate) struct McpStdioProcessStartAuthorization {
 
 pub(crate) struct ExecutionPolicyPermit {
     _config: tokio::sync::OwnedRwLockReadGuard<SafetyConfig>,
+    session_id: Option<String>,
 }
 
 impl ExecutionPolicyPermit {
@@ -138,7 +143,8 @@ impl ExecutionPolicyPermit {
         if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
             return Err("MXC process roots require the Workspace Write sandbox".into());
         }
-        self._config.workspace_write_directories()
+        self._config
+            .workspace_write_directories(self.session_id.as_deref())
     }
 }
 
@@ -169,10 +175,17 @@ impl ExecutionPolicyAuthorization {
         if config.policy_revision != self.policy_revision {
             return Err("execution policy changed before the side effect".into());
         }
-        if config.execution_workspace.generation() != self.execution_workspace_generation {
+        if config
+            .execution_workspace_for(self.session_id.as_deref())
+            .generation()
+            != self.execution_workspace_generation
+        {
             return Err("execution workspace changed before the side effect".into());
         }
-        Ok(ExecutionPolicyPermit { _config: config })
+        Ok(ExecutionPolicyPermit {
+            _config: config,
+            session_id: self.session_id.clone(),
+        })
     }
 
     /// LSP servers are user-configured host executables and may read workspace
@@ -214,7 +227,11 @@ impl ExecutionPolicyAuthorization {
                 "execution policy changed before {process_name} process start"
             ));
         }
-        if config.execution_workspace.generation() != self.execution_workspace_generation {
+        if config
+            .execution_workspace_for(self.session_id.as_deref())
+            .generation()
+            != self.execution_workspace_generation
+        {
             return Err(format!(
                 "execution workspace changed before {process_name} process start"
             ));
@@ -230,7 +247,10 @@ impl ExecutionPolicyAuthorization {
                 "{process_name} requires Open or user-approved network access"
             ));
         }
-        Ok(ExecutionPolicyPermit { _config: config })
+        Ok(ExecutionPolicyPermit {
+            _config: config,
+            session_id: self.session_id.clone(),
+        })
     }
 
     /// Wait until a global policy mutation or this tool's settings revoke the
@@ -329,6 +349,7 @@ impl ExecutionPolicyAuthorization {
             policy_revision: 0,
             execution_workspace_generation: 1,
             execution_boundary: crate::ExecutionBoundary::HostProcess,
+            session_id: session_id.map(ToOwned::to_owned),
             expires_at: execution_proof_expiry(),
             process_revocation_signal,
             tool_settings_cancellation,
@@ -359,7 +380,10 @@ impl McpStdioProcessStartAuthorization {
         if config.network_policy != NetworkPolicy::Open {
             return Err("MCP stdio requires the network policy to be Open".into());
         }
-        Ok(ExecutionPolicyPermit { _config: config })
+        Ok(ExecutionPolicyPermit {
+            _config: config,
+            session_id: None,
+        })
     }
 }
 

@@ -27,6 +27,7 @@ mod resume_support;
 mod rollback;
 mod rollback_support;
 mod session;
+mod session_execution_workspace;
 mod storage_error;
 #[cfg(test)]
 mod test_support;
@@ -65,6 +66,7 @@ pub use session::{
     ToolAuthorizationPort, ToolExecution, ToolExecutionContext, ToolExecutionPort,
     ToolObservationPort, ToolRunCompletionReceiverPort,
 };
+pub(crate) use session_execution_workspace::session_execution_workspace_from_events;
 pub use storage_error::sqlite_storage_failure_message;
 pub use working_document::{
     MAX_SESSION_WORKING_DOCUMENT_BYTES, SESSION_WORKING_DOCUMENT_EVENT_TYPE,

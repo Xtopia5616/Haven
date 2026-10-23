@@ -16,6 +16,8 @@ use tokio_util::sync::CancellationToken;
 
 #[path = "integration_tests/canonical.rs"]
 mod canonical;
+#[path = "integration_tests/fork.rs"]
+mod fork;
 #[path = "integration_tests/lifecycle.rs"]
 mod lifecycle;
 #[path = "integration_tests/react.rs"]

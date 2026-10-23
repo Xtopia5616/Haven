@@ -36,6 +36,8 @@
 		getLatestSessionForResume,
 		getSessionLineage,
 		listRuntimeSessions,
+		getSessionExecutionWorkspace,
+		setSessionExecutionWorkspace,
 		reopenSession,
 		rollbackSession,
 		forkSessionFromMessage,
@@ -151,9 +153,10 @@
 		maxFileBytes: 20 * 1024 * 1024,
 	});
 	let initialLoading = $state(true);
+	let defaultExecutionWorkspaceRoot = $state<string | null>(null);
 	let executionWorkspaceRoot = $state<string | null>(null);
 	let executionWorkspaceSwitching = $state(false);
-	let executionWorkspaceSettingsRevision = 0;
+	let executionWorkspaceRequestSequence = 0;
 	let deleteTarget = $state<{ sessionId: string; title: string } | null>(null);
 	let deletingSession = $state(false);
 	const sessionReducer = appSessionReducer;
@@ -217,6 +220,34 @@
 		),
 	);
 	$effect(() => syncStore(sessionRunEndNoticeStore, (next) => (sessionRunEndNotice = next)));
+	$effect(() => {
+		const sessionId = activeSessionId;
+		if (!sessionId) {
+			executionWorkspaceRoot = defaultExecutionWorkspaceRoot;
+			return;
+		}
+		executionWorkspaceRoot = null;
+		const requestSequence = ++executionWorkspaceRequestSequence;
+		let cancelled = false;
+		void getSessionExecutionWorkspace({ sessionId })
+			.then((root) => {
+				if (
+					!cancelled &&
+					requestSequence === executionWorkspaceRequestSequence &&
+					activeSessionId === sessionId
+				) {
+					executionWorkspaceRoot = root;
+				}
+			})
+			.catch((error) => {
+				if (!cancelled) {
+					reportError(error, { context: '+page', message: '读取会话工作目录失败' });
+				}
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
 	// Interaction requests are shared by the ask cards and confirmation modal.
 	// The modal keeps only its current presentation id; pending requests remain
 	// owned by SessionReducer so ask/confirm/scheduled-confirm cannot drift.
@@ -911,13 +942,10 @@
 		// Load configured Chat profiles and the current route primary for the
 		// toolbar. Fire-and-forget so loading settings never delays chat
 		// rendering.
-		const settingsRevisionAtStart = executionWorkspaceSettingsRevision;
 		loadSettings()
 			.then((s) => {
 				applyDefaultModelFromSettings(s);
-				if (executionWorkspaceSettingsRevision === settingsRevisionAtStart) {
-					executionWorkspaceRoot = s?.security?.execution_root ?? null;
-				}
+				defaultExecutionWorkspaceRoot = s?.security?.execution_root ?? null;
 				if (s?.hotkey?.key_binding) {
 					hotkeyBinding = s.hotkey.key_binding;
 				}
@@ -1226,11 +1254,19 @@
 		String(activeSession?.title || activeSession?.inputText || '新会话'),
 	);
 	async function persistExecutionWorkspace(selectedRoot: string | null) {
-		await updateSettings({ settings: { security: { execution_root: selectedRoot } } });
-		executionWorkspaceSettingsRevision += 1;
-		executionWorkspaceRoot = selectedRoot;
+		if (activeSessionId) {
+			executionWorkspaceRoot = await setSessionExecutionWorkspace({
+				sessionId: activeSessionId,
+				root: selectedRoot,
+			});
+			addNotification('当前会话工作目录已更新', 'success', 3000);
+		} else {
+			await updateSettings({ settings: { security: { execution_root: selectedRoot } } });
+			defaultExecutionWorkspaceRoot = selectedRoot;
+			executionWorkspaceRoot = selectedRoot;
+			addNotification('新会话默认工作目录已更新', 'success', 3000);
+		}
 		if (selectedRoot) executionWorkspaceStore.add(selectedRoot);
-		addNotification('执行工作区已切换；已开始的调用继续使用原工作区', 'success', 3000);
 	}
 	async function selectExecutionWorkspace(selectedRoot: string | null) {
 		if (executionWorkspaceSwitching) return;
@@ -1238,7 +1274,7 @@
 		try {
 			await persistExecutionWorkspace(selectedRoot);
 		} catch (error) {
-			reportError(error, { context: '+page', message: '切换执行工作区失败' });
+			reportError(error, { context: '+page', message: '切换会话工作目录失败' });
 		} finally {
 			executionWorkspaceSwitching = false;
 		}
@@ -1251,7 +1287,7 @@
 			if (selectedRoot === null) return;
 			await persistExecutionWorkspace(selectedRoot);
 		} catch (error) {
-			reportError(error, { context: '+page', message: '选择执行工作区失败' });
+			reportError(error, { context: '+page', message: '选择工作目录失败' });
 		} finally {
 			executionWorkspaceSwitching = false;
 		}

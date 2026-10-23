@@ -229,8 +229,10 @@ impl SessionStore {
             .await
     }
 
-    /// Seed an event stream exactly once from the initial transcript. A
-    /// non-empty stream is never rewritten, even if a stale seed is passed.
+    /// Seed an event stream exactly once from the initial transcript. Stable
+    /// session configuration events do not make the transcript non-empty; any
+    /// transcript or control event still prevents a stale seed from rewriting
+    /// an established timeline.
     pub(super) fn seed_if_empty(
         &self,
         session_id: &str,
@@ -244,12 +246,15 @@ impl SessionStore {
         let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Option<Vec<SessionEvent>>> {
-            let latest_sequence: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
-                rusqlite::params![session_id],
+            let has_timeline_events: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM session_events
+                    WHERE session_id = ?1 AND event_type != ?2
+                )",
+                rusqlite::params![session_id, super::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE],
                 |row| row.get(0),
             )?;
-            if latest_sequence != 0 {
+            if has_timeline_events {
                 return Ok(None);
             }
             Ok(Some(Self::append_batch_in_transaction(

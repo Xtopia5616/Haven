@@ -60,6 +60,10 @@ pub use transcript_commit::{SessionCommitResult, SessionCommitted};
 use transcript_commit::{SessionCommittedEvent, SessionProjectionIntent};
 
 pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
+/// Stable session execution context survives transcript rollback and compaction.
+/// The payload remains Agent-owned; Memory only preserves its latest event.
+pub const SESSION_EXECUTION_WORKSPACE_EVENT_TYPE: &str =
+    "session_context.execution_workspace_bound";
 /// Agent-owned durable signal for memory work. Memory stores the event
 /// without depending on Agent payload types.
 pub const MEMORY_TRIGGER_EVENT_TYPE: &str = "memory_trigger";
@@ -3142,6 +3146,63 @@ mod tests {
     }
 
     #[test]
+    fn session_execution_workspace_survives_rollback_and_compaction() {
+        let (_db, store, session_id) = store();
+        let binding = store
+            .append(
+                &session_id,
+                SESSION_EXECUTION_WORKSPACE_EVENT_TYPE,
+                r#"{"root":"C:\\Haven\\Workspace"}"#,
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .append_transcript(&session_id, r#"{"type":"first"}"#, 1, 1)
+            .unwrap();
+        let rollback = store
+            .append(
+                &session_id,
+                TIMELINE_ROLLBACK_EVENT_TYPE,
+                r#"{"to_sequence":0}"#,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(rollback.event_type, TIMELINE_ROLLBACK_EVENT_TYPE);
+        let active_after_rollback = store.read_active(&session_id).unwrap();
+        assert!(active_after_rollback.iter().any(|event| {
+            event.sequence == binding.sequence
+                && event.event_type == SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+        }));
+        assert!(
+            active_after_rollback
+                .iter()
+                .all(|event| event.event_type == SESSION_EXECUTION_WORKSPACE_EVENT_TYPE),
+            "rollback markers are audit history and do not appear in the active replay"
+        );
+
+        let compact = store
+            .append_transcript(
+                &session_id,
+                r#"{"type":"compact_summary","summary":"root"}"#,
+                2,
+                1,
+            )
+            .unwrap();
+        let active_after_compaction = store.read_active(&session_id).unwrap();
+        assert!(active_after_compaction.iter().any(|event| {
+            event.sequence == binding.sequence
+                && event.event_type == SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+        }));
+        assert!(
+            active_after_compaction
+                .iter()
+                .any(|event| event.sequence == compact.sequence)
+        );
+    }
+
+    #[test]
     fn event_cursor_matches_active_transcript_across_rollbacks_and_compaction() {
         let (_db, store, session_id) = store();
 
@@ -3912,6 +3973,49 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(second, first);
         assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stable_workspace_configuration_does_not_block_initial_transcript_seed() {
+        let (_db, store, session_id) = store();
+        store
+            .append_domain_event(
+                &session_id,
+                SESSION_EXECUTION_WORKSPACE_EVENT_TYPE,
+                r#"{"root":null}"#,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .load_replay_state_async(&session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let seeded = store
+            .seed_if_empty_async(
+                &session_id,
+                vec![SessionEventInput::transcript(r#"{"type":"first"}"#, 1, 1)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeded.len(), 1);
+        let events = store.read_all(&session_id).unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "the workspace event is preserved beside the seed"
+        );
+        assert_eq!(events[0].event_type, SESSION_EXECUTION_WORKSPACE_EVENT_TYPE);
+        assert_eq!(events[1].event_type, TRANSCRIPT_EVENT_TYPE);
+        let replay = store
+            .load_replay_state_async(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay.transcript.len(), 1);
     }
 
     #[test]

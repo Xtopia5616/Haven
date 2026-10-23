@@ -420,12 +420,16 @@ impl SystemPromptBuilder {
     /// resumes; exact local/UTC time and timezone remain on-demand via
     /// `system.get_info` with `category=locale`. Live runtime owners keep the
     /// prompt from advertising stale capabilities after settings hot-reload.
-    async fn render_runtime_snapshot(&self) -> String {
+    async fn render_runtime_snapshot(&self, session_id: Option<&str>) -> String {
         let local_date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let process_cwd = std::env::current_dir()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "unknown".into());
-        let runtime = self.context_provider.tools().runtime_context().await;
+        let runtime = self
+            .context_provider
+            .tools()
+            .runtime_context(session_id)
+            .await;
         let workspace_root = runtime
             .execution_workspace
             .root
@@ -506,8 +510,13 @@ impl SystemPromptBuilder {
         let memory = self
             .build_memory_sections(session_description, exclude_session_id)
             .await;
-        self.build_for_session_with_memory(session_description, session_prompt_history, memory)
-            .await
+        self.build_for_session_with_memory(
+            session_description,
+            session_prompt_history,
+            memory,
+            exclude_session_id,
+        )
+        .await
     }
 
     /// Build the first-turn prompt without waiting for semantic memory recall.
@@ -521,11 +530,13 @@ impl SystemPromptBuilder {
         &self,
         session_description: &str,
         session_prompt_history: &[String],
+        session_id: Option<&str>,
     ) -> String {
         self.build_for_session_with_memory(
             session_description,
             session_prompt_history,
             MemorySections::default(),
+            session_id,
         )
         .await
     }
@@ -535,6 +546,7 @@ impl SystemPromptBuilder {
         session_description: &str,
         session_prompt_history: &[String],
         memory: MemorySections,
+        session_id: Option<&str>,
     ) -> String {
         let sections = self.get_or_build_sections().await;
 
@@ -562,7 +574,7 @@ impl SystemPromptBuilder {
         );
         let session_description =
             truncate_prefix_to_token_budget(&session_description, SESSION_DESCRIPTION_TOKEN_BUDGET);
-        let runtime_snapshot = self.render_runtime_snapshot().await;
+        let runtime_snapshot = self.render_runtime_snapshot(session_id).await;
         let prefix = format!(
             "{SESSION_CONTEXT_FENCE_START}Runtime snapshot:\n{runtime_snapshot}\n\nCurrent session: {session_description}\n\n"
         );
@@ -919,6 +931,7 @@ impl SystemPromptBuilder {
     /// recall is ready.
     pub(crate) async fn rebuild_canonical_system_without_memory(
         &self,
+        session_id: &str,
         description: &str,
         canonical: &mut [CanonicalMessage],
     ) {
@@ -939,7 +952,7 @@ impl SystemPromptBuilder {
         let preserved_context = extract_additional_context_lines(prior);
         self.context_provider.clear_schema();
         let rebuilt = self
-            .build_for_session_without_memory(description, &preserved_context)
+            .build_for_session_without_memory(description, &preserved_context, Some(session_id))
             .await;
         for part in &mut sys.content {
             if let ContentPart::Text(text) = part {
@@ -1265,7 +1278,7 @@ mod tests {
             }
         }
 
-        async fn runtime_context(&self) -> PromptRuntimeContext {
+        async fn runtime_context(&self, _session_id: Option<&str>) -> PromptRuntimeContext {
             PromptRuntimeContext {
                 default_shell: "powershell".into(),
                 capabilities: haven_tools::RuntimeCapabilities {
@@ -2018,11 +2031,40 @@ mod tests {
         );
 
         let prompt = builder
-            .build_for_session_without_memory("search the workspace", &[])
+            .build_for_session_without_memory("search the workspace", &[], None)
             .await;
 
         assert!(prompt.contains("MEMORY: (none)"));
         assert!(prompt.contains("Current session: search the workspace"));
+    }
+
+    #[tokio::test]
+    async fn runtime_snapshot_uses_the_session_bound_workspace() {
+        let tools = Arc::new(ToolsFacade::new());
+        let selected = tempfile::tempdir().unwrap();
+        let session_id = "ses-00000000000000000000000000000031";
+        tools
+            .share_services()
+            .authorization
+            .bind_session_execution_workspace(session_id, Some(selected.path()))
+            .await
+            .unwrap();
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&db_dir.path().join("prompt.db")).unwrap());
+        let builder = SystemPromptBuilder::with_memory_service(
+            tools,
+            Arc::new(MemoryService::new(db, None, 64)),
+        );
+
+        let session_prompt = builder
+            .build_for_session_without_memory("session workspace", &[], Some(session_id))
+            .await;
+        let default_prompt = builder
+            .build_for_session_without_memory("no session", &[], None)
+            .await;
+        let selected_path = selected.path().to_string_lossy();
+        assert!(session_prompt.contains(selected_path.as_ref()));
+        assert!(!default_prompt.contains(selected_path.as_ref()));
     }
 
     #[tokio::test]
@@ -2036,7 +2078,7 @@ mod tests {
         );
 
         let before = builder
-            .build_for_session_without_memory("list capabilities", &[])
+            .build_for_session_without_memory("list capabilities", &[], None)
             .await;
         assert!(!before.contains("configured-without-client"));
 
@@ -2051,7 +2093,7 @@ mod tests {
             .await;
 
         let after = builder
-            .build_for_session_without_memory("list capabilities", &[])
+            .build_for_session_without_memory("list capabilities", &[], None)
             .await;
         assert!(after.contains("configured-without-client"));
     }
@@ -2067,7 +2109,7 @@ mod tests {
             Arc::new(MemoryService::new(db, None, 64)),
         );
         let prompt = builder
-            .build_for_session_without_memory("read a file", &[])
+            .build_for_session_without_memory("read a file", &[], None)
             .await;
         assert!(
             !prompt.contains("input_schema"),
@@ -2143,7 +2185,7 @@ mod tests {
             Arc::new(MemoryService::new(db, None, 64)),
         );
         let before = builder
-            .build_for_session_without_memory("use skills", &[])
+            .build_for_session_without_memory("use skills", &[], None)
             .await;
         assert!(before.contains("first-skill"));
 
@@ -2170,7 +2212,7 @@ mod tests {
             .unwrap();
 
         let after = builder
-            .build_for_session_without_memory("use skills", &[])
+            .build_for_session_without_memory("use skills", &[], None)
             .await;
         assert!(after.contains("second-skill"));
     }

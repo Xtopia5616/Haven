@@ -79,12 +79,15 @@ impl SessionStore {
         let conn = self.db.try_conn()?;
         conn.execute_batch("BEGIN")?;
         let result = (|| -> anyhow::Result<Option<SessionReplayState>> {
-            let latest_sequence: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
-                rusqlite::params![session_id],
+            let has_timeline_events: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM session_events
+                    WHERE session_id = ?1 AND event_type != ?2
+                )",
+                rusqlite::params![session_id, super::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE],
                 |row| row.get(0),
             )?;
-            if latest_sequence == 0 {
+            if !has_timeline_events {
                 return Ok(None);
             }
             let active_events = Self::read_active_in_connection(&conn, session_id)?;
@@ -496,6 +499,19 @@ impl SessionStore {
                 active.push(event);
             }
         }
+        // A session's bound execution workspace is session configuration, not
+        // branch history. Preserve its latest value across rollback and
+        // compaction even when the original event falls before the active root.
+        let retained_context =
+            Self::read_latest_session_execution_workspace_in_connection(conn, session_id)?;
+        if let Some(event) = retained_context
+            && !active
+                .iter()
+                .any(|active_event| active_event.sequence == event.sequence)
+        {
+            active.push(event);
+            active.sort_by_key(|event| event.sequence);
+        }
         tracing::debug!(
             session_id,
             after_sequence,
@@ -504,6 +520,25 @@ impl SessionStore {
             "active session event replay scanned durable suffix"
         );
         Ok(active)
+    }
+
+    fn read_latest_session_execution_workspace_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> anyhow::Result<Option<SessionEvent>> {
+        ensure_session_id(session_id)?;
+        let event = conn
+            .query_row(
+                "SELECT session_id, sequence, event_type, payload,
+                        created_at, run_id, step_number
+                 FROM session_events
+                 WHERE session_id = ?1 AND event_type = ?2
+                 ORDER BY sequence DESC LIMIT 1",
+                rusqlite::params![session_id, super::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE],
+                session_event_from_row,
+            )
+            .optional()?;
+        Ok(event)
     }
 
     fn active_replay_boundary_in_connection(

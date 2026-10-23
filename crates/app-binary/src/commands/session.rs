@@ -69,6 +69,66 @@ pub async fn reopen_session(
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionExecutionWorkspaceResponse {
+    pub root: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_session_execution_workspace(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<SessionExecutionWorkspaceResponse, String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("get_session_execution_workspace", error))?;
+    let root = state
+        .runtime
+        .executor
+        .session_execution_workspace(&session_id)
+        .await
+        .map_err(|error| log_err("get_session_execution_workspace", error))?;
+    Ok(SessionExecutionWorkspaceResponse {
+        root: root.map(|path| path.to_string_lossy().into_owned()),
+    })
+}
+
+#[tauri::command]
+pub async fn set_session_execution_workspace(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    root: Option<String>,
+) -> Result<SessionExecutionWorkspaceResponse, String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("set_session_execution_workspace", error))?;
+    let root = match root {
+        Some(root) => Some(
+            state
+                .runtime
+                .tools
+                .validate_execution_workspace(std::path::Path::new(&root))
+                .map_err(|error| log_err("set_session_execution_workspace", error))?,
+        ),
+        None => {
+            state
+                .runtime
+                .services
+                .authorization
+                .execution_workspace_snapshot(None)
+                .await
+                .root
+        }
+    };
+    let root = state
+        .runtime
+        .executor
+        .set_session_execution_workspace(&session_id, root)
+        .await
+        .map_err(|error| log_err("set_session_execution_workspace", error))?;
+    Ok(SessionExecutionWorkspaceResponse {
+        root: root.map(|path| path.to_string_lossy().into_owned()),
+    })
+}
+
 #[tauri::command]
 pub async fn list_runtime_sessions(
     state: State<'_, Arc<AppState>>,

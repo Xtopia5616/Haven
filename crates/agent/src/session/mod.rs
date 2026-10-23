@@ -18,6 +18,7 @@ use haven_tools::{AuthorizationDecision, ToolResult, is_silent_tool_call};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -668,6 +669,167 @@ impl SessionSupervisor {
         Ok(event.sequence)
     }
 
+    /// Read or initialize the durable working directory for a session. A
+    /// pre-existing session captures the current default exactly once; later
+    /// changes to the default apply only to newly created sessions.
+    pub async fn session_execution_workspace(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        crate::session_execution_workspace::validate_session_id(session_id)?;
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_lifecycle_open()?;
+        anyhow::ensure!(
+            !self.is_session_closing(session_id),
+            "session is closing; its working directory cannot be read"
+        );
+        self.ensure_session_execution_workspace_bound(session_id)
+            .await
+    }
+
+    /// Replace one session's working directory without changing the default
+    /// for other sessions. The lifecycle gate prevents the dispatcher from
+    /// starting this session between the durable update and runtime rebinding.
+    pub async fn set_session_execution_workspace(
+        &self,
+        session_id: &str,
+        root: Option<PathBuf>,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        crate::session_execution_workspace::validate_session_id(session_id)?;
+        if let Some(root) = &root {
+            crate::session_execution_workspace::validate_session_execution_workspace_root(root)?;
+        }
+
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_lifecycle_open()?;
+        anyhow::ensure!(
+            !self.is_session_closing(session_id),
+            "session is closing; its working directory cannot be changed"
+        );
+        if let Some(actor) = self.actor_for(session_id).await {
+            anyhow::ensure!(
+                !actor.is_running().await,
+                "session is running; wait for the current turn to finish before changing its working directory"
+            );
+        }
+        let previous_root = self
+            .ensure_session_execution_workspace_bound(session_id)
+            .await?;
+        self.authorization
+            .bind_session_execution_workspace(session_id, root.as_deref())
+            .await
+            .map_err(anyhow::Error::msg)?;
+        let payload = serde_json::to_string(
+            &crate::session_execution_workspace::SessionExecutionWorkspaceEvent {
+                root: root.clone(),
+            },
+        )?;
+        if let Err(error) = self
+            .store
+            .append_domain_event(
+                session_id,
+                haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE,
+                &payload,
+            )
+            .await
+        {
+            let rollback = self
+                .authorization
+                .bind_session_execution_workspace(session_id, previous_root.as_deref())
+                .await;
+            if let Err(rollback_error) = rollback {
+                anyhow::bail!(
+                    "failed to persist session working directory ({error}); runtime rollback also failed ({rollback_error})"
+                );
+            }
+            return Err(error);
+        }
+        Ok(root)
+    }
+
+    pub(crate) async fn ensure_session_execution_workspace_bound(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        let events = self
+            .store
+            .read_active_domain_events_async(session_id)
+            .await?;
+        if let Some(root) = crate::session_execution_workspace_from_events(&events)? {
+            self.authorization
+                .bind_session_execution_workspace(session_id, root.as_deref())
+                .await
+                .map_err(anyhow::Error::msg)?;
+            return Ok(root);
+        }
+
+        let default_root = self
+            .authorization
+            .execution_workspace_snapshot(None)
+            .await
+            .root;
+        let payload = serde_json::to_string(
+            &crate::session_execution_workspace::SessionExecutionWorkspaceEvent {
+                root: default_root.clone(),
+            },
+        )?;
+        self.store
+            .append_domain_event(
+                session_id,
+                haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE,
+                &payload,
+            )
+            .await?;
+        self.authorization
+            .bind_session_execution_workspace(session_id, default_root.as_deref())
+            .await
+            .map_err(anyhow::Error::msg)?;
+        Ok(default_root)
+    }
+
+    /// Bind the inherited workspace of a newly created child session before
+    /// its actor is installed. The caller must hold the lifecycle gate.
+    pub(crate) async fn bind_new_session_execution_workspace_locked(
+        &self,
+        session_id: &str,
+        root: Option<PathBuf>,
+    ) -> anyhow::Result<()> {
+        crate::session_execution_workspace::validate_session_id(session_id)?;
+        if let Some(root) = &root {
+            crate::session_execution_workspace::validate_session_execution_workspace_root(root)?;
+        }
+
+        let payload = serde_json::to_string(
+            &crate::session_execution_workspace::SessionExecutionWorkspaceEvent {
+                root: root.clone(),
+            },
+        )?;
+        self.store
+            .append_domain_event(
+                session_id,
+                haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE,
+                &payload,
+            )
+            .await?;
+        if let Err(error) = self
+            .authorization
+            .bind_session_execution_workspace(session_id, root.as_deref())
+            .await
+        {
+            self.authorization
+                .forget_session_execution_workspaces(&[session_id.to_owned()])
+                .await;
+            return Err(anyhow::Error::msg(error));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn forget_session_execution_workspaces(&self, session_ids: &[String]) {
+        self.authorization
+            .forget_session_execution_workspaces(session_ids)
+            .await;
+    }
+
     #[cfg(test)]
     pub(crate) fn new_with_session_tool_overlay_port(
         store: SessionStore,
@@ -1000,6 +1162,8 @@ impl SessionSupervisor {
         self: &Arc<Self>,
         info: SessionInfo,
     ) -> anyhow::Result<actor::SessionActorHandle> {
+        self.ensure_session_execution_workspace_bound(&info.session_id)
+            .await?;
         // Interaction state is authoritative in the active durable event
         // stream. Do not apply this session's grants or register an actor
         // until that state has been reconstructed successfully.
@@ -1104,6 +1268,57 @@ mod tests {
         // temp files eventually.
         let _ = path;
         (exec, db)
+    }
+
+    #[tokio::test]
+    async fn session_workspace_binding_is_persisted_and_restored() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&directory.path().join("workspace.db")).unwrap());
+        let first_tools = Arc::new(ToolsFacade::new());
+        let first = Arc::new(SessionSupervisor::new_for_test(db.clone(), first_tools, 2));
+        let record = first
+            .store
+            .create_session_with_creation(
+                "workspace binding",
+                haven_memory::SessionCreation::user_new(),
+            )
+            .await
+            .unwrap();
+        let original_default = first
+            .session_execution_workspace(&record.session_id)
+            .await
+            .unwrap();
+        assert!(original_default.is_some());
+
+        let selected = tempfile::tempdir().unwrap();
+        let updated = first
+            .set_session_execution_workspace(
+                &record.session_id,
+                Some(selected.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.as_deref(), Some(selected.path()));
+
+        let second = SessionSupervisor::new_for_test(db, Arc::new(ToolsFacade::new()), 2);
+        assert_eq!(
+            second
+                .session_execution_workspace(&record.session_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(selected.path()),
+            "reloading a session restores its durable workspace instead of the current default"
+        );
+        assert_eq!(
+            second
+                .authorization
+                .execution_workspace_snapshot(Some(&record.session_id))
+                .await
+                .root
+                .as_deref(),
+            Some(selected.path())
+        );
     }
 
     fn make_executor(max_concurrent: usize) -> Arc<SessionSupervisor> {
@@ -3870,7 +4085,12 @@ mod tests {
             .store
             .read_active_domain_events_async(&session.session_id)
             .await
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event.event_type != haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+            })
+            .collect::<Vec<_>>();
         assert_eq!(events.len(), 1);
         assert_eq!(
             events[0].event_type,
@@ -3952,7 +4172,12 @@ mod tests {
             .store
             .read_active_domain_events_async(&session.session_id)
             .await
-            .unwrap();
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event.event_type != haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+            })
+            .collect::<Vec<_>>();
         assert_eq!(events.len(), 4);
         assert_eq!(
             events[1].event_type,
@@ -4330,7 +4555,10 @@ mod tests {
                 .read_active_domain_events_async(&session.session_id)
                 .await
                 .unwrap()
-                .is_empty()
+                .iter()
+                .all(|event| {
+                    event.event_type == haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+                })
         );
 
         assert!(
@@ -4347,7 +4575,10 @@ mod tests {
                 .read_active_domain_events_async(&session.session_id)
                 .await
                 .unwrap()
-                .is_empty()
+                .iter()
+                .all(|event| {
+                    event.event_type == haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+                })
         );
 
         db.conn()
@@ -4392,7 +4623,10 @@ mod tests {
                 .read_active_domain_events_async(&session.session_id)
                 .await
                 .unwrap()
-                .is_empty()
+                .iter()
+                .all(|event| {
+                    event.event_type == haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+                })
         );
 
         exec.request_confirm_batch(
@@ -4493,7 +4727,10 @@ mod tests {
                 .read_active_domain_events_async(&session.session_id)
                 .await
                 .unwrap()
-                .is_empty()
+                .iter()
+                .all(|event| {
+                    event.event_type == haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+                })
         );
 
         db.conn()
@@ -4512,6 +4749,12 @@ mod tests {
             .read_active_domain_events_async(&session.session_id)
             .await
             .unwrap();
+        let events = events
+            .into_iter()
+            .filter(|event| {
+                event.event_type != haven_memory::SESSION_EXECUTION_WORKSPACE_EVENT_TYPE
+            })
+            .collect::<Vec<_>>();
         assert_eq!(events.len(), 2);
         assert_eq!(
             events[0].event_type,

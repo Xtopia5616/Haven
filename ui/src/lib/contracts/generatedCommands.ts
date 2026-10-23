@@ -99,6 +99,7 @@ export type ReasoningEffortSelectionInput = (typeof REASONING_EFFORT_SELECTION_I
 export interface SchedulePlanDto { schedule_id: string; owner_session_id: string; schedule_type: ScheduleType; title: string; body: string; mode: ScheduleMode; due_at: string | null; watch_tool_run_id: string | null; interval_seconds: number | null; anchor_at: string | null; next_due_at: string | null; active_schedule_run_id: string | null; created_at: string; updated_at: string }
 export const CONFIRMATION_RESOLUTION_RESULT_VALUES = ['resolved', 'expired', 'stale'] as const;
 export type ConfirmationResolutionResult = (typeof CONFIRMATION_RESOLUTION_RESULT_VALUES)[number];
+export interface SessionExecutionWorkspaceResponse { root: string | null }
 export interface SessionLineageChildDto { session: SessionRecordDto; parent_session_id: string }
 export interface SessionLineageResponse { session_id: string; parent_session_id: string | null; parent: SessionRecordDto | null; children: SessionLineageChildDto[] }
 export interface SessionRecordDto { session_id: string; input_text: string; title: string | null; status: SessionStatus; run_end_kind?: SessionRunEndKind; run_end_reason?: string; created_at: string; updated_at: string; creation: SessionCreation }
@@ -2998,6 +2999,15 @@ export const GET_PERFORMANCE_METRICS_RESPONSE_SHAPE = {
 					}
 				}
 			},
+		}
+	}
+} as const;
+export const GET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'root': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
 		}
 	}
 } as const;
@@ -10281,6 +10291,15 @@ export const SETTINGS_RESPONSE_SHAPE = {
 } as const;
 export const SET_HOTKEY_CAPTURE_ACTIVE_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SET_REASONING_EFFORT_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const SET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE = {
+	kind: 'object',
+	fields: {
+		'root': {
+			optional: false,
+			shape: { kind: 'nullable', inner: { kind: 'string' } },
+		}
+	}
+} as const;
 export const SET_SKILL_ENABLED_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SET_TOOL_ENABLED_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SET_WEB_SEARCH_RESPONSE_SHAPE = { kind: 'null' } as const;
@@ -10622,6 +10641,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_log_info: GET_LOG_INFO_RESPONSE_SHAPE,
 	get_mcp_prompt: GET_MCP_PROMPT_RESPONSE_SHAPE,
 	get_performance_metrics: GET_PERFORMANCE_METRICS_RESPONSE_SHAPE,
+	get_session_execution_workspace: GET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE,
 	get_session_for_resume: GET_SESSION_FOR_RESUME_RESPONSE_SHAPE,
 	get_session_lineage: GET_SESSION_LINEAGE_RESPONSE_SHAPE,
 	get_settings: GET_SETTINGS_RESPONSE_SHAPE,
@@ -10668,6 +10688,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	search_session_history_filtered: SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE,
 	set_hotkey_capture_active: SET_HOTKEY_CAPTURE_ACTIVE_RESPONSE_SHAPE,
 	set_reasoning_effort: SET_REASONING_EFFORT_RESPONSE_SHAPE,
+	set_session_execution_workspace: SET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE,
 	set_skill_enabled: SET_SKILL_ENABLED_RESPONSE_SHAPE,
 	set_tool_enabled: SET_TOOL_ENABLED_RESPONSE_SHAPE,
 	set_web_search: SET_WEB_SEARCH_RESPONSE_SHAPE,
@@ -10807,6 +10828,7 @@ export interface TauriCommandMap {
 	get_log_info: { request: undefined; response: LogInfo };
 	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpFeatureCallOutcome };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
+	get_session_execution_workspace: { request: { sessionId: string }; response: SessionExecutionWorkspaceResponse };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
 	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
 	get_settings: { request: undefined; response: SettingsSnapshot };
@@ -10853,6 +10875,7 @@ export interface TauriCommandMap {
 	search_session_history_filtered: { request: { query?: string | null; status?: SessionHistoryStatusFilterInput | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: ReasoningEffortSelectionInput | null }; response: void };
+	set_session_execution_workspace: { request: { sessionId: string; root?: string | null }; response: SessionExecutionWorkspaceResponse };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_web_search: { request: { requestKind: RequestKindInput; mode?: WebSearchModeInput | null }; response: void };
@@ -10931,6 +10954,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_log_info: { boundary: 'read', security: "path is optional; no environment details" },
 	get_mcp_prompt: { boundary: 'execute', security: "explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages" },
 	get_performance_metrics: { boundary: 'read', security: "bounded content-free backend counters plus renderer stream counters" },
+	get_session_execution_workspace: { boundary: 'read', security: "canonical session id; reads its durable workspace binding" },
 	get_session_for_resume: { boundary: 'read', security: "session-scoped persisted projection" },
 	get_session_lineage: { boundary: 'read', security: "parent and direct child sessions of the selected session only" },
 	get_settings: { boundary: 'read', security: "config response redacts credentials and MCP environment values" },
@@ -10977,6 +11001,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	search_session_history_filtered: { boundary: 'read', security: "bounded page and date-filtered projection" },
 	set_hotkey_capture_active: { boundary: 'mutate', security: "transient renderer key-capture state only; not persisted" },
 	set_reasoning_effort: { boundary: 'mutate', security: "request kind selects the assigned model; validated before config save" },
+	set_session_execution_workspace: { boundary: 'mutate', security: "canonical session id; local directory is validated and bound to that session" },
 	set_skill_enabled: { boundary: 'mutate', security: "AuthorizationPort; typed native admin operation persists the toggle" },
 	set_tool_enabled: { boundary: 'mutate', security: "AuthorizationPort; typed native admin operation persists the toggle" },
 	set_web_search: { boundary: 'mutate', security: "request kind selects the assigned model; provider capability checked before config save" },

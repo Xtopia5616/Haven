@@ -756,6 +756,8 @@ pub(crate) fn run() {
             commands::recording::cancel_recording,
             commands::recording::submit_transcript,
             commands::session::reopen_session,
+            commands::session::get_session_execution_workspace,
+            commands::session::set_session_execution_workspace,
             commands::session::get_latest_session_for_resume,
             commands::session::list_runtime_sessions,
             commands::session::get_session_lineage,

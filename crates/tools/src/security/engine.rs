@@ -50,6 +50,8 @@ pub(super) struct SafetyConfig {
     pub(super) sandbox_mode: SandboxMode,
     writable_roots: Vec<PathBuf>,
     pub(super) execution_workspace: ExecutionWorkspace,
+    /// Stable working directory bindings restored from Agent session events.
+    session_workspaces: HashMap<String, ExecutionWorkspace>,
     pub(super) network_policy: NetworkPolicy,
     /// Monotonic process-local revision. Configuration/policy changes
     /// invalidate outstanding receipts; the grant attached to the decision
@@ -68,11 +70,22 @@ pub(super) struct SafetyConfig {
 }
 
 impl SafetyConfig {
+    pub(super) fn execution_workspace_for(&self, session_id: Option<&str>) -> ExecutionWorkspace {
+        session_id
+            .and_then(|session_id| self.session_workspaces.get(session_id))
+            .cloned()
+            .unwrap_or_else(|| self.execution_workspace.clone())
+    }
+
     pub(super) fn workspace_write_directories(
         &self,
+        session_id: Option<&str>,
     ) -> Result<Vec<haven_platform::filesystem::DirectoryCapability>, String> {
         let directories = if self.writable_roots.is_empty() {
-            self.execution_workspace.directory().into_iter().collect()
+            self.execution_workspace_for(session_id)
+                .directory()
+                .into_iter()
+                .collect()
         } else {
             open_directory_roots(&self.writable_roots, "security.writable_roots")?
         };
@@ -126,6 +139,7 @@ impl AuthorizationEngine {
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 writable_roots: Vec::new(),
                 execution_workspace,
+                session_workspaces: HashMap::new(),
                 network_policy: NetworkPolicy::Ask,
                 policy_revision: 0,
                 process_boundary_revision: 0,
@@ -292,6 +306,65 @@ impl AuthorizationEngine {
         self.config.read().await.execution_workspace.snapshot()
     }
 
+    pub async fn session_execution_workspace_snapshot(
+        &self,
+        session_id: &str,
+    ) -> ExecutionWorkspaceSnapshot {
+        self.config
+            .read()
+            .await
+            .execution_workspace_for(Some(session_id))
+            .snapshot()
+    }
+
+    /// Bind a session to a workspace value. The first binding deliberately
+    /// copies the current global default even when its path is equal, so later
+    /// default changes cannot silently move an existing session.
+    pub async fn bind_session_execution_workspace(
+        &self,
+        session_id: &str,
+        root: Option<&Path>,
+    ) -> Result<ExecutionWorkspaceSnapshot, String> {
+        let mut cfg = self.config.write().await;
+        let current = cfg.execution_workspace_for(Some(session_id));
+        let candidate = root
+            .map(|root| {
+                ExecutionWorkspace::open_root(root, current.generation()).unwrap_or_else(|_| {
+                    ExecutionWorkspace::unavailable_for(root, current.generation())
+                })
+            })
+            .unwrap_or_else(ExecutionWorkspace::unavailable);
+        if cfg.session_workspaces.contains_key(session_id) && current.same_root(&candidate) {
+            return Ok(current.snapshot());
+        }
+
+        let generation = if cfg.session_workspaces.contains_key(session_id) {
+            current
+                .generation()
+                .checked_add(1)
+                .ok_or_else(|| "session workspace generation is exhausted".to_string())?
+        } else {
+            current.generation()
+        };
+        let workspace = match root {
+            Some(root) => ExecutionWorkspace::open_root(root, generation)
+                .unwrap_or_else(|_| ExecutionWorkspace::unavailable_for(root, generation)),
+            None => ExecutionWorkspace::unavailable().with_generation(generation),
+        };
+        cfg.session_workspaces
+            .insert(session_id.to_string(), workspace.clone());
+        self.cancel_session_processes(session_id);
+        Ok(workspace.snapshot())
+    }
+
+    pub async fn forget_session_execution_workspaces(&self, session_ids: &[String]) {
+        let mut cfg = self.config.write().await;
+        for session_id in session_ids {
+            cfg.session_workspaces.remove(session_id);
+            self.cancel_session_processes(session_id);
+        }
+    }
+
     pub(crate) async fn switch_execution_workspace(
         &self,
         root: &Path,
@@ -302,23 +375,18 @@ impl AuthorizationEngine {
         if cfg.execution_workspace.same_root(&candidate) {
             return Ok(cfg.execution_workspace.snapshot());
         }
-        if cfg.policy_revision == u64::MAX {
-            return Err("execution policy revision is exhausted".to_string());
-        }
         let generation = cfg
             .execution_workspace
             .generation()
             .checked_add(1)
             .ok_or_else(|| "workspace generation is exhausted".to_string())?;
         cfg.execution_workspace = candidate.with_generation(generation);
-        self.bump_process_boundary_revision(&mut cfg);
-        self.bump_global_policy_revision(&mut cfg);
         Ok(cfg.execution_workspace.snapshot())
     }
 
-    /// Replace the policy and permanent rules atomically. Clears the
-    /// process-local session map; the Agent restores grants whose owning
-    /// persisted sessions still exist after a live security apply.
+    /// Replace the policy and permanent rules atomically. Session grants are
+    /// process-local; workspace bindings remain session-owned in the Agent
+    /// event stream and are restored when each session is installed.
     pub async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String> {
         let candidate = match security.execution_root.as_deref() {
             Some(root) => ExecutionWorkspace::open_root(root, 1)
@@ -363,32 +431,41 @@ impl AuthorizationEngine {
             open_directory_roots(&writable_roots, "security.writable_roots").map(|_| ());
         let process_boundaries_changed = cfg.sandbox_mode != security.sandbox_mode
             || cfg.writable_roots != writable_roots
+            || cfg.network_policy != security.network_policy;
+        let mut permanent = HashMap::new();
+        for permission in &security.permissions {
+            match CapabilityScope::try_new(&permission.key) {
+                Ok(capability) => {
+                    permanent.insert(capability, permission.effect);
+                }
+                Err(_error) => {
+                    // Keep runtime policy fail-closed if a caller constructs
+                    // SecurityConfig in memory or a future wire boundary bypasses
+                    // the loader.
+                    tracing::warn!("ignoring invalid persisted capability rule");
+                }
+            }
+        }
+        let policy_changed = cfg.permission_mode != security.permission_mode
+            || cfg.sandbox_mode != security.sandbox_mode
+            || cfg.writable_roots != writable_roots
             || cfg.network_policy != security.network_policy
-            || cfg.execution_workspace.generation() != workspace.generation();
+            || cfg.permanent != permanent;
         cfg.execution_workspace = workspace;
         cfg.permission_mode = security.permission_mode;
         cfg.sandbox_mode = security.sandbox_mode;
         cfg.writable_roots = writable_roots;
         cfg.network_policy = security.network_policy;
-        cfg.permanent.clear();
-        for p in &security.permissions {
-            match CapabilityScope::try_new(&p.key) {
-                Ok(capability) => {
-                    cfg.permanent.insert(capability, p.effect);
-                }
-                Err(_error) => {
-                    // Keep runtime policy fail-closed if a caller constructs
-                    // SecurityConfig in memory or a future wire boundary
-                    // bypasses the loader.
-                    tracing::warn!("ignoring invalid persisted capability rule");
-                }
-            }
+        cfg.permanent = permanent;
+        if policy_changed {
+            cfg.session_grants.clear();
         }
-        cfg.session_grants.clear();
         if process_boundaries_changed {
             self.bump_process_boundary_revision(&mut cfg);
         }
-        self.bump_global_policy_revision(&mut cfg);
+        if policy_changed {
+            self.bump_global_policy_revision(&mut cfg);
+        }
         if let Err(error) = writable_roots_validation {
             tracing::warn!(error, "writable roots configuration could not be applied");
             return Err(error);
@@ -502,6 +579,10 @@ impl AuthorizationEngine {
         if cfg.policy_revision != proof.binding.policy_revision {
             return Err("execution policy changed before capability capture".into());
         }
+        let execution_workspace = cfg.execution_workspace_for(request.session_id.as_deref());
+        if execution_workspace.generation() != proof.binding.workspace_generation {
+            return Err("execution workspace changed before capability capture".into());
+        }
 
         let file_write_policy = if request.tool_name.starts_with("files.")
             && matches!(request.policy.effect, OperationEffect::WorkspaceWrite)
@@ -512,8 +593,7 @@ impl AuthorizationEngine {
                     return Err("read-only sandbox does not grant file mutation access".into());
                 }
                 SandboxMode::WorkspaceWrite if cfg.writable_roots.is_empty() => {
-                    let roots = cfg
-                        .execution_workspace
+                    let roots = execution_workspace
                         .directory()
                         .into_iter()
                         .collect::<Vec<_>>();
@@ -555,12 +635,13 @@ impl AuthorizationEngine {
             self.register_session_trust_cancellation(proof.binding.session_id.as_deref());
 
         Ok(ToolExecutionContext {
-            execution_workspace: Some(cfg.execution_workspace.clone()),
+            execution_workspace: Some(execution_workspace.clone()),
             file_write_policy,
             execution_authorization: Some(ExecutionPolicyAuthorization {
                 authorization: Arc::clone(self),
                 policy_revision: proof.binding.policy_revision,
-                execution_workspace_generation: cfg.execution_workspace.generation(),
+                execution_workspace_generation: execution_workspace.generation(),
+                session_id: proof.binding.session_id.clone(),
                 execution_boundary: request.policy.execution_boundary,
                 expires_at: proof.binding.expires_at,
                 process_revocation_signal: self.process_revocations.borrow().clone(),
@@ -587,8 +668,11 @@ impl AuthorizationEngine {
         let key = request.capability();
         let cfg = self.config.read().await;
         let risk = effective_risk_from(&cfg, tool_name, policy.risk_level);
+        let workspace = cfg.execution_workspace_for(session_id);
 
-        if let Err(failure) = check_policy_boundaries(&cfg, tool_name, key, params, policy) {
+        if let Err(failure) =
+            check_policy_boundaries(&cfg, &workspace, tool_name, key, params, policy)
+        {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: failure.reason,
                 reason_code: failure.reason_code,
@@ -630,13 +714,21 @@ impl AuthorizationEngine {
             risk >= RiskLevel::Critical || policy.confirmation == ConfirmationRequirement::Required;
         if !hard_confirmation {
             if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Allow) {
-                return AuthorizationCheck::auto_approved(request, cfg.policy_revision);
+                return AuthorizationCheck::auto_approved(
+                    request,
+                    cfg.policy_revision,
+                    workspace.generation(),
+                );
             }
             if let Some(sid) = session_id
                 && let Some(grants) = cfg.session_grants.get(sid)
                 && match_key_set(&grants.allow, key)
             {
-                return AuthorizationCheck::auto_approved(request, cfg.policy_revision);
+                return AuthorizationCheck::auto_approved(
+                    request,
+                    cfg.policy_revision,
+                    workspace.generation(),
+                );
             }
         }
 
@@ -663,7 +755,11 @@ impl AuthorizationEngine {
         };
 
         if !needs_prompt {
-            return AuthorizationCheck::auto_approved(request, cfg.policy_revision);
+            return AuthorizationCheck::auto_approved(
+                request,
+                cfg.policy_revision,
+                workspace.generation(),
+            );
         }
 
         let reason_code = if hard_confirmation {
@@ -677,7 +773,10 @@ impl AuthorizationEngine {
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::ConfirmId::new(),
             capability: key.clone(),
-            canonical_input_hash: canonical_authorization_hash(request),
+            canonical_input_hash: canonical_authorization_hash_for_workspace(
+                request,
+                workspace.generation(),
+            ),
             effective_risk: risk,
             policy_revision: cfg.policy_revision,
             expires_at: confirmation_expiry(),
@@ -709,10 +808,13 @@ impl AuthorizationEngine {
         let policy = &request.policy;
         let key = request.capability();
         let cfg = self.config.read().await;
+        let workspace = cfg.execution_workspace_for(session_id);
         if receipt.capability != *key {
             return Err("confirmation receipt does not match the capability scope".into());
         }
-        if receipt.canonical_input_hash != canonical_authorization_hash(request) {
+        if receipt.canonical_input_hash
+            != canonical_authorization_hash_for_workspace(request, workspace.generation())
+        {
             return Err("confirmation receipt does not match the tool input".into());
         }
         if receipt.policy_revision != cfg.policy_revision {
@@ -732,7 +834,7 @@ impl AuthorizationEngine {
         let mut effective_policy = policy.clone();
         effective_policy.risk_level = risk;
         if let Err(failure) =
-            check_policy_boundaries(&cfg, tool_name, key, params, &effective_policy)
+            check_policy_boundaries(&cfg, &workspace, tool_name, key, params, &effective_policy)
         {
             return Err(failure.reason);
         }
@@ -766,6 +868,12 @@ impl AuthorizationEngine {
                 target_binding: request.target_binding.clone(),
                 policy: request.policy.clone(),
                 policy_revision: receipt.policy_revision,
+                workspace_generation: self
+                    .config
+                    .read()
+                    .await
+                    .execution_workspace_for(request.session_id.as_deref())
+                    .generation(),
                 expires_at: execution_proof_expiry().min(receipt.expires_at),
             },
             authorization: ExecutionAuthorizationKind::Confirmed(receipt.clone()),
@@ -793,6 +901,15 @@ impl AuthorizationEngine {
         if confirmation_now() >= binding.expires_at {
             return Err("execution proof has expired".into());
         }
+        let workspace_generation = self
+            .config
+            .read()
+            .await
+            .execution_workspace_for(request.session_id.as_deref())
+            .generation();
+        if binding.workspace_generation != workspace_generation {
+            return Err("execution proof was issued for an older execution workspace".into());
+        }
         if let ExecutionAuthorizationKind::Confirmed(receipt) = &proof.authorization {
             if receipt.policy_revision != binding.policy_revision {
                 return Err("execution proof receipt has a mismatched policy revision".into());
@@ -807,9 +924,18 @@ impl AuthorizationEngine {
         let tool_name = request.tool_name.as_str();
         let key = request.capability();
         let risk = effective_risk_from(&cfg, tool_name, request.policy.risk_level);
-        if let Err(failure) =
-            check_policy_boundaries(&cfg, tool_name, key, &request.input, &request.policy)
-        {
+        let workspace = cfg.execution_workspace_for(session_id);
+        if binding.workspace_generation != workspace.generation() {
+            return Err("execution proof was issued for an older execution workspace".into());
+        }
+        if let Err(failure) = check_policy_boundaries(
+            &cfg,
+            &workspace,
+            tool_name,
+            key,
+            &request.input,
+            &request.policy,
+        ) {
             return Err(failure.reason);
         }
         if matches!(cfg.permission_mode, PermissionMode::Plan) && !request.policy.is_read_only() {
@@ -971,6 +1097,28 @@ impl AuthorizationPort for AuthorizationEngine {
         AuthorizationEngine::apply_security(self, security).await
     }
 
+    async fn execution_workspace_snapshot(
+        &self,
+        session_id: Option<&str>,
+    ) -> ExecutionWorkspaceSnapshot {
+        match session_id {
+            Some(session_id) => self.session_execution_workspace_snapshot(session_id).await,
+            None => AuthorizationEngine::execution_workspace_snapshot(self).await,
+        }
+    }
+
+    async fn bind_session_execution_workspace(
+        &self,
+        session_id: &str,
+        root: Option<&Path>,
+    ) -> Result<ExecutionWorkspaceSnapshot, String> {
+        AuthorizationEngine::bind_session_execution_workspace(self, session_id, root).await
+    }
+
+    async fn forget_session_execution_workspaces(&self, session_ids: &[String]) {
+        AuthorizationEngine::forget_session_execution_workspaces(self, session_ids).await
+    }
+
     async fn set_permission_mode(&self, mode: PermissionMode) {
         AuthorizationEngine::set_permission_mode(self, mode).await;
     }
@@ -1116,6 +1264,16 @@ pub(super) fn canonical_authorization_hash(request: &AuthorizationRequest) -> St
     }
 }
 
+fn canonical_authorization_hash_for_workspace(
+    request: &AuthorizationRequest,
+    workspace_generation: u64,
+) -> String {
+    canonical_input_hash(&serde_json::json!({
+        "operation": canonical_authorization_hash(request),
+        "workspace_generation": workspace_generation,
+    }))
+}
+
 fn is_auto_edit_safe(key: &CapabilityScope, policy: &OperationPolicy) -> bool {
     // AutoEdit is intentionally a narrow convenience mode for ordinary
     // workspace mutations. UI effects, scheduling, subprocesses, network
@@ -1237,6 +1395,7 @@ struct PolicyBoundaryFailure {
 /// critical checks around this shared ordered boundary check.
 fn check_policy_boundaries(
     cfg: &SafetyConfig,
+    execution_workspace: &ExecutionWorkspace,
     tool_name: &str,
     capability: &CapabilityScope,
     params: &Value,
@@ -1264,7 +1423,7 @@ fn check_policy_boundaries(
         &cfg.tool_settings,
         cfg.sandbox_mode,
         &cfg.writable_roots,
-        &cfg.execution_workspace,
+        execution_workspace,
         tool_name,
         params,
         policy,
@@ -2246,6 +2405,186 @@ mod tests {
                 .is_err()
         );
         assert_eq!(engine.execution_workspace_snapshot().await, after);
+    }
+
+    #[tokio::test]
+    async fn session_workspaces_are_isolated_and_only_revoke_the_changed_session() {
+        let global_root = tempfile::tempdir().unwrap();
+        let first_root = tempfile::tempdir().unwrap();
+        let second_root = tempfile::tempdir().unwrap();
+        let next_first_root = tempfile::tempdir().unwrap();
+        let engine = AuthorizationEngine::new_with_workspace(
+            ExecutionWorkspace::from_root(global_root.path()).unwrap(),
+        );
+        engine
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
+            .await;
+        let first_session = "ses-00000000000000000000000000000001";
+        let second_session = "ses-00000000000000000000000000000002";
+        engine
+            .bind_session_execution_workspace(first_session, Some(first_root.path()))
+            .await
+            .unwrap();
+        engine
+            .bind_session_execution_workspace(second_session, Some(second_root.path()))
+            .await
+            .unwrap();
+
+        let policy_for = || OperationPolicy {
+            risk_level: RiskLevel::Safe,
+            capability: CapabilityScope::try_new("files.write").unwrap(),
+            confirmation: ConfirmationRequirement::None,
+            idempotency: crate::OperationIdempotency::Unknown,
+            scope: crate::ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+            effect: OperationEffect::WorkspaceWrite,
+            data_sensitivity: DataSensitivity::None,
+            network_access: NetworkAccess::None,
+            execution_boundary: crate::ExecutionBoundary::InProcess,
+        };
+        let first_input = json!({ "path": first_root.path().join("note.txt") });
+        let second_input = json!({ "path": second_root.path().join("note.txt") });
+        let first_request = AuthorizationRequest::new(
+            Some(first_session),
+            "files.write",
+            first_input.clone(),
+            policy_for(),
+        );
+        let second_request = AuthorizationRequest::new(
+            Some(second_session),
+            "files.write",
+            second_input.clone(),
+            policy_for(),
+        );
+        let first_proof = engine
+            .authorize_for_execution(&first_request)
+            .await
+            .execution_proof
+            .expect("the first session can write inside its own workspace");
+        let second_proof = engine
+            .authorize_for_execution(&second_request)
+            .await
+            .execution_proof
+            .expect("the second session can write inside its own workspace");
+        let outside_first = AuthorizationRequest::new(
+            Some(first_session),
+            "files.write",
+            second_input,
+            policy_for(),
+        );
+        assert!(matches!(
+            engine.authorize(&outside_first).await,
+            AuthorizationDecision::Blocked { .. }
+        ));
+
+        engine
+            .bind_session_execution_workspace(first_session, Some(next_first_root.path()))
+            .await
+            .unwrap();
+        assert!(
+            engine
+                .verify_execution_proof(&first_request, &first_proof)
+                .await
+                .is_err()
+        );
+        assert!(
+            engine
+                .verify_execution_proof(&second_request, &second_proof)
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            engine
+                .session_execution_workspace_snapshot(first_session)
+                .await
+                .root
+                .as_deref(),
+            Some(next_first_root.path())
+        );
+        assert_eq!(
+            engine
+                .session_execution_workspace_snapshot(second_session)
+                .await
+                .root
+                .as_deref(),
+            Some(second_root.path())
+        );
+
+        engine
+            .apply_security(&SecurityConfig {
+                execution_root: Some(next_first_root.path().to_path_buf()),
+                sandbox_mode: SandboxMode::WorkspaceWrite,
+                network_policy: NetworkPolicy::Restricted,
+                ..SecurityConfig::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .session_execution_workspace_snapshot(first_session)
+                .await
+                .root
+                .as_deref(),
+            Some(next_first_root.path()),
+            "changing the default does not move a bound session"
+        );
+        assert!(
+            engine
+                .verify_execution_proof(&second_request, &second_proof)
+                .await
+                .is_ok(),
+            "changing the default does not invalidate proofs for a bound session"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_workspace_can_be_reopened_after_a_missing_directory_returns() {
+        let default_root = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let selected_root = parent.path().join("recreated-workspace");
+        let engine = AuthorizationEngine::new_with_workspace(
+            ExecutionWorkspace::from_root(default_root.path()).unwrap(),
+        );
+        let session_id = "ses-12121212121212121212121212121212";
+
+        let unavailable = engine
+            .bind_session_execution_workspace(session_id, Some(&selected_root))
+            .await
+            .unwrap();
+        assert_eq!(unavailable.root.as_deref(), Some(selected_root.as_path()));
+
+        std::fs::create_dir(&selected_root).unwrap();
+        let available = engine
+            .bind_session_execution_workspace(session_id, Some(&selected_root))
+            .await
+            .unwrap();
+        assert_eq!(available.root.as_deref(), Some(selected_root.as_path()));
+
+        let request = AuthorizationRequest::new(
+            Some(session_id),
+            "files.write",
+            json!({ "path": selected_root.join("note.txt") }),
+            OperationPolicy {
+                risk_level: RiskLevel::Safe,
+                capability: CapabilityScope::try_new("files.write").unwrap(),
+                confirmation: ConfirmationRequirement::None,
+                idempotency: crate::OperationIdempotency::Unknown,
+                scope: crate::ToolOperationScope::Session,
+                concurrency: ToolConcurrency::Exclusive,
+                effect: OperationEffect::WorkspaceWrite,
+                data_sensitivity: DataSensitivity::None,
+                network_access: NetworkAccess::None,
+                execution_boundary: crate::ExecutionBoundary::InProcess,
+            },
+        );
+        assert!(matches!(
+            engine.authorize(&request).await,
+            AuthorizationDecision::AutoApproved
+        ));
     }
 
     #[tokio::test]
@@ -3619,9 +3958,16 @@ mod tests {
         };
         let params = json!({"path": outside.path().join("blocked.txt")});
         let check = |cfg: &SafetyConfig| {
-            check_policy_boundaries(cfg, "files.write", &capability, &params, &policy)
-                .unwrap_err()
-                .reason_code
+            check_policy_boundaries(
+                cfg,
+                &cfg.execution_workspace,
+                "files.write",
+                &capability,
+                &params,
+                &policy,
+            )
+            .unwrap_err()
+            .reason_code
         };
 
         assert_eq!(

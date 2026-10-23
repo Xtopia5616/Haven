@@ -73,6 +73,22 @@ export function reopenSession(request: TauriCommandRequest<'reopen_session'>): P
 	return invoke('reopen_session', request);
 }
 
+/** Read the durable working directory captured for one session. */
+export async function getSessionExecutionWorkspace(
+	request: TauriCommandRequest<'get_session_execution_workspace'>,
+): Promise<string | null> {
+	const response = await invoke('get_session_execution_workspace', request);
+	return response.root;
+}
+
+/** Bind a validated local working directory to one session. */
+export async function setSessionExecutionWorkspace(
+	request: TauriCommandRequest<'set_session_execution_workspace'>,
+): Promise<string | null> {
+	const response = await invoke('set_session_execution_workspace', request);
+	return response.root;
+}
+
 /** Delete one persisted session and release its runtime state. */
 export function deleteSession(request: TauriCommandRequest<'delete_session'>): Promise<void> {
 	return invoke('delete_session', request);

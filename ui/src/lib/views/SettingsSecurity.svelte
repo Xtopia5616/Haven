@@ -416,9 +416,10 @@
 		<div class="execution-workspace-boundary">
 			<div class="subsection-heading">
 				<div>
-					<h3>执行工作区</h3>
+					<h3>新会话默认工作目录</h3>
 					<p>
-						Files 的相对路径和默认 Shell 工作目录使用此根。工作区可写模式下，只有
+						此目录只用于初始化新会话。每个会话随后独立保存工作目录，Files 的相对路径和
+						Shell 默认目录会跟随该会话。工作区可写模式下，只有
 						writable_roots
 						留空时它才是默认写入范围；自定义可写目录非空时会覆盖此默认范围。Files
 						工具配置的 allowed_paths 还会进一步收窄写入范围。
@@ -427,7 +428,7 @@
 				</div>
 			</div>
 			<SettingsField
-				label="执行工作区目录"
+				label="新会话默认目录"
 				id="security-execution-root"
 				description="填写已存在的本地绝对路径；应用设置后，新调用使用新目录。"
 				stacked
@@ -438,7 +439,7 @@
 						class="md-textarea md-textarea--code security-roots"
 						rows="1"
 						value={security.execution_root || ''}
-						placeholder="留空使用启动时发现的仓库根"
+						placeholder="留空使用启动时发现的项目根"
 						oninput={(event) => {
 							security.execution_root = inputElementValue(event).trim() || null;
 						}}></textarea>
@@ -462,7 +463,7 @@
 				{/snippet}
 				<div class="advanced-boundary__body">
 					<p>
-						每行填写一个已存在、可安全打开的本地绝对目录。非空时，这些目录覆盖执行工作区的默认写入范围；为空时使用当前执行工作区。Files
+						每行填写一个已存在、可安全打开的本地绝对目录。非空时，这些目录覆盖会话工作目录的默认写入范围；为空时使用当前会话工作目录。Files
 						工具配置的 allowed_paths 会与写入基准取交集。
 					</p>
 					<textarea
@@ -499,7 +500,7 @@
 							</ul>
 						{:else}
 							<p class="effective-write-scope__root">
-								{security.execution_root || '启动时发现的执行工作区'}
+								{security.execution_root || '启动时发现的项目根'}
 							</p>
 						{/if}
 					</div>

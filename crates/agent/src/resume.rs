@@ -555,7 +555,7 @@ impl AgentLayer {
             .read_session_working_document(session_id)
             .await?;
         self.prompt_builder
-            .rebuild_canonical_system_without_memory(description, &mut canonical)
+            .rebuild_canonical_system_without_memory(session_id, description, &mut canonical)
             .await;
         crate::prompt::append_session_working_document_to_canonical(
             &mut canonical,
@@ -720,7 +720,7 @@ impl AgentLayer {
         // place once the prefetch completes.
         let system_prompt = self
             .prompt_builder
-            .build_for_session_without_memory(description, &history_lines)
+            .build_for_session_without_memory(description, &history_lines, Some(session_id))
             .await;
         let working_document = self
             .executor

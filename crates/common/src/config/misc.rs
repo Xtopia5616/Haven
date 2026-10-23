@@ -507,8 +507,9 @@ pub struct SecurityConfig {
     /// network policy. Other effects follow their declared execution boundary
     /// and network, risk, permission, or confirmation rules.
     pub sandbox_mode: SandboxMode,
-    /// Optional persisted root for Files-relative paths, default Shell `cwd`,
-    /// and the implicit WorkspaceWrite boundary. `None` uses startup discovery.
+    /// Optional persisted default root captured when a session is first
+    /// loaded, for its Files-relative paths, default Shell `cwd`, and implicit
+    /// WorkspaceWrite boundary. `None` uses startup discovery for new sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_root: Option<PathBuf>,
     /// Optional absolute roots that WorkspaceWrite operations must remain

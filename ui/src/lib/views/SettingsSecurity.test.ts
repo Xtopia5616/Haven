@@ -18,12 +18,12 @@ function createSecurity(): SecurityConfigInput & {
 }
 
 describe('SettingsSecurity', () => {
-	it('edits the execution workspace independently from writable roots', async () => {
+	it('edits the new-session default directory independently from writable roots', async () => {
 		const security = createSecurity();
 		const onPickExecutionRoot = vi.fn(async () => 'C:\\Projects\\selected');
 		render(SettingsSecurity, { security, onPickExecutionRoot });
 
-		await fireEvent.input(screen.getByLabelText('执行工作区目录'), {
+		await fireEvent.input(screen.getByLabelText('新会话默认目录'), {
 			target: { value: 'C:\\Projects\\demo' },
 		});
 

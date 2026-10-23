@@ -1276,3 +1276,4 @@
 - [1370：Agent 模型消费者共享运行时发布点](1370-share-agent-model-runtime.md)
 - [1371：扩展生命周期 Hooks 的管理与事件覆盖](1371-expand-lifecycle-hooks.md)
 - [1372：完善 Lifecycle Hook 编写、复用与排错流程](1372-lifecycle-hook-authoring-workflow.md)
+- [1373：将执行工作目录绑定到会话](1373-session-scoped-execution-workspace.md)

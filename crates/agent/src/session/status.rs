@@ -580,6 +580,9 @@ impl SessionSupervisor {
             self.partials.forget_session(session_id).await;
             self.remove_session_locked(session_id).await?;
             self.store.delete_session(session_id).await?;
+            self.authorization
+                .forget_session_execution_workspaces(&[session_id.to_string()])
+                .await;
             // Once the durable owner is gone, release its process-local asset
             // lease so reference-based media cleanup can reclaim unshared
             // files. The deletion must succeed first; a failed DB delete keeps
@@ -650,6 +653,9 @@ impl SessionSupervisor {
             self.clear_session_runtime_state_locked().await?;
             self.partials.forget_all_sessions().await;
             self.store.delete_all_sessions().await?;
+            self.authorization
+                .forget_session_execution_workspaces(&session_ids)
+                .await;
             // Release only after the durable purge succeeds. Shared paths are
             // still protected by any remaining message reference and can be
             // reclaimed by the host cleanup pass.

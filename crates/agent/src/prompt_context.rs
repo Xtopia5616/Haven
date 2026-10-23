@@ -49,7 +49,7 @@ pub trait PromptToolPort: Send + Sync {
 
     async fn catalog_content(&self) -> PromptCatalogContent;
 
-    async fn runtime_context(&self) -> PromptRuntimeContext;
+    async fn runtime_context(&self, session_id: Option<&str>) -> PromptRuntimeContext;
 }
 
 #[async_trait]
@@ -75,12 +75,15 @@ impl PromptToolPort for ToolsFacade {
         }
     }
 
-    async fn runtime_context(&self) -> PromptRuntimeContext {
+    async fn runtime_context(&self, session_id: Option<&str>) -> PromptRuntimeContext {
         let services = self.share_services();
         let default_shell = self.default_shell_name().await;
         let capabilities = self.runtime_capabilities().await;
         let permission_summary = services.authorization.prompt_summary().await;
-        let execution_workspace = self.execution_workspace_snapshot().await;
+        let execution_workspace = services
+            .authorization
+            .execution_workspace_snapshot(session_id)
+            .await;
         PromptRuntimeContext {
             default_shell,
             capabilities,

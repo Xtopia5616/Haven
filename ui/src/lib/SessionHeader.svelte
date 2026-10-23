@@ -42,7 +42,7 @@
 		children,
 	}: Props = $props();
 	let executionWorkspaceOptions = $derived.by(() => {
-		const options: SelectOption[] = [{ value: '', label: '自动检测', group: '执行工作区' }];
+		const options: SelectOption[] = [{ value: '', label: '新会话默认目录', group: '工作目录' }];
 		if (
 			executionWorkspaceRoot &&
 			!savedExecutionWorkspaces.some((root) =>
@@ -52,14 +52,14 @@
 			options.push({
 				value: executionWorkspaceRoot,
 				label: `当前：${executionWorkspaceRoot}`,
-				group: '当前工作区',
+				group: '当前会话目录',
 			});
 		}
 		options.push(
 			...savedExecutionWorkspaces.map((root) => ({
 				value: root,
 				label: root,
-				group: '已保存工作区',
+				group: '快捷目录',
 			})),
 		);
 		return options;
@@ -83,14 +83,14 @@
 	<div class="session-header__identity">
 		<div class="session-header__title-row">
 			<h1 {title}>{title}</h1>
-			<div class="session-header__workspace-controls" role="group" aria-label="执行工作区">
+			<div class="session-header__workspace-controls" role="group" aria-label="会话工作目录">
 				<MaterialSelect
 					id="session-execution-workspace"
-					ariaLabel="执行工作区"
+					ariaLabel="会话工作目录"
 					width="standard"
 					value={selectedWorkspaceValue}
 					options={executionWorkspaceOptions}
-					title={`执行工作区：${selectedWorkspaceValue || '自动检测'}`}
+					title={`工作目录：${selectedWorkspaceValue || '新会话默认目录'}`}
 					disabled={executionWorkspaceSwitching}
 					onChange={(root) => onSelectExecutionWorkspace?.(root || null)}
 				/>
@@ -98,8 +98,8 @@
 					size="toolbar"
 					icon="delete"
 					variant="danger-text"
-					label={`从工作区快捷列表移除 ${executionWorkspaceRoot || '当前工作区'}`}
-					title="仅移除工作区快捷项，不会删除磁盘目录"
+					label={`从快捷列表移除 ${executionWorkspaceRoot || '当前工作目录'}`}
+					title="仅移除快捷项，不会删除磁盘目录"
 					disabled={executionWorkspaceSwitching || !selectedWorkspaceIsSaved}
 					onclick={() => {
 						if (executionWorkspaceRoot)
@@ -110,10 +110,10 @@
 					size="toolbar"
 					icon="plus"
 					className="session-header__workspace-add"
-					label="选择目录并保存为工作区"
+					label="选择目录并保存为快捷项"
 					ariaBusy={executionWorkspaceSwitching}
 					disabled={executionWorkspaceSwitching || !onAddExecutionWorkspace}
-					title="选择目录并保存为工作区"
+					title="选择当前会话的工作目录，并保存快捷项"
 					onclick={() => onAddExecutionWorkspace?.()}
 				/>
 			</div>

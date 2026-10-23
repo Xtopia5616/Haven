@@ -142,11 +142,14 @@ impl PromptToolPort for ToolsFacadeAgentAdapter {
         }
     }
 
-    async fn runtime_context(&self) -> PromptRuntimeContext {
+    async fn runtime_context(&self, session_id: Option<&str>) -> PromptRuntimeContext {
         let default_shell = self.tools.default_shell_name().await;
         let capabilities = self.tools.runtime_capabilities().await;
         let permission_summary = self.authorization.prompt_summary().await;
-        let execution_workspace = self.tools.execution_workspace_snapshot().await;
+        let execution_workspace = self
+            .authorization
+            .execution_workspace_snapshot(session_id)
+            .await;
         PromptRuntimeContext {
             default_shell,
             capabilities,
@@ -176,6 +179,31 @@ impl LifecycleHooksPort for ToolsFacadeAgentAdapter {
 
 #[async_trait]
 impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
+    async fn execution_workspace_snapshot(
+        &self,
+        session_id: Option<&str>,
+    ) -> haven_tools::ExecutionWorkspaceSnapshot {
+        self.authorization
+            .execution_workspace_snapshot(session_id)
+            .await
+    }
+
+    async fn bind_session_execution_workspace(
+        &self,
+        session_id: &str,
+        root: Option<&std::path::Path>,
+    ) -> Result<haven_tools::ExecutionWorkspaceSnapshot, String> {
+        self.authorization
+            .bind_session_execution_workspace(session_id, root)
+            .await
+    }
+
+    async fn forget_session_execution_workspaces(&self, session_ids: &[String]) {
+        self.authorization
+            .forget_session_execution_workspaces(session_ids)
+            .await;
+    }
+
     async fn risk_level(
         &self,
         session_id: Option<&str>,

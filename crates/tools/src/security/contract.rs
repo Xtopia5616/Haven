@@ -6,7 +6,7 @@ use haven_common::types::{
     SandboxMode,
 };
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A one-shot authorization proof bound to the exact request that was shown
 /// to the user.  A receipt is deliberately invalidated by any policy change,
@@ -92,6 +92,7 @@ pub(super) struct AuthorizationExecutionBinding {
     pub(super) target_binding: Option<String>,
     pub(super) policy: OperationPolicy,
     pub(super) policy_revision: u64,
+    pub(super) workspace_generation: u64,
     pub(super) expires_at: u64,
 }
 
@@ -127,7 +128,11 @@ impl AuthorizationCheck {
         }
     }
 
-    pub(super) fn auto_approved(request: &AuthorizationRequest, policy_revision: u64) -> Self {
+    pub(super) fn auto_approved(
+        request: &AuthorizationRequest,
+        policy_revision: u64,
+        workspace_generation: u64,
+    ) -> Self {
         Self {
             decision: AuthorizationDecision::AutoApproved,
             execution_proof: Some(AuthorizationExecutionProof {
@@ -139,6 +144,7 @@ impl AuthorizationCheck {
                     target_binding: request.target_binding.clone(),
                     policy: request.policy.clone(),
                     policy_revision,
+                    workspace_generation,
                     expires_at: execution_proof_expiry(),
                 },
                 authorization: ExecutionAuthorizationKind::AutoApproved,
@@ -155,6 +161,19 @@ impl AuthorizationCheck {
 #[async_trait::async_trait]
 pub trait AuthorizationPort: Send + Sync {
     async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String>;
+
+    async fn execution_workspace_snapshot(
+        &self,
+        session_id: Option<&str>,
+    ) -> crate::ExecutionWorkspaceSnapshot;
+
+    async fn bind_session_execution_workspace(
+        &self,
+        session_id: &str,
+        root: Option<&Path>,
+    ) -> Result<crate::ExecutionWorkspaceSnapshot, String>;
+
+    async fn forget_session_execution_workspaces(&self, session_ids: &[String]);
 
     async fn set_permission_mode(&self, mode: PermissionMode);
 

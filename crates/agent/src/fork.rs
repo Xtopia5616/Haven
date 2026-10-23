@@ -183,13 +183,28 @@ impl AgentLayer {
             if self.executor.is_session_closing(session_id) {
                 anyhow::bail!("session is closing; retry after deletion");
             }
+            let inherited_workspace = self
+                .executor
+                .ensure_session_execution_workspace_bound(session_id)
+                .await?;
             let child = store.create_fork_session(snapshot).await?;
+            if let Err(error) = self
+                .executor
+                .bind_new_session_execution_workspace_locked(&child.session_id, inherited_workspace)
+                .await
+            {
+                let _ = store.delete_session(&child.session_id).await;
+                return Err(error);
+            }
             if let Err(error) = self
                 .executor
                 .ensure_session_loaded_locked(&child.session_id)
                 .await
             {
                 let _ = store.delete_session(&child.session_id).await;
+                self.executor
+                    .forget_session_execution_workspaces(std::slice::from_ref(&child.session_id))
+                    .await;
                 return Err(error);
             }
             self.spawn_title_generation(&child.session_id);
