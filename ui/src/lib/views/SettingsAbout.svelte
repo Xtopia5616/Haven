@@ -107,6 +107,41 @@
 		</div>
 	</SettingsSection>
 
+	<SettingsSection title="Everything 文件名搜索">
+		<p>
+			Haven 可选调用 voidtools 的 ES 命令行工具查询 Everything 索引。此功能默认关闭，仅用于
+			<code>files.search</code> 的文件名搜索；内容搜索继续由 Haven 原生后端执行。启用时，文件名查询使用 Everything
+			的查询语法。
+		</p>
+		<p>
+			使用前请单独安装并运行 Everything，取得兼容版本的 <code>es.exe</code>，并在
+			<code>%APPDATA%\haven\config.toml</code> 的 <code>[everything]</code> 配置段中设置其绝对路径。
+			Haven 不下载或捆绑 Everything 与 ES CLI；索引范围由 Everything 管理，零结果不能证明索引已覆盖所有文件。
+		</p>
+		<div class="about-actions">
+			<MaterialButton
+				label="设置与故障排查"
+				variant="text"
+				onclick={() =>
+					void openBundledDocument(
+						'docs/everything-search.md',
+						`${repositoryUrl}/blob/main/docs/everything-search.md`,
+					)}
+			/>
+			<MaterialButton
+				label="Everything 官方网站"
+				variant="text"
+				onclick={() => void openExternal('https://www.voidtools.com/')}
+			/>
+			<MaterialButton
+				label="ES 命令行文档"
+				variant="text"
+				onclick={() =>
+					void openExternal('https://www.voidtools.com/support/everything/command_line_interface/')}
+			/>
+		</div>
+	</SettingsSection>
+
 	<SettingsSection title="开源组件与致谢">
 		<ul class="about-credits">
 			<li>
@@ -129,6 +164,10 @@
 			</li>
 			<li>
 				<strong>Agent Skills 与 Model Context Protocol</strong>：Haven 分别按公开清单格式和协议实现互操作。
+			</li>
+			<li>
+				<strong>voidtools Everything 与 ES CLI</strong>：可选文件名搜索集成；Everything 按 MIT License
+				提供并附有 PCRE 许可说明，ES CLI 采用 MIT License。Haven 不捆绑或下载这两个程序；许可来源见第三方许可证与致谢。
 			</li>
 		</ul>
 		<p>
@@ -166,5 +205,9 @@
 
 	.settings-about p {
 		line-height: var(--md-sys-typescale-body-medium-line-height);
+	}
+
+	.settings-about code {
+		font-family: var(--md-sys-typescale-mono);
 	}
 </style>
