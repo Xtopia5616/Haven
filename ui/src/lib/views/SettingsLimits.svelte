@@ -707,11 +707,11 @@
 		border-radius: var(--md-sys-shape-small);
 		background: color-mix(in srgb, var(--md-sys-color-error) 6%, transparent);
 		margin-top: var(--md-sys-space-sm);
-		padding: 8px;
+		padding: var(--md-sys-space-sm);
 	}
 	.limit-danger-items {
 		display: grid;
-		gap: 10px;
+		gap: var(--md-sys-space-md);
 	}
 	.limit-danger-caret {
 		display: inline-flex;
@@ -724,7 +724,7 @@
 	:global(.limit-toggle-all) {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
+		gap: var(--md-sys-space-xs);
 	}
 	:global(.limit-toggle-all[aria-expanded='false'] .limit-danger-caret) {
 		transform: rotate(-90deg);
@@ -746,12 +746,12 @@
 	.limit-hint {
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
-		margin: 2px 0 0;
+		margin: var(--md-sys-space-2xs) 0 0;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.danger-badge {
 		display: inline-block;
-		margin-left: 6px;
+		margin-left: var(--md-sys-space-xs);
 		padding: 1px 6px;
 		border-radius: 999px;
 		font-size: var(--md-sys-typescale-label-small-size);

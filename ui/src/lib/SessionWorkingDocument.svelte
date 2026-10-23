@@ -62,46 +62,48 @@
 	.working-document {
 		flex: 0 0 auto;
 		max-height: min(32vh, 300px);
-		margin: 12px auto 8px;
+		margin: var(--md-sys-space-md) auto var(--md-sys-space-sm);
 		width: min(100%, 820px);
 		overflow: auto;
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: 14px;
+		border-radius: var(--md-sys-shape-large);
 		background: color-mix(in srgb, var(--md-sys-color-surface-container) 86%, transparent);
-		padding: 12px 16px 14px;
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
 	}
 
 	.working-document-heading {
 		display: flex;
 		align-items: center;
-		gap: 8px;
-		margin-bottom: 8px;
+		gap: var(--md-sys-space-sm);
+		margin-bottom: var(--md-sys-space-sm);
 		color: var(--md-sys-color-on-surface-variant);
 	}
 
 	.working-document-heading h2 {
 		margin: 0;
-		font-size: 13px;
+		font-size: var(--md-sys-typescale-body-small-size);
 		font-weight: 650;
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface);
 	}
 
 	.material-symbol {
 		font-family: 'Material Symbols Rounded';
-		font-size: 17px;
+		font-size: var(--md-sys-icon-size);
 		font-weight: normal;
 		font-style: normal;
 		line-height: 1;
 	}
 
 	.working-document-hint {
-		font-size: 11px;
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
 		opacity: 0.75;
 	}
 
 	.working-document-content {
-		font-size: 13px;
-		line-height: 1.55;
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 		color: var(--md-sys-color-on-surface);
 		overflow-wrap: anywhere;
 	}
@@ -135,7 +137,7 @@
 
 	.working-document-content :global(blockquote) {
 		margin-left: 0;
-		padding-left: 12px;
+		padding-left: var(--md-sys-space-md);
 		border-left: 2px solid var(--md-sys-color-outline-variant);
 		color: var(--md-sys-color-on-surface-variant);
 	}
