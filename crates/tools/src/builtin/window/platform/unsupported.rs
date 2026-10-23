@@ -8,6 +8,18 @@ pub(crate) fn get_foreground_window_info() -> anyhow::Result<Value> {
     Ok(serde_json::json!({"available": false, "note": "window operations require Windows"}))
 }
 
+pub(crate) fn resolve_foreground_window_identity() -> anyhow::Result<(String, u32)> {
+    anyhow::bail!("window operations require Windows")
+}
+
+pub(crate) fn resolve_window_identity(
+    _window_id: Option<&str>,
+    _title: Option<&str>,
+    _pid: Option<u32>,
+) -> anyhow::Result<(String, u32)> {
+    anyhow::bail!("window operations require Windows")
+}
+
 pub(crate) fn focus_window(
     _window_id: Option<&str>,
     _title: Option<&str>,
@@ -81,6 +93,11 @@ pub(crate) fn select_ui_element(
     anyhow::bail!("UI Automation element input requires Windows")
 }
 
-pub(crate) fn any_ui_name_contains(_title: Option<&str>, _needle: &str) -> anyhow::Result<bool> {
+pub(crate) fn any_ui_name_contains(
+    _window_id: Option<&str>,
+    _title: Option<&str>,
+    _pid: Option<u32>,
+    _needle: &str,
+) -> anyhow::Result<bool> {
     Ok(false)
 }

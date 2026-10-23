@@ -17,6 +17,18 @@ export function declaredResourceDescription(resource: DeclaredResource): string 
 	if (resource.kind === 'clipboard') {
 		return resource.access === 'read' ? '读取系统剪贴板' : '写入系统剪贴板';
 	}
+	if (resource.kind === 'desktop') {
+		return resource.access === 'read' ? '读取桌面窗口信息' : '截取桌面画面';
+	}
+	if (resource.kind === 'window') {
+		const access =
+			resource.access === 'read'
+				? '读取窗口'
+				: resource.access === 'interact'
+					? '操作窗口'
+					: '关闭窗口';
+		return `${access} · ${resource.window_id} · PID ${resource.process_id}${resource.element_fingerprint ? ' · 指定控件' : ''}`;
+	}
 	return `读取受管媒体资产 · ${resource.asset_id}`;
 }
 
@@ -31,6 +43,18 @@ export function permissionResourceScopeDescription(scope: PermissionResourceScop
 	}
 	if (scope.kind === 'clipboard') {
 		return scope.access === 'read' ? '读取系统剪贴板' : '写入系统剪贴板';
+	}
+	if (scope.kind === 'desktop') {
+		return scope.access === 'read' ? '读取桌面窗口信息' : '截取桌面画面';
+	}
+	if (scope.kind === 'window') {
+		const access =
+			scope.access === 'read'
+				? '读取窗口'
+				: scope.access === 'interact'
+					? '操作窗口'
+					: '关闭窗口';
+		return `${access} · ${scope.window_id} · PID ${scope.process_id}${scope.element_fingerprint ? ' · 指定控件' : ''}`;
 	}
 	return `读取受管媒体资产 · ${scope.asset_id}`;
 }

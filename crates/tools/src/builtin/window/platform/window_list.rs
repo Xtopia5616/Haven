@@ -108,6 +108,61 @@ pub(crate) fn get_foreground_window_info() -> anyhow::Result<Value> {
     }
 }
 
+pub(crate) fn resolve_foreground_window_identity() -> anyhow::Result<(String, u32)> {
+    let foreground = get_foreground_window_info()?;
+    let window_id = foreground
+        .get("window_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("no foreground window is available"))?;
+    let process_id = foreground
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value != 0)
+        .ok_or_else(|| anyhow::anyhow!("foreground window has no valid process identity"))?;
+    Ok((window_id.to_owned(), process_id))
+}
+
+pub(crate) fn resolve_window_identity(
+    selector_window_id: Option<&str>,
+    title: Option<&str>,
+    pid: Option<u32>,
+) -> anyhow::Result<(String, u32)> {
+    let title = title.filter(|value| !value.trim().is_empty());
+    if selector_window_id.is_none() && title.is_none() && pid.is_none() {
+        anyhow::bail!("a window selector is required");
+    }
+    if let Some(window_id) = selector_window_id {
+        hwnd_from_window_id(window_id)?;
+    }
+    let windows = enumerate_windows(None)?;
+    let matches: Vec<&Value> = windows
+        .iter()
+        .filter(|window| match selector_window_id {
+            Some(window_id) => window_id_matches(window, window_id, title, pid),
+            None => window_matches(window, title, pid),
+        })
+        .collect();
+    if matches.len() > 1 {
+        return Err(ambiguous_window_error(title, pid, matches.len()));
+    }
+    let window = matches
+        .first()
+        .copied()
+        .ok_or_else(|| window_not_found(selector_window_id, title, pid))?;
+    let window_id = window
+        .get("window_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("resolved window has no identity"))?;
+    let process_id = window
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value != 0)
+        .ok_or_else(|| anyhow::anyhow!("resolved window has no valid process identity"))?;
+    Ok((window_id.to_owned(), process_id))
+}
+
 pub(crate) fn focus_window(
     selector_window_id: Option<&str>,
     title: Option<&str>,

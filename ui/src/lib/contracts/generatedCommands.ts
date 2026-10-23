@@ -367,6 +367,10 @@ export const CLIPBOARD_ACCESS_INPUT_VALUES = ['read', 'write'] as const;
 export type ClipboardAccessInput = (typeof CLIPBOARD_ACCESS_INPUT_VALUES)[number];
 export const CLIPBOARD_ACCESS_VALUES = ['read', 'write'] as const;
 export type ClipboardAccess = (typeof CLIPBOARD_ACCESS_VALUES)[number];
+export const DESKTOP_ACCESS_INPUT_VALUES = ['read', 'capture'] as const;
+export type DesktopAccessInput = (typeof DESKTOP_ACCESS_INPUT_VALUES)[number];
+export const DESKTOP_ACCESS_VALUES = ['read', 'capture'] as const;
+export type DesktopAccess = (typeof DESKTOP_ACCESS_VALUES)[number];
 export const EXECUTION_MODE_INPUT_VALUES = ['analyze', 'collaborative', 'unattended'] as const;
 export type ExecutionModeInput = (typeof EXECUTION_MODE_INPUT_VALUES)[number];
 export const EXECUTION_MODE_VALUES = ['analyze', 'collaborative', 'unattended'] as const;
@@ -389,8 +393,8 @@ export const PERMISSION_EFFECT_INPUT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffectInput = (typeof PERMISSION_EFFECT_INPUT_VALUES)[number];
 export const PERMISSION_EFFECT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffect = (typeof PERMISSION_EFFECT_VALUES)[number];
-export type PermissionResourceScopeInput = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccessInput } | { kind: 'network_destination'; scheme: string; host: string; port?: number | null } | { kind: 'clipboard'; access: ClipboardAccessInput } | { kind: 'managed_asset'; asset_id: string };
-export type PermissionResourceScope = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'managed_asset'; asset_id: string };
+export type PermissionResourceScopeInput = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccessInput } | { kind: 'network_destination'; scheme: string; host: string; port?: number | null } | { kind: 'clipboard'; access: ClipboardAccessInput } | { kind: 'desktop'; access: DesktopAccessInput } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccessInput; element_fingerprint?: string | null } | { kind: 'managed_asset'; asset_id: string };
+export type PermissionResourceScope = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'managed_asset'; asset_id: string };
 export const PERMISSION_RESOURCE_TARGET_INPUT_VALUES = ['exact', 'directory'] as const;
 export type PermissionResourceTargetInput = (typeof PERMISSION_RESOURCE_TARGET_INPUT_VALUES)[number];
 export const PERMISSION_SCOPE_INPUT_VALUES = ['once', 'session', 'always'] as const;
@@ -407,6 +411,10 @@ export const SHELL_CHOICE_VALUES = ['powershell', 'cmd', 'pwsh'] as const;
 export type ShellChoice = (typeof SHELL_CHOICE_VALUES)[number];
 export const TRANSCRIPT_MESSAGE_KIND_VALUES = ['text', 'thought', 'tool_call', 'observation', 'reasoning', 'peer_kickoff'] as const;
 export type TranscriptMessageKind = (typeof TRANSCRIPT_MESSAGE_KIND_VALUES)[number];
+export const WINDOW_ACCESS_INPUT_VALUES = ['read', 'interact', 'close'] as const;
+export type WindowAccessInput = (typeof WINDOW_ACCESS_INPUT_VALUES)[number];
+export const WINDOW_ACCESS_VALUES = ['read', 'interact', 'close'] as const;
+export type WindowAccess = (typeof WINDOW_ACCESS_VALUES)[number];
 export const CACHE_ACCOUNTING_VALUES = ['inclusive', 'exclusive', 'unknown'] as const;
 export type CacheAccounting = (typeof CACHE_ACCOUNTING_VALUES)[number];
 export const CACHE_DIAGNOSTIC_OUTCOME_VALUES = ['disabled', 'unknown', 'hit', 'miss'] as const;
@@ -477,7 +485,7 @@ export type SessionCreator = (typeof SESSION_CREATOR_VALUES)[number];
 export interface LlmUsageRecord { usage_id: string; session_id: string; step_number: number | null; request_kind: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
-export type DeclaredResource = { kind: 'local_path'; path: string; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'managed_asset'; asset_id: string };
+export type DeclaredResource = { kind: 'local_path'; path: string; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'managed_asset'; asset_id: string };
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 export const ADD_FACT_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -2406,6 +2414,44 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 								fields: {
 									'kind': {
 										optional: false,
+										shape: { kind: 'literal', value: 'desktop' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: DESKTOP_ACCESS_VALUES },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'window' },
+									},
+									'window_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'process_id': {
+										optional: false,
+										shape: { kind: 'number' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: WINDOW_ACCESS_VALUES },
+									},
+									'element_fingerprint': {
+										optional: true,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
 										shape: { kind: 'literal', value: 'managed_asset' },
 									},
 									'asset_id': {
@@ -4149,6 +4195,44 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 								fields: {
 									'kind': {
 										optional: false,
+										shape: { kind: 'literal', value: 'desktop' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: DESKTOP_ACCESS_VALUES },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'window' },
+									},
+									'window_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'process_id': {
+										optional: false,
+										shape: { kind: 'number' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: WINDOW_ACCESS_VALUES },
+									},
+									'element_fingerprint': {
+										optional: true,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
 										shape: { kind: 'literal', value: 'managed_asset' },
 									},
 									'asset_id': {
@@ -5249,6 +5333,44 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 											fields: {
 												'kind': {
 													optional: false,
+													shape: { kind: 'literal', value: 'desktop' },
+												},
+												'access': {
+													optional: false,
+													shape: { kind: 'enum', values: DESKTOP_ACCESS_VALUES },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'window' },
+												},
+												'window_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'process_id': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'access': {
+													optional: false,
+													shape: { kind: 'enum', values: WINDOW_ACCESS_VALUES },
+												},
+												'element_fingerprint': {
+													optional: true,
+													shape: { kind: 'string' },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
 													shape: { kind: 'literal', value: 'managed_asset' },
 												},
 												'asset_id': {
@@ -5915,6 +6037,44 @@ export const INTERACTION_REQUESTED_EVENT_PAYLOAD_SHAPE = {
 						'access': {
 							optional: false,
 							shape: { kind: 'enum', values: CLIPBOARD_ACCESS_VALUES },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'desktop' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: DESKTOP_ACCESS_VALUES },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'window' },
+						},
+						'window_id': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'process_id': {
+							optional: false,
+							shape: { kind: 'number' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: WINDOW_ACCESS_VALUES },
+						},
+						'element_fingerprint': {
+							optional: true,
+							shape: { kind: 'string' },
 						}
 					}
 				},
@@ -6907,6 +7067,44 @@ export const LIST_SESSION_PERMISSIONS_RESPONSE_SHAPE = { kind: 'array', items: {
 						'access': {
 							optional: false,
 							shape: { kind: 'enum', values: CLIPBOARD_ACCESS_VALUES },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'desktop' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: DESKTOP_ACCESS_VALUES },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'window' },
+						},
+						'window_id': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'process_id': {
+							optional: false,
+							shape: { kind: 'number' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: WINDOW_ACCESS_VALUES },
+						},
+						'element_fingerprint': {
+							optional: true,
+							shape: { kind: 'string' },
 						}
 					}
 				},
@@ -8593,6 +8791,44 @@ export const SESSION_PERMISSION_GRANT_RESPONSE_SHAPE = {
 					fields: {
 						'kind': {
 							optional: false,
+							shape: { kind: 'literal', value: 'desktop' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: DESKTOP_ACCESS_VALUES },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'window' },
+						},
+						'window_id': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'process_id': {
+							optional: false,
+							shape: { kind: 'number' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: WINDOW_ACCESS_VALUES },
+						},
+						'element_fingerprint': {
+							optional: true,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
 							shape: { kind: 'literal', value: 'managed_asset' },
 						},
 						'asset_id': {
@@ -9715,6 +9951,44 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 								fields: {
 									'kind': {
 										optional: false,
+										shape: { kind: 'literal', value: 'desktop' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: DESKTOP_ACCESS_VALUES },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'window' },
+									},
+									'window_id': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'process_id': {
+										optional: false,
+										shape: { kind: 'number' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: WINDOW_ACCESS_VALUES },
+									},
+									'element_fingerprint': {
+										optional: true,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
 										shape: { kind: 'literal', value: 'managed_asset' },
 									},
 									'asset_id': {
@@ -10556,6 +10830,44 @@ export const SETTINGS_RESPONSE_SHAPE = {
 												'access': {
 													optional: false,
 													shape: { kind: 'enum', values: CLIPBOARD_ACCESS_VALUES },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'desktop' },
+												},
+												'access': {
+													optional: false,
+													shape: { kind: 'enum', values: DESKTOP_ACCESS_VALUES },
+												}
+											}
+										},
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'window' },
+												},
+												'window_id': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'process_id': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'access': {
+													optional: false,
+													shape: { kind: 'enum', values: WINDOW_ACCESS_VALUES },
+												},
+												'element_fingerprint': {
+													optional: true,
+													shape: { kind: 'string' },
 												}
 											}
 										},

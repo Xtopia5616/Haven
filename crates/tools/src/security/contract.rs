@@ -1,12 +1,12 @@
 use super::engine::{canonical_authorization_hash, execution_proof_expiry};
 use crate::OperationPolicy;
 use haven_common::config::{SecurityConfig, StoredPermission};
-pub use haven_common::types::ClipboardAccess;
 pub use haven_common::types::LocalPathAccess;
 use haven_common::types::{
     CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect, PermissionScope, RiskLevel,
     SandboxMode,
 };
+pub use haven_common::types::{ClipboardAccess, DesktopAccess, WindowAccess};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -111,6 +111,16 @@ pub enum DeclaredResource {
     },
     Clipboard {
         access: ClipboardAccess,
+    },
+    Desktop {
+        access: DesktopAccess,
+    },
+    Window {
+        window_id: String,
+        process_id: u32,
+        access: WindowAccess,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        element_fingerprint: Option<String>,
     },
     ManagedAsset {
         asset_id: String,

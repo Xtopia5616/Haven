@@ -21,13 +21,14 @@ pub(super) use ui_automation::{
 #[cfg(windows)]
 pub(super) use window_list::{
     any_title_contains, close_window, enumerate_windows, focus_window, foreground_title_contains,
-    get_foreground_window_info,
+    get_foreground_window_info, resolve_foreground_window_identity, resolve_window_identity,
 };
 
 #[cfg(not(windows))]
 pub(super) use unsupported::{
     any_title_contains, any_ui_name_contains, capture_screen, close_window, enumerate_ui_tree,
     enumerate_windows, focus_ui_element, focus_window, foreground_title_contains,
-    get_foreground_window_info, invoke_ui_element, resolve_ui_element, select_ui_element,
-    set_ui_element_value, toggle_ui_element,
+    get_foreground_window_info, invoke_ui_element, resolve_foreground_window_identity,
+    resolve_ui_element, resolve_window_identity, select_ui_element, set_ui_element_value,
+    toggle_ui_element,
 };

@@ -1411,6 +1411,35 @@ impl AuthorizationEngine {
                 super::DeclaredResource::Clipboard { access } => {
                     PermissionResourceScope::Clipboard { access: *access }
                 }
+                super::DeclaredResource::Desktop { access } => {
+                    PermissionResourceScope::Desktop { access: *access }
+                }
+                super::DeclaredResource::Window {
+                    window_id,
+                    process_id,
+                    access,
+                    element_fingerprint,
+                } => {
+                    if !is_canonical_window_id(window_id) || *process_id == 0 {
+                        return Err(
+                            "persistent window grant requires a valid window identity".into()
+                        );
+                    }
+                    if element_fingerprint
+                        .as_deref()
+                        .is_some_and(|value| !is_sha256_fingerprint(value))
+                    {
+                        return Err(
+                            "persistent window grant has an invalid UI element fingerprint".into(),
+                        );
+                    }
+                    PermissionResourceScope::Window {
+                        window_id: window_id.clone(),
+                        process_id: *process_id,
+                        access: *access,
+                        element_fingerprint: element_fingerprint.clone(),
+                    }
+                }
                 super::DeclaredResource::ManagedAsset { asset_id } => {
                     if !is_canonical_id(asset_id, "asset") {
                         return Err(
@@ -1811,6 +1840,8 @@ fn network_resource_block(
             super::DeclaredResource::NetworkDestination { host, .. } => Some(host.as_str()),
             super::DeclaredResource::LocalPath { .. }
             | super::DeclaredResource::Clipboard { .. }
+            | super::DeclaredResource::Desktop { .. }
+            | super::DeclaredResource::Window { .. }
             | super::DeclaredResource::ManagedAsset { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -2035,6 +2066,33 @@ fn permission_resource_scope_matches(
             },
         ) => granted_access == requested_access,
         (
+            PermissionResourceScope::Desktop {
+                access: granted_access,
+            },
+            super::DeclaredResource::Desktop {
+                access: requested_access,
+            },
+        ) => granted_access == requested_access,
+        (
+            PermissionResourceScope::Window {
+                window_id: granted_window_id,
+                process_id: granted_process_id,
+                access: granted_access,
+                element_fingerprint: granted_element_fingerprint,
+            },
+            super::DeclaredResource::Window {
+                window_id,
+                process_id,
+                access,
+                element_fingerprint,
+            },
+        ) => {
+            granted_window_id == window_id
+                && granted_process_id == process_id
+                && granted_access == access
+                && granted_element_fingerprint == element_fingerprint
+        }
+        (
             PermissionResourceScope::ManagedAsset {
                 asset_id: granted_asset_id,
             },
@@ -2042,6 +2100,23 @@ fn permission_resource_scope_matches(
         ) => granted_asset_id == asset_id,
         _ => false,
     }
+}
+
+fn is_canonical_window_id(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("hwnd:") else {
+        return false;
+    };
+    let Ok(raw) = usize::from_str_radix(hex, 16) else {
+        return false;
+    };
+    raw != 0 && format!("{raw:x}") == hex
+}
+
+fn is_sha256_fingerprint(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn paths_equal(left: &Path, right: &Path) -> bool {
@@ -2170,6 +2245,8 @@ fn path_sandbox_block(
             super::DeclaredResource::LocalPath { path, access } => Some((path, access)),
             super::DeclaredResource::NetworkDestination { .. }
             | super::DeclaredResource::Clipboard { .. }
+            | super::DeclaredResource::Desktop { .. }
+            | super::DeclaredResource::Window { .. }
             | super::DeclaredResource::ManagedAsset { .. } => None,
         })
         .collect::<Vec<_>>();
@@ -2851,6 +2928,166 @@ mod tests {
         );
         assert!(matches!(
             engine.authorize(&other_asset).await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn persistent_window_grants_bind_identity_access_and_ui_control() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let capability = capability_scope!("window.interact");
+        let resource = DeclaredResource::Window {
+            window_id: "hwnd:2a".into(),
+            process_id: 42,
+            access: haven_common::types::WindowAccess::Interact,
+            element_fingerprint: Some("a".repeat(64)),
+        };
+        let request = resource_test_request(&capability, vec![resource.clone()]);
+        let scopes = engine
+            .resource_scope_for_request(&request, PermissionResourceTarget::Exact)
+            .await
+            .unwrap();
+        assert_eq!(
+            scopes,
+            vec![PermissionResourceScope::Window {
+                window_id: "hwnd:2a".into(),
+                process_id: 42,
+                access: haven_common::types::WindowAccess::Interact,
+                element_fingerprint: Some("a".repeat(64)),
+            }]
+        );
+        engine
+            .grant(
+                None,
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                scopes,
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&request).await,
+            AuthorizationDecision::AutoApproved
+        ));
+
+        for changed in [
+            DeclaredResource::Window {
+                window_id: "hwnd:2b".into(),
+                process_id: 42,
+                access: haven_common::types::WindowAccess::Interact,
+                element_fingerprint: Some("a".repeat(64)),
+            },
+            DeclaredResource::Window {
+                window_id: "hwnd:2a".into(),
+                process_id: 43,
+                access: haven_common::types::WindowAccess::Interact,
+                element_fingerprint: Some("a".repeat(64)),
+            },
+            DeclaredResource::Window {
+                window_id: "hwnd:2a".into(),
+                process_id: 42,
+                access: haven_common::types::WindowAccess::Close,
+                element_fingerprint: Some("a".repeat(64)),
+            },
+            DeclaredResource::Window {
+                window_id: "hwnd:2a".into(),
+                process_id: 42,
+                access: haven_common::types::WindowAccess::Interact,
+                element_fingerprint: Some("b".repeat(64)),
+            },
+        ] {
+            let changed_request = resource_test_request(&capability, vec![changed]);
+            assert!(matches!(
+                engine.authorize(&changed_request).await,
+                AuthorizationDecision::RequiresConfirmation { .. }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn persistent_window_grants_reject_noncanonical_identities() {
+        let engine = AuthorizationEngine::new();
+        let capability = capability_scope!("window.read");
+        let invalid = resource_test_request(
+            &capability,
+            vec![DeclaredResource::Window {
+                window_id: "hwnd:02a".into(),
+                process_id: 42,
+                access: haven_common::types::WindowAccess::Read,
+                element_fingerprint: None,
+            }],
+        );
+        assert!(
+            engine
+                .resource_scope_for_request(&invalid, PermissionResourceTarget::Exact)
+                .await
+                .is_err()
+        );
+
+        let invalid_fingerprint = resource_test_request(
+            &capability,
+            vec![DeclaredResource::Window {
+                window_id: "hwnd:2a".into(),
+                process_id: 42,
+                access: haven_common::types::WindowAccess::Read,
+                element_fingerprint: Some("not-a-fingerprint".into()),
+            }],
+        );
+        assert!(
+            engine
+                .resource_scope_for_request(&invalid_fingerprint, PermissionResourceTarget::Exact)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn persistent_desktop_grants_separate_read_from_capture() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let capability = capability_scope!("window.desktop");
+        let read = resource_test_request(
+            &capability,
+            vec![DeclaredResource::Desktop {
+                access: haven_common::types::DesktopAccess::Read,
+            }],
+        );
+        let scopes = engine
+            .resource_scope_for_request(&read, PermissionResourceTarget::Exact)
+            .await
+            .unwrap();
+        assert_eq!(
+            scopes,
+            vec![PermissionResourceScope::Desktop {
+                access: haven_common::types::DesktopAccess::Read,
+            }]
+        );
+        engine
+            .grant(
+                None,
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                scopes,
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&read).await,
+            AuthorizationDecision::AutoApproved
+        ));
+        let capture = resource_test_request(
+            &capability,
+            vec![DeclaredResource::Desktop {
+                access: haven_common::types::DesktopAccess::Capture,
+            }],
+        );
+        assert!(matches!(
+            engine.authorize(&capture).await,
             AuthorizationDecision::RequiresConfirmation { .. }
         ));
     }

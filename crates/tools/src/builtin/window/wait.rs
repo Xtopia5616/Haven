@@ -34,6 +34,11 @@ impl WindowTool {
             .clamp(1, MAX_WAIT_SECS);
         let deadline = Instant::now() + Duration::from_secs(timeout);
         let title_filter = params.title.clone();
+        let window_id = params.window_id.clone();
+        let process_id = params
+            .pid
+            .filter(|value| *value > 0 && *value <= u32::MAX as i64)
+            .map(|value| value as u32);
         let poll_ms = match condition {
             WaitCondition::UiText => WAIT_UI_POLL_MS,
             _ => WAIT_POLL_MS,
@@ -50,9 +55,12 @@ impl WindowTool {
                     WaitCondition::ForegroundContains => {
                         platform::foreground_title_contains(&text)?
                     }
-                    WaitCondition::UiText => {
-                        platform::any_ui_name_contains(title_filter.as_deref(), &text)?
-                    }
+                    WaitCondition::UiText => platform::any_ui_name_contains(
+                        window_id.as_deref(),
+                        title_filter.as_deref(),
+                        process_id,
+                        &text,
+                    )?,
                 };
                 if matched {
                     return Ok(ToolResult::ok(serde_json::json!({

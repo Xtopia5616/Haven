@@ -366,6 +366,23 @@ pub enum ClipboardAccess {
     Write,
 }
 
+/// Access direction for a concrete top-level window resource.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowAccess {
+    Read,
+    Interact,
+    Close,
+}
+
+/// Access direction for the system-wide desktop surface.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopAccess {
+    Read,
+    Capture,
+}
+
 /// Persistent resource boundary attached to an allow or deny grant.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -382,6 +399,16 @@ pub enum PermissionResourceScope {
     },
     Clipboard {
         access: ClipboardAccess,
+    },
+    Desktop {
+        access: DesktopAccess,
+    },
+    Window {
+        window_id: String,
+        process_id: u32,
+        access: WindowAccess,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        element_fingerprint: Option<String>,
     },
     ManagedAsset {
         asset_id: String,

@@ -1,6 +1,6 @@
 # 会话、工作区、权限与执行环境重设计
 
-> 日期：2026-10-23，状态更新：Slice 1 已按 [ADR 1373](adr/1373-session-scoped-execution-workspace.md) 完成；Slice 2 的执行预设、网络 Ask 拆分、Files 本地路径、HTTP origin 与剪贴板 typed resource 已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 和 [ADR 1378](adr/1378-typed-clipboard-resource-boundary.md) 实施；全局/工具级 `ResourcePolicy` 与精确文件、HTTP 一次性边界扩展分别按 [ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md) 和 [ADR 1377](adr/1377-once-only-http-domain-boundary-extension.md) 完成。Slice 5 的会话执行方式选择已部分实施。窗口、注册表和 MCP 远程对象仍待对应切片完成后替代当前契约。
+> 日期：2026-10-23，状态更新：Slice 1 已按 [ADR 1373](adr/1373-session-scoped-execution-workspace.md) 完成；Slice 2 的执行预设、网络 Ask 拆分、Files/HTTP/剪贴板/窗口 typed resource 与全局/工具级 `ResourcePolicy` 已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md)、[ADR 1377](adr/1377-once-only-http-domain-boundary-extension.md)、[ADR 1378](adr/1378-typed-clipboard-resource-boundary.md) 和 [ADR 1379](adr/1379-typed-window-resource-boundary.md) 实施。文件与 HTTP 一次性边界扩展也已完成。Slice 5 的会话执行方式选择已部分实施。注册表和 MCP 远程对象仍待对应切片完成后替代当前契约。
 > 决策入口：[ADR 1367](adr/1367-session-scoped-execution-policy-design.md)。实施状态只在[架构重构路线图](architecture-refactor-roadmap.md)维护。
 
 ## 1. 建议采用的模型
@@ -195,14 +195,14 @@ HTTP MCP 按远程 endpoint、账户和目标对象授权，不要求本机进�
 | 顺序 | 状态 | 完整切片 | 随切片删除的旧设计 | 验收重点 |
 |---|---|---|---|---|
 | 1 | 已完成（ADR 1373） | Session 创建/恢复 → 工作绑定 → Files/Shell/prompt 使用同一 run context | 全局活动 workspace 对会话的隐式影响 | 双会话、恢复、失效目录、切目录期间的 attempt 与后台任务 |
-| 2 | 核心完成（ADR 1374、1376–1378） | typed 资源契约 → 单一授权 → 文件/HTTP/剪贴板执行 | 参数名猜路径；network 中的 Ask；Plan 与审批偏好的混合；分散的资源配置字段 | Files 源/目标、HTTP origin 与剪贴板 read/write 已声明；剪贴板图片/文件来源也进入资源范围；全局/工具级策略已统一为 `ResourcePolicy`；文件写入只对收据中的精确目标扩展；HTTP 全局域名白名单只对当前调用的单个精确 origin 扩展；窗口、注册表与 MCP 远程对象等资源声明仍待完成 |
+| 2 | 核心完成，进行中（ADR 1374、1376–1379） | typed 资源契约 → 单一授权 → 文件/HTTP/剪贴板/窗口执行 | 参数名猜路径；network 中的 Ask；Plan 与审批偏好的混合；分散的资源配置字段 | Files 源/目标、HTTP origin、剪贴板 read/write 与输入来源、窗口与桌面资源均已声明；全局/工具级策略已统一为 `ResourcePolicy`；文件写入只对收据中的精确目标扩展；HTTP 全局域名白名单只对当前调用的单个精确 origin 扩展；注册表和 MCP 远程对象资源声明仍待完成 |
 | 3 | 部分完成（ADR 1368） | 将已有 MXC 工作接入统一执行环境，并盘点其他进程路径 | 将静态隔离声明视作已实施证明；隔离失败后的宽权限回退 | Shell 隔离已独立实现；其余子进程路径与统一 capability 报告待盘点 |
 | 4 | 部分完成 | 拆解 MCP exposure → 原生/Code Mode 共用资源契约与 journal | server 级 Legacy/CodeMode 常规选择及重复授权分支 | CodeMode 子调用已复用授权和 durable journal；exposure 枚举拆分及资源合同仍待完成 |
-| 5 | 已完成（ADR 1374、1376–1378） | 标题区执行方式、权限明细、规范资源策略和具体边界扩展 | 旧 permission/sandbox/network 三组模式及重复目录入口 | 设置页统一编辑全局文件/网络策略；边界扩展只作用于收据绑定的文件目标或 HTTP origin；剪贴板授权区分读取、写入和输入来源 |
+| 5 | 已完成（ADR 1374、1376–1379） | 标题区执行方式、权限明细、规范资源策略和具体边界扩展 | 旧 permission/sandbox/network 三组模式及重复目录入口 | 设置页统一编辑全局文件/网络策略；边界扩展只作用于收据绑定的文件目标或 HTTP origin；剪贴板授权区分读取、写入和输入来源；窗口授权区分桌面读/截图与具体窗口读/交互/关闭 |
 
-切片 1 已落地；Slice 2 已将旧 `PermissionMode` 收敛为会话级执行预设，将网络 `Ask` 移出资源策略，并完成规范策略、精确文件边界扩展、全局 HTTP 域名白名单的一次性 origin 扩展及剪贴板 typed 资源。窗口、注册表和 MCP 远程对象仍需后续切片补齐。MXC 的 Shell 支持已按 ADR 1368 独立完成；剩余进程路径盘点仍属于 Slice 3。
+切片 1 已落地；Slice 2 已将旧 `PermissionMode` 收敛为会话级执行预设，将网络 `Ask` 移出资源策略，并完成规范策略、精确文件边界扩展、全局 HTTP 域名白名单的一次性 origin 扩展、剪贴板与窗口 typed 资源。注册表和 MCP 远程对象仍需后续切片补齐。MXC 的 Shell 支持已按 ADR 1368 独立完成；剩余进程路径盘点仍属于 Slice 3。
 
-会话目录和执行方式都复用 `session_events`，未改数据库 schema，**无需重置任何数据**。Slice 2 的配置与授权改动已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 记录；后续切片仍需逐片记录契约处理：
+会话目录和执行方式都复用 `session_events`，未改数据库 schema，**无需重置任何数据**。Slice 2 的配置与授权改动已按 [ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md) 及其后续 ADR 记录；后续切片仍需逐片记录契约处理：
 
 - 会话绑定和新增事件按仓库 schema/事件规则版本化；若变更 schema，遵守现有“不做运行时迁移”的数据库完整备份/重置流程，不能在本提案中承诺升级保留历史。
 - 替换安全配置时只转换能保守映射的值；无法确定资源范围的旧 allow 必须失效并要求重新授权，旧 deny 保守保留。`full_access` 不能直接变成永久的无范围本机授权，`autonomous` 不能映射成自动批准所有操作。

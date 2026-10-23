@@ -1,11 +1,163 @@
 use async_trait::async_trait;
-use haven_common::types::RiskLevel;
+use haven_common::types::{DesktopAccess, RiskLevel, WindowAccess};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
-use super::ui_automation::UIA_CONTROL_TYPE_NAMES;
+use super::ui_automation::{UIA_CONTROL_TYPE_NAMES, window_element_query};
 use super::{WindowParams, WindowTool};
-use crate::{Tool, ToolConcurrency, ToolResult};
+use crate::security::DeclaredResource;
+use crate::{Tool, ToolConcurrency, ToolExecutionContext, ToolResult};
+
+struct ResolvedWindowTarget {
+    window_id: String,
+    process_id: u32,
+    element_token: Option<String>,
+}
+
+struct WindowAuthorizationResources {
+    resources: Vec<DeclaredResource>,
+    target: Option<ResolvedWindowTarget>,
+}
+
+fn resolve_window_authorization(
+    params: &WindowParams,
+) -> Result<WindowAuthorizationResources, String> {
+    let operation = params.operation.unwrap_or(super::WindowOperation::List);
+    let mut resources = Vec::new();
+    let target_access = match operation {
+        super::WindowOperation::Focus => Some(WindowAccess::Interact),
+        super::WindowOperation::Close => Some(WindowAccess::Close),
+        super::WindowOperation::UiTree | super::WindowOperation::Observe => {
+            Some(WindowAccess::Read)
+        }
+        super::WindowOperation::Wait
+            if params.condition == Some(super::WaitCondition::UiText)
+                && params
+                    .title
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()) =>
+        {
+            Some(WindowAccess::Read)
+        }
+        super::WindowOperation::Invoke
+        | super::WindowOperation::SetValue
+        | super::WindowOperation::Toggle
+        | super::WindowOperation::Select => Some(WindowAccess::Interact),
+        _ => None,
+    };
+
+    let target = if let Some(access) = target_access {
+        let target = match operation {
+            super::WindowOperation::Invoke
+            | super::WindowOperation::SetValue
+            | super::WindowOperation::Toggle
+            | super::WindowOperation::Select => {
+                let query = window_element_query(params).map_err(|error| error.to_string())?;
+                let element =
+                    super::resolve_ui_element(&query).map_err(|error| error.to_string())?;
+                let (window_id, process_id) =
+                    super::platform::resolve_window_identity(Some(&element.window_id), None, None)
+                        .map_err(|error| error.to_string())?;
+                ResolvedWindowTarget {
+                    window_id,
+                    process_id,
+                    element_token: Some(element.element_token),
+                }
+            }
+            super::WindowOperation::Focus | super::WindowOperation::Close => {
+                let title = params
+                    .title
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty());
+                let process_id = validated_process_id(params)?;
+                let (window_id, process_id) = super::platform::resolve_window_identity(
+                    params.window_id.as_deref(),
+                    title,
+                    process_id,
+                )
+                .map_err(|error| error.to_string())?;
+                ResolvedWindowTarget {
+                    window_id,
+                    process_id,
+                    element_token: None,
+                }
+            }
+            super::WindowOperation::UiTree
+            | super::WindowOperation::Observe
+            | super::WindowOperation::Wait => {
+                let title = params
+                    .title
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty());
+                let process_id = validated_process_id(params)?;
+                let (window_id, process_id) =
+                    if params.window_id.is_some() || title.is_some() || process_id.is_some() {
+                        super::platform::resolve_window_identity(
+                            params.window_id.as_deref(),
+                            title,
+                            process_id,
+                        )
+                    } else {
+                        super::platform::resolve_foreground_window_identity()
+                    }
+                    .map_err(|error| error.to_string())?;
+                ResolvedWindowTarget {
+                    window_id,
+                    process_id,
+                    element_token: None,
+                }
+            }
+            _ => unreachable!("only targeted operations request a window resource"),
+        };
+        let element_fingerprint = target
+            .element_token
+            .as_deref()
+            .map(fingerprint_element_token);
+        resources.push(DeclaredResource::Window {
+            window_id: target.window_id.clone(),
+            process_id: target.process_id,
+            access,
+            element_fingerprint,
+        });
+        Some(target)
+    } else {
+        None
+    };
+
+    match operation {
+        super::WindowOperation::List | super::WindowOperation::Foreground => {
+            resources.push(DeclaredResource::Desktop {
+                access: DesktopAccess::Read,
+            })
+        }
+        super::WindowOperation::Wait if target.is_none() => {
+            resources.push(DeclaredResource::Desktop {
+                access: DesktopAccess::Read,
+            })
+        }
+        super::WindowOperation::Screenshot => resources.push(DeclaredResource::Desktop {
+            access: DesktopAccess::Capture,
+        }),
+        super::WindowOperation::Observe => resources.push(DeclaredResource::Desktop {
+            access: DesktopAccess::Capture,
+        }),
+        _ => {}
+    }
+    Ok(WindowAuthorizationResources { resources, target })
+}
+
+fn validated_process_id(params: &WindowParams) -> Result<Option<u32>, String> {
+    match params.pid {
+        Some(pid) if (1..=u32::MAX as i64).contains(&pid) => Ok(Some(pid as u32)),
+        Some(_) => Err("pid must be a positive 32-bit integer".into()),
+        None => Ok(None),
+    }
+}
+
+fn fingerprint_element_token(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
 
 #[async_trait]
 impl Tool for WindowTool {
@@ -26,6 +178,14 @@ impl Tool for WindowTool {
             }
             _ => RiskLevel::Low,
         }
+    }
+
+    fn authorization_resources(&self, input: &Value) -> Result<Vec<DeclaredResource>, String> {
+        let mut input = input.clone();
+        crate::tool_contract::strip_private_tool_fields(&mut input);
+        let params = crate::tool_contract::parse_tool_input::<WindowParams>(&self.name(), input)
+            .map_err(|error| error.to_string())?;
+        Ok(resolve_window_authorization(&params)?.resources)
     }
 
     fn requires_session_id(&self) -> bool {
@@ -209,6 +369,46 @@ impl Tool for WindowTool {
     /// land in the same implementation as entry ①.
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
         let params = crate::tool_contract::parse_tool_input::<WindowParams>(&self.name(), input)?;
+        self.run(params, cancel).await
+    }
+
+    async fn execute_with_authorization_context(
+        &self,
+        input: Value,
+        cancel: CancellationToken,
+        target_binding: Option<&str>,
+        context: &ToolExecutionContext,
+    ) -> anyhow::Result<ToolResult> {
+        if target_binding.is_some() {
+            anyhow::bail!("window operations do not accept a remote execution target binding");
+        }
+        let session_id = input
+            .get("_session_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let mut authorization_input = input;
+        crate::tool_contract::strip_private_tool_fields(&mut authorization_input);
+        let mut params = crate::tool_contract::parse_tool_input::<WindowParams>(
+            &self.name(),
+            authorization_input,
+        )?;
+        params.session_id = session_id;
+        let resolved = resolve_window_authorization(&params).map_err(anyhow::Error::msg)?;
+        if resolved.resources != context.authorized_resources() {
+            anyhow::bail!("window resources no longer match their authorization proof");
+        }
+        let _permit = context
+            .acquire_execution_policy_permit()
+            .await
+            .map_err(anyhow::Error::msg)?
+            .ok_or_else(|| anyhow::anyhow!("window access requires proof-derived authorization"))?;
+        if let Some(target) = resolved.target {
+            params.window_id = Some(target.window_id);
+            params.pid = Some(target.process_id as i64);
+            if let Some(element_token) = target.element_token {
+                params.element_token = Some(element_token);
+            }
+        }
         self.run(params, cancel).await
     }
 }

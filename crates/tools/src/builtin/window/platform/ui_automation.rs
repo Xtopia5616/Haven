@@ -3,7 +3,7 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use super::window_list::{
-    find_window_by_title, hwnd_from_window_id, visible_window_title, window_id,
+    find_window, find_window_by_title, hwnd_from_window_id, visible_window_title, window_id,
 };
 
 const UIA_E_FAIL: windows::core::HRESULT = windows::core::HRESULT(0x8000_4005_u32 as i32);
@@ -546,18 +546,25 @@ fn enumerate_ui_tree_once(
 }
 
 /// Early-exit name scan for `wait`/`ui_text` — no JSON materialization.
-pub(crate) fn any_ui_name_contains(title: Option<&str>, needle: &str) -> anyhow::Result<bool> {
+pub(crate) fn any_ui_name_contains(
+    window_id: Option<&str>,
+    title: Option<&str>,
+    pid: Option<u32>,
+    needle: &str,
+) -> anyhow::Result<bool> {
     use windows::Win32::Foundation::HWND as WinHwnd;
     use windows::Win32::System::Com::*;
     use windows::Win32::UI::Accessibility::*;
 
     let _com = ComApartmentGuard::initialize_mta()?;
 
-    let target_hwnd: HWND = if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
-        let hwnd = find_window_by_title(t.trim())?;
-        if hwnd.is_null() {
+    let target_hwnd: HWND = if window_id.is_some()
+        || title.is_some_and(|value| !value.trim().is_empty())
+        || pid.is_some()
+    {
+        let Some(hwnd) = find_window(window_id, title, pid)? else {
             return Ok(false);
-        }
+        };
         hwnd
     } else {
         unsafe { GetForegroundWindow() }

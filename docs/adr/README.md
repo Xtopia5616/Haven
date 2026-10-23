@@ -1282,3 +1282,4 @@
 - [1376：统一资源策略与本次边界扩展](1376-canonical-resource-policy-and-boundary-extension.md)
 - [1377：HTTP 全局域名边界的一次性扩展](1377-once-only-http-domain-boundary-extension.md)
 - [1378：剪贴板 typed 资源边界](1378-typed-clipboard-resource-boundary.md)
+- [1379：窗口与桌面 typed 资源边界](1379-typed-window-resource-boundary.md)

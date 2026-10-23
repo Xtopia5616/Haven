@@ -208,7 +208,8 @@ pub(crate) use security::AuthorizationEngine;
 pub use security::{
     AuthorizationCheck, AuthorizationDecision, AuthorizationExecutionProof, AuthorizationPort,
     AuthorizationReasonCode, AuthorizationRequest, ClipboardAccess, ConfirmationReceipt,
-    DeclaredResource, LocalPathAccess, is_safe_local_path, permission_prompt_summary,
+    DeclaredResource, DesktopAccess, LocalPathAccess, WindowAccess, is_safe_local_path,
+    permission_prompt_summary,
 };
 #[cfg(windows)]
 pub(crate) use shell_runtime::CREATE_NO_WINDOW;

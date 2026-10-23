@@ -1,7 +1,9 @@
 use super::*;
 use crate::ManagedAssetRegistry;
 use crate::Tool;
+use crate::ToolExecutionContext;
 use crate::builtin::media::MediaTool;
+use crate::security::{DeclaredResource, DesktopAccess};
 use haven_common::types::RiskLevel;
 use serde_json::json;
 
@@ -44,6 +46,72 @@ fn test_window_tool_risk_level() {
         RiskLevel::Low
     );
     assert_eq!(t.risk_level(&json!({"operation": "wait"})), RiskLevel::Low);
+}
+
+#[test]
+fn window_authorization_resources_distinguish_desktop_read_and_capture() {
+    let tool = tool();
+    assert_eq!(
+        tool.authorization_resources(&json!({"operation": "list"}))
+            .unwrap(),
+        vec![DeclaredResource::Desktop {
+            access: DesktopAccess::Read,
+        }]
+    );
+    assert_eq!(
+        tool.authorization_resources(&json!({"operation": "screenshot"}))
+            .unwrap(),
+        vec![DeclaredResource::Desktop {
+            access: DesktopAccess::Capture,
+        }]
+    );
+    assert_eq!(
+        tool.authorization_resources(&json!({
+            "operation": "wait",
+            "condition": "title_contains",
+            "text": "Haven"
+        }))
+        .unwrap(),
+        vec![DeclaredResource::Desktop {
+            access: DesktopAccess::Read,
+        }]
+    );
+}
+
+#[test]
+fn targeted_window_mutations_require_a_concrete_selector_before_authorization() {
+    let tool = tool();
+    assert!(
+        tool.authorization_resources(&json!({"operation": "focus"}))
+            .unwrap_err()
+            .contains("selector")
+    );
+    assert!(
+        tool.authorization_resources(&json!({"operation": "close"}))
+            .unwrap_err()
+            .contains("selector")
+    );
+}
+
+#[tokio::test]
+async fn window_execution_rejects_resources_that_differ_from_the_proof() {
+    let tool = tool();
+    let context = ToolExecutionContext {
+        authorized_resources: vec![DeclaredResource::Desktop {
+            access: DesktopAccess::Read,
+        }],
+        ..Default::default()
+    };
+    let error = tool
+        .execute_with_authorization_context(
+            json!({"operation": "screenshot"}),
+            CancellationToken::new(),
+            None,
+            &context,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("no longer match"));
 }
 
 #[test]
