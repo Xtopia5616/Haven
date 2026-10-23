@@ -1065,6 +1065,7 @@ mod tests {
         let receiver = service.subscribe().unwrap();
         let hooks = super::super::LifecycleHooksConfig {
             run_start: vec![super::super::HookCommand {
+                enabled: true,
                 command: "hook.exe".into(),
                 args: vec!["--run-start".into()],
                 matcher: None,

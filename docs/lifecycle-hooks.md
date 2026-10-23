@@ -9,6 +9,7 @@ Commands start directly with literal arguments. Haven does not invoke a shell, e
 ```toml
 [[hooks.pre_tool_use]]
 command = "pwsh.exe"
+enabled = true # default; set false to pause without removing the command
 args = ["-NoProfile", "-File", "C:/Users/me/haven-hooks/check-tool.ps1"]
 matcher = "shell"
 
@@ -17,6 +18,60 @@ command = "C:/Tools/haven-session-note.exe"
 ```
 
 Settings lets you add/remove Hook commands, edit the executable and literal arguments, configure tool matchers, and review the active security policy. Arguments are entered one per line in the UI. `matcher` is optional; omit it to match every tool. `*` matches any sequence of characters, so patterns such as `mcp_*.search` are supported. Matching is case-sensitive.
+
+You can pause individual commands, duplicate them, reorder them, filter by event, and start from PowerShell, Python, or Node.js launch templates. Templates fill executable/argument fields; create the script yourself or change the path to an existing script. Paths relative to the command's working directory refer to the active execution workspace, including for user-level hooks. Do not add shell quotes around individual arguments.
+
+The local matcher preview never starts a process. Events other than tool events have no tool name: only an omitted matcher or the literal `*` matches them. The editor warns about other patterns on those events. Paused commands retain their position, arguments and matcher, still count toward the eight-command limit, and must still pass configuration validation. Pausing takes effect after saving and applies to subsequent events; it does not cancel an already running command.
+
+The import/export section uses a JSON object keyed by event name (the same object as `hooks`, without an outer `hooks` wrapper). Import replaces only the unsaved user-level draft; review it and save explicitly to activate it. Omitted events become empty lists. Omitted `enabled`, `args` and `matcher` use `true`, `[]` and `null`. Unknown events/fields, invalid types, invalid commands, more than eight commands per event, and imports above 8 MiB are rejected without changing the draft. Project workspace trust is never imported. Export text contains executable paths and arguments; inspect it before sharing.
+
+```json
+{
+  "run_end": [
+    { "enabled": false, "command": "node.exe", "args": ["scripts/hook.mjs"], "matcher": null }
+  ]
+}
+```
+
+Field validation covers UTF-8 byte limits, control characters, argument count and matcher whitespace. Errors remain blocking even when their event is hidden by the filter. A failed save preserves the editor and draft for correction or retry; “Discard changes” restores the last successfully loaded/saved configuration.
+
+## Script starters
+
+Each script reads the JSON object to EOF. These minimal starters allow tool calls; replace the decision with your own checks. Notification events ignore stdout. Keep scripts short: all commands for one event share the five-second budget. Debug messages belong on stderr because `pre_tool_use` parses stdout as its decision.
+
+PowerShell (`scripts/hook.ps1`, launched with `pwsh.exe -NoProfile -NonInteractive -File scripts/hook.ps1`):
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$eventData = [Console]::In.ReadToEnd() | ConvertFrom-Json
+if ($eventData.event -eq 'pre_tool_use') {
+    @{ decision = 'allow' } | ConvertTo-Json -Compress
+}
+```
+
+Python (`scripts/hook.py`, launched with `python.exe scripts/hook.py`):
+
+```python
+import json
+import sys
+
+event = json.load(sys.stdin)
+if event['event'] == 'pre_tool_use':
+    print(json.dumps({'decision': 'allow'}))
+```
+
+Node.js (`scripts/hook.mjs`, launched with `node.exe scripts/hook.mjs`):
+
+```javascript
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+const event = JSON.parse(input);
+if (event.event === 'pre_tool_use') {
+  process.stdout.write(JSON.stringify({ decision: 'allow' }));
+}
+```
+
+Use `post_tool_use` for local audit checks based on `success`, `run_end` for completion integrations based on `run_outcome`, and `post_compact` for compaction metrics. Notification hooks cannot change Haven state through their response. For example, inspect `event.run_outcome === 'completed'` in a `run_end` script before updating a local completion indicator. Never insert raw tool input into executable code or shell command strings.
 
 User-level command lists run before project-level lists for each event. Within each list, commands run in their configured order. `pre_tool_use` stops at the first deny or failure. Notification events attempt each configured command in order, subject to the event-wide five-second limit.
 
@@ -55,6 +110,8 @@ Haven reads the project file through its pinned workspace directory handle and r
 `pre_tool_use` fails closed: if a matching hook cannot run, exits unsuccessfully, times out, is cancelled, is rejected by policy, or returns invalid JSON, the tool does not run. Other events are notifications: a Hook failure is logged as a static error code and does not change the primary operation. A user Hook failure does not prevent later matching notification hooks from being attempted unless the event deadline is exhausted.
 
 The Settings diagnostics panel keeps bounded, in-memory counters per event: event runs, command runs, failures, denials, last outcome, and a static failure code. It never stores executable paths, arguments, payloads, stdout, stderr, or denial text. Counters reset when Haven exits.
+
+Diagnostics distinguish a failed `pre_tool_use` (tool blocked) from a failed notification (primary operation continues), and show a suggested next step for static failure codes: executable/script paths, policy changes, invalid stdout, event time budget, output cap, project configuration and workspace availability. The denial counter counts explicit script denials; failures are counted separately. While an event is in progress its last outcome is unset.
 
 ## Execution boundary
 

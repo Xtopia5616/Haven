@@ -42,6 +42,9 @@ impl LifecycleHooksConfig {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookCommand {
+    /// Disabled commands remain validated and ordered, but never execute.
+    #[serde(default = "hook_enabled_by_default")]
+    pub enabled: bool,
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -49,10 +52,15 @@ pub struct HookCommand {
     pub matcher: Option<String>,
 }
 
+fn hook_enabled_by_default() -> bool {
+    true
+}
+
 impl std::fmt::Debug for HookCommand {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("HookCommand")
+            .field("enabled", &self.enabled)
             .field("command", &"<redacted>")
             .field(
                 "args",
@@ -145,13 +153,35 @@ mod tests {
 
         assert_eq!(hooks.pre_tool_use.len(), 1);
         assert_eq!(hooks.pre_tool_use[0].command, "pwsh.exe");
+        assert!(hooks.pre_tool_use[0].enabled);
         assert_eq!(hooks.pre_tool_use[0].matcher.as_deref(), Some("shell"));
+    }
+
+    #[test]
+    fn disabled_hooks_round_trip_and_still_require_valid_commands() {
+        let hooks =
+            parse_project_hooks("[[hooks.run_start]]\ncommand = 'hook.exe'\nenabled = false")
+                .unwrap();
+        assert!(!hooks.run_start[0].enabled);
+        let encoded = toml::to_string(&ProjectHooksFileForTest { hooks: &hooks }).unwrap();
+        assert_eq!(parse_project_hooks(&encoded).unwrap(), hooks);
+        assert!(parse_project_hooks("[[hooks.run_start]]\ncommand = ''\nenabled = false").is_err());
+        assert!(
+            parse_project_hooks("[[hooks.run_start]]\ncommand = 'hook.exe'\nenabled = 'false'")
+                .is_err()
+        );
+    }
+
+    #[derive(Serialize)]
+    struct ProjectHooksFileForTest<'a> {
+        hooks: &'a LifecycleHooksConfig,
     }
 
     #[test]
     fn project_hooks_accept_bounded_tool_globs_and_reject_control_characters() {
         let glob_matcher = LifecycleHooksConfig {
             pre_tool_use: vec![HookCommand {
+                enabled: true,
                 command: "hook.exe".into(),
                 args: Vec::new(),
                 matcher: Some("shell.*".into()),
@@ -162,6 +192,7 @@ mod tests {
 
         let invalid_matcher = LifecycleHooksConfig {
             pre_tool_use: vec![HookCommand {
+                enabled: true,
                 command: "hook.exe".into(),
                 args: Vec::new(),
                 matcher: Some("shell.\n*".into()),
@@ -172,6 +203,7 @@ mod tests {
 
         let invalid_command = LifecycleHooksConfig {
             pre_tool_use: vec![HookCommand {
+                enabled: true,
                 command: "hook.exe\n--unsafe".into(),
                 args: Vec::new(),
                 matcher: None,
@@ -184,6 +216,7 @@ mod tests {
     #[test]
     fn hook_debug_output_redacts_executable_and_arguments() {
         let hook = HookCommand {
+            enabled: true,
             command: "C:/private/secret.exe".into(),
             args: vec!["--token=secret".into()],
             matcher: Some("shell".into()),

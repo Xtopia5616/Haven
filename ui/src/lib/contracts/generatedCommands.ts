@@ -203,8 +203,8 @@ export const REQUEST_KIND_VALUES = ['chat', 'fast_chat', 'vision', 'audio_chat',
 export type RequestKind = (typeof REQUEST_KIND_VALUES)[number];
 export interface RequestPolicyInput { request?: RequestKindInput; primary?: string }
 export interface RequestPolicy { request: RequestKind; primary: string }
-export interface HookCommandInput { command: string; args?: string[]; matcher?: string | null }
-export interface HookCommand { command: string; args: string[]; matcher: string | null }
+export interface HookCommandInput { enabled?: boolean; command: string; args?: string[]; matcher?: string | null }
+export interface HookCommand { enabled: boolean; command: string; args: string[]; matcher: string | null }
 export interface LifecycleHooksConfigInput { pre_tool_use?: HookCommandInput[]; post_tool_use?: HookCommandInput[]; session_start?: HookCommandInput[]; run_start?: HookCommandInput[]; run_end?: HookCommandInput[]; pre_compact?: HookCommandInput[]; post_compact?: HookCommandInput[] }
 export interface LifecycleHooksConfig { pre_tool_use: HookCommand[]; post_tool_use: HookCommand[]; session_start: HookCommand[]; run_start: HookCommand[]; run_end: HookCommand[]; pre_compact: HookCommand[]; post_compact: HookCommand[] }
 export interface SettingsPatchInput { default_shell?: ShellChoiceInput | null; llm?: LlmConfigInput | null; hotkey?: HotkeyConfigInput | null; session?: SessionConfigInput | null; context_limits?: ContextLimitsConfigInput | null; memory?: MemoryConfigInput | null; security?: SecurityConfigInput | null; media?: MediaConfigInput | null; notification?: NotificationConfigInput | null; log?: LogConfigInput | null }
@@ -2376,6 +2376,10 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 						shape: { kind: 'array', items: {
 							kind: 'object',
 							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
 								'command': {
 									optional: false,
 									shape: { kind: 'string' },
@@ -2396,6 +2400,10 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 						shape: { kind: 'array', items: {
 							kind: 'object',
 							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
 								'command': {
 									optional: false,
 									shape: { kind: 'string' },
@@ -2416,6 +2424,10 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 						shape: { kind: 'array', items: {
 							kind: 'object',
 							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
 								'command': {
 									optional: false,
 									shape: { kind: 'string' },
@@ -2436,6 +2448,10 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 						shape: { kind: 'array', items: {
 							kind: 'object',
 							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
 								'command': {
 									optional: false,
 									shape: { kind: 'string' },
@@ -2456,6 +2472,10 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 						shape: { kind: 'array', items: {
 							kind: 'object',
 							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
 								'command': {
 									optional: false,
 									shape: { kind: 'string' },
@@ -2476,6 +2496,10 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 						shape: { kind: 'array', items: {
 							kind: 'object',
 							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
 								'command': {
 									optional: false,
 									shape: { kind: 'string' },
@@ -2496,6 +2520,10 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 						shape: { kind: 'array', items: {
 							kind: 'object',
 							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
 								'command': {
 									optional: false,
 									shape: { kind: 'string' },

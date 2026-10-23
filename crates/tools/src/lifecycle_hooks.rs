@@ -73,7 +73,13 @@ impl LifecycleHookService {
 
         let workspace = authorization.execution_workspace().await;
         let Some(workspace_root) = workspace.root().map(Path::to_path_buf) else {
-            if !snapshot.config.hooks.is_empty() {
+            if snapshot
+                .config
+                .hooks
+                .for_event(payload.event)
+                .iter()
+                .any(|hook| hook.enabled)
+            {
                 return self
                     .failure_decision(payload.event, "execution_workspace_unavailable")
                     .await;
@@ -97,7 +103,7 @@ impl LifecycleHookService {
             }
         }
 
-        hooks.retain(|hook| matcher_applies(hook, payload.tool_name.as_deref()));
+        hooks.retain(|hook| hook.enabled && matcher_applies(hook, payload.tool_name.as_deref()));
         if hooks.is_empty() {
             self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None);
             return LifecycleHookDecision::Allow;
@@ -647,6 +653,7 @@ mod tests {
     #[test]
     fn matcher_supports_exact_names_global_and_partial_wildcards() {
         let exact = HookCommand {
+            enabled: true,
             command: "hook.exe".into(),
             args: Vec::new(),
             matcher: Some("shell".into()),
@@ -775,6 +782,70 @@ mod tests {
         assert!(matches!(decision, LifecycleHookDecision::Deny { .. }));
     }
 
+    #[tokio::test]
+    async fn disabled_user_and_project_hooks_never_reach_process_authorization() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join(".haven")).unwrap();
+        let disabled = "[[hooks.pre_tool_use]]\ncommand = 'must-not-run.exe'\nenabled = false\n";
+        std::fs::write(directory.path().join(".haven/hooks.toml"), disabled).unwrap();
+        let config_path = directory.path().join("config.toml");
+        let trusted_root = directory.path().to_string_lossy().replace('\\', "/");
+        std::fs::write(
+            &config_path,
+            format!("trusted_hook_workspaces = ['{trusted_root}']\n{disabled}"),
+        )
+        .unwrap();
+        let config_service = Arc::new(
+            ConfigService::new_with_credential_store(
+                ConfigLoader::load_from(&config_path).unwrap(),
+                Arc::new(InMemoryCredentialStore::default()),
+            )
+            .unwrap(),
+        );
+        let hooks = LifecycleHookService::default();
+        hooks
+            .bind_config_service(Some(config_service.clone()))
+            .unwrap();
+        let authorization = Arc::new(AuthorizationEngine::new());
+        authorization
+            .switch_execution_workspace(directory.path())
+            .await
+            .unwrap();
+        // Default policy cannot launch Hook commands. A disabled veto must not
+        // turn this policy rejection into a denied tool call.
+        let mut payload = LifecycleHookPayload::new(LifecycleHookEvent::PreToolUse);
+        payload.tool_name = Some("shell".into());
+        assert_eq!(
+            hooks
+                .run(&authorization, payload.clone(), CancellationToken::new())
+                .await,
+            LifecycleHookDecision::Allow
+        );
+        assert_eq!(hooks.diagnostics()[0].command_runs, 0);
+        assert_eq!(
+            hooks.diagnostics()[0].last_outcome,
+            Some(LifecycleHookOutcome::NoHooks)
+        );
+
+        // Re-enabling a veto through the authoritative config takes effect on
+        // the next event and restores fail-closed policy enforcement.
+        let mut enabled = config_service.snapshot().unwrap().config.hooks.clone();
+        enabled.pre_tool_use[0].enabled = true;
+        config_service
+            .apply_patch(haven_common::config::ConfigPatch::LifecycleHooks(enabled))
+            .unwrap();
+        assert!(matches!(
+            hooks
+                .run(&authorization, payload, CancellationToken::new())
+                .await,
+            LifecycleHookDecision::Deny { .. }
+        ));
+        assert_eq!(
+            hooks.diagnostics()[0].last_failure_code.as_deref(),
+            Some("security_policy_denied")
+        );
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn configured_command_runs_directly_inside_process_containment() {
@@ -790,6 +861,7 @@ mod tests {
             .await
             .unwrap();
         let hook = HookCommand {
+            enabled: true,
             command: std::env::var("COMSPEC").unwrap(),
             args: vec!["/D".into(), "/C".into(), "echo lifecycle-hook-ok".into()],
             matcher: None,

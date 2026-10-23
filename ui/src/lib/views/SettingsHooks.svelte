@@ -2,6 +2,19 @@
 	import { onMount } from 'svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
+	import HookCommandEditor from './HookCommandEditor.svelte';
+	import HookConfigTransfer from './HookConfigTransfer.svelte';
+	import {
+		HOOK_EVENTS as EVENTS,
+		HOOK_TEMPLATES,
+		MAX_HOOKS_PER_EVENT,
+		emptyHooks,
+		createHook,
+		hookValidationErrors,
+		hookFailureHelp,
+		type HookListKey,
+		type HookTemplateKey,
+	} from '$lib/lifecycleHooksEditor.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import {
@@ -18,8 +31,6 @@
 	} from '$lib/contracts/generatedCommands.ts';
 
 	type HookSettings = TauriCommandResponse<'get_lifecycle_hooks_settings'>;
-	type HookListKey = keyof LifecycleHooksConfig;
-	const MAX_HOOKS_PER_EVENT = 8;
 	type DraftState = { dirty: boolean; save: () => Promise<boolean>; discard: () => void };
 	interface Props {
 		active: boolean;
@@ -28,63 +39,8 @@
 
 	let { active, onDraftState }: Props = $props();
 
-	const EVENTS: Array<{ key: HookListKey; label: string; description: string; veto: boolean }> = [
-		{
-			key: 'pre_tool_use',
-			label: 'PreToolUse',
-			description: '工具执行前运行；脚本可返回 allow 或 deny。任何失败都会阻止该工具。',
-			veto: true,
-		},
-		{
-			key: 'post_tool_use',
-			label: 'PostToolUse',
-			description: '工具完成后运行；脚本失败只记录诊断，不改变工具结果。',
-			veto: false,
-		},
-		{
-			key: 'session_start',
-			label: 'SessionStart',
-			description: 'Haven 进程中的会话 actor 首次开始执行时运行一次。',
-			veto: false,
-		},
-		{
-			key: 'run_start',
-			label: 'RunStart',
-			description: '每次 Agent 执行开始时运行。',
-			veto: false,
-		},
-		{
-			key: 'run_end',
-			label: 'RunEnd',
-			description: '每次 Agent 执行退出时运行；包含完成、暂停、取消或错误结果。',
-			veto: false,
-		},
-		{
-			key: 'pre_compact',
-			label: 'PreCompact',
-			description: '上下文压缩前运行；可读取压缩前 token 估算。',
-			veto: false,
-		},
-		{
-			key: 'post_compact',
-			label: 'PostCompact',
-			description: '压缩结果成功写入会话后运行；包含压缩前后的 token 估算。',
-			veto: false,
-		},
-	];
-
-	const EMPTY_HOOKS = (): LifecycleHooksConfig => ({
-		pre_tool_use: [],
-		post_tool_use: [],
-		session_start: [],
-		run_start: [],
-		run_end: [],
-		pre_compact: [],
-		post_compact: [],
-	});
-
 	let settings = $state<HookSettings | null>(null);
-	let hooks = $state<LifecycleHooksConfig>(EMPTY_HOOKS());
+	let hooks = $state<LifecycleHooksConfig>(emptyHooks());
 	let savedHooks = $state<LifecycleHooksConfig | null>(null);
 	let trustedWorkspaces = $state<string[]>([]);
 	let diagnostics = $state<LifecycleHookEventDiagnostics[]>([]);
@@ -92,6 +48,26 @@
 	let refreshing = $state(false);
 	let saving = $state(false);
 	let errorMessage = $state('');
+	let eventFilter = $state<HookListKey | 'all'>('all');
+	let template = $state<HookTemplateKey>('blank');
+	const validationErrors = $derived(
+		EVENTS.flatMap((event) =>
+			hooks[event.key].flatMap((hook, index) =>
+				hookValidationErrors(hook).map(
+					(error) => `${event.label} · 命令 ${index + 1}：${error}`,
+				),
+			),
+		),
+	);
+	const totalHooks = $derived(
+		EVENTS.reduce((total, event) => total + hooks[event.key].length, 0),
+	);
+	const enabledHooks = $derived(
+		EVENTS.reduce(
+			(total, event) => total + hooks[event.key].filter((hook) => hook.enabled).length,
+			0,
+		),
+	);
 	const hooksDirty = $derived(
 		savedHooks !== null && JSON.stringify(hooks) !== JSON.stringify(savedHooks),
 	);
@@ -105,11 +81,13 @@
 		errorMessage = '';
 		try {
 			const current = await getLifecycleHooksSettings();
-			settings = current;
-			hooks = structuredClone(current.hooks);
+			const draft = structuredClone(current.hooks);
+			const trusted = [...current.trusted_hook_workspaces];
+			hooks = draft;
 			savedHooks = structuredClone(current.hooks);
-			trustedWorkspaces = [...current.trusted_hook_workspaces];
+			trustedWorkspaces = trusted;
 			diagnostics = current.diagnostics;
+			settings = current;
 		} catch (error) {
 			errorMessage = '无法读取 Hook 设置。';
 			reportError(error, { context: 'SettingsHooks', message: errorMessage, log: false });
@@ -123,11 +101,16 @@
 		refreshing = true;
 		try {
 			const current = await getLifecycleHooksSettings();
-			settings = current;
-			trustedWorkspaces = [...current.trusted_hook_workspaces];
+			const trusted = [...current.trusted_hook_workspaces];
+			trustedWorkspaces = trusted;
 			diagnostics = current.diagnostics;
+			settings = current;
 		} catch (error) {
-			reportError(error, { context: 'SettingsHooks', message: '刷新 Hook 状态失败', log: false });
+			reportError(error, {
+				context: 'SettingsHooks',
+				message: '刷新 Hook 状态失败',
+				log: false,
+			});
 		} finally {
 			refreshing = false;
 		}
@@ -138,7 +121,8 @@
 	}
 
 	function addHook(key: HookListKey) {
-		replaceHookList(key, [...hooks[key], { command: '', args: [], matcher: null }]);
+		if (hooks[key].length >= MAX_HOOKS_PER_EVENT || saving) return;
+		replaceHookList(key, [...hooks[key], createHook(template)]);
 	}
 
 	function patchHook(key: HookListKey, index: number, patch: Partial<HookCommand>) {
@@ -151,7 +135,10 @@
 	}
 
 	function removeHook(key: HookListKey, index: number) {
-		replaceHookList(key, hooks[key].filter((_, currentIndex) => currentIndex !== index));
+		replaceHookList(
+			key,
+			hooks[key].filter((_, currentIndex) => currentIndex !== index),
+		);
 	}
 
 	function moveHook(key: HookListKey, index: number, offset: -1 | 1) {
@@ -163,11 +150,17 @@
 	}
 
 	async function saveDraft(): Promise<boolean> {
+		if (saving || loading || !settings) return false;
+		if (validationErrors.length) {
+			errorMessage = '请修正标出的字段后保存，停用的命令也需要有效配置。';
+			return false;
+		}
+		const submitted = $state.snapshot(hooks);
 		saving = true;
 		errorMessage = '';
 		try {
-			await saveLifecycleHooks(hooks);
-			savedHooks = structuredClone(hooks);
+			await saveLifecycleHooks(submitted);
+			savedHooks = structuredClone(submitted);
 			addNotification('Lifecycle Hooks 已保存并立即生效', 'success');
 			await refreshMetadata();
 			return true;
@@ -181,7 +174,7 @@
 	}
 
 	function discardDraft() {
-		if (savedHooks) hooks = structuredClone(savedHooks);
+		if (savedHooks) hooks = structuredClone($state.snapshot(savedHooks));
 		errorMessage = '';
 	}
 
@@ -215,13 +208,14 @@
 		}
 	}
 
-	function outcomeLabel(outcome: LifecycleHookEventDiagnostics['last_outcome']): string {
-		if (!outcome) return '尚未触发';
+	function outcomeLabel(item: LifecycleHookEventDiagnostics): string {
+		const outcome = item.last_outcome;
+		if (!outcome) return '执行中';
 		return {
 			no_hooks: '没有匹配的 Hook',
 			succeeded: '成功',
 			denied: '已拒绝工具',
-			failed_open: 'Hook 失败',
+			failed_open: item.event === 'pre_tool_use' ? '失败，已阻止工具' : '失败，主操作继续',
 		}[outcome];
 	}
 
@@ -244,12 +238,18 @@
 		description="Hook 命令继承 Haven 当前安全策略；只有 FullAccess 与开放网络同时启用时才会启动外部进程。"
 	>
 		<div class:allowed={hookExecutionAllowed} class="hook-policy" role="status">
-			<strong>{hookExecutionAllowed ? '当前策略允许 Hook 运行' : '当前策略会阻止 Hook 运行'}</strong>
+			<strong
+				>{!settings
+					? '尚未读取执行策略'
+					: hookExecutionAllowed
+						? '当前策略允许 Hook 运行'
+						: '当前策略会阻止 Hook 运行'}</strong
+			>
 			<span>
 				{#if hookExecutionAllowed}
 					命令仍通过 Haven 的进程授权与进程树清理边界启动。
 				{:else}
-					PreToolUse 会 fail-closed 并阻止工具；通知型事件会跳过 Hook 并记录诊断。
+					匹配到的启用 PreToolUse 无法启动时会阻止工具；通知型事件会跳过 Hook 并记录诊断。
 				{/if}
 			</span>
 		</div>
@@ -261,103 +261,111 @@
 	>
 		{#if loading}
 			<p class="hooks-muted">正在读取 Hook 配置…</p>
-		{:else if errorMessage}
+		{:else if !settings}
 			<p class="hooks-error" role="alert">{errorMessage}</p>
 			<MaterialButton variant="outlined" label="重试" onclick={() => void reload()} />
 		{:else}
-			{#each EVENTS as event (event.key)}
+			{#if errorMessage}<p class="hooks-error" role="alert">{errorMessage}</p>{/if}
+			<div class="hooks-toolbar">
+				<label
+					>事件筛选<select class="md-input" bind:value={eventFilter}
+						><option value="all">全部事件</option>{#each EVENTS as event}<option
+								value={event.key}>{event.label} ({hooks[event.key].length})</option
+							>{/each}</select
+					></label
+				>
+				<label
+					>新增命令模板<select class="md-input" bind:value={template}
+						>{#each Object.entries(HOOK_TEMPLATES) as [key, item]}<option value={key}
+								>{item.label}</option
+							>{/each}</select
+					></label
+				>
+				<span role="status"
+					>{enabledHooks} 条启用 / {totalHooks} 条配置{hooksDirty
+						? ' · 有未保存改动'
+						: ''}</span
+				>
+			</div>
+			{#if template !== 'blank'}<p class="hooks-note">
+					模板只填充启动参数。请在执行工作区创建对应 scripts/hook
+					脚本，或将参数改为已有脚本的绝对路径。
+				</p>{/if}
+			{#each EVENTS.filter((event) => eventFilter === 'all' || event.key === eventFilter) as event (event.key)}
 				<section class="hook-event" aria-labelledby={`hook-event-${event.key}`}>
 					<header class="hook-event__header">
 						<div>
-						<h3 id={`hook-event-${event.key}`}>{event.label}</h3>
-						<p>{event.description}</p>
-					</div>
+							<h3 id={`hook-event-${event.key}`}>{event.label}</h3>
+							<p>{event.description}</p>
+						</div>
 						<MaterialButton
 							variant="text"
 							label="添加 Hook"
-							disabled={hooks[event.key].length >= MAX_HOOKS_PER_EVENT}
+							disabled={saving || hooks[event.key].length >= MAX_HOOKS_PER_EVENT}
 							onclick={() => addHook(event.key)}
 						/>
 					</header>
-					{#if hooks[event.key].length === 0}
-						<p class="hooks-muted">尚未配置</p>
-					{/if}
+					<p class="hooks-muted">
+						{hooks[event.key].length} / {MAX_HOOKS_PER_EVENT} 条{hooks[event.key]
+							.length === 0
+							? ' · 尚未配置'
+							: ''}
+					</p>
 					{#each hooks[event.key] as hook, index (`${event.key}-${index}`)}
-						<div class="hook-command">
-							<div class="hook-command__title">
-								<strong>命令 {index + 1}</strong>
-								<div class="hook-command__actions">
-									<MaterialButton
-									variant="text"
-									label="上移"
-									disabled={index === 0}
-									onclick={() => moveHook(event.key, index, -1)}
-								/>
-									<MaterialButton
-									variant="text"
-									label="下移"
-									disabled={index === hooks[event.key].length - 1}
-									onclick={() => moveHook(event.key, index, 1)}
-								/>
-								<MaterialButton
-									variant="text"
-									label="删除"
-									onclick={() => removeHook(event.key, index)}
-								/>
-								</div>
-							</div>
-							<label>
-								<span>可执行文件</span>
-								<input
-									class="md-input"
-									value={hook.command}
-									placeholder="例如：pwsh.exe"
-									autocomplete="off"
-									oninput={(inputEvent) => patchHook(event.key, index, { command: inputEvent.currentTarget.value })}
-								/>
-							</label>
-							<label>
-								<span>参数（每行一个）</span>
-								<textarea
-									class="md-input hook-args"
-									value={hook.args.join('\n')}
-									placeholder={'-NoProfile\n-File\nscripts/hook.ps1'}
-									oninput={(inputEvent) =>
-										patchHook(event.key, index, {
-											args: inputEvent.currentTarget.value ? inputEvent.currentTarget.value.split('\n') : [],
-										})}
-								></textarea>
-							</label>
-							<label>
-								<span>工具 matcher</span>
-								<input
-									class="md-input"
-									value={hook.matcher ?? ''}
-									placeholder="留空匹配所有工具；例如 mcp_*.search"
-									autocomplete="off"
-									oninput={(inputEvent) =>
-										patchHook(event.key, index, {
-											matcher: inputEvent.currentTarget.value || null,
-										})}
-								/>
-							</label>
-							{#if event.veto}
-								<p class="hooks-note">非空 stdout 应为 JSON：&#123;"decision":"allow"&#125; 或 &#123;"decision":"deny","reason":"…"&#125;。</p>
-							{/if}
-						</div>
+						<HookCommandEditor
+							{hook}
+							{index}
+							count={hooks[event.key].length}
+							eventLabel={event.label}
+							veto={event.veto}
+							toolEvent={event.key === 'pre_tool_use' ||
+								event.key === 'post_tool_use'}
+							disabled={saving}
+							onPatch={(patch) => patchHook(event.key, index, patch)}
+							onMove={(offset) => moveHook(event.key, index, offset)}
+							onRemove={() => removeHook(event.key, index)}
+							onDuplicate={() => {
+								if (hooks[event.key].length < MAX_HOOKS_PER_EVENT)
+									replaceHookList(event.key, [
+										...hooks[event.key].slice(0, index + 1),
+										structuredClone($state.snapshot(hook)),
+										...hooks[event.key].slice(index + 1),
+									]);
+							}}
+						/>
 					{/each}
 				</section>
 			{/each}
+			{#if validationErrors.length}<p class="hooks-error" role="status">
+					有 {validationErrors.length} 项待修正（包含筛选隐藏的事件），请查看各命令下方提示。
+				</p>{/if}
+			<HookConfigTransfer
+				{hooks}
+				disabled={saving}
+				onImport={(draft: LifecycleHooksConfig) => {
+					hooks = draft;
+					errorMessage = '';
+					eventFilter = 'all';
+				}}
+			/>
 
 			<div class="hooks-save-row">
-				<p class="hooks-note">Hook 通过 stdin 接收 JSON。会话输入和工具结果可能含敏感内容，请只配置可信命令。</p>
+				<p class="hooks-note">
+					Hook 通过 stdin 接收 JSON。会话输入和工具结果可能含敏感内容，请只配置可信命令。
+				</p>
 				<MaterialButton
 					variant="filled"
-				label={saving ? '保存中…' : '保存 Hooks'}
-					disabled={saving}
+					label={saving ? '保存中…' : '保存 Hooks'}
+					disabled={saving || !hooksDirty || validationErrors.length > 0}
 					onclick={() => void saveDraft()}
 				/>
 			</div>
+			<MaterialButton
+				variant="text"
+				label="放弃改动"
+				disabled={saving || !hooksDirty}
+				onclick={discardDraft}
+			/>
 		{/if}
 	</SettingsSection>
 
@@ -366,12 +374,10 @@
 		description="信任目录后，目录中的 .haven/hooks.toml 才会加入配置。用户级 Hooks 先执行，项目级 Hooks 后执行。"
 	>
 		<div class="trust-actions">
-			<p class="hooks-note">项目 Hook 文件可由仓库内容修改，因此仅对你明确选择的本地目录启用。</p>
-			<MaterialButton
-				variant="outlined"
-				label="选择并信任目录"
-				onclick={trustWorkspace}
-			/>
+			<p class="hooks-note">
+				项目 Hook 文件可由仓库内容修改，因此仅对你明确选择的本地目录启用。
+			</p>
+			<MaterialButton variant="outlined" label="选择并信任目录" onclick={trustWorkspace} />
 		</div>
 		{#if trustedWorkspaces.length === 0}
 			<p class="hooks-muted">没有已信任的项目目录。</p>
@@ -397,7 +403,12 @@
 	>
 		<div class="diagnostics-toolbar">
 			<span>配置版本 {settings?.config_version ?? '—'}</span>
-			<MaterialButton variant="text" label="刷新" onclick={() => void refreshMetadata()} disabled={loading || refreshing} />
+			<MaterialButton
+				variant="text"
+				label="刷新"
+				onclick={() => void refreshMetadata()}
+				disabled={loading || refreshing}
+			/>
 		</div>
 		{#if diagnostics.length === 0}
 			<p class="hooks-muted">触发 Hook 后会在这里显示运行状态。</p>
@@ -406,11 +417,17 @@
 				{#each diagnostics as item (item.event)}
 					<div class="hook-diagnostic-row">
 						<strong>{item.event}</strong>
-						<span>{outcomeLabel(item.last_outcome)}</span>
+						<span>{outcomeLabel(item)}</span>
 						<span>事件 {item.event_runs} 次 · 命令 {item.command_runs} 次</span>
 						{#if item.failures || item.denials}
-							<small>失败 {item.failures} · 拒绝 {item.denials} · {item.last_failure_code ?? ''}</small>
+							<small
+								>失败 {item.failures} · 脚本拒绝 {item.denials} · {item.last_failure_code ??
+									''}</small
+							>
 						{/if}
+						{#if item.last_failure_code}<small
+								>{hookFailureHelp(item.last_failure_code)}</small
+							>{/if}
 					</div>
 				{/each}
 			</div>
@@ -419,13 +436,28 @@
 </div>
 
 <style>
+	.hooks-toolbar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: end;
+		gap: 0.75rem;
+		margin-bottom: 0.8rem;
+	}
+	.hooks-toolbar label {
+		display: grid;
+		gap: 0.35rem;
+		font-size: 0.875rem;
+	}
+	.hooks-toolbar span {
+		font-size: 0.8125rem;
+		color: var(--md-sys-color-on-surface-variant);
+	}
 	.settings-hooks {
 		display: grid;
 		gap: 1rem;
 	}
 	.hook-policy,
-	.hook-event,
-	.hook-command {
+	.hook-event {
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: 0.75rem;
 		padding: 0.9rem;
@@ -453,8 +485,6 @@
 		margin-top: 0.9rem;
 	}
 	.hook-event__header,
-	.hook-command__title,
-	.hook-command__actions,
 	.trust-actions,
 	.diagnostics-toolbar,
 	.trusted-workspaces li {
@@ -463,31 +493,12 @@
 		justify-content: space-between;
 		gap: 0.75rem;
 	}
-	.hook-command__actions {
-		margin-left: auto;
-	}
 	.hook-event__header h3 {
 		margin: 0;
 		font-size: 1rem;
 	}
 	.hook-event__header p {
 		margin: 0.3rem 0 0;
-	}
-	.hook-command {
-		display: grid;
-		gap: 0.75rem;
-		margin-top: 0.65rem;
-		background: var(--md-sys-color-surface-container-low);
-	}
-	.hook-command label {
-		display: grid;
-		gap: 0.35rem;
-		font-size: 0.875rem;
-	}
-	.hook-args {
-		min-height: 5rem;
-		resize: vertical;
-		font-family: var(--font-mono, monospace);
 	}
 	.hooks-save-row {
 		display: flex;

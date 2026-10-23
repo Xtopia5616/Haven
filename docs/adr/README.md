@@ -1275,3 +1275,4 @@
 - [1369：移除生成采样参数配置](1369-remove-generation-sampling-configuration.md)
 - [1370：Agent 模型消费者共享运行时发布点](1370-share-agent-model-runtime.md)
 - [1371：扩展生命周期 Hooks 的管理与事件覆盖](1371-expand-lifecycle-hooks.md)
+- [1372：完善 Lifecycle Hook 编写、复用与排错流程](1372-lifecycle-hook-authoring-workflow.md)

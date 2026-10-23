@@ -1320,6 +1320,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
         config.hooks.pre_tool_use.push(HookCommand {
+            enabled: true,
             command: "pwsh.exe".into(),
             args: vec!["-NoProfile".into(), "-File".into(), "hook.ps1".into()],
             matcher: Some("shell".into()),
