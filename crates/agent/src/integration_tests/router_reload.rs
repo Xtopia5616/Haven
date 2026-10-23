@@ -136,7 +136,7 @@ async fn router_reload_reaches_title_inference_prompt_recall_and_index() {
     .unwrap();
 
     let (b, client_b) = generation("B").await;
-    agent.replace_router(b.clone()).unwrap();
+    agent.replace_router_for_test(b.clone()).unwrap();
     client_a.release.notify_one();
     assert_eq!(in_flight.await.unwrap().as_deref(), Some("A"));
     assert!(Arc::ptr_eq(&agent.react_engine.router(), &b));
@@ -185,7 +185,7 @@ async fn router_reload_reaches_title_inference_prompt_recall_and_index() {
     assert_eq!(client_b.embeddings.load(Ordering::SeqCst), 3);
 
     let (revoked, revoked_client) = generation("revoked").await;
-    agent.replace_router(revoked).unwrap();
+    agent.replace_router_for_test(revoked).unwrap();
     assert!(title.generate(&["hello".into()]).await.is_none());
     assert!(agent.memory_worker.fast_chat_for_test().await.is_err());
     memory
@@ -200,7 +200,7 @@ async fn router_reload_reaches_title_inference_prompt_recall_and_index() {
     assert_eq!(client_b.embeddings.load(Ordering::SeqCst), 3);
 
     let unconfigured = Arc::new(LlmRouter::new(haven_common::config::RouterConfig::default()));
-    agent.replace_router(unconfigured).unwrap();
+    agent.replace_router_for_test(unconfigured).unwrap();
     assert!(title.generate(&["hello".into()]).await.is_none());
     assert_eq!(memory.current_embedding_model().await, "");
     memory

@@ -49,6 +49,7 @@ const MAX_INSPECT_HASH_BYTES: u64 = 64 * 1024 * 1024;
 
 pub struct FilesTool {
     summarizer: Option<Arc<LlmRouter>>,
+    model_media_runtime: Option<haven_llm::ModelMediaRuntime>,
     max_output_chars: usize,
     max_full_file_bytes: u64,
     max_patch_file_bytes: u64,
@@ -70,6 +71,7 @@ impl Default for FilesTool {
     fn default() -> Self {
         Self {
             summarizer: None,
+            model_media_runtime: None,
             max_output_chars: 20_000,
             max_full_file_bytes: 128_000,
             max_patch_file_bytes: 8 * 1024 * 1024,
@@ -209,6 +211,7 @@ impl FilesTool {
     ) -> Self {
         Self {
             summarizer,
+            model_media_runtime: None,
             max_output_chars,
             max_full_file_bytes: max_full_file_bytes.min(MAX_FILE_OPERATION_BYTES),
             max_patch_file_bytes: max_patch_file_bytes.clamp(1, MAX_FILE_OPERATION_BYTES),
@@ -229,6 +232,14 @@ impl FilesTool {
 
     pub(crate) fn with_media_tool(mut self, media_tool: Arc<MediaTool>) -> Self {
         self.media_tool = Some(media_tool);
+        self
+    }
+
+    pub(crate) fn with_model_media_runtime(
+        mut self,
+        runtime: Option<haven_llm::ModelMediaRuntime>,
+    ) -> Self {
+        self.model_media_runtime = runtime;
         self
     }
 
@@ -300,6 +311,14 @@ impl FilesTool {
         cancel: CancellationToken,
         context: &crate::ToolExecutionContext,
     ) -> anyhow::Result<ToolResult> {
+        let model_media = self
+            .model_media_runtime
+            .as_ref()
+            .map(haven_llm::ModelMediaRuntime::snapshot);
+        let summarizer = model_media
+            .as_ref()
+            .map(|snapshot| snapshot.router().clone())
+            .or_else(|| self.summarizer.clone());
         let op = params.operation.unwrap_or(FilesOperation::Read);
         let mutates_files = matches!(
             op,
@@ -576,7 +595,7 @@ impl FilesTool {
                     params.focus.as_deref(),
                     input_budget,
                     self.max_line_bytes,
-                    self.summarizer.clone(),
+                    summarizer,
                     cancel.clone(),
                     self.summary_timeout_secs,
                 )

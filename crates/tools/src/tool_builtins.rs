@@ -51,17 +51,12 @@ impl ToolBuiltins {
         runtime: &ToolRuntime,
         platform: Arc<PlatformRuntime>,
         capabilities: ToolCapabilitySnapshot,
+        model_media_snapshot: Option<Arc<haven_llm::ModelMediaSnapshot>>,
     ) -> BuiltinContext {
         let settings = platform.tool_settings.clone();
         let limits = platform.context_limits.clone();
-        let router = platform.router.clone();
         let admin_context = platform.admin_context.clone();
         let input_pipeline = platform.input_pipeline.clone();
-        let stt_client = platform.stt_client.clone();
-        let ocr_client = platform.ocr_client.clone();
-        let image_gen_client = platform.image_gen_client.clone();
-        let media_config = platform.media_config.clone();
-        let tts_client = platform.tts_client.clone();
 
         BuiltinContext {
             skill_registry: self.skill_registry.clone(),
@@ -83,13 +78,9 @@ impl ToolBuiltins {
             managed_assets: runtime.managed_assets.clone(),
             authorization: core.authorization.clone(),
             media: MediaDeps {
-                router,
+                model_media_runtime: platform.model_media_runtime.clone(),
+                model_media_snapshot,
                 input_pipeline,
-                stt_client,
-                ocr_client,
-                image_gen_client,
-                tts_client,
-                config: media_config,
                 capabilities: capabilities.media,
             },
             tool_runs: ToolRunDeps {

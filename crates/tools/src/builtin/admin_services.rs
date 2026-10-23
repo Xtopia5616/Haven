@@ -537,7 +537,9 @@ impl AdminServices {
             }
         }
 
-        let models = if let Some(router) = &self.context.router {
+        let models = if let Some(model_media_runtime) = &self.context.model_media_runtime {
+            let model_media = model_media_runtime.snapshot();
+            let router = model_media.router();
             let route_details = router.request_route_diagnostics().await;
             let configured = route_details
                 .iter()

@@ -221,6 +221,7 @@ pub struct MediaTool {
     max_bytes: u64,
     timeout_secs: u64,
     max_output_chars: usize,
+    model_media_runtime: Option<haven_llm::ModelMediaRuntime>,
 }
 
 impl MediaTool {
@@ -257,6 +258,7 @@ impl MediaTool {
             max_bytes: max_bytes.min(MAX_FILE_OPERATION_BYTES),
             timeout_secs,
             max_output_chars: max_output_chars.max(1),
+            model_media_runtime: None,
         }
     }
 
@@ -307,6 +309,51 @@ impl MediaTool {
         self.capabilities.speak = audio_runtime.tts_available();
         self.audio_runtime = audio_runtime;
         self
+    }
+
+    pub(crate) fn with_model_media_runtime(
+        mut self,
+        runtime: Option<haven_llm::ModelMediaRuntime>,
+    ) -> Self {
+        self.model_media_runtime = runtime;
+        self
+    }
+
+    async fn for_model_media_snapshot(&self) -> Option<MediaTool> {
+        let runtime = self.model_media_runtime.as_ref()?;
+        let snapshot = runtime.snapshot();
+        let config = snapshot.media_config();
+        let audio_runtime = Arc::new(
+            self.audio_runtime
+                .with_tts_client(snapshot.tts_client().cloned()),
+        );
+        let capabilities = crate::runtime_capabilities::resolve_model_media_capabilities(
+            Some(&snapshot),
+            audio_runtime.record_available(),
+        )
+        .await;
+        Some(MediaTool {
+            router: Some(snapshot.router().clone()),
+            transcriber: Arc::new(media_content::MediaTranscriber::new(
+                Some(snapshot.router().clone()),
+                snapshot.stt_client().cloned(),
+                config.stt.timeout_secs,
+                config.stt.min_confidence,
+                self.max_output_chars,
+            )),
+            ocr_client: snapshot.ocr_client().cloned(),
+            image_gen_client: snapshot.image_gen_client().cloned(),
+            capabilities,
+            audio_runtime,
+            ocr_min_confidence: config.ocr.min_confidence,
+            stt_timeout_secs: config.stt.timeout_secs.max(1),
+            managed_assets: self.managed_assets.clone(),
+            authorization: self.authorization.clone(),
+            max_bytes: self.max_bytes,
+            timeout_secs: self.timeout_secs,
+            max_output_chars: self.max_output_chars,
+            model_media_runtime: None,
+        })
     }
 
     pub(crate) fn with_authorization_engine(
@@ -364,6 +411,17 @@ impl MediaTool {
     }
 
     pub async fn run(
+        &self,
+        params: MediaParams,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if let Some(active) = self.for_model_media_snapshot().await {
+            return active.run_captured(params, cancel).await;
+        }
+        self.run_captured(params, cancel).await
+    }
+
+    async fn run_captured(
         &self,
         params: MediaParams,
         cancel: CancellationToken,

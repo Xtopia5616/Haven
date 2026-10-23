@@ -87,17 +87,13 @@ pub(crate) fn tool_output_cap(
         .unwrap_or(default_cap)
 }
 
-/// Provider and host dependencies used by media producers/consumers. Media
-/// tools are rebuilt as one generation so a settings update cannot combine a
-/// new router with stale specialized clients.
+/// Provider and host dependencies used by media producers/consumers. The
+/// shared runtime handle lets each media operation capture the active model
+/// and provider clients from the same immutable generation.
 pub(crate) struct MediaDeps {
-    pub router: Option<Arc<haven_llm::LlmRouter>>,
+    pub model_media_runtime: Option<haven_llm::ModelMediaRuntime>,
+    pub model_media_snapshot: Option<Arc<haven_llm::ModelMediaSnapshot>>,
     pub input_pipeline: Option<Arc<haven_input::InputPipeline>>,
-    pub stt_client: Option<Arc<dyn haven_llm::SttClient>>,
-    pub ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
-    pub image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
-    pub tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
-    pub config: haven_common::config::MediaConfig,
     pub(crate) capabilities: media::MediaCapabilities,
 }
 
@@ -160,13 +156,9 @@ pub(crate) async fn register_builtin_tools(
         authorization,
         media:
             MediaDeps {
-                router,
+                model_media_runtime,
+                model_media_snapshot,
                 input_pipeline,
-                stt_client,
-                ocr_client,
-                image_gen_client,
-                tts_client,
-                config: media_config,
                 capabilities,
             },
         tool_runs:
@@ -175,6 +167,25 @@ pub(crate) async fn register_builtin_tools(
                 service: tool_run_service,
             },
     } = context;
+    let router = model_media_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.router().clone());
+    let stt_client = model_media_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.stt_client().cloned());
+    let ocr_client = model_media_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.ocr_client().cloned());
+    let image_gen_client = model_media_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.image_gen_client().cloned());
+    let tts_client = model_media_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.tts_client().cloned());
+    let media_config = model_media_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.media_config().clone())
+        .unwrap_or_default();
     let execution_workspace = authorization.execution_workspace().await;
     let settings = &settings;
     let limits = &limits;
@@ -216,6 +227,7 @@ pub(crate) async fn register_builtin_tools(
         tools.push(Arc::new(web_search::typed_adapter(
             search_router.clone(),
             http_tool.clone(),
+            model_media_runtime.clone(),
         )));
     }
     // One media runtime serves every producer/consumer boundary. `files` and
@@ -240,6 +252,7 @@ pub(crate) async fn register_builtin_tools(
         .with_stt_timeout_secs(media_config.stt.timeout_secs)
         .with_capabilities(capabilities)
         .with_audio_runtime(audio_runtime)
+        .with_model_media_runtime(model_media_runtime.clone())
         .with_authorization_engine(authorization.clone()),
     );
     add_operation_views(tools, media_tool.clone(), settings, MEDIA_OPERATION_VIEWS);
@@ -264,6 +277,7 @@ pub(crate) async fn register_builtin_tools(
             everything_config_source.clone(),
             managed_assets.clone(),
         )
+        .with_model_media_runtime(model_media_runtime.clone())
         .with_max_write_bytes(limits.file_write_max_bytes)
         .with_authorization_engine(authorization.clone())
         .with_media_tool(media_tool.clone()),

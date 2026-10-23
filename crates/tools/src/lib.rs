@@ -60,6 +60,7 @@ use haven_common::config::{
     ContextLimitsConfig, McpServerConfig, SecurityConfig, SkillsExecConfig, ToolConfig,
 };
 use haven_common::types::{MessageAttachment, RiskLevel, ShellChoice};
+#[cfg(test)]
 use haven_llm::LlmRouter;
 use serde_json::Value;
 use sha2::{Digest, Sha256};

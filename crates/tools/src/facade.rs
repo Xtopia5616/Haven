@@ -986,10 +986,16 @@ impl ToolsFacade {
             .await
     }
 
-    /// Replace the router and media clients together during a live settings
-    /// update, then rebuild the builtin catalog once so media tools cannot
-    /// observe a mixed-generation runtime.
-    pub async fn set_router_and_media_clients(
+    /// Rebuild the catalog views derived from the already published shared
+    /// model/media generation.
+    pub async fn rebuild_model_media_catalog(
+        &self,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        self.coordinator.rebuild_model_media_catalog().await
+    }
+
+    #[cfg(test)]
+    async fn set_router_and_media_clients(
         &self,
         router: Arc<LlmRouter>,
         stt_client: Option<Arc<dyn haven_llm::SttClient>>,
@@ -999,7 +1005,7 @@ impl ToolsFacade {
         media_config: haven_common::config::MediaConfig,
     ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         self.coordinator
-            .set_router_and_media_clients(
+            .set_router_and_media_clients_for_test(
                 router,
                 stt_client,
                 ocr_client,
@@ -1172,19 +1178,28 @@ impl ToolsFacade {
         cancel: CancellationToken,
     ) -> builtin::MediaTranscriptionResult {
         let platform = self.coordinator.runtime.platform().await;
-        let router = platform.router.clone();
-        let stt_client = platform.stt_client.clone();
-        let capabilities = self.tool_capability_snapshot(&platform).await;
+        let model_media = platform
+            .model_media_runtime
+            .as_ref()
+            .map(haven_llm::ModelMediaRuntime::snapshot);
+        let capabilities = self
+            .tool_capability_snapshot_for(&platform, model_media.as_deref())
+            .await;
         if !capabilities.media.transcribe {
             return builtin::MediaTranscriptionResult::unavailable(
                 "No speech-to-text provider is configured.",
             );
         }
-        let media_config = platform.media_config.clone();
+        let Some(model_media) = model_media else {
+            return builtin::MediaTranscriptionResult::unavailable(
+                "No speech-to-text provider is configured.",
+            );
+        };
+        let media_config = model_media.media_config().clone();
         let max_output_chars = platform.context_limits.max_observation_chars;
         builtin::media::MediaTranscriber::new(
-            router,
-            stt_client,
+            Some(model_media.router().clone()),
+            model_media.stt_client().cloned(),
             media_config.stt.timeout_secs,
             media_config.stt.min_confidence,
             max_output_chars,
@@ -1246,15 +1261,29 @@ impl ToolsFacade {
             .map_err(anyhow::Error::msg)
     }
 
-    /// Construct the single capability view used by facade reads and builtin
-    /// catalog assembly. Each call resolves current platform, router and MCP
-    /// inputs instead of returning a cached value whose invalidation would
-    /// have to coordinate their independent update clocks.
+    /// Construct the capability view used by facade reads and builtin catalog
+    /// assembly. Model/media inputs come from one captured generation; MCP
+    /// discovery remains an independent live input.
     pub(super) async fn tool_capability_snapshot(
         &self,
         platform: &crate::tool_runtime::PlatformRuntime,
     ) -> runtime_capabilities::ToolCapabilitySnapshot {
-        self.coordinator.tool_capability_snapshot(platform).await
+        let model_media = platform
+            .model_media_runtime
+            .as_ref()
+            .map(haven_llm::ModelMediaRuntime::snapshot);
+        self.tool_capability_snapshot_for(platform, model_media.as_deref())
+            .await
+    }
+
+    async fn tool_capability_snapshot_for(
+        &self,
+        platform: &crate::tool_runtime::PlatformRuntime,
+        model_media: Option<&haven_llm::ModelMediaSnapshot>,
+    ) -> runtime_capabilities::ToolCapabilitySnapshot {
+        self.coordinator
+            .tool_capability_snapshot(platform, model_media)
+            .await
     }
 }
 

@@ -7,6 +7,7 @@ mod endpoint_circuit_breaker;
 mod image_gen;
 mod media;
 mod model_directory;
+mod model_media_runtime;
 mod ocr;
 mod registry;
 mod request_descriptor;
@@ -45,6 +46,7 @@ pub fn supports_builtin_web_search_for_endpoint(
 pub use client::{LlmClient, endpoint_host};
 pub use image_gen::{GeneratedImage, ImageGenClient, build_image_gen_client};
 pub use media::project_media_plan;
+pub use model_media_runtime::{ModelMediaPublisher, ModelMediaRuntime, ModelMediaSnapshot};
 pub use ocr::{OcrClient, OcrResult, build_ocr_client};
 pub use registry::{ModelDiscoveryAuthHeader, ModelInfo, ModelRegistry};
 pub use router::{

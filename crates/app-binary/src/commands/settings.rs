@@ -551,14 +551,14 @@ async fn execute_settings_apply_phase(
                     crate::commands::emit_llm_config_changed(&app);
                     SettingsRuntimeApplyOutcome::applied()
                 }
-                Err(RouterRuntimePublishError::ToolCatalog(error)) => {
+                Err(RouterRuntimePublishError::ToolCatalog { source: error, .. }) => {
                     crate::commands::emit_llm_config_changed(&app);
                     SettingsRuntimeApplyOutcome::failed_catalog_rebuild_after_router_publish(
                         command_name,
                         error,
                     )
                 }
-                Err(error @ RouterRuntimePublishError::Agent(_)) => {
+                Err(error @ RouterRuntimePublishError::ModelMedia(_)) => {
                     SettingsRuntimeApplyOutcome::failed(command_name, error)
                 }
             }

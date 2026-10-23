@@ -493,7 +493,7 @@ mod tests {
         )
         .unwrap();
         runtime
-            .replace(embedding_router(
+            .publish_router_for_test(embedding_router(
                 "text-embedding-3-small",
                 "https://gateway-b.example/v1",
             ))

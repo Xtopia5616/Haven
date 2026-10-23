@@ -20,6 +20,12 @@ struct DedicatedOcrClient;
 
 struct FailingSttClient;
 
+struct GenerationSttClient {
+    text: &'static str,
+    started: Option<Arc<Notify>>,
+    release: Option<Arc<Notify>>,
+}
+
 #[test]
 fn operation_groups_keep_assets_and_device_effects_distinct() {
     assert!(MediaOperation::Transcribe.is_asset_operation());
@@ -85,6 +91,24 @@ impl haven_llm::SttClient for DedicatedSttClient {
 impl haven_llm::SttClient for FailingSttClient {
     async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
         Err(anyhow::anyhow!("provider unavailable"))
+    }
+}
+
+#[async_trait]
+impl haven_llm::SttClient for GenerationSttClient {
+    async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
+        if let Some(started) = &self.started {
+            started.notify_one();
+        }
+        if let Some(release) = &self.release {
+            release.notified().await;
+        }
+        Ok(haven_llm::SttResult {
+            text: self.text.into(),
+            confidence: None,
+            usage: None,
+            model: None,
+        })
     }
 }
 
@@ -536,6 +560,74 @@ async fn transcribe_prefers_dedicated_stt_without_router() {
     assert_eq!(result.output["media"]["content"], "dedicated transcript");
     assert_eq!(client.calls.load(Ordering::SeqCst), 1);
     assert!(result.llm_usage.is_empty());
+}
+
+#[tokio::test]
+async fn media_operation_keeps_its_captured_model_media_generation_after_publish() {
+    let root = TempDir::new().unwrap();
+    let (registry, asset_id) = registered_asset(root.path(), "recording.wav", "audio/wav");
+    let asset = registry.resolve(&asset_id).unwrap();
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let old_stt: Arc<dyn haven_llm::SttClient> = Arc::new(GenerationSttClient {
+        text: "generation A",
+        started: Some(entered.clone()),
+        release: Some(release.clone()),
+    });
+    let new_stt: Arc<dyn haven_llm::SttClient> = Arc::new(GenerationSttClient {
+        text: "generation B",
+        started: None,
+        release: None,
+    });
+    let (runtime, publisher) = haven_llm::ModelMediaRuntime::new(
+        haven_llm::ModelMediaSnapshot::new(
+            1,
+            Arc::new(haven_llm::LlmRouter::new(
+                haven_common::config::RouterConfig::default(),
+            )),
+            haven_common::config::MediaConfig::default(),
+        )
+        .with_clients(Some(old_stt), None, None, None),
+    );
+    let tool = Arc::new(
+        MediaTool::new(None, registry.clone(), 1024, 10, 2_000)
+            .with_model_media_runtime(Some(runtime.clone())),
+    );
+
+    let in_flight_tool = tool.clone();
+    let in_flight = tokio::spawn(async move {
+        in_flight_tool
+            .transcribe_asset(asset, CancellationToken::new())
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+        .await
+        .expect("old STT generation must start");
+
+    publisher
+        .publish(
+            haven_llm::ModelMediaSnapshot::new(
+                2,
+                Arc::new(haven_llm::LlmRouter::new(
+                    haven_common::config::RouterConfig::default(),
+                )),
+                haven_common::config::MediaConfig::default(),
+            )
+            .with_clients(Some(new_stt), None, None, None),
+        )
+        .unwrap();
+    release.notify_one();
+
+    let old_result = in_flight.await.unwrap().unwrap();
+    assert_eq!(old_result.output["media"]["content"], "generation A");
+    let new_result = tool
+        .transcribe_asset(
+            registry.resolve(&asset_id).unwrap(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(new_result.output["media"]["content"], "generation B");
 }
 
 #[tokio::test]

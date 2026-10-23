@@ -332,6 +332,9 @@ impl MediaTool {
         asset: ManagedAsset,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
+        if let Some(active) = self.for_model_media_snapshot().await {
+            return active.transcribe(asset, cancel).await;
+        }
         self.transcribe(asset, cancel).await
     }
 

@@ -23,7 +23,6 @@ use async_trait::async_trait;
 use haven_common::config::McpServerConfig;
 use haven_common::config::{ConfigService, ConfigVersion, LogLevel};
 use haven_common::{mcp::McpServerTransport, types::RiskLevel};
-use haven_llm::LlmRouter;
 use haven_mcp::{McpManager, McpReconcile};
 use haven_memory::{MemoryFactStore, SessionStore};
 use haven_skills::SkillRegistry;
@@ -54,7 +53,7 @@ pub struct AdminContext {
     /// Agent-owned append-only event capability for the current session's working document.
     pub session_working_document: Option<Arc<dyn SessionWorkingDocumentPort>>,
     pub memory_facts: Option<MemoryFactStore>,
-    pub router: Option<Arc<LlmRouter>>,
+    pub model_media_runtime: Option<haven_llm::ModelMediaRuntime>,
     /// Configured base path. `file_logging_enabled` determines whether it may
     /// be read; `None` is reserved for callers without logging context.
     pub log_path: Option<PathBuf>,
@@ -1862,7 +1861,7 @@ mod tests {
             session_store,
             session_working_document: None,
             memory_facts,
-            router: None,
+            model_media_runtime: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
             file_logging_enabled: true,
             log_level: None,
@@ -1892,7 +1891,7 @@ mod tests {
             session_store: None,
             session_working_document: None,
             memory_facts: None,
-            router: None,
+            model_media_runtime: None,
             log_path: None,
             file_logging_enabled: false,
             log_level,
@@ -3326,7 +3325,7 @@ mod tests {
             session_store: None,
             session_working_document: None,
             memory_facts: None,
-            router: None,
+            model_media_runtime: None,
             log_path: None,
             file_logging_enabled: false,
             log_level: None,
@@ -3801,7 +3800,7 @@ mod tests {
             session_store: None,
             session_working_document: None,
             memory_facts: None,
-            router: None,
+            model_media_runtime: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
             file_logging_enabled: true,
             log_level: None,

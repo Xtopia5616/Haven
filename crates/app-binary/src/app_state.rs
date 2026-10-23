@@ -244,6 +244,7 @@ impl AppState {
         let config_apply_gate = Arc::new(tokio::sync::Mutex::new(()));
         let initial_config = config_service.snapshot()?;
         let last_fully_applied_security_config_version = initial_config.version;
+        let config_version = initial_config.version;
         let cfg = initial_config.config;
         let context_limits = cfg.context_limits.clone();
         let context_limits_clone = context_limits.clone();
@@ -261,6 +262,57 @@ impl AppState {
         let router_media_build =
             build_router_media(&cfg, Some(mcp_caller), Some(chatgpt_plan_auth.clone()));
         let router = Arc::clone(&router_media_build.router);
+
+        // Dedicated media providers degrade independently at startup, then
+        // join the same immutable model/media generation as the router.
+        let stt_client = match router_media_build.stt_client {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::warn!(
+                    failure_kind = "stt_client_build",
+                    "STT client build failed, transcription disabled"
+                );
+                None
+            }
+        };
+        let tts_client = match router_media_build.tts_client {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::warn!(
+                    failure_kind = "tts_client_build",
+                    "TTS client build failed, TTS disabled"
+                );
+                None
+            }
+        };
+        let ocr_client = match router_media_build.ocr_client {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::warn!(
+                    failure_kind = "ocr_client_build",
+                    "OCR client build failed, OCR disabled"
+                );
+                None
+            }
+        };
+        let image_gen_client = match router_media_build.image_gen_client {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::warn!(
+                    failure_kind = "image_gen_client_build",
+                    "image generation client build failed, image generation disabled"
+                );
+                None
+            }
+        };
+        let (model_media_runtime, model_media_publisher) = haven_llm::ModelMediaRuntime::new(
+            haven_llm::ModelMediaSnapshot::new(
+                config_version,
+                router.clone(),
+                router_media_build.media,
+            )
+            .with_clients(stt_client, ocr_client, image_gen_client, tts_client),
+        );
         let max_steps_per_run = cfg.session.max_steps_per_run;
         let max_steps_per_session = cfg.session.max_steps_per_session;
         let session_prompt_history_limit = cfg.session.prompt_history_limit;
@@ -271,9 +323,9 @@ impl AppState {
             cfg.session.max_concurrent,
         ));
 
-        let memory_service = Arc::new(MemoryService::new(
+        let memory_service = Arc::new(MemoryService::new_with_model_media_runtime(
             memory_stores,
-            Some(router.clone()),
+            model_media_runtime.clone(),
             context_limits.embedding_chunk_size,
         ));
         let agent_startup = AgentLayer::build(
@@ -310,6 +362,7 @@ impl AppState {
             config_service: config_service.clone(),
             chatgpt_plan_auth: chatgpt_plan_auth.clone(),
             config_apply_gate: config_apply_gate.clone(),
+            model_media_publisher,
         }));
 
         // ApplicationRuntime owns task registration, cancellation, and join;
@@ -322,62 +375,6 @@ impl AppState {
                     .await;
             });
         }
-
-        // Build the dedicated STT client for the media runtime. On error
-        // (e.g. `mcp` provider with no server) or `none`, the optional
-        // transcription capability degrades without affecting capture.
-        let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> =
-            match router_media_build.stt_client {
-                Ok(client) => client,
-                Err(_) => {
-                    tracing::warn!(
-                        failure_kind = "stt_client_build",
-                        "STT client build failed, transcription disabled"
-                    );
-                    None
-                }
-            };
-        // Build the TTS client once for the model-facing `media.speak` operation
-        // while startup wiring is assembled below. A failed optional
-        // capability degrades only that capability and remains observable in
-        // the log.
-        let tts: Option<std::sync::Arc<dyn haven_llm::TtsClient>> =
-            match router_media_build.tts_client {
-                Ok(client) => client,
-                Err(_) => {
-                    tracing::warn!(
-                        failure_kind = "tts_client_build",
-                        "TTS client build failed, TTS disabled"
-                    );
-                    None
-                }
-            };
-
-        // Dedicated media providers are wired directly into the canonical
-        // model-facing `media` tool. Attachments remain raw managed assets;
-        // no hidden ingress extraction or generation runs before ReAct.
-        let ocr_client: Option<std::sync::Arc<dyn haven_llm::OcrClient>> =
-            match router_media_build.ocr_client {
-                Ok(client) => client,
-                Err(_) => {
-                    tracing::warn!(
-                        failure_kind = "ocr_client_build",
-                        "OCR client build failed, OCR disabled"
-                    );
-                    None
-                }
-            };
-        let image_gen_client: Option<std::sync::Arc<dyn haven_llm::ImageGenClient>> =
-            match router_media_build.image_gen_client {
-                Ok(client) => client,
-                Err(_) => {
-                    tracing::warn!(
-                        failure_kind = "image_gen_client_build",
-                        "image generation client build failed, image generation disabled"
-                    );
-                    None
-                }
-            };
 
         // The previous process is gone, so any session left `running` can
         // never resume — mark it errored immediately so the user sees the
@@ -483,7 +480,7 @@ impl AppState {
                 crate::agent_tool_adapters::session_working_document_port(executor.clone()),
             ),
             memory_facts: Some(memory_fact_store),
-            router: Some(router.clone()),
+            model_media_runtime: Some(model_media_runtime.clone()),
             log_path,
             file_logging_enabled,
             log_level,
@@ -503,13 +500,8 @@ impl AppState {
                 default_shell: cfg.default_shell,
                 context_limits: context_limits_clone,
                 security: cfg.security.clone(),
-                router: router.clone(),
-                media_config: cfg.media.clone(),
+                model_media_runtime: model_media_runtime.clone(),
                 input_pipeline: Some(input_pipeline.clone()),
-                stt_client: stt_client.clone(),
-                ocr_client,
-                image_gen_client,
-                tts_client: tts,
                 admin_context,
                 messaging_runtime: agent.clone(),
                 memory_recall: agent.clone(),

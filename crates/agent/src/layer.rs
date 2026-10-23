@@ -215,9 +215,6 @@ impl AgentLayer {
         let model_runtime = memory_service
             .model_runtime()
             .unwrap_or_else(|| crate::model_runtime::ModelRuntime::new(router.clone()));
-        model_runtime
-            .replace(router.clone())
-            .expect("model runtime publication during Agent construction");
         let events = Arc::new(EventDispatcher::new());
         let outbox_store = memory_service.outbox_store();
         let prompt_builder = Arc::new(SystemPromptBuilder::with_memory_service(
@@ -454,11 +451,12 @@ impl AgentLayer {
         self.events.install_bus()
     }
 
-    pub fn replace_router(&self, new_router: Arc<LlmRouter>) -> anyhow::Result<()> {
-        self.react_engine.replace_router(new_router.clone())?;
+    /// Warm a router that has already been published through the app's shared
+    /// model/media runtime handle.
+    pub fn prewarm_current_router(&self) {
         // Pre-warm the new router's HTTP connection pool so the next request
         // doesn't pay TCP+TLS handshake latency after a provider switch.
-        let warm = new_router.clone();
+        let warm = self.react_engine.router();
         let cancellation = CancellationToken::new();
         let task_cancellation = cancellation.clone();
         self.background_tasks
@@ -481,7 +479,11 @@ impl AgentLayer {
                     Err(_) => tracing::warn!("LLM pre-warm after swap exceeded its deadline"),
                 }
             });
-        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_router_for_test(&self, new_router: Arc<LlmRouter>) -> anyhow::Result<()> {
+        self.react_engine.replace_router_for_test(new_router)
     }
 
     /// Run the full memory maintenance pass (fact dedup, sensitive purge,

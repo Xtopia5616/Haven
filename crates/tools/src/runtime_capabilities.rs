@@ -13,10 +13,12 @@ use std::sync::Arc;
 
 pub(crate) async fn resolve_snapshot(
     platform: &PlatformRuntime,
+    model_media: Option<&haven_llm::ModelMediaSnapshot>,
     mcp_index: &[McpServerIndexEntry],
 ) -> ToolCapabilitySnapshot {
-    let media = resolve_tool_media_capabilities(platform).await;
-    let provider_search_available = match &platform.router {
+    let media = resolve_tool_media_capabilities(platform, model_media).await;
+    let router = model_media.map(haven_llm::ModelMediaSnapshot::router);
+    let provider_search_available = match router {
         Some(router) => {
             router
                 .provider_web_search_available(RequestKind::Chat)
@@ -24,7 +26,7 @@ pub(crate) async fn resolve_snapshot(
         }
         None => false,
     };
-    let independent_search_available = match &platform.router {
+    let independent_search_available = match router {
         Some(router) => {
             platform
                 .tool_settings
@@ -47,9 +49,9 @@ pub(crate) async fn resolve_snapshot(
 
 /// One freshly resolved view of capabilities owned by `ToolsFacade`.
 ///
-/// This value is deliberately not cached: platform replacement, the router's
-/// own config publication, and MCP tools/list updates do not share one version
-/// clock. The facade rebuilds it from current inputs for each read.
+/// This value is deliberately not cached: MCP tools/list updates have an
+/// independent version clock. Model and media capabilities are resolved from
+/// the same captured generation for each read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolCapabilitySnapshot {
     pub(crate) media: MediaCapabilities,
@@ -72,14 +74,27 @@ impl ToolCapabilitySnapshot {
 /// Combine configured LLM routes and available runtime services into the
 /// media capability snapshot shared by prompt reporting and tool admission.
 /// Capture, generation, OCR, and TTS remain independent of transcription.
-async fn resolve_tool_media_capabilities(platform: &PlatformRuntime) -> MediaCapabilities {
-    let mut capabilities =
-        resolve_backend_media_capabilities(platform.router.as_ref(), platform.stt_client.is_some())
-            .await;
-    capabilities.record = platform.input_pipeline.is_some();
-    capabilities.ocr = platform.ocr_client.is_some();
-    capabilities.generate = platform.image_gen_client.is_some();
-    capabilities.speak = platform.tts_client.is_some();
+async fn resolve_tool_media_capabilities(
+    platform: &PlatformRuntime,
+    model_media: Option<&haven_llm::ModelMediaSnapshot>,
+) -> MediaCapabilities {
+    resolve_model_media_capabilities(model_media, platform.input_pipeline.is_some()).await
+}
+
+pub(crate) async fn resolve_model_media_capabilities(
+    model_media: Option<&haven_llm::ModelMediaSnapshot>,
+    recording_available: bool,
+) -> MediaCapabilities {
+    let mut capabilities = resolve_backend_media_capabilities(
+        model_media.map(haven_llm::ModelMediaSnapshot::router),
+        model_media.is_some_and(|snapshot| snapshot.stt_client().is_some()),
+    )
+    .await;
+    capabilities.record = recording_available;
+    capabilities.ocr = model_media.is_some_and(|snapshot| snapshot.ocr_client().is_some());
+    capabilities.generate =
+        model_media.is_some_and(|snapshot| snapshot.image_gen_client().is_some());
+    capabilities.speak = model_media.is_some_and(|snapshot| snapshot.tts_client().is_some());
     capabilities
 }
 

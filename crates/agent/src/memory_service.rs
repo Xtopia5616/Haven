@@ -112,6 +112,32 @@ impl MemoryService {
         router: Option<Arc<LlmRouter>>,
         embed_chunk_size: usize,
     ) -> Self {
+        Self::new_with_runtime(
+            stores,
+            router.map(crate::model_runtime::ModelRuntime::new),
+            embed_chunk_size,
+        )
+    }
+
+    /// Composition-root construction that shares the app's atomic
+    /// model/media publication handle with Agent and Tools consumers.
+    pub fn new_with_model_media_runtime(
+        stores: impl Into<MemoryStores>,
+        runtime: haven_llm::ModelMediaRuntime,
+        embed_chunk_size: usize,
+    ) -> Self {
+        Self::new_with_runtime(
+            stores,
+            Some(crate::model_runtime::ModelRuntime::from_shared(runtime)),
+            embed_chunk_size,
+        )
+    }
+
+    fn new_with_runtime(
+        stores: impl Into<MemoryStores>,
+        router: Option<crate::model_runtime::ModelRuntime>,
+        embed_chunk_size: usize,
+    ) -> Self {
         let stores = stores.into();
         #[cfg(test)]
         let test_database = stores.database_handle_for_test();
@@ -122,7 +148,6 @@ impl MemoryService {
         let maintenance_store = stores.maintenance_store();
         let recall_store = stores.recall_store();
         let embeddings = stores.embedding_store();
-        let router = router.map(crate::model_runtime::ModelRuntime::new);
         let embedding_index = router.as_ref().map(|router| {
             MemoryEmbeddingIndex::with_runtime(
                 embeddings,

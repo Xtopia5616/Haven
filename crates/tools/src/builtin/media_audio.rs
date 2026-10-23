@@ -85,6 +85,16 @@ impl AudioRuntime {
         }
     }
 
+    pub(crate) fn with_tts_client(&self, tts: Option<Arc<dyn TtsClient>>) -> Self {
+        Self {
+            input_pipeline: self.input_pipeline.clone(),
+            tts,
+            playback: self.playback.clone(),
+            managed_assets: self.managed_assets.clone(),
+            capture_root: self.capture_root.clone(),
+        }
+    }
+
     pub(crate) fn with_managed_assets(mut self, managed_assets: ManagedAssetRegistry) -> Self {
         self.managed_assets = managed_assets;
         self

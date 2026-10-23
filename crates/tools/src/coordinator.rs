@@ -11,6 +11,8 @@ pub(crate) struct ToolRuntimeCoordinator {
     pub(crate) runtime: tool_runtime::ToolRuntime,
     pub(crate) builtins: tool_builtins::ToolBuiltins,
     pub(crate) lifecycle_hooks: crate::lifecycle_hooks::LifecycleHookService,
+    #[cfg(test)]
+    fail_next_catalog_rebuild: std::sync::atomic::AtomicBool,
 }
 
 impl ToolRuntimeCoordinator {
@@ -21,10 +23,13 @@ impl ToolRuntimeCoordinator {
             runtime: tool_runtime::ToolRuntime::new(),
             builtins: tool_builtins::ToolBuiltins::new(exec_config),
             lifecycle_hooks: crate::lifecycle_hooks::LifecycleHookService::default(),
+            #[cfg(test)]
+            fail_next_catalog_rebuild: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
-    pub(crate) async fn set_router_and_media_clients(
+    #[cfg(test)]
+    pub(crate) async fn set_router_and_media_clients_for_test(
         &self,
         router: Arc<LlmRouter>,
         stt_client: Option<Arc<dyn haven_llm::SttClient>>,
@@ -33,20 +38,33 @@ impl ToolRuntimeCoordinator {
         tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
         media_config: haven_common::config::MediaConfig,
     ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        let snapshot = haven_llm::ModelMediaSnapshot::new(0, router, media_config).with_clients(
+            stt_client,
+            ocr_client,
+            image_gen_client,
+            tts_client,
+        );
+        let (model_media_runtime, _publisher) = haven_llm::ModelMediaRuntime::new(snapshot);
+        let current = self.runtime.platform().await;
         self.runtime
-            .update_platform(|current| {
-                let mut next = current.clone();
-                next.router = Some(router);
-                next.stt_client = stt_client;
-                next.ocr_client = ocr_client;
-                next.image_gen_client = image_gen_client;
-                next.tts_client = tts_client;
-                next.media_config = media_config;
-                next
+            .replace_platform(crate::tool_runtime::PlatformRuntime {
+                model_media_runtime: Some(model_media_runtime),
+                ..current.as_ref().clone()
             })
             .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media", "files", "window"]))
-            .await
+        self.rebuild_model_media_catalog().await
+    }
+
+    pub(crate) async fn rebuild_model_media_catalog(
+        &self,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        self.rebuild_catalog_scoped(CatalogRebuildScope::roots([
+            "media",
+            "files",
+            "window",
+            "web_search_api",
+        ]))
+        .await
     }
 
     pub(crate) async fn wire_startup(&self, wiring: StartupWiring) -> anyhow::Result<()> {
@@ -59,13 +77,8 @@ impl ToolRuntimeCoordinator {
             default_shell,
             context_limits,
             security,
-            router,
-            media_config,
+            model_media_runtime,
             input_pipeline,
-            stt_client,
-            ocr_client,
-            image_gen_client,
-            tts_client,
             admin_context,
             messaging_runtime,
             memory_recall,
@@ -131,14 +144,9 @@ impl ToolRuntimeCoordinator {
             .set_capacity(context_limits.clipboard_history_entries);
         self.runtime
             .replace_platform(crate::tool_runtime::PlatformRuntime {
-                router: Some(router),
+                model_media_runtime: Some(model_media_runtime),
                 admin_context: Some(admin_context),
                 input_pipeline,
-                tts_client,
-                stt_client,
-                ocr_client,
-                image_gen_client,
-                media_config,
                 tool_settings,
                 context_limits,
                 default_shell,
@@ -325,6 +333,15 @@ impl ToolRuntimeCoordinator {
         &self,
         scope: CatalogRebuildScope,
     ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        #[cfg(test)]
+        if self
+            .fail_next_catalog_rebuild
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(CatalogRebuildError::RegistryRejected {
+                source: anyhow::anyhow!("injected catalog rebuild failure"),
+            });
+        }
         let mut all_tools: Vec<ToolHandle> = Vec::new();
         let previous_catalog = self.runtime.builtin_catalog().await;
         let previous_by_name: HashMap<String, ToolHandle> = previous_catalog
@@ -335,10 +352,20 @@ impl ToolRuntimeCoordinator {
             .collect();
 
         let platform = self.runtime.platform().await;
-        let capabilities = self.tool_capability_snapshot(&platform).await;
-        let context =
-            self.builtins
-                .build_context(&self.core, &self.runtime, platform, capabilities);
+        let model_media_snapshot = platform
+            .model_media_runtime
+            .as_ref()
+            .map(haven_llm::ModelMediaRuntime::snapshot);
+        let capabilities = self
+            .tool_capability_snapshot(&platform, model_media_snapshot.as_deref())
+            .await;
+        let context = self.builtins.build_context(
+            &self.core,
+            &self.runtime,
+            platform,
+            capabilities,
+            model_media_snapshot,
+        );
         let settings = context.settings.clone();
         let admin_operations = builtin::register_builtin_tools(&mut all_tools, context).await;
 
@@ -420,9 +447,10 @@ impl ToolRuntimeCoordinator {
     pub(crate) async fn tool_capability_snapshot(
         &self,
         platform: &tool_runtime::PlatformRuntime,
+        model_media: Option<&haven_llm::ModelMediaSnapshot>,
     ) -> runtime_capabilities::ToolCapabilitySnapshot {
         let mcp_index = self.build_mcp_index().await;
-        runtime_capabilities::resolve_snapshot(platform, &mcp_index).await
+        runtime_capabilities::resolve_snapshot(platform, model_media, &mcp_index).await
     }
 }
 
@@ -471,7 +499,7 @@ mod tests {
             session_store: None,
             session_working_document: None,
             memory_facts: None,
-            router: None,
+            model_media_runtime: None,
             log_path: None,
             file_logging_enabled: false,
             log_level: None,
@@ -480,6 +508,12 @@ mod tests {
     }
 
     fn startup_wiring() -> StartupWiring {
+        let (model_media_runtime, _publisher) =
+            haven_llm::ModelMediaRuntime::new(haven_llm::ModelMediaSnapshot::new(
+                0,
+                Arc::new(LlmRouter::new(RouterConfig::default())),
+                haven_common::config::MediaConfig::default(),
+            ));
         StartupWiring {
             tool_run_store: None,
             schedule_store: None,
@@ -487,13 +521,8 @@ mod tests {
             default_shell: ShellChoice::default(),
             context_limits: ContextLimitsConfig::default(),
             security: SecurityConfig::default(),
-            router: Arc::new(LlmRouter::new(RouterConfig::default())),
-            media_config: haven_common::config::MediaConfig::default(),
+            model_media_runtime,
             input_pipeline: None,
-            stt_client: None,
-            ocr_client: None,
-            image_gen_client: None,
-            tts_client: None,
             admin_context: empty_admin_context(),
             messaging_runtime: Arc::new(UnusedMessagingRuntime),
             memory_recall: Arc::new(UnusedMemoryRecall),
@@ -507,7 +536,7 @@ mod tests {
         let router = Arc::new(LlmRouter::new(RouterConfig::default()));
 
         coordinator
-            .set_router_and_media_clients(
+            .set_router_and_media_clients_for_test(
                 Arc::clone(&router),
                 None,
                 None,
@@ -520,7 +549,15 @@ mod tests {
 
         let after = coordinator.runtime.platform().await;
         assert!(!Arc::ptr_eq(&before, &after));
-        assert!(Arc::ptr_eq(after.router.as_ref().unwrap(), &router));
+        assert!(Arc::ptr_eq(
+            after
+                .model_media_runtime
+                .as_ref()
+                .unwrap()
+                .snapshot()
+                .router(),
+            &router
+        ));
         let catalog = coordinator.runtime.builtin_catalog().await;
         assert!(catalog.tools.iter().any(|tool| tool.name() == "files.read"));
     }
@@ -545,8 +582,49 @@ mod tests {
         let after_catalog = coordinator.runtime.builtin_catalog().await;
         assert!(Arc::ptr_eq(&before_platform, &after_platform));
         assert!(Arc::ptr_eq(&before_catalog, &after_catalog));
-        assert!(after_platform.router.is_none());
+        assert!(after_platform.model_media_runtime.is_none());
         assert!(after_catalog.tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_catalog_rebuild_keeps_the_shared_generation_and_old_catalog_atomic() {
+        let coordinator = ToolRuntimeCoordinator::new(SkillsExecConfig::default());
+        let (runtime, publisher) =
+            haven_llm::ModelMediaRuntime::new(haven_llm::ModelMediaSnapshot::new(
+                1,
+                Arc::new(LlmRouter::new(RouterConfig::default())),
+                haven_common::config::MediaConfig::default(),
+            ));
+        let mut wiring = startup_wiring();
+        wiring.model_media_runtime = runtime.clone();
+        coordinator.wire_startup(wiring).await.unwrap();
+        let old_catalog = coordinator.runtime.builtin_catalog().await;
+        let old_snapshot = runtime.snapshot();
+
+        publisher
+            .publish(haven_llm::ModelMediaSnapshot::new(
+                2,
+                Arc::new(LlmRouter::new(RouterConfig::default())),
+                haven_common::config::MediaConfig::default(),
+            ))
+            .unwrap();
+        coordinator
+            .fail_next_catalog_rebuild
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let error = coordinator.rebuild_model_media_catalog().await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected catalog rebuild failure")
+        );
+        assert_eq!(old_snapshot.config_version(), 1);
+        assert_eq!(runtime.snapshot().config_version(), 2);
+        assert!(Arc::ptr_eq(
+            &old_catalog,
+            &coordinator.runtime.builtin_catalog().await
+        ));
     }
 
     #[tokio::test]

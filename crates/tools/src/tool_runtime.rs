@@ -10,7 +10,7 @@ use crate::live_output::LiveOutputHub;
 use crate::tool_run_service::ToolRunService;
 use haven_common::config::{ContextLimitsConfig, SecurityConfig, ToolConfig};
 use haven_common::types::ShellChoice;
-use haven_llm::LlmRouter;
+use haven_llm::ModelMediaRuntime;
 use haven_memory::ToolRunStore;
 use haven_memory::{MemoryQuery, MemoryRecall};
 use haven_messaging::{MessagingRuntime, MessagingService};
@@ -56,14 +56,9 @@ pub(crate) fn new_memory_recall_slot() -> MemoryRecallSlot {
 /// and a speech client from another.
 #[derive(Clone, Default)]
 pub(crate) struct PlatformRuntime {
-    pub(crate) router: Option<Arc<LlmRouter>>,
+    pub(crate) model_media_runtime: Option<ModelMediaRuntime>,
     pub(crate) admin_context: Option<AdminContext>,
     pub(crate) input_pipeline: Option<Arc<haven_input::InputPipeline>>,
-    pub(crate) tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
-    pub(crate) stt_client: Option<Arc<dyn haven_llm::SttClient>>,
-    pub(crate) ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
-    pub(crate) image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
-    pub(crate) media_config: haven_common::config::MediaConfig,
     /// Enabled flags, timeouts and per-tool caps for this generation.
     pub(crate) tool_settings: HashMap<String, ToolConfig>,
     pub(crate) context_limits: ContextLimitsConfig,
@@ -197,13 +192,8 @@ pub struct StartupWiring {
     pub default_shell: ShellChoice,
     pub context_limits: ContextLimitsConfig,
     pub security: SecurityConfig,
-    pub router: Arc<LlmRouter>,
-    pub media_config: haven_common::config::MediaConfig,
+    pub model_media_runtime: ModelMediaRuntime,
     pub input_pipeline: Option<Arc<haven_input::InputPipeline>>,
-    pub stt_client: Option<Arc<dyn haven_llm::SttClient>>,
-    pub ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
-    pub image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
-    pub tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     pub admin_context: AdminContext,
     /// Installed before the first catalog rebuild. `AgentLayer` is the only
     /// production implementation; there is no later public bind slot.
@@ -259,22 +249,20 @@ mod tests {
     async fn platform_snapshot_replacement_keeps_the_previous_view() {
         let runtime = ToolRuntime::new();
         let before = runtime.platform().await;
-        assert_eq!(before.media_config.stt.timeout_secs, 30);
-        assert!(before.router.is_none());
-        assert!(before.tts_client.is_none());
+        assert!(before.model_media_runtime.is_none());
         runtime
             .update_platform(|current| {
                 let mut next = current.clone();
-                next.media_config.stt.timeout_secs = 42;
-                next.media_config.ocr.timeout_secs = 7;
+                next.context_limits.clipboard_history_entries = 42;
                 next
             })
             .await;
         let after = runtime.platform().await;
-        assert_eq!(before.media_config.stt.timeout_secs, 30);
-        assert_eq!(before.media_config.ocr.timeout_secs, 20);
-        assert_eq!(after.media_config.stt.timeout_secs, 42);
-        assert_eq!(after.media_config.ocr.timeout_secs, 7);
+        assert_eq!(
+            before.context_limits.clipboard_history_entries,
+            ContextLimitsConfig::default().clipboard_history_entries
+        );
+        assert_eq!(after.context_limits.clipboard_history_entries, 42);
         assert!(!Arc::ptr_eq(&before, &after));
     }
 }

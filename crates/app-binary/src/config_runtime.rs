@@ -10,7 +10,6 @@ use crate::router_media_builder::build_router_media;
 use haven_common::config::{
     AppConfig, ConfigChanged, ConfigDomain, ConfigService, ConfigSnapshot, ConfigVersion, LogLevel,
 };
-use haven_llm::LlmRouter;
 use std::future::Future;
 use std::sync::Arc;
 use tracing_subscriber::Registry;
@@ -164,8 +163,9 @@ impl RuntimeConfigCoordinator {
         )
     }
 
-    /// Publish a fully prepared router generation and its dependent media
-    /// clients. Publishing has the same ordering as the prior command helper.
+    /// Publish one fully prepared router/media generation through the shared
+    /// handle, then rebuild the derived Tools catalog. In-flight consumers
+    /// keep their captured generation if the pointer advances.
     pub(crate) async fn publish_router_runtime(
         &self,
         state: &AppState,
@@ -177,22 +177,19 @@ impl RuntimeConfigCoordinator {
         );
         state
             .runtime
-            .agent
-            .replace_router(prepared.router.clone())
-            .map_err(RouterRuntimePublishError::Agent)?;
+            .model_media_publisher
+            .publish(prepared.snapshot.clone())
+            .map_err(RouterRuntimePublishError::ModelMedia)?;
+        state.runtime.agent.prewarm_current_router();
         state
             .runtime
             .tools
-            .set_router_and_media_clients(
-                prepared.router,
-                prepared.stt_client,
-                prepared.ocr_client,
-                prepared.image_gen_client,
-                prepared.tts_client,
-                prepared.media,
-            )
+            .rebuild_model_media_catalog()
             .await
-            .map_err(RouterRuntimePublishError::ToolCatalog)?;
+            .map_err(|source| RouterRuntimePublishError::ToolCatalog {
+                config_version: prepared.config_version,
+                source,
+            })?;
         Ok(())
     }
 
@@ -249,24 +246,28 @@ impl RuntimeConfigCoordinator {
             .image_gen_client
             .map_err(|error| log_err(&format!("{ctx} image generation"), error))?;
 
+        let model_media =
+            haven_llm::ModelMediaSnapshot::new(snapshot.version, built.router, built.media)
+                .with_clients(stt_client, ocr_client, image_gen_client, tts_client);
         Ok(PreparedRouterRuntime {
             config_version: snapshot.version,
-            router: built.router,
-            stt_client,
-            ocr_client,
-            image_gen_client,
-            tts_client,
-            media: built.media,
+            snapshot: model_media,
         })
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum RouterRuntimePublishError {
-    #[error("Agent router publication failed: {0}")]
-    Agent(#[source] anyhow::Error),
-    #[error(transparent)]
-    ToolCatalog(#[from] haven_tools::CatalogRebuildError),
+    #[error("model/media generation publication failed: {0}")]
+    ModelMedia(#[source] anyhow::Error),
+    #[error(
+        "model/media generation config_version={config_version} was published atomically, but the derived tool catalog rebuild failed: {source}"
+    )]
+    ToolCatalog {
+        config_version: ConfigVersion,
+        #[source]
+        source: haven_tools::CatalogRebuildError,
+    },
 }
 
 pub(crate) fn partial_config_apply_error(
@@ -291,12 +292,7 @@ fn partial_router_config_apply_error(error: impl std::fmt::Display) -> String {
 /// Construction may fail; publication only accepts this prepared value.
 pub(crate) struct PreparedRouterRuntime {
     config_version: ConfigVersion,
-    router: Arc<LlmRouter>,
-    stt_client: Option<Arc<dyn haven_llm::SttClient>>,
-    ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
-    image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
-    tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
-    media: haven_common::config::MediaConfig,
+    snapshot: haven_llm::ModelMediaSnapshot,
 }
 
 /// Apply a configured log level to every reloadable application filter.
@@ -2114,8 +2110,8 @@ mod tests {
                 .expect("default router and media clients should prepare");
 
         assert_eq!(prepared.config_version, snapshot.version);
-        assert_eq!(prepared.media, snapshot.config.media);
-        assert!(Arc::strong_count(&prepared.router) >= 1);
+        assert_eq!(prepared.snapshot.media_config(), &snapshot.config.media);
+        assert!(Arc::strong_count(prepared.snapshot.router()) >= 1);
     }
 
     #[test]

@@ -51,6 +51,9 @@ pub struct ApplicationRuntime {
     pub(crate) log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     pub(crate) config_service: Arc<ConfigService>,
     pub(crate) chatgpt_plan_auth: Arc<ConfigChatGptPlanAuthPort>,
+    /// Sole write capability for the shared model/media handle. Consumers
+    /// receive only the corresponding read handle.
+    pub(crate) model_media_publisher: haven_llm::ModelMediaPublisher,
     /// Serializes settings and model config commit-plus-apply operations so a
     /// later snapshot cannot publish before an earlier runtime update ends.
     pub(crate) config_runtime_coordinator: RuntimeConfigCoordinator,
@@ -78,6 +81,7 @@ pub(crate) struct RuntimeServices {
     pub(crate) config_service: Arc<ConfigService>,
     pub(crate) chatgpt_plan_auth: Arc<ConfigChatGptPlanAuthPort>,
     pub(crate) config_apply_gate: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) model_media_publisher: haven_llm::ModelMediaPublisher,
 }
 
 pub(crate) struct AppServices {
@@ -123,6 +127,7 @@ impl ApplicationRuntime {
             log_filter_handles: runtime_services.log_filter_handles,
             config_service: runtime_services.config_service,
             chatgpt_plan_auth: runtime_services.chatgpt_plan_auth,
+            model_media_publisher: runtime_services.model_media_publisher,
             config_runtime_coordinator: RuntimeConfigCoordinator::with_shared_gate(
                 config_apply_gate,
             ),

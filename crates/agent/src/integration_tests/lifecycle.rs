@@ -282,7 +282,7 @@ async fn replace_router_and_router_work() {
         client_b.clone(),
         client_b,
     ));
-    agent.replace_router(router_b).unwrap();
+    agent.replace_router_for_test(router_b).unwrap();
     // No panic == success
 }
 

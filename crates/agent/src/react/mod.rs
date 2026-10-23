@@ -521,7 +521,7 @@ impl ReActEngine {
         self
     }
 
-    /// Wire the composition root's single model publication point.
+    /// Wire the shared model/media runtime read handle.
     pub(crate) fn with_model_runtime(
         mut self,
         runtime: crate::model_runtime::ModelRuntime,
@@ -536,8 +536,9 @@ impl ReActEngine {
         self
     }
 
-    pub fn replace_router(&self, new_router: Arc<LlmRouter>) -> anyhow::Result<()> {
-        self.router.replace(new_router)
+    #[cfg(test)]
+    pub(crate) fn replace_router_for_test(&self, new_router: Arc<LlmRouter>) -> anyhow::Result<()> {
+        self.router.publish_router_for_test(new_router)
     }
 
     /// Snapshot of `[context_limits]` (cloned; safe across awaits).
