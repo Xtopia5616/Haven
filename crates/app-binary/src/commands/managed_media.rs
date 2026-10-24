@@ -59,21 +59,21 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// Write ordinary file attachments to disk under `uploads/<batch>/` and return
-/// them with `path` set. `data` is cleared afterwards — the bytes live on
-/// disk, keeping the persisted message and DB storage slim. Inline image and
-/// audio media pass through because the active chat model consumes their
-/// base64 payload directly.
+/// them with `path` set. Uploads remain under a pending lease until transcript
+/// ingress accepts them and binds them to the resulting session. `data` is
+/// cleared afterwards — the bytes live on disk, keeping the persisted message
+/// and DB storage slim. Inline image and audio media pass through because the
+/// active chat model consumes their base64 payload directly.
 pub(crate) async fn persist_file_attachments(
     attachments: Vec<haven_common::types::MessageAttachment>,
     max_total_bytes: u64,
     registry: Arc<dyn haven_tools::ManagedAssetLifecyclePort>,
-    session_id: Option<String>,
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     persist_file_attachments_to_with_limit_and_registry(
         uploads_root(),
         attachments,
         max_total_bytes,
-        Some((registry, session_id)),
+        Some((registry, None)),
     )
     .await
 }
@@ -1288,6 +1288,91 @@ mod tests {
         assert!(path.exists());
 
         registry.release_pending(asset_id);
+        assert_eq!(
+            cleanup_unreferenced_upload_batches(root.path().to_path_buf(), registry, Vec::new(),)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!batch.exists());
+    }
+
+    #[tokio::test]
+    async fn test_failed_existing_session_submission_releases_upload_for_gc() {
+        use base64::Engine as _;
+
+        let root = tempfile::TempDir::new().unwrap();
+        let registry = haven_tools::ManagedAssetRegistry::default();
+        let mut attachment = att(
+            "text/plain",
+            &base64::engine::general_purpose::STANDARD.encode(b"failed submit"),
+        );
+        attachment.filename = Some("failed.txt".into());
+
+        // Existing-session uploads use the same pending lease as new-session
+        // uploads until transcript ingress confirms acceptance.
+        let persisted = persist_file_attachments_to_with_limit_and_registry(
+            root.path().to_path_buf(),
+            vec![attachment],
+            1024,
+            Some((Arc::new(registry.clone()), None)),
+        )
+        .await
+        .unwrap();
+        let path = std::path::PathBuf::from(persisted[0].path.as_deref().unwrap());
+        let batch = path.parent().unwrap().to_path_buf();
+        let asset_id = persisted[0].asset_id.as_deref().unwrap();
+
+        assert!(registry.protected_paths().contains(&path));
+        assert!(registry.release_pending(asset_id));
+        assert_eq!(
+            cleanup_unreferenced_upload_batches(root.path().to_path_buf(), registry, Vec::new(),)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!batch.exists());
+    }
+
+    #[tokio::test]
+    async fn test_accepted_existing_session_submission_binds_upload_lease() {
+        use base64::Engine as _;
+
+        let root = tempfile::TempDir::new().unwrap();
+        let registry = haven_tools::ManagedAssetRegistry::default();
+        let session_id = "ses-0123456789abcdef0123456789abcdef";
+        let mut attachment = att(
+            "text/plain",
+            &base64::engine::general_purpose::STANDARD.encode(b"accepted submit"),
+        );
+        attachment.filename = Some("accepted.txt".into());
+
+        let persisted = persist_file_attachments_to_with_limit_and_registry(
+            root.path().to_path_buf(),
+            vec![attachment],
+            1024,
+            Some((Arc::new(registry.clone()), None)),
+        )
+        .await
+        .unwrap();
+        let path = std::path::PathBuf::from(persisted[0].path.as_deref().unwrap());
+        let batch = path.parent().unwrap().to_path_buf();
+        let asset_id = persisted[0].asset_id.as_deref().unwrap();
+
+        assert!(registry.bind_pending_to_session(session_id, asset_id));
+        assert_eq!(
+            cleanup_unreferenced_upload_batches(
+                root.path().to_path_buf(),
+                registry.clone(),
+                Vec::new(),
+            )
+            .await
+            .unwrap(),
+            0
+        );
+        assert!(path.exists());
+
+        registry.release_session(session_id);
         assert_eq!(
             cleanup_unreferenced_upload_batches(root.path().to_path_buf(), registry, Vec::new(),)
                 .await

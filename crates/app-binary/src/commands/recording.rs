@@ -949,7 +949,6 @@ pub async fn submit_transcript(
         attachments,
         limits.max_upload_total_bytes,
         assets,
-        active_session_id.clone(),
     )
     .await
     .map_err(|e| log_err("submit_transcript", e))?;
@@ -975,31 +974,22 @@ pub async fn submit_transcript(
     {
         Ok(result) => result,
         Err(error) => {
-            if active_session_id.is_none() {
-                state
-                    .runtime
-                    .tools
-                    .release_pending_managed_assets(&attachments);
-            }
+            state
+                .runtime
+                .tools
+                .release_pending_managed_assets(&attachments);
             return Err(log_storage_err("submit_transcript", error));
         }
     };
     match (&result, active_session_id.as_deref()) {
-        (
-            haven_agent::TranscriptSubmissionResult::SessionCreated { session_id, .. },
-            Some(previous_id),
-        ) => {
-            state.runtime.tools.transfer_managed_assets_to_session(
-                previous_id,
-                session_id,
-                &attachments,
-            );
-        }
-        (haven_agent::TranscriptSubmissionResult::SessionCreated { session_id, .. }, None) => state
+        (haven_agent::TranscriptSubmissionResult::SessionCreated { session_id, .. }, _) => state
             .runtime
             .tools
             .bind_pending_managed_assets_to_session(session_id, &attachments),
-        (haven_agent::TranscriptSubmissionResult::Supplemented { .. }, Some(_)) => {}
+        (haven_agent::TranscriptSubmissionResult::Supplemented { .. }, Some(session_id)) => state
+            .runtime
+            .tools
+            .bind_pending_managed_assets_to_session(session_id, &attachments),
         (haven_agent::TranscriptSubmissionResult::Supplemented { .. }, None) => {
             state
                 .runtime

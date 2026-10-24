@@ -111,7 +111,7 @@
 
 **验收。** 文件已写但未登记、登记后消息提交失败、活动租约与 GC 并发、重启后 registry 为空、引用到期及路径身份替换。删除会话与用户明确删除文件分别定义；不能只根据进程内表判断磁盘文件无主。若引入持久资产索引，需独立 ADR 证明价值、明确事务/GC 协议及 schema 重置。
 
-**复核记录（2026-10-25）。** 现有 managed-media tests 已覆盖 upload staging rollback、pending/session lease 与 GC 竞争、引用读取失败 fail-closed、名称碰撞、注册资产被历史删除后 GC、symlink/reparse point 和源文件身份替换；本轮保留轻量 process-local registry，不引入持久资产索引。真实的消息提交失败及 renderer/应用重启交互仍在 Windows Gate 中，不能从这些单元测试推断已通过。
+**复核记录（2026-10-25，ADR 1400）。** 源码复核发现活动会话上传在 ingress 失败时可能留下 session lease，阻止当前进程的 GC 回收未引用文件。上传现在统一先持有 pending lease；接受后按实际结果绑定 session，失败时释放；durable message reference 仍是重启后保护已提交文件的依据。新增失败释放与成功绑定清理测试。现有测试另覆盖 upload staging rollback、pending/session lease 与 GC 竞争、引用读取失败 fail-closed、名称碰撞、重复孤立上传清理、注册资产被历史删除后 GC、symlink/reparse point 和源文件身份替换；本轮保留轻量 process-local registry，不引入持久资产索引。真实的消息提交失败及 renderer/应用重启交互仍在 Windows Gate 中，不能从这些单元测试推断已通过。
 
 ## 10. R09：任务、计划、编排保留三个独立生命周期
 
