@@ -11,6 +11,7 @@ const { invoke, listen, isTauri } = vi.hoisted(() => ({
 }));
 
 import { onNotificationSettingsChanged } from '$lib/notificationSettingsEvents.ts';
+import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 
 vi.mock('$lib/tauri.ts', () => ({ invoke, listen, isTauri }));
 
@@ -680,7 +681,7 @@ describe('SettingsView diagnostics export', () => {
 			}
 		});
 
-		render(SettingsView);
+		const view = render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
 		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
 		await fireEvent.click(await screen.findByRole('button', { name: '添加 Provider 配置' }));
@@ -695,10 +696,11 @@ describe('SettingsView diagnostics export', () => {
 				name: /保存/,
 			}),
 		);
-		await fireEvent.click(screen.getByRole('tab', { name: /对话与行为/ }));
-		expect(screen.queryByRole('dialog', { name: '未保存的更改' })).toBeNull();
-		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
-		await fireEvent.click(await screen.findByRole('button', { name: /保存/ }));
+
+		const leaveAttempt = confirmLeaveSettingsIfNeeded();
+		const leaveDialog = await screen.findByRole('dialog', { name: '未保存的更改' });
+		await fireEvent.click(within(leaveDialog).getByRole('button', { name: '保存并离开' }));
+		await expect(leaveAttempt).resolves.toBe(true);
 
 		await waitFor(() =>
 			expect(invoke).toHaveBeenCalledWith('update_settings', expect.anything()),
@@ -712,5 +714,12 @@ describe('SettingsView diagnostics export', () => {
 		expect(settings.llm.providers[0].api_key).toBeUndefined();
 		expect(settings.llm.providers[0].api_key_ref).toBe('cred-b338124556ee7e51cdde231e1e5a64e6');
 		expect(JSON.stringify(settings)).not.toContain('provider-secret-marker');
+
+		view.unmount();
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('discard_staged_credentials'));
+		const commandNames = invoke.mock.calls.map(([command]) => command);
+		expect(commandNames.indexOf('update_settings')).toBeLessThan(
+			commandNames.lastIndexOf('discard_staged_credentials'),
+		);
 	});
 });
