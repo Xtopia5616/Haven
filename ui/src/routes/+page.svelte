@@ -1645,6 +1645,7 @@
 		 * including sidebar resizing, rather than the outer window. */
 		--chat-inline-gutter: clamp(var(--md-sys-space-md), 2.5cqi, var(--md-sys-space-3xl));
 		--chat-body-size: clamp(0.875rem, 0.8125rem + 0.15cqi, 0.9375rem);
+		--chat-transcript-body-size: clamp(0.8125rem, 0.75rem + 0.15cqi, 0.875rem);
 		--chat-title-size: clamp(1rem, 0.875rem + 0.3cqi, 1.125rem);
 		--chat-message-gap: clamp(var(--md-sys-space-md), 1.5cqi, var(--md-sys-space-lg));
 		--chat-surface-padding: clamp(var(--md-sys-space-md), 1.5cqi, var(--md-sys-space-lg));

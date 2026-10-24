@@ -715,7 +715,7 @@
 		margin-left: auto;
 		width: fit-content;
 		max-width: min(88%, var(--md-sys-chat-reading-width));
-		font-size: var(--chat-body-size, var(--md-sys-typescale-body-large-size));
+		font-size: var(--chat-transcript-body-size, var(--md-sys-typescale-body-medium-size));
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-primary) 84%,
@@ -746,7 +746,7 @@
 	.bubble.assistant:not(.tool):not(.thinking) {
 		width: var(--md-sys-chat-surface-width);
 		max-width: var(--md-sys-chat-surface-width);
-		font-size: var(--chat-body-size, var(--md-sys-typescale-body-large-size));
+		font-size: var(--chat-transcript-body-size, var(--md-sys-typescale-body-medium-size));
 		line-height: var(--md-sys-typescale-body-large-line-height);
 	}
 	/* Tool cards have their own structured header, so keep a secondary-color

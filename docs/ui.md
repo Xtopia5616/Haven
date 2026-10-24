@@ -55,7 +55,7 @@
 
 ### 1.2 字体与行高
 
-字号、字重和行高使用语义 token，禁止页面随意组合字号与 `line-height`。正文默认使用 14px / 1.55；小号正文使用 13px / 1.5；按钮和标签使用 14px / 1.4 或 12px / 1.45；标题按层级使用 18px、20px、28px 和 30px，并保持至少 1.2 的行高。
+字号、字重和行高使用语义 token，禁止页面随意组合字号与 `line-height`。正文默认使用 14px / 1.55；会话消息正文随会话栏宽度在 13–14px / 1.55 间自适应；输入框正文在 14–15px / 1.55 间自适应；小号正文使用 13px / 1.5；按钮和标签使用 14px / 1.4 或 12px / 1.45；标题按层级使用 18px、20px、28px 和 30px，并保持至少 1.2 的行高。
 
 | Token | 值 | 适用场景 |
 |---|---:|---|
@@ -64,7 +64,7 @@
 | `--md-sys-typescale-headline-medium-size` / `-line-height` | 20px / 1.3 | 区块标题 |
 | `--md-sys-typescale-title-large-size` / `-line-height` | 18px / 1.35 | 会话标题 |
 | `--md-sys-typescale-body-medium-size` / `-line-height` | 14px / 1.55 | 默认正文、控件与辅助文本 |
-| `--md-sys-typescale-body-large-size` / `-line-height` | 15px / 1.55 | 聊天回复等连续阅读正文 |
+| `--md-sys-typescale-body-large-size` / `-line-height` | 15px / 1.55 | 强调正文 |
 | `--md-sys-typescale-body-small-size` / `-line-height` | 13px / 1.5 | 辅助正文 |
 | `--md-sys-typescale-label-medium-size` / `-line-height` | 12px / 1.45 | 状态、菜单、次要标签 |
 | `--md-sys-typescale-label-small-size` / `-line-height` | 11px / 1.4 | 极少量元数据 |
