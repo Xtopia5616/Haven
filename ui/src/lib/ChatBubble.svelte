@@ -716,13 +716,10 @@
 		width: fit-content;
 		max-width: min(88%, var(--md-sys-chat-reading-width));
 		font-size: var(--chat-transcript-body-size, var(--md-sys-typescale-body-medium-size));
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-primary) 84%,
-			var(--md-sys-color-surface)
-		);
-		color: var(--md-sys-color-on-primary);
-		border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 55%, transparent);
+		background: var(--md-sys-color-primary-container);
+		color: var(--md-sys-color-on-primary-container);
+		border: 1px solid
+			color-mix(in srgb, var(--md-sys-color-primary) 20%, var(--md-sys-color-outline-variant));
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large)
 			var(--md-sys-shape-extra-small) var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-1);
@@ -731,14 +728,9 @@
 		margin-right: auto;
 		width: var(--md-sys-chat-surface-width);
 		max-width: var(--md-sys-chat-surface-width);
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-primary-container) 18%,
-			var(--md-sys-color-surface-container-low)
-		);
+		background: var(--md-sys-color-surface-container-low);
 		color: var(--md-sys-color-on-surface);
-		border: 1px solid
-			color-mix(in srgb, var(--md-sys-color-primary) 18%, var(--md-sys-color-outline-variant));
+		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-large)
 			var(--md-sys-shape-extra-small);
 		box-shadow: var(--md-sys-elevation-1);
@@ -767,7 +759,7 @@
 		box-shadow: none;
 	}
 	.bubble.user .bubble-role {
-		color: color-mix(in srgb, var(--md-sys-color-on-primary) 88%, var(--md-sys-color-primary));
+		color: var(--md-sys-color-on-primary-container);
 	}
 	.bubble.assistant .bubble-role {
 		color: var(--md-sys-color-primary);
@@ -826,7 +818,7 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.bubble.user .bubble-time {
-		color: color-mix(in srgb, var(--md-sys-color-on-primary) 95%, var(--md-sys-color-primary));
+		color: var(--md-sys-color-on-primary-container);
 	}
 	.bubble.assistant .bubble-time {
 		color: var(--md-sys-color-on-surface-variant);
@@ -905,7 +897,7 @@
 		max-width: 240px;
 		max-height: 180px;
 		border-radius: var(--md-sys-shape-small);
-		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
+		border: 1px solid var(--md-sys-color-outline-variant);
 		object-fit: contain;
 		display: block;
 		cursor: zoom-in;
@@ -917,7 +909,7 @@
 		max-width: 240px;
 		height: 36px;
 		border-radius: var(--md-sys-shape-small);
-		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
+		border: 1px solid var(--md-sys-color-outline-variant);
 	}
 	.attachment-video {
 		max-width: min(100%, 420px);
@@ -932,8 +924,8 @@
 		max-width: 220px;
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
-		border: 1px solid color-mix(in srgb, var(--md-sys-color-on-primary) 25%, transparent);
-		background: color-mix(in srgb, var(--md-sys-color-on-primary) 8%, transparent);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		background: color-mix(in srgb, var(--md-sys-color-on-surface) 5%, transparent);
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface);

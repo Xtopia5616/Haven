@@ -14,11 +14,7 @@ describe('themeStore', () => {
 		document.documentElement.removeAttribute('data-accent');
 		document.documentElement.style.removeProperty('--md-accent-hex');
 		document.documentElement.style.removeProperty('--md-accent-on-primary');
-		document.documentElement.style.removeProperty('--md-accent-on-secondary');
-		document.documentElement.style.removeProperty('--md-accent-on-tertiary');
 		document.documentElement.style.removeProperty('--md-accent-on-primary-container');
-		document.documentElement.style.removeProperty('--md-accent-on-secondary-container');
-		document.documentElement.style.removeProperty('--md-accent-on-tertiary-container');
 		// jsdom has no matchMedia by default; default to dark via a stub.
 		window.matchMedia = vi.fn().mockReturnValue({ matches: true });
 	});
@@ -116,26 +112,14 @@ describe('themeStore', () => {
 		expect(document.documentElement.style.getPropertyValue('--md-accent-on-primary')).toBe(
 			'#000000',
 		);
-		expect(document.documentElement.style.getPropertyValue('--md-accent-on-secondary')).toBe(
-			'#000000',
-		);
-		expect(document.documentElement.style.getPropertyValue('--md-accent-on-tertiary')).toBe(
-			'#000000',
-		);
 		expect(
 			document.documentElement.style.getPropertyValue('--md-accent-on-primary-container'),
-		).toBe('#ffffff');
+		).toBe('#e7ecf3');
 
 		themeStore.setTheme('light');
 		expect(
 			document.documentElement.style.getPropertyValue('--md-accent-on-primary-container'),
-		).toBe('#000000');
-		expect(
-			document.documentElement.style.getPropertyValue('--md-accent-on-secondary-container'),
-		).toBe('#000000');
-		expect(
-			document.documentElement.style.getPropertyValue('--md-accent-on-tertiary-container'),
-		).toBe('#000000');
+		).toBe('#253044');
 	});
 
 	it('ignores invalid accents', async () => {

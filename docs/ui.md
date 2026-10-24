@@ -1,6 +1,6 @@
 # Haven UI 设计规范与编码规则
 
-> 版本: v2.3 | 日期: 2026-10-20
+> 版本: v2.4 | 日期: 2026-10-24
 >
 > 本文定义 Haven UI 设计系统、信息架构和交互契约。组件与页面的具体实现以当前代码为准。
 
@@ -29,29 +29,34 @@
 
 使用 CSS 自定义属性，通过 `[data-theme="light|dark"]` 切换。
 
-| Token 类别 | 命名模式 | 示例 |
-|---|---|---|
-| 主色 | `--md-sys-color-primary` | `#3378D6` |
-| 主色上文字 | `--md-sys-color-on-primary` | `#ffffff` |
-| 主色容器 | `--md-sys-color-primary-container` | `#d7e3ff` |
-| 主色容器上文字 | `--md-sys-color-on-primary-container` | `#001b3e` |
-| 次要色 | `--md-sys-color-secondary` | ... |
-| 第三色 | `--md-sys-color-tertiary` | ... |
-| 错误色 | `--md-sys-color-error` | `#ba1a1a` |
-| 成功色 | `--md-sys-color-success` | `#2e7d32` |
-| 警告色 | `--md-sys-color-warning` | `#7d5700` |
-| 背景/表面 | `--md-sys-color-surface` | ... |
-| 表面变体 | `--md-sys-color-surface-variant` | ... |
-| 轮廓线 | `--md-sys-color-outline` | `#777680` |
-| 轮廓线变体 | `--md-sys-color-outline-variant` | `#c7c5d0` |
+配色方向为「雾灰 / 石板灰底色 + 信息蓝主操作 + 低饱和青色辅助」。保留信息蓝 `#2C5090` 和邮政绿 `#006548`；所有页面共用以下浅色与深色角色，颜色值集中在 `ui/src/app.css`。
 
-**规则**:
+| 角色（`--md-sys-color-*`） | 浅色 | 深色 | 用途 |
+|---|---|---|---|
+| `primary` | `#2C5090` | `#8B9FC2` | 默认蓝色的主操作、链接、焦点 |
+| `primary-container` | `#E6EAF2` | `#25344C` | 选中 chip、用户气泡等柔和强调面 |
+| `secondary` / `secondary-container` | `#536176` / `#E7EDF5` | `#B8C4D4` / `#303D4F` | 导航、次级按钮和中性标签 |
+| `tertiary` / `tertiary-container` | `#426B78` / `#E2EEF1` | `#9AC6D2` / `#293F49` | 工具活动、结构化结果的辅助区分 |
+| `background` / `surface` | `#F6F8FB` | `#171C24` | 工作区底色 |
+| `surface-container-lowest` | `#FFFFFF` | `#12171E` | 最低层表面 |
+| `surface-container-low` | `#F0F3F7` | `#1D232D` | 标题栏、侧栏、聊天回复 |
+| `surface-container` | `#E9EEF4` | `#232B37` | 常规容器 |
+| `surface-container-high` | `#E2E8F0` | `#2B3543` | 菜单、浮层、嵌套区块 |
+| `surface-container-highest` | `#DBE3ED` | `#344051` | 更强的中性层级 |
+| `on-surface` / `on-surface-variant` | `#202B3C` / `#536176` | `#E5EBF3` / `#B8C4D4` | 正文 / 辅助文字 |
+| `outline` / `outline-variant` | `#758296` / `#C7D1DF` | `#8998AC` / `#435166` | 控件边框 / 分割线 |
+| `success` / `success-container` | `#006548` / `#E2F2EA` | `#83CFAC` / `#203E33` | 完成、成功、连接正常 |
+| `warning` / `warning-container` | `#855B12` / `#F9EDDA` | `#E5BF7D` / `#433823` | 等待、注意、需要处理 |
+| `error` / `error-container` | `#B13E42` / `#F9E8E7` | `#F0A5A5` / `#492B31` | 错误、拒绝、破坏性操作 |
 
-- 不允许在组件样式中硬编码颜色值，必须使用 CSS 变量
-- 不允许使用 `color-mix()` 之外的颜色函数直接操作颜色值
-- 组件变体使用 `data-variant` 属性驱动主题切换
+使用规则：
 
-蓝色强调色保留手工调校的默认配色；其他预设和自定义强调色以所选色为种子，在浅色/深色模式下共同派生主色、次要色、第三色和表面轻染色，避免沿用蓝紫色容器。强调色及容器文字的对比色由 themeStore 按当前主题计算；状态色映射到主色、成功、警告、错误和轮廓等语义 token。应用内 HavenMark 使用主色容器及其文字 token，随强调色和浅/深色模式更新；安装包图标继续使用固定品牌配色。
+- 强调色预设与自定义色只改变 `primary` 角色族；背景、次要色、工具色与成功/警告/错误色保持稳定，避免红色主题与错误状态混淆。深色主色由强调色与白色按 55% / 45% 混合；主色容器浅色为强调色 12% + 白色，深色为强调色 24% + `#232B37`。表中蓝色派生值取整到 sRGB 字节。
+- 主操作使用 `primary` / `on-primary`，柔和选中面与用户气泡使用 `primary-container` / `on-primary-container`。助手回复使用中性 surface，不叠加强调色染色；正文密集区域不使用大块高饱和填充。
+- 前景与容器必须成对使用。主色文字由 `themeStore.ts` 按对比度选择；容器文字优先使用柔和的深灰蓝 / 浅灰白，必要时回退到黑白。其余前景由主题 token 指定，正文配对至少 4.5:1；不以降低透明度代替文字层级。
+- 应用内 HavenMark 继续使用主色容器与容器文字，随强调色和浅深模式更新；安装包图标保持固定品牌配色。组件变体使用 `data-variant` 属性。
+- 状态语义继续由 `statusColors.ts` 映射；状态同时用文字或图标表达，不单独依赖颜色。组件不写独立 hex，不自行用强调色生成新背景。阴影使用中性低透明度颜色。
+- `app.html` 的首屏背景与正文色同步，避免加载完成时闪色。新增配色需通过浅深主题、预设与自定义强调色、状态提示和聊天内容的检查；`themePalette.test.ts` 检查静态正文配对对比度。
 
 ### 1.2 字体与行高
 
@@ -773,7 +778,7 @@ ready + 用户修改 → dirty → saving → saved | error
 
 | 反模式 | 正确做法 |
 |---|---|
-| 硬编码颜色 `color: #3378D6` | 使用 `var(--md-sys-color-primary)` |
+| 硬编码颜色 `color: #2C5090` | 使用 `var(--md-sys-color-primary)` |
 | 硬编码间距 `padding: 16px` | 使用 `var(--md-sys-space-lg)` |
 | 使用 `<slot>` | 使用 `{@render children?.()}` |
 | 使用 `export let` | 使用 `$props()` 解构 |

@@ -337,275 +337,118 @@
 }
 
 /* ============================================================================
- * LIGHT THEME (Material 3 expressive light scheme)
+ * Haven palette: mist / slate neutrals, blue actions, muted teal tool accents.
+ * Accent preferences only affect primary roles; surfaces and status colors stay
+ * stable across presets. Keep primary mixes aligned with themeStore.ts so custom
+ * accents receive readable foregrounds in both themes.
  * ========================================================================== */
 :root,
 [data-theme='light'] {
-	/* Primary — overridable via --md-accent-hex (set by themeStore.ts) */
-	--md-sys-color-primary: var(--md-accent-hex, #3378d6);
-	--md-sys-color-titlebar: color-mix(
-		in srgb,
-		var(--md-sys-color-surface-container-low) 92%,
-		var(--md-sys-color-primary) 8%
-	);
-	--md-sys-color-on-primary: #ffffff;
-	--md-sys-color-primary-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #3378d6) 20%,
-		#ffffff
-	);
-	--md-sys-color-on-primary-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #3378d6) 80%,
-		#000000
-	);
-	--md-sys-color-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #3378d6) 20%, #ffffff);
-	--md-sys-color-on-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #3378d6) 80%, #000000);
-
-	/* Secondary */
-	--md-sys-color-secondary: #545f70;
-	--md-sys-color-on-secondary: #ffffff;
-	--md-sys-color-secondary-container: #dae2f9;
-	--md-sys-color-on-secondary-container: #111c2b;
-
-	/* Tertiary */
-	--md-sys-color-tertiary: #735b6c;
-	--md-sys-color-on-tertiary: #ffffff;
-	--md-sys-color-tertiary-container: #ffd8ec;
-	--md-sys-color-on-tertiary-container: #2a1226;
-
-	/* Error */
-	--md-sys-color-error: #ba1a1a;
-	--md-sys-color-on-error: #ffffff;
-	--md-sys-color-error-container: #ffdad6;
-	--md-sys-color-on-error-container: #410002;
-
-	/* Success (邮政绿 aligned) */
-	--md-sys-color-success: #006548;
-	--md-sys-color-success-container: #cef5e3;
-	--md-sys-color-on-success-container: #002110;
-
-	/* Warning (custom, M3-aligned) */
-	--md-sys-color-warning: #7d5700;
-	--md-sys-color-warning-container: #ffddb0;
-	--md-sys-color-on-warning-container: #281800;
-
-	/* Background & surfaces */
-	--md-sys-color-background: #f7f8fc;
-	--md-sys-color-on-background: #1a1b22;
-	--md-sys-color-surface: #f7f8fc;
-	--md-sys-color-on-surface: #1a1b22;
-	--md-sys-color-surface-variant: #e3e1ec;
-	--md-sys-color-on-surface-variant: #46464f;
-	--md-sys-color-surface-dim: #dbd9e0;
-	--md-sys-color-surface-bright: #faf8ff;
-	--md-sys-color-surface-container-lowest: #ffffff;
-	--md-sys-color-surface-container-low: #f1f3f8;
-	--md-sys-color-surface-container: #e9edf4;
-	--md-sys-color-surface-container-high: #e1e6ef;
-	--md-sys-color-surface-container-highest: #d9dfe9;
-
-	/* Outline */
-	--md-sys-color-outline: #777680;
-	--md-sys-color-outline-variant: #c3c9d5;
-
-	/* Scrim */
-	--md-sys-color-scrim: #000000;
-	--md-sys-color-shadow: rgba(0, 0, 0, 0.18);
-	--md-sys-color-shadow-strong: rgba(0, 0, 0, 0.28);
-
-	/* Inverse */
-	--md-sys-color-inverse-surface: #2f3036;
-	--md-sys-color-inverse-on-surface: #f0f0f7;
-	--md-sys-color-inverse-primary: #a5c8ff;
-
-	color-scheme: light;
-}
-
-/* ============================================================================
- * DARK THEME
- * ========================================================================== */
-[data-theme='dark'] {
-	--md-sys-color-primary: color-mix(in srgb, var(--md-accent-hex, #a5c8ff) 55%, #ffffff);
-	--md-sys-color-titlebar: color-mix(
-		in srgb,
-		var(--md-sys-color-surface-container-high) 92%,
-		var(--md-sys-color-primary) 8%
-	);
-	--md-sys-color-on-primary: color-mix(in srgb, var(--md-accent-hex, #003062) 80%, #000000);
-	--md-sys-color-primary-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #0f4792) 22%,
-		var(--md-sys-color-surface-container)
-	);
-	--md-sys-color-on-primary-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #d7e3ff) 55%,
-		#ffffff
-	);
-	--md-sys-color-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #d7e3ff) 55%, #ffffff);
-	--md-sys-color-on-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #001b3e) 80%, #000000);
-
-	--md-sys-color-secondary: #bec6dc;
-	--md-sys-color-on-secondary: #283041;
-	--md-sys-color-secondary-container: #3e4759;
-	--md-sys-color-on-secondary-container: #dae2f9;
-
-	--md-sys-color-tertiary: #e7b9d1;
-	--md-sys-color-on-tertiary: #44263b;
-	--md-sys-color-tertiary-container: #5c3c52;
-	--md-sys-color-on-tertiary-container: #ffd8ec;
-
-	--md-sys-color-error: #ffb4ab;
-	--md-sys-color-on-error: #690005;
-	--md-sys-color-error-container: #93000a;
-	--md-sys-color-on-error-container: #ffdad6;
-
-	--md-sys-color-success: #73d9af;
-	--md-sys-color-success-container: #004d34;
-	--md-sys-color-on-success-container: #a8f6b3;
-
-	--md-sys-color-warning: #f5bd4d;
-	--md-sys-color-warning-container: #5d4100;
-	--md-sys-color-on-warning-container: #ffddb0;
-
-	--md-sys-color-background: #181b24;
-	--md-sys-color-on-background: #e3e2e9;
-	--md-sys-color-surface: #181b24;
-	--md-sys-color-on-surface: #e3e2e9;
-	--md-sys-color-surface-variant: #4c5160;
-	--md-sys-color-on-surface-variant: #c7c5d0;
-	--md-sys-color-surface-dim: #14171f;
-	--md-sys-color-surface-bright: #3f4451;
-	--md-sys-color-surface-container-lowest: #11141b;
-	--md-sys-color-surface-container-low: #1d2029;
-	--md-sys-color-surface-container: #222631;
-	--md-sys-color-surface-container-high: #292e3b;
-	--md-sys-color-surface-container-highest: #303646;
-
-	--md-sys-color-outline: #9b9ba6;
-	--md-sys-color-outline-variant: #414754;
-
-	--md-sys-color-scrim: #000000;
-	--md-sys-color-shadow: rgba(0, 0, 0, 0.4);
-	--md-sys-color-shadow-strong: rgba(0, 0, 0, 0.6);
-
-	--md-sys-color-inverse-surface: #e3e2e9;
-	--md-sys-color-inverse-on-surface: #2f3036;
-	--md-sys-color-inverse-primary: #3378d6;
-
-	color-scheme: dark;
-}
-
-/* Non-blue accents seed the complete expressive palette. The blue preset keeps
- * its hand-tuned scheme above; other accents tint semantic roles and neutral
- * surfaces together so old blue/purple colors do not leak into those themes. */
-[data-theme='light'][data-accent]:not([data-accent='blue']) {
 	--md-sys-color-primary: var(--md-accent-hex, #2c5090);
 	--md-sys-color-on-primary: var(--md-accent-on-primary, #ffffff);
 	--md-sys-color-primary-container: color-mix(
 		in srgb,
-		var(--md-accent-hex, #2c5090) 20%,
+		var(--md-accent-hex, #2c5090) 12%,
 		#ffffff
 	);
-	--md-sys-color-on-primary-container: var(--md-accent-on-primary-container, #000000);
+	--md-sys-color-on-primary-container: var(--md-accent-on-primary-container, #253044);
 	--md-sys-color-primary-fixed: var(--md-sys-color-primary-container);
 	--md-sys-color-on-primary-fixed: var(--md-sys-color-on-primary-container);
-
-	--md-sys-color-secondary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 68%, #545f70);
-	--md-sys-color-on-secondary: var(--md-accent-on-secondary, #ffffff);
-	--md-sys-color-secondary-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 15%,
-		#e9edf2
-	);
-	--md-sys-color-on-secondary-container: var(--md-accent-on-secondary-container, #000000);
-
-	--md-sys-color-tertiary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 60%, #735b6c);
-	--md-sys-color-on-tertiary: var(--md-accent-on-tertiary, #ffffff);
-	--md-sys-color-tertiary-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 14%,
-		#f0edf0
-	);
-	--md-sys-color-on-tertiary-container: var(--md-accent-on-tertiary-container, #000000);
-
-	--md-sys-color-background: color-mix(in srgb, var(--md-accent-hex, #2c5090) 2%, #f7f8fc);
+	--md-sys-color-titlebar: var(--md-sys-color-surface-container-low);
 	--md-sys-color-surface: var(--md-sys-color-background);
-	--md-sys-color-surface-variant: color-mix(in srgb, var(--md-accent-hex, #2c5090) 7%, #e3e1ec);
-	--md-sys-color-surface-container-low: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 3%,
-		#f1f3f8
-	);
-	--md-sys-color-surface-container: color-mix(in srgb, var(--md-accent-hex, #2c5090) 4%, #e9edf4);
-	--md-sys-color-surface-container-high: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 5%,
-		#e1e6ef
-	);
-	--md-sys-color-surface-container-highest: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 6%,
-		#d9dfe9
-	);
-	--md-sys-color-outline: color-mix(in srgb, var(--md-accent-hex, #2c5090) 5%, #777680);
-	--md-sys-color-outline-variant: color-mix(in srgb, var(--md-accent-hex, #2c5090) 16%, #c3c9d5);
-	--md-sys-color-inverse-primary: var(--md-accent-hex, #2c5090);
+	--md-sys-color-on-background: var(--md-sys-color-on-surface);
+	--md-sys-color-scrim: #000000;
+	--md-sys-color-secondary: #536176;
+	--md-sys-color-on-secondary: #ffffff;
+	--md-sys-color-secondary-container: #e7edf5;
+	--md-sys-color-on-secondary-container: #35445a;
+	--md-sys-color-tertiary: #426b78;
+	--md-sys-color-on-tertiary: #ffffff;
+	--md-sys-color-tertiary-container: #e2eef1;
+	--md-sys-color-on-tertiary-container: #294c58;
+	--md-sys-color-error: #b13e42;
+	--md-sys-color-on-error: #ffffff;
+	--md-sys-color-error-container: #f9e8e7;
+	--md-sys-color-on-error-container: #802c30;
+	--md-sys-color-success: #006548;
+	--md-sys-color-success-container: #e2f2ea;
+	--md-sys-color-on-success-container: #1d5140;
+	--md-sys-color-warning: #855b12;
+	--md-sys-color-warning-container: #f9edda;
+	--md-sys-color-on-warning-container: #684914;
+	--md-sys-color-background: #f6f8fb;
+	--md-sys-color-on-surface: #202b3c;
+	--md-sys-color-surface-variant: #e2e8f0;
+	--md-sys-color-on-surface-variant: #536176;
+	--md-sys-color-surface-dim: #dbe3ed;
+	--md-sys-color-surface-bright: #ffffff;
+	--md-sys-color-surface-container-lowest: #ffffff;
+	--md-sys-color-surface-container-low: #f0f3f7;
+	--md-sys-color-surface-container: #e9eef4;
+	--md-sys-color-surface-container-high: #e2e8f0;
+	--md-sys-color-surface-container-highest: #dbe3ed;
+	--md-sys-color-outline: #758296;
+	--md-sys-color-outline-variant: #c7d1df;
+	--md-sys-color-shadow: rgba(20, 30, 46, 0.12);
+	--md-sys-color-shadow-strong: rgba(20, 30, 46, 0.22);
+	--md-sys-color-inverse-surface: #2b3543;
+	--md-sys-color-inverse-on-surface: #edf2f8;
+	--md-sys-color-inverse-primary: #a8bfe0;
+	color-scheme: light;
 }
 
-[data-theme='dark'][data-accent]:not([data-accent='blue']) {
+[data-theme='dark'] {
 	--md-sys-color-primary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 55%, #ffffff);
 	--md-sys-color-on-primary: var(--md-accent-on-primary, #000000);
 	--md-sys-color-primary-container: color-mix(
 		in srgb,
-		var(--md-accent-hex, #2c5090) 22%,
-		#222631
+		var(--md-accent-hex, #2c5090) 24%,
+		#232b37
 	);
-	--md-sys-color-on-primary-container: var(--md-accent-on-primary-container, #ffffff);
-	--md-sys-color-primary-fixed: var(--md-sys-color-primary);
-	--md-sys-color-on-primary-fixed: color-mix(in srgb, var(--md-accent-hex, #2c5090) 80%, #000000);
-
-	--md-sys-color-secondary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 42%, #bec6dc);
-	--md-sys-color-on-secondary: var(--md-accent-on-secondary, #000000);
-	--md-sys-color-secondary-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 32%,
-		#3e424c
-	);
-	--md-sys-color-on-secondary-container: var(--md-accent-on-secondary-container, #ffffff);
-
-	--md-sys-color-tertiary: color-mix(in srgb, var(--md-accent-hex, #2c5090) 50%, #e7b9d1);
-	--md-sys-color-on-tertiary: var(--md-accent-on-tertiary, #000000);
-	--md-sys-color-tertiary-container: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 26%,
-		#443c46
-	);
-	--md-sys-color-on-tertiary-container: var(--md-accent-on-tertiary-container, #ffffff);
-
-	--md-sys-color-background: color-mix(in srgb, var(--md-accent-hex, #2c5090) 3%, #181b24);
+	--md-sys-color-on-primary-container: var(--md-accent-on-primary-container, #e7ecf3);
+	--md-sys-color-primary-fixed: var(--md-sys-color-primary-container);
+	--md-sys-color-on-primary-fixed: var(--md-sys-color-on-primary-container);
+	--md-sys-color-titlebar: var(--md-sys-color-surface-container-low);
 	--md-sys-color-surface: var(--md-sys-color-background);
-	--md-sys-color-surface-variant: color-mix(in srgb, var(--md-accent-hex, #2c5090) 8%, #4c5160);
-	--md-sys-color-surface-container-low: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 4%,
-		#1d2029
-	);
-	--md-sys-color-surface-container: color-mix(in srgb, var(--md-accent-hex, #2c5090) 5%, #222631);
-	--md-sys-color-surface-container-high: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 6%,
-		#292e3b
-	);
-	--md-sys-color-surface-container-highest: color-mix(
-		in srgb,
-		var(--md-accent-hex, #2c5090) 7%,
-		#303646
-	);
-	--md-sys-color-outline: color-mix(in srgb, var(--md-accent-hex, #2c5090) 10%, #9b9ba6);
-	--md-sys-color-outline-variant: color-mix(in srgb, var(--md-accent-hex, #2c5090) 18%, #414754);
-	--md-sys-color-inverse-primary: var(--md-accent-hex, #2c5090);
+	--md-sys-color-on-background: var(--md-sys-color-on-surface);
+	--md-sys-color-scrim: #000000;
+	--md-sys-color-secondary: #b8c4d4;
+	--md-sys-color-on-secondary: #253044;
+	--md-sys-color-secondary-container: #303d4f;
+	--md-sys-color-on-secondary-container: #dce5f1;
+	--md-sys-color-tertiary: #9ac6d2;
+	--md-sys-color-on-tertiary: #183a45;
+	--md-sys-color-tertiary-container: #293f49;
+	--md-sys-color-on-tertiary-container: #cee7ef;
+	--md-sys-color-error: #f0a5a5;
+	--md-sys-color-on-error: #542126;
+	--md-sys-color-error-container: #492b31;
+	--md-sys-color-on-error-container: #f6cece;
+	--md-sys-color-success: #83cfac;
+	--md-sys-color-success-container: #203e33;
+	--md-sys-color-on-success-container: #bfe9d4;
+	--md-sys-color-warning: #e5bf7d;
+	--md-sys-color-warning-container: #433823;
+	--md-sys-color-on-warning-container: #f3dcb2;
+	--md-sys-color-background: #171c24;
+	--md-sys-color-on-surface: #e5ebf3;
+	--md-sys-color-surface-variant: #344051;
+	--md-sys-color-on-surface-variant: #b8c4d4;
+	--md-sys-color-surface-dim: #12171e;
+	--md-sys-color-surface-bright: #3b4758;
+	--md-sys-color-surface-container-lowest: #12171e;
+	--md-sys-color-surface-container-low: #1d232d;
+	--md-sys-color-surface-container: #232b37;
+	--md-sys-color-surface-container-high: #2b3543;
+	--md-sys-color-surface-container-highest: #344051;
+	--md-sys-color-outline: #8998ac;
+	--md-sys-color-outline-variant: #435166;
+	--md-sys-color-shadow: rgba(0, 0, 0, 0.3);
+	--md-sys-color-shadow-strong: rgba(0, 0, 0, 0.5);
+	--md-sys-color-inverse-surface: #e5ebf3;
+	--md-sys-color-inverse-on-surface: #253044;
+	--md-sys-color-inverse-primary: #2c5090;
+	color-scheme: dark;
 }
 
 /* ============================================================================

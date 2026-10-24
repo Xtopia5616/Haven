@@ -112,28 +112,20 @@ function applyAccentContrast(accent: string, theme: ThemeMode) {
 	const accentHex = resolveAccentHex(accent);
 	const dark = theme === 'dark';
 	const primary = dark ? mixHex(accentHex, '#ffffff', 0.55) : accentHex;
-	const secondary = dark
-		? mixHex(accentHex, '#bec6dc', 0.42)
-		: mixHex(accentHex, '#545f70', 0.68);
-	const tertiary = dark ? mixHex(accentHex, '#e7b9d1', 0.5) : mixHex(accentHex, '#735b6c', 0.6);
 	const primaryContainer = dark
-		? mixHex(accentHex, '#222631', 0.22)
-		: mixHex(accentHex, '#ffffff', 0.2);
-	const secondaryContainer = dark
-		? mixHex(accentHex, '#3e424c', 0.32)
-		: mixHex(accentHex, '#e9edf2', 0.15);
-	const tertiaryContainer = dark
-		? mixHex(accentHex, '#443c46', 0.26)
-		: mixHex(accentHex, '#f0edf0', 0.14);
+		? mixHex(accentHex, '#232b37', 0.24)
+		: mixHex(accentHex, '#ffffff', 0.12);
+	const containerInk = dark ? '#e7ecf3' : '#253044';
+	const inkLuminance = relativeLuminance(containerInk);
+	const backgroundLuminance = relativeLuminance(primaryContainer);
+	const containerContrast =
+		(Math.max(inkLuminance, backgroundLuminance) + 0.05) /
+		(Math.min(inkLuminance, backgroundLuminance) + 0.05);
 	root.style.setProperty('--md-accent-on-primary', contrastingText(primary));
-	root.style.setProperty('--md-accent-on-secondary', contrastingText(secondary));
-	root.style.setProperty('--md-accent-on-tertiary', contrastingText(tertiary));
-	root.style.setProperty('--md-accent-on-primary-container', contrastingText(primaryContainer));
 	root.style.setProperty(
-		'--md-accent-on-secondary-container',
-		contrastingText(secondaryContainer),
+		'--md-accent-on-primary-container',
+		containerContrast >= 4.5 ? containerInk : contrastingText(primaryContainer),
 	);
-	root.style.setProperty('--md-accent-on-tertiary-container', contrastingText(tertiaryContainer));
 }
 
 function applyTheme(theme: ThemeMode, accent: string) {
