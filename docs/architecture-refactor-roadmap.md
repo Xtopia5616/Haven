@@ -96,7 +96,7 @@
 
 **2026-10-24 部分 Windows 证据：** 在 R03 提交 `527bcd3` 的独立开发 profile 上，bootstrap ready、schema v61、SQLite integrity check 和旧 MCP exposure 五值迁移均通过；生产 Shell/MXC 路径的根内写入成功、兄弟目录写入拒绝测试通过。用户手动处理 Node.js 防火墙提示后，在运行代码相同、仅增加验收文档的 `6f60ef1` 上重启该 profile，真实首屏、Settings、安全页及 MCP 卡片/三维编辑器读取与菜单选项核对通过，迁移配置重启可读；只读取消后配置哈希不变。安全策略编辑保存、完整调用/撤权交互、安装/升级/卸载、用户数据保留与物理 ENOSPC 仍未验收。详细环境、命令和范围见 [ADR 1382](adr/1382-execution-path-capability-audit.md) 与 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)。这只是开发版部分验收，不关闭 Slice 3/4 Acceptance 或 Windows Gate；最终门禁仍须在隔离环境的最新构建上完成。
 
-**2026-10-24 当前代码启动复核：** 在提交 `a2b1720c463796a0bb1f81c4e5c4ecd7324fb8b3` 上使用固定 Rust/Node/pnpm 工具链和隔离 profile，Tauri bootstrap ready、schema v61 与 SQLite integrity check 通过；系统报告 Windows 10 Pro build 29683，尚未确认满足 Windows 11 24H2 支持基线。Node.js 防火墙权限提示遮挡首屏，按 computer-use skill 未自动处理；本次不计入 UI 验收，详情见 [ADR 1382](adr/1382-execution-path-capability-audit.md)。
+**2026-10-24 当前代码只读 UI 复核：** 在提交 `a2b1720c463796a0bb1f81c4e5c4ecd7324fb8b3` 的隔离 profile 上，用户手动允许 Node.js 防火墙提示后，主界面、Settings 安全与权限页及 Tools > MCP 空状态页均可显示；没有配置 MCP 服务器，未修改 Haven 设置，也未发起工具调用。Windows 当前环境报告 Windows 10 Pro build 29683，尚未确认满足 Windows 11 24H2 支持基线。此证据不关闭 Slice 3/4 Acceptance 或 Windows Gate；范围和未验收项见 [ADR 1382](adr/1382-execution-path-capability-audit.md)。
 
 ### 5.2 交互生命周期所有权（行为已收口；恢复覆盖纳入新一轮）
 

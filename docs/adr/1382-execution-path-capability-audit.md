@@ -34,4 +34,6 @@ ADR 1368 为 WorkspaceWrite Shell 建立了 MXC ProcessContainer 路径。仓库
 
 完整授权/确认、网络策略、子进程后代、取消/撤权及 backend 不可用时无 host fallback 的 UI/平台场景尚未验收；未配置模型 endpoint，也未通过 UI 发起 Shell。当前 Windows Computer Use 执行限制禁止自动修改应用内安全/隐私设置或通过 UI 运行终端命令，因此不以界面说明代替实际授权/执行证明。Slice 3 保持 Acceptance Open。
 
-2026-10-24 在当前提交 `a2b1720c463796a0bb1f81c4e5c4ecd7324fb8b3` 上，以 Rust 1.99.0、Node 24.21.0、pnpm 12.12.1 和隔离 `HAVEN_DATA_DIR` 再次启动开发版；AppState、Tauri 初始化和 bootstrap ready 完成，schema v61，SQLite integrity check 为 `ok`，未配置模型 endpoint 或使用真实数据/凭据。Windows 当前环境报告 Windows 10 Pro、build 29683，尚未据此确认满足 Windows 11 24H2 支持基线。首屏被 Windows Defender Firewall 的 Node.js 网络权限提示遮挡；按 computer-use skill 的规定未自动选择允许或取消，也未修改防火墙规则。此轮没有进一步交互，因此不计入 UI 验收；待用户处理提示后才能继续当前构建的只读界面核验。
+2026-10-24 在当前代码提交 `a2b1720c463796a0bb1f81c4e5c4ecd7324fb8b3` 上，以 Rust 1.99.0、Node 24.21.0、pnpm 12.12.1 和隔离 `HAVEN_DATA_DIR` 再次启动开发版；AppState、Tauri 初始化和 bootstrap ready 完成，schema v61，SQLite integrity check 为 `ok`，未配置模型 endpoint 或使用真实数据/凭据。Windows 当前环境报告 Windows 10 Pro、build 29683，尚未据此确认满足 Windows 11 24H2 支持基线。首屏最初被 Windows Defender Firewall 的 Node.js 网络权限提示遮挡；用户手动允许后窗口正常显示，自动化未修改防火墙规则。随后只读核对主界面、Settings 安全与权限页，以及 Tools > MCP 空状态页：安全页显示“协作执行”、工作区范围、受限网络和“已应用”状态；MCP 页可达，显示 0 个已配置服务器及添加入口。未修改 Haven 安全设置、MCP 配置或其它应用配置；核对后开发进程已关闭。
+
+这只证明当前隔离 profile 下首屏及相关页面可显示、MCP 空状态可达。没有 MCP 配置，因此未验收服务添加/连接、填充后的 availability/catalog、invocation、旧 exposure 配置迁移、编辑保存与重启恢复；也没有配置模型或发起 Shell 调用。完整 MXC/进程权限负向 UI 验收仍未完成。Windows 支持基线尚未确认，Slice 3 保持 Acceptance Open。
