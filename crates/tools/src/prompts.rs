@@ -22,7 +22,7 @@ pub(crate) const NOTIFY_DESCRIPTION: &str = "Send a non-blocking visual or syste
 pub(crate) const SCHEDULE_DESCRIPTION: &str = "Create, list, or cancel one-off plans and recurring fresh-session tasks. Plans own their occurrences independently of background ToolRuns. For mode=new_session, write a self-contained execution prompt because the new session has no source-session transcript; body is only the short user-visible summary. A recurring task reuses the same prompt at each fixed-seconds interval; missed ticks are skipped while one occurrence runs. Intervals do not represent local wall-clock times.";
 pub(crate) const HAVEN_DESCRIPTION: &str =
     "Inspect or change Haven configuration, skills, builtins, MCP servers, logs, or sessions.";
-pub(crate) const SHELL_DESCRIPTION: &str = "Run a non-interactive shell command in the configured shell as a foreground tool call. Use an explicit cwd and flags; use toolrun.start with tool_name=shell for detached background execution.";
+pub(crate) const SHELL_DESCRIPTION: &str = "Run a non-interactive shell command in the configured shell as a foreground tool call. Use an explicit cwd and flags; use toolrun.start with tool_name=shell for detached background execution. In WorkspaceWrite, explain any returned sandbox_notice to the user, especially when network access was reduced to public outbound or disabled.";
 pub(crate) const SYSTEM_DESCRIPTION: &str = "Read machine info, environment variables, Registry, power, or display settings. Prefer the narrow operation view.";
 pub(crate) const WINDOW_DESCRIPTION: &str = "List, inspect, focus, close, or screenshot desktop windows. Re-observe before acting; screenshots return an asset_id.";
 pub(crate) const DIAGNOSTICS_DESCRIPTION: &str =
@@ -608,6 +608,9 @@ mod tests {
                 "root description contains newline: {text}"
             );
         }
+        assert!(SHELL_DESCRIPTION.contains("sandbox_notice"));
+        assert!(SHELL_DESCRIPTION.contains("network access was reduced"));
+        assert!(SHELL_DESCRIPTION.contains("or disabled"));
 
         let operations = [
             "files.read",

@@ -11,9 +11,11 @@ ADR 1368 将 `WorkspaceWrite` Shell 接入 MXC ProcessContainer。当前代码�
 ## 决定
 
 - 先按原始请求 probe BaseContainer。只有完整策略可由 BaseContainer 执行时，才使用原始网络和 UI 策略启动。
-- BaseContainer 无法执行原策略时，使用收窄网络权限的兼容请求重探；只接受 probe 明确报告且无错误的 BaseContainer、AppContainer+BFS 或 AppContainer+DACL。兼容请求无可用 tier 或 spawn 失败时仍拒绝；永不回退为普通宿主进程。
+- 原策略 probe API 报错、BaseContainer 无法执行原策略或原策略 spawn 失败时，继续按有序策略重试；只接受 probe 明确报告且无错误的 BaseContainer、AppContainer+BFS 或 AppContainer+DACL。原策略本来就拒绝网络时，可直接采用语义相同的 AppContainer tier。MXC 启动失败后继续下一档时，依赖 MXC runner 在返回错误前终止/回收尚未成功启动的子进程。
 - 兼容 tier 下若原请求允许网络，将网络收窄为仅允许公网出站连接，并拒绝私有网络入站和 host loopback。原请求拒绝网络时继续全拒绝。其它文件范围、工作目录、环境和进程生命周期边界保持原授权值。
+- 若仅公网出站兼容策略仍无法 probe 或启动，则再试完全断网的兼容策略；结果必须显式告知 Shell 调用者及模型网络已关闭。所有策略均失败时报告各档失败阶段和原因，不回退为普通宿主进程。
 - AppContainer+DACL tier 可在授权路径上临时调整 ACL，MXC 在进程结束时恢复。Shell 结果显示当前兼容 tier、ACL 临时调整及网络降级说明；日志记录 tier 和 probe warnings。
+- MXC probe/spawn 错误经路径与凭据脱敏后进入 Shell 错误；兼容成功时 probe 与运行时 warnings 也显示在 `sandbox_notice`。模型工具描述要求向用户解释该提示，特别是网络权限降级。
 - 不新增设置项、配置字段、IPC 命令或数据迁移。
 
 ## 替代方案
@@ -30,6 +32,6 @@ Shell 的 `WorkspaceWrite` 在兼容 tier 上可用范围扩大；兼容 tier �
 
 ## 验证
 
-- 单元测试覆盖兼容 tier 判定、策略拒绝、仅出站网络构造与拒绝网络保持拒绝。
+- 单元测试覆盖兼容 tier 判定、初次 probe API 错误后的重试、仅公网出站到全断网的降级顺序、策略拒绝与用户可见提示。
 - UI 测试覆盖 Shell 结果卡片显示降级说明。
 - Windows 真实 MXC 验收需分别覆盖 BaseContainer 和 AppContainer+DACL 主机；当前开发机的 BaseContainer 路径继续由既有 Windows Shell/MXC 验收覆盖。若当前主机只提供 BaseContainer，则 AppContainer+DACL 真机路径记为环境受限，不据此宣称已运行验收。

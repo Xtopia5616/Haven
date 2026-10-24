@@ -229,20 +229,22 @@ impl ShellTool {
                             "powershell" | "pwsh"
                         ),
                     )?;
-                    let process = haven_platform::sandboxed_process::SandboxedProcess::spawn(
-                        request,
-                    )
-                    .await
-                    .map_err(|error| {
-                        tracing::warn!(
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "MXC rejected the Workspace Write shell process"
-                        );
-                        crate::security::execution_policy_denied(
-                            "MXC could not start the shell inside the Workspace Write boundary"
-                                .into(),
-                        )
-                    })?;
+                    let process =
+                        haven_platform::sandboxed_process::SandboxedProcess::spawn(request)
+                            .await
+                            .map_err(|error| {
+                                // The platform boundary already sanitizes and bounds each MXC
+                                // diagnostic before composing the ordered retry report. Keep
+                                // the full report for the model; sanitize the log copy again.
+                                let reason = error.to_string();
+                                tracing::warn!(
+                                    error = %haven_common::error::sanitize_error_text(&reason),
+                                    "MXC rejected the Workspace Write shell process"
+                                );
+                                crate::security::execution_policy_denied(format!(
+                                    "MXC 无法在 WorkspaceWrite 隔离中启动 Shell：{reason}"
+                                ))
+                            })?;
                     let sandbox_notice = process.degradation_notice().map(str::to_owned);
                     ShellProcess {
                         kind: ShellProcessKind::Sandboxed(process),
@@ -925,6 +927,67 @@ mod tests {
             !outside_root.join("outside.txt").exists(),
             "MXC must deny a write outside the configured workspace root"
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "run on a serviced Windows host without BaseContainer to exercise AppContainer+DACL"]
+    async fn workspace_write_shell_is_confined_by_appcontainer_dacl_compatibility() {
+        use haven_common::types::NetworkPolicy;
+
+        let temp = tempdir().expect("create isolated MXC DACL fixture");
+        let workspace_root = temp.path().join("workspace");
+        let outside_root = temp.path().join("outside");
+        std::fs::create_dir(&workspace_root).expect("create workspace root");
+        std::fs::create_dir(&outside_root).expect("create outside root");
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (execution_authorization, _) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Deny,
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let tool = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        };
+        let result = tool
+            .run_with_execution_context(
+                ShellParams {
+                    command: "echo inside>inside.txt & echo outside>..\\outside\\outside.txt"
+                        .into(),
+                    shell: Some("cmd".into()),
+                    silent: Some(true),
+                    cwd: None,
+                    step_id: None,
+                    session_id: None,
+                },
+                CancellationToken::new(),
+                Some(&context),
+            )
+            .await
+            .expect("MXC compatibility tier must launch the authorized Shell");
+
+        assert!(result.output["exit_code"].as_i64().unwrap_or(1) != 0);
+        assert_eq!(
+            std::fs::read_to_string(workspace_root.join("inside.txt"))
+                .unwrap()
+                .trim(),
+            "inside"
+        );
+        assert!(
+            !outside_root.join("outside.txt").exists(),
+            "AppContainer+DACL must deny writes outside the configured workspace root"
+        );
+        let notice = result.output["sandbox_notice"]
+            .as_str()
+            .expect("compatibility tier must be reported to the caller");
+        assert!(notice.contains("appcontainer-dacl"));
+        assert!(notice.contains("ACL"));
     }
 
     #[cfg(windows)]
