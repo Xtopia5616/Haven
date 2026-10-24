@@ -196,11 +196,7 @@
 		gap: var(--md-sys-space-lg);
 		padding: var(--md-sys-space-sm) var(--chat-inline-gutter, var(--md-sys-space-2xl));
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-surface-container-low) 92%,
-			var(--md-sys-color-primary) 8%
-		);
+		background: var(--md-sys-color-surface-container-low);
 		min-width: 0;
 	}
 	.session-header::before {

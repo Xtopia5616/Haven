@@ -45,7 +45,7 @@
 | `surface-container-highest` | `#DBE3ED` | `#344051` | 更强的中性层级 |
 | `on-surface` / `on-surface-variant` | `#202B3C` / `#536176` | `#E5EBF3` / `#B8C4D4` | 正文 / 辅助文字 |
 | `outline` / `outline-variant` | `#758296` / `#C7D1DF` | `#8998AC` / `#435166` | 控件边框 / 分割线 |
-| `success` / `success-container` | `#006548` / `#E2F2EA` | `#83CFAC` / `#203E33` | 完成、成功、连接正常 |
+| `success` / `on-success` / `success-container` | `#006548` / `#FFFFFF` / `#E2F2EA` | `#83CFAC` / `#183A2D` / `#203E33` | 成功实底 / 实底前景 / 成功浅底 |
 | `warning` / `warning-container` | `#855B12` / `#F9EDDA` | `#E5BF7D` / `#433823` | 等待、注意、需要处理 |
 | `error` / `error-container` | `#B13E42` / `#F9E8E7` | `#F0A5A5` / `#492B31` | 错误、拒绝、破坏性操作 |
 
@@ -56,9 +56,9 @@
 - 主操作使用 `primary` / `on-primary`，柔和选中面与用户气泡使用 `primary-container` / `on-primary-container`。助手回复使用中性 surface，不叠加强调色染色；正文密集区域不使用大块高饱和填充。
 - 前景与容器必须成对使用。主色文字由 `themeStore.ts` 按对比度选择；容器文字优先使用柔和的深灰蓝 / 浅灰白，必要时回退到黑白。其余前景由主题 token 指定，正文配对至少 4.5:1；不以降低透明度代替文字层级。
 - 应用内 HavenMark 继续使用主色容器与容器文字，随强调色和浅深模式更新；安装包图标保持固定品牌配色。组件变体使用 `data-variant` 属性。
-- 状态语义继续由 `statusColors.ts` 映射；状态同时用文字或图标表达，不单独依赖颜色。阴影、scrim、焦点环、悬停/按压层和细边框可用 `color-mix()` 对现有语义 token 做透明度混合；shell 环境光和选中、状态、工具类型标记可使用轻量语义色。混色不得创造新的色相或改变中性工作区表面的角色，新增规则应先考虑现有容器 token。
+- 状态语义继续由 `statusColors.ts` 映射；状态同时用文字或图标表达，不单独依赖颜色。阴影、scrim、焦点环、悬停/按压层和细边框可用 `color-mix()` 对现有语义 token 做透明度混合；选中、状态、工具类型标记可使用轻量语义色。应用壳层、会话页头和工作区表面使用中性 surface，不叠加强调色渐变。混色不得创造新的色相或改变中性工作区表面的角色，新增规则应先考虑现有容器 token。
 - 组件样式不得硬编码配色 hex；hex 只允许出现在全局 token 定义、强调色预设/算法及必须内联的外部边界。Windows OAuth 回调页无法载入 Svelte 全局样式，使用同色板的局部子集；修改时与本表同步。Tauri 窗口背景是首屏的深色启动兜底，也必须跟随 `background`。
-- `app.html` 的首屏背景与正文色同步，避免加载完成时闪色。安装包图标与生成器里的固定蓝白品牌色是有意的静态资产，不跟随 UI 主题。`themePalette.test.ts` 检查静态正文配对对比度。
+- `app.html` 的首屏背景与正文色同步，避免加载完成时闪色。安装包图标、生成器和托盘图标的品牌底色是有意的静态资产，不跟随 UI 强调色；托盘录音、静音、忙碌状态分别映射到稳定的 `error`、`outline`、`warning` 颜色。`themePalette.test.ts` 检查静态正文配对对比度。
 
 ### 1.2 字体与行高
 

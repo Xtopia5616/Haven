@@ -334,8 +334,10 @@ const CALLBACK_PAGE_STYLE: &str = r#"
 		--outline: #c7d1df;
 		--container: #f0f3f7;
 		--success: #006548;
+		--on-success: #ffffff;
 		--success-container: #e2f2ea;
 		--error: #b13e42;
+		--shadow: rgba(20, 30, 46, .12);
 		--error-container: #f9e8e7;
 	}
 	* { box-sizing: border-box; }
@@ -352,7 +354,7 @@ const CALLBACK_PAGE_STYLE: &str = r#"
 		border: 1px solid var(--outline);
 		border-radius: 28px;
 		background: var(--card);
-		box-shadow: 0 2px 8px rgba(26, 27, 34, .08);
+		box-shadow: 0 2px 8px var(--shadow);
 	}
 	.brand { display: flex; align-items: center; gap: 9px; color: var(--primary); font-size: 15px; font-weight: 700; }
 	.brand-mark { width: 30px; height: 30px; flex: 0 0 auto; }
@@ -383,11 +385,13 @@ const CALLBACK_PAGE_STYLE: &str = r#"
 			--outline: #435166;
 			--container: #232b37;
 			--success: #83cfac;
+			--on-success: #183a2d;
 			--success-container: #203e33;
 			--error: #f0a5a5;
+			--shadow: rgba(0, 0, 0, .3);
 			--error-container: #492b31;
 		}
-		.card { box-shadow: 0 2px 12px rgba(0, 0, 0, .24); }
+		.card { box-shadow: 0 2px 12px var(--shadow); }
 	}
 "#;
 

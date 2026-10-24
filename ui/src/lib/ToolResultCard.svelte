@@ -1012,7 +1012,7 @@
 		flex: none;
 		border-radius: var(--md-sys-shape-full);
 		background: var(--md-sys-color-success);
-		color: var(--md-sys-color-on-success-container);
+		color: var(--md-sys-color-on-success);
 	}
 	.ask-resolved > span:last-child {
 		display: flex;

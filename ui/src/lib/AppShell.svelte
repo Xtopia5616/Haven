@@ -239,11 +239,6 @@
 		padding: var(--md-sys-content-gutter);
 		transition: padding var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 		background: var(--md-sys-color-surface);
-		background-image: linear-gradient(
-			180deg,
-			color-mix(in srgb, var(--md-sys-color-primary) 3%, transparent),
-			transparent 240px
-		);
 	}
 	.content:not(.content--chat) {
 		padding-bottom: var(--workspace-surface-bottom-gap);
@@ -488,13 +483,7 @@
 			grid-row: 2;
 			min-width: 0;
 			padding: var(--md-sys-space-xl);
-			background:
-				radial-gradient(
-					ellipse at 58% -18%,
-					color-mix(in srgb, var(--md-sys-color-primary) 9%, transparent),
-					transparent 56%
-				),
-				var(--md-sys-color-surface);
+			background: var(--md-sys-color-surface);
 		}
 		.content--chat {
 			padding: 0;

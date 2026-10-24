@@ -689,7 +689,7 @@ fn test_make_tray_icon_uses_opaque_background_and_status_colors() {
             .iter()
             .any(|pixel| pixel[3] > 0)
     );
-    let expected_border_red = [44, 240, 169, 255];
+    let expected_border_red = [44, 177, 117, 133];
     let border_offset = ((TRAY_ICON_SIZE / 16) * TRAY_ICON_SIZE + TRAY_ICON_SIZE / 2) * 4;
     for (index, image) in images.iter().enumerate() {
         let border_pixel = &image.rgba()[border_offset as usize..border_offset as usize + 4];

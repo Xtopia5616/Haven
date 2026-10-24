@@ -319,9 +319,11 @@ pub(crate) fn make_tray_icon(status: TrayStatus) -> tauri::image::Image<'static>
     let status_color = match status {
         // The normal tray icon is the same fixed mark as the window icon.
         TrayStatus::Normal => BLUE,
-        TrayStatus::Recording => [240, 68, 56, 255],
-        TrayStatus::Muted => [169, 170, 178, 255],
-        TrayStatus::Busy => [255, 183, 77, 255],
+        // Map shell status colors to the stable light semantic palette. Windows
+        // chooses the tray surface and may use either light or dark mode.
+        TrayStatus::Recording => [177, 62, 66, 255],
+        TrayStatus::Muted => [117, 130, 150, 255],
+        TrayStatus::Busy => [133, 91, 18, 255],
     };
 
     // Desktop tray/taskbar icons use an opaque brand tile for crisp small-size
