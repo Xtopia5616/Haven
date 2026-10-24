@@ -1242,6 +1242,18 @@ describe('ToolResultCard shell / notify / generic', () => {
 		expect(screen.getByText('输出过长已截断')).toBeTruthy();
 	});
 
+	it('shows a visible notice when Shell used compatibility isolation', async () => {
+		const notice =
+			'MXC 兼容隔离已启用（appcontainer-dacl）。兼容层会临时调整授权目录的 ACL，并在子进程结束时恢复。网络访问仍被完全禁用。';
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			content: JSON.stringify({ output: 'command output', sandbox_notice: notice }),
+		});
+		await expandToolCard(container);
+		expect(container.querySelector('.sandbox-notice')?.textContent).toBe(notice);
+		expect(screen.getByText('command output')).toBeTruthy();
+	});
+
 	it('renders the result for a completed background tool invocation', async () => {
 		upsertToolRun({
 			toolRunId: toolRunId(11),

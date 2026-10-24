@@ -625,6 +625,7 @@ function validBuiltinRendererData(renderer: string, data: JsonRecord): boolean {
 					truncated: isBoolean,
 					exit_code: isFiniteNumber,
 					output: isString,
+					sandbox_notice: isString,
 				})
 			);
 		default:

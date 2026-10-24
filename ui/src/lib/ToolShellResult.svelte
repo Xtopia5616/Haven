@@ -3,6 +3,7 @@
 		data?: {
 			truncated?: boolean | null;
 			exit_code?: number | null;
+			sandbox_notice?: string | null;
 		};
 		shellText?: string;
 		liveStreaming?: boolean;
@@ -20,6 +21,9 @@
 {#if data.truncated}
 	<div class="tool-result-label">输出过长已截断</div>
 {/if}
+{#if data.sandbox_notice}
+	<p class="tool-result-message sandbox-notice" role="note">{data.sandbox_notice}</p>
+{/if}
 {#if data.exit_code != null}
 	<div class="tool-result-meta tool-result-meta--shell">退出码 {data.exit_code}</div>
 {/if}
@@ -33,6 +37,14 @@
 	<p class="tool-result-message">（无输出）</p>
 {/if}
 <style>
+	.sandbox-notice {
+		padding: 8px 10px;
+		border: 1px solid var(--md-sys-color-warning);
+		border-radius: var(--md-sys-shape-corner-small);
+		background: var(--md-sys-color-warning-container);
+		color: var(--md-sys-color-on-warning-container);
+	}
+
 	.tool-result-preview.streaming {
 		max-height: 280px;
 	}

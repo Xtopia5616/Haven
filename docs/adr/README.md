@@ -1294,3 +1294,4 @@
 - [1388：区分工具拒绝与结果不确定时的 Agent 提示](1388-distinguish-tool-denial-and-replay-guidance.md)
 - [1389：对话界面分层与正常占位输入区](1389-conversation-layout-and-flow-composer.md)
 - [1390：隔离继续生成期间过期的会话选择](1390-fence-continue-reload-by-user-selection.md)
+- [1391：为 WorkspaceWrite Shell 增加 MXC 兼容隔离 tier](1391-workspace-write-mxc-compatibility-tier.md)

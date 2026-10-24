@@ -40,6 +40,7 @@ pub struct SandboxedProcess {
     stdin: Option<tokio::io::DuplexStream>,
     stdout: Option<SandboxedPipeReader>,
     stderr: Option<SandboxedPipeReader>,
+    degradation_notice: Option<String>,
 }
 
 struct SandboxedPipeReader {
@@ -49,25 +50,55 @@ struct SandboxedPipeReader {
 }
 
 impl SandboxedProcess {
-    /// Start the request only when MXC confirms that BaseContainer can enforce
-    /// its full policy. No host-process fallback is attempted.
+    /// Start the request in MXC's strongest compatible process-container tier.
+    /// When BaseContainer cannot enforce the requested policy, a compatibility
+    /// retry narrows network access and accepts only an isolation tier MXC's
+    /// probe confirms. A host process is never used as a fallback.
     pub async fn spawn(request: SandboxedProcessRequest) -> anyhow::Result<Self> {
-        let container_request = build_container_request(request)?;
         let process = tokio::task::spawn_blocking(move || {
-            let probe = mxc_sdk::v1::probe(Some(&container_request)).map_err(|_| {
-                anyhow::anyhow!("MXC could not validate the Windows process policy")
-            })?;
+            let requested = build_container_request(
+                request.clone(),
+                NetworkProfile::Requested,
+            )?;
+            let probe = probe_container_request(&requested)?;
+            if probe_is_base_container(&probe) {
+                let process = spawn_container_request(requested)?;
+                return Ok((process, None));
+            }
+
+            let compatibility =
+                build_container_request(request.clone(), NetworkProfile::OutboundOnly)?;
+            let compatibility_probe = probe_container_request(&compatibility)?;
+            let probe_error = compatibility_probe
+                .error
+                .as_deref()
+                .map(haven_common::error::sanitize_error_text)
+                .unwrap_or_else(|| "no compatible isolation tier was reported".to_owned());
             anyhow::ensure!(
-                probe.error.is_none()
-                    && probe.tier == Some("base-container")
-                    && probe.needs_dacl_augmentation == Some(false),
-                "MXC BaseContainer isolation is unavailable for this Windows process policy"
+                probe_is_compatible_fallback(&compatibility_probe),
+                "MXC BaseContainer and AppContainer compatibility isolation are unavailable for this Windows process policy: {}",
+                probe_error
             );
-            mxc_sdk::v1::spawn(container_request, Default::default())
-                .map_err(|_| anyhow::anyhow!("MXC could not start the Windows sandboxed process"))
+
+            let notice = compatibility_notice(&compatibility_probe, request.allow_network);
+            let process = spawn_container_request(compatibility)?;
+            let warning = compatibility_probe
+                .warnings
+                .iter()
+                .map(|warning| haven_common::error::sanitize_error_text(warning))
+                .collect::<Vec<_>>()
+                .join("; ");
+            tracing::warn!(
+                tier = compatibility_probe.tier.unwrap_or("unknown"),
+                network_egress_only = request.allow_network,
+                warning = %warning,
+                "MXC started the shell with compatibility isolation"
+            );
+            Ok((process, Some(notice)))
         })
         .await
         .map_err(|_| anyhow::anyhow!("MXC process launch task failed"))??;
+        let (process, degradation_notice) = process;
 
         for warning in process.warnings() {
             tracing::warn!(warning = %haven_common::error::sanitize_error_text(&warning), "MXC sandbox reported a process warning");
@@ -82,7 +113,13 @@ impl SandboxedProcess {
             stdin,
             stdout,
             stderr,
+            degradation_notice,
         })
+    }
+
+    /// User-visible explanation when MXC had to use a lower isolation tier.
+    pub fn degradation_notice(&self) -> Option<&str> {
+        self.degradation_notice.as_deref()
     }
 
     pub fn take_stdin(&mut self) -> Option<impl AsyncWrite + Unpin + Send + 'static> {
@@ -220,6 +257,7 @@ fn make_async_writer(mut writer: Box<dyn Write + Send>) -> tokio::io::DuplexStre
 
 fn build_container_request(
     request: SandboxedProcessRequest,
+    network_profile: NetworkProfile,
 ) -> anyhow::Result<mxc_sdk::v1::ContainerRequest> {
     use mxc_sdk::v1::configs::{
         ProcessContainerConfig, ProcessContainerUi, ProcessContainerUiIsolation,
@@ -266,6 +304,10 @@ fn build_container_request(
     } else {
         NetworkAction::Deny
     };
+    let ingress_action = match network_profile {
+        NetworkProfile::Requested => network_action,
+        NetworkProfile::OutboundOnly => NetworkAction::Deny,
+    };
     let ui = request.allow_desktop_handle_access.then_some(UiPolicy {
         disable: false,
         clipboard: ClipboardPolicy::None,
@@ -299,8 +341,8 @@ fn build_container_request(
                 ..Default::default()
             }),
             ingress: Some(NetworkIngressPolicy {
-                default: Some(network_action),
-                host_loopback: Some(network_action),
+                default: Some(ingress_action),
+                host_loopback: Some(ingress_action),
             }),
             runtime_config: None,
         }),
@@ -313,6 +355,73 @@ fn build_container_request(
         inherit_default_environment: Some(false),
         ..ContainerRequest::new(command_line)
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NetworkProfile {
+    Requested,
+    /// Keep only public outbound networking; deny private-network ingress and
+    /// host loopback in the compatibility request.
+    OutboundOnly,
+}
+
+fn probe_container_request(
+    request: &mxc_sdk::v1::ContainerRequest,
+) -> anyhow::Result<mxc_sdk::v1::ProbeOutput> {
+    mxc_sdk::v1::probe(Some(request))
+        .map_err(|_| anyhow::anyhow!("MXC could not validate the Windows process policy"))
+}
+
+fn probe_is_base_container(probe: &mxc_sdk::v1::ProbeOutput) -> bool {
+    probe.error.is_none()
+        && probe.tier == Some("base-container")
+        && probe.needs_dacl_augmentation == Some(false)
+}
+
+fn probe_is_compatible_fallback(probe: &mxc_sdk::v1::ProbeOutput) -> bool {
+    compatible_fallback_tier(
+        probe.tier,
+        probe.error.is_some(),
+        probe.needs_dacl_augmentation,
+    )
+}
+
+fn compatible_fallback_tier(
+    tier: Option<&str>,
+    has_error: bool,
+    needs_dacl_augmentation: Option<bool>,
+) -> bool {
+    if has_error {
+        return false;
+    }
+    match tier {
+        Some("base-container") => needs_dacl_augmentation == Some(false),
+        Some("appcontainer-bfs") => needs_dacl_augmentation == Some(false),
+        Some("appcontainer-dacl") => needs_dacl_augmentation == Some(true),
+        _ => false,
+    }
+}
+
+fn spawn_container_request(
+    request: mxc_sdk::v1::ContainerRequest,
+) -> anyhow::Result<mxc_sdk::v1::MxcProcess> {
+    mxc_sdk::v1::spawn(request, Default::default())
+        .map_err(|_| anyhow::anyhow!("MXC could not start the Windows sandboxed process"))
+}
+
+fn compatibility_notice(probe: &mxc_sdk::v1::ProbeOutput, network_egress_only: bool) -> String {
+    let tier = probe.tier.unwrap_or("unknown");
+    let dacl_note = if probe.needs_dacl_augmentation == Some(true) {
+        "兼容层会临时调整授权目录的 ACL，并在子进程结束时恢复。"
+    } else {
+        ""
+    };
+    let network_note = if network_egress_only {
+        "网络权限已收窄为仅允许公网出站；私有网络入站和本机回环已禁用。"
+    } else {
+        "网络访问仍被完全禁用。"
+    };
+    format!("MXC 兼容隔离已启用（{tier}）。{dacl_note}{network_note}")
 }
 
 fn normalize_directories(paths: &[PathBuf], label: &str) -> anyhow::Result<Vec<PathBuf>> {
@@ -408,7 +517,9 @@ fn lock_process(
 
 #[cfg(test)]
 mod tests {
-    use super::{SandboxedProcessRequest, build_container_request, quote_windows_argument};
+    use super::{
+        NetworkProfile, SandboxedProcessRequest, build_container_request, quote_windows_argument,
+    };
     use std::ffi::OsString;
 
     #[test]
@@ -428,19 +539,22 @@ mod tests {
     #[test]
     fn container_request_does_not_inherit_ambient_environment() {
         let root = tempfile::tempdir().expect("create MXC environment fixture");
-        let request = build_container_request(SandboxedProcessRequest {
-            program: OsString::from("cmd"),
-            arguments: Vec::new(),
-            working_directory: root.path().to_path_buf(),
-            readwrite_paths: vec![root.path().to_path_buf()],
-            readonly_paths: Vec::new(),
-            environment: vec![(
-                OsString::from("PATH"),
-                OsString::from("C:\\Windows\\System32"),
-            )],
-            allow_network: false,
-            allow_desktop_handle_access: false,
-        })
+        let request = build_container_request(
+            SandboxedProcessRequest {
+                program: OsString::from("cmd"),
+                arguments: Vec::new(),
+                working_directory: root.path().to_path_buf(),
+                readwrite_paths: vec![root.path().to_path_buf()],
+                readonly_paths: Vec::new(),
+                environment: vec![(
+                    OsString::from("PATH"),
+                    OsString::from("C:\\Windows\\System32"),
+                )],
+                allow_network: false,
+                allow_desktop_handle_access: false,
+            },
+            NetworkProfile::Requested,
+        )
         .expect("build MXC request");
 
         assert_eq!(request.inherit_default_environment, Some(false));
@@ -470,16 +584,19 @@ mod tests {
         use mxc_sdk::v1::{ClipboardPolicy, Containment};
 
         let root = tempfile::tempdir().expect("create MXC UI fixture");
-        let request = build_container_request(SandboxedProcessRequest {
-            program: OsString::from("powershell.exe"),
-            arguments: Vec::new(),
-            working_directory: root.path().to_path_buf(),
-            readwrite_paths: vec![root.path().to_path_buf()],
-            readonly_paths: Vec::new(),
-            environment: Vec::new(),
-            allow_network: false,
-            allow_desktop_handle_access: true,
-        })
+        let request = build_container_request(
+            SandboxedProcessRequest {
+                program: OsString::from("powershell.exe"),
+                arguments: Vec::new(),
+                working_directory: root.path().to_path_buf(),
+                readwrite_paths: vec![root.path().to_path_buf()],
+                readonly_paths: Vec::new(),
+                environment: Vec::new(),
+                allow_network: false,
+                allow_desktop_handle_access: true,
+            },
+            NetworkProfile::Requested,
+        )
         .expect("build PowerShell MXC request");
 
         let ui = request
@@ -499,5 +616,124 @@ mod tests {
         assert!(!ui.desktop_system_control);
         assert_eq!(ui.system_settings, ProcessContainerSystemSettings::None);
         assert!(!ui.ime);
+    }
+
+    #[test]
+    fn compatibility_network_profile_keeps_only_requested_egress() {
+        use mxc_sdk::v1::NetworkAction;
+
+        let root = tempfile::tempdir().expect("create MXC network fixture");
+        let request = build_container_request(
+            SandboxedProcessRequest {
+                program: OsString::from("cmd"),
+                arguments: Vec::new(),
+                working_directory: root.path().to_path_buf(),
+                readwrite_paths: vec![root.path().to_path_buf()],
+                readonly_paths: Vec::new(),
+                environment: Vec::new(),
+                allow_network: true,
+                allow_desktop_handle_access: false,
+            },
+            NetworkProfile::OutboundOnly,
+        )
+        .expect("build compatibility MXC request");
+
+        let network = request.network.expect("network policy is explicit");
+        assert_eq!(
+            network.egress.and_then(|policy| policy.default),
+            Some(NetworkAction::Allow)
+        );
+        let ingress = network.ingress.expect("ingress policy is explicit");
+        assert_eq!(ingress.default, Some(NetworkAction::Deny));
+        assert_eq!(ingress.host_loopback, Some(NetworkAction::Deny));
+        assert_eq!(network.runtime_config, None);
+    }
+
+    #[test]
+    fn denied_network_stays_denied_in_compatibility_profile() {
+        use mxc_sdk::v1::NetworkAction;
+
+        let root = tempfile::tempdir().expect("create MXC network fixture");
+        let request = build_container_request(
+            SandboxedProcessRequest {
+                program: OsString::from("cmd"),
+                arguments: Vec::new(),
+                working_directory: root.path().to_path_buf(),
+                readwrite_paths: vec![root.path().to_path_buf()],
+                readonly_paths: Vec::new(),
+                environment: Vec::new(),
+                allow_network: false,
+                allow_desktop_handle_access: false,
+            },
+            NetworkProfile::OutboundOnly,
+        )
+        .expect("build compatibility MXC request");
+
+        let network = request.network.expect("network policy is explicit");
+        assert_eq!(
+            network.egress.and_then(|policy| policy.default),
+            Some(NetworkAction::Deny)
+        );
+        let ingress = network.ingress.expect("ingress policy is explicit");
+        assert_eq!(ingress.default, Some(NetworkAction::Deny));
+        assert_eq!(ingress.host_loopback, Some(NetworkAction::Deny));
+    }
+
+    #[test]
+    fn compatibility_tier_accepts_mxc_appcontainer_and_clean_base_container() {
+        use super::compatible_fallback_tier;
+
+        assert!(compatible_fallback_tier(
+            Some("appcontainer-dacl"),
+            false,
+            Some(true)
+        ));
+        assert!(compatible_fallback_tier(
+            Some("appcontainer-bfs"),
+            false,
+            Some(false)
+        ));
+        assert!(compatible_fallback_tier(
+            Some("base-container"),
+            false,
+            Some(false)
+        ));
+    }
+
+    #[test]
+    fn compatibility_tier_rejects_probe_errors_and_unenforced_base_requests() {
+        use super::compatible_fallback_tier;
+
+        assert!(!compatible_fallback_tier(
+            Some("appcontainer-dacl"),
+            true,
+            Some(true)
+        ));
+        assert!(!compatible_fallback_tier(
+            Some("base-container"),
+            false,
+            Some(true)
+        ));
+        assert!(!compatible_fallback_tier(
+            Some("appcontainer-bfs"),
+            false,
+            Some(true)
+        ));
+        assert!(!compatible_fallback_tier(
+            Some("appcontainer-dacl"),
+            false,
+            Some(false)
+        ));
+        assert!(!compatible_fallback_tier(
+            Some("appcontainer-dacl"),
+            false,
+            None
+        ));
+        assert!(!compatible_fallback_tier(
+            Some("unknown"),
+            false,
+            Some(false)
+        ));
+        assert!(!compatible_fallback_tier(None, false, None));
     }
 }

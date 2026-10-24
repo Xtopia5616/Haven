@@ -9,8 +9,10 @@
 
 `ReadOnly` / `WorkspaceWrite` 的文件路径边界只作用于声明为
 `OperationEffect::WorkspaceWrite` 的本地文件写操作；其它 `ExternalEffect` 仍按各自的执行边界、
-网络策略、风险、权限和确认规则处理。`WorkspaceWrite` 下 Shell 必须通过 MXC BaseContainer；
-MXC 无法验证完整策略时 fail closed。Skill、MCP stdio 及其它未接入隔离 capability 仍拒绝。
+网络策略、风险、权限和确认规则处理。`WorkspaceWrite` 下 Shell 优先通过 MXC BaseContainer；
+不支持时可降至 MXC AppContainer 兼容层（BFS 或 DACL），使用 DACL 时授权根 ACL 临时调整并在进程结束时恢复。兼容层将允许网络
+收窄为仅公网出站，拒绝私有网络入站与 host loopback；拒绝网络仍保持拒绝。原始请求和兼容请求都无法验证时 fail closed，
+绝不回退宿主进程。降级通过 Shell 结果向用户说明。Skill、MCP stdio 及其它未接入隔离 capability 仍拒绝。
 回归覆盖外链目标位于 writable roots 之外、`NetworkPolicy::Restricted` 时，ReadOnly 与
 WorkspaceWrite 都进入确认流程；本地文件写入仍分别受只读拒绝与工作区根限制。
 
@@ -22,7 +24,7 @@ WorkspaceWrite 都进入确认流程；本地文件写入仍分别受只读拒�
 | `media.*`（内容派生） | `media.inspect`, `media.extract`, `media.render` = low | `media.describe`, `media.transcribe`, `media.generate` = medium；`media.run_ocr` = high | view 的完整名称；父级 `media` 可作为 ToolConfig 家族设置 | 仅接受受管 `asset_id`；OCR 只有专用 OCR client 存在时才暴露；视觉、STT、OCR 和生成分别经过实时 capability 与大小预算 | 派生调用可取消；provider 失败保留受管 asset reference，不暴露宿主路径 |
 | `ask` | 全部 | 无系统副作用 = safe | `ask` | 无本地路径 | 不得静默跳过用户问题 |
 | `files.*` | `files.read`, `files.inspect`, `files.list`, `files.get_outline`, `files.summarize`, `files.search` = low | `files.write`, `files.patch`, `files.copy`, `files.move`, `files.create_directory` = medium；`files.delete` = high；内容搜索 = medium | view 的完整名称；父级 `files` 可作为 ToolConfig 家族设置 | view 固定 operation，继承 `allowed_paths`；`path`, `paths`, `source`, `destination`, `file`, `dir`, `directory` 逐一校验；写入使用 expected_hash/CAS、原子替换和大小上限；write 可在获准目标下创建父目录，dry-run 与 CAS 失配不创建目录；delete 只删除文件或空目录，不递归 | 失败不得部分放宽；dry-run 不产生写入；重试沿用同一 gate |
-| `shell` | 无 | 所有命令 = high | `shell` | `FullAccess` 沿用当前 Windows 用户权限；`WorkspaceWrite` 必须经 MXC BaseContainer，只有有效可写根可读写，系统运行时/PATH/cwd 可只读；策略探测失败不得回退 | 取消或授权撤销终止 MXC/Job Object 进程树；输出保持有界；unsafe 重试默认关闭 |
+| `shell` | 无 | 所有命令 = high | `shell` | `FullAccess` 沿用当前 Windows 用户权限；`WorkspaceWrite` 优先 MXC BaseContainer，兼容时可降至 AppContainer tier，只有有效可写根可写，系统运行时/PATH/cwd 可只读；降级层仅允许公网出站并显示提示；无兼容 tier 时拒绝，绝不回退宿主进程 | 取消或授权撤销终止 MXC/Job Object 进程树；DACL 随子进程结束恢复；输出保持有界；unsafe 重试默认关闭 |
 | `system.*` / `clipboard.*` / `input.*` / `window.*` | `system.get_info`, `system.list_displays`, `system.power.get_status`, `clipboard.read`, `clipboard.list_history`, `input.move`, `input.scroll`, `window.list`, `window.get_foreground`, `window.capture_screenshot`, `window.get_ui_tree`, `window.observe`, `window.wait`, `system.env.get` = safe/low | `system.env.list` = high（scope 明确为 process/user/machine）；注册表只读 = medium；`system.power.lock/sleep` = high、hibernate = critical；`clipboard.write`、`input.click/type/key/click_element/type_element`、`window.invoke/set_value/toggle/select` = medium；`window.focus` = medium、`window.close` = high | view 的完整名称；各 family 父级可作为 ToolConfig 家族设置 | 每个 view 固定 scope/operation，分别沿用路径、桌面和设备边界；`system.env.list` 只返回名称并用 `prefix` 过滤，credential-like get 脱敏；clipboard rich read 只返回受管 asset_id；window 语义操作必须带近期稳定 target | 聚合实现只转发子工具策略；取消只允许在操作未提交前生效 |
 | `http` | 无 | 请求 = medium | `http` | 默认阻断 localhost/loopback、特殊用途和解析到受限地址的域名；可用 `allowed_domains` 进一步收窄；公网地址固定到连接；关闭代理和自动重定向；仅允许逐跳复核的 same-origin redirect；URL/header/body 有字节或条目上限 | 在途取消丢弃 request future；timeout/cancel 后不得自动升级重试；未知结果不重放 |
 | OpenAI 图片 URL 下载 | 无 | 由已授权图片生成操作覆盖 | provider 返回的 `url` | 不带凭据/cookie；不使用代理；关闭自动重定向，每跳重新解析、阻断私有/特殊用途地址并固定公网 IP；允许受校验的公网 CDN 跨 origin redirect | 最多 10 跳，响应最多 32 MiB；取消/超时释放当前请求 |

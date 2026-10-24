@@ -243,8 +243,10 @@ impl ShellTool {
                                 .into(),
                         )
                     })?;
+                    let sandbox_notice = process.degradation_notice().map(str::to_owned);
                     ShellProcess {
                         kind: ShellProcessKind::Sandboxed(process),
+                        sandbox_notice,
                     }
                 }
                 #[cfg(not(windows))]
@@ -347,6 +349,9 @@ impl ShellTool {
         let text = haven_common::encoding::truncate_output(&combined, max_chars).text;
         let exit_code = status.code;
         let mut output = serde_json::json!({"output": text, "shell": shell_context.shell});
+        if let Some(notice) = child.sandbox_notice() {
+            output["sandbox_notice"] = serde_json::Value::String(notice.to_owned());
+        }
         if let Some(code) = exit_code {
             output["exit_code"] = serde_json::Value::from(code);
         }
@@ -521,6 +526,7 @@ enum ShellProcessKind {
 
 struct ShellProcess {
     kind: ShellProcessKind,
+    sandbox_notice: Option<String>,
 }
 
 struct ShellExitStatus {
@@ -529,6 +535,10 @@ struct ShellExitStatus {
 }
 
 impl ShellProcess {
+    fn sandbox_notice(&self) -> Option<&str> {
+        self.sandbox_notice.as_deref()
+    }
+
     fn take_stdout(&mut self) -> Option<ShellAsyncReader> {
         match &mut self.kind {
             ShellProcessKind::Host { child, .. } => child
@@ -625,6 +635,7 @@ async fn spawn_shell_with_host_permissions(
             child,
             _containment: containment,
         },
+        sandbox_notice: None,
     })
 }
 
