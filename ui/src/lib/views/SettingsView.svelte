@@ -19,15 +19,13 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
+	import SettingsErrorNotice from '$lib/SettingsErrorNotice.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { executionWorkspaceStore } from '$lib/executionWorkspaceStore.ts';
 	import { publishNotificationSettingsChanged } from '$lib/notificationSettingsEvents.ts';
 	import { validateSettingsModelDrafts } from '$lib/settingsModelValidation.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import {
-		isPartialConfigApplyError,
-		PARTIAL_APPLY_SAVE_MESSAGE,
-	} from '$lib/settingsSaveFailure.ts';
+	import { isPartialConfigApplyError, presentSettingsFailure } from '$lib/settingsSaveFailure.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { selectSettingsSaveAction } from '$lib/settingsSaveAction.ts';
@@ -441,12 +439,12 @@
 	let saveState = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
 	let providerSaveBusy = $state(false);
 	let settingsSaveSettled: Promise<void> | null = null;
-	let saveError = $state('');
+	let saveError = $state<ReturnType<typeof presentSettingsFailure> | null>(null);
 	let settingsApplyStatuses = $state<TauriCommandResponse<'get_settings_runtime_apply_status'>>(
 		[],
 	);
 	let reapplyBusy = $state(false);
-	let reapplyError = $state('');
+	let reapplyError = $state<ReturnType<typeof presentSettingsFailure> | null>(null);
 	let visibleApplyStatuses = $derived(
 		settingsApplyStatuses.filter((status) => status.result !== 'applied'),
 	);
@@ -609,7 +607,7 @@
 		discardChanges();
 		hookDraftState.discard();
 		saveState = 'idle';
-		saveError = '';
+		saveError = null;
 	}
 
 	function isSettingsTabId(value: string): value is SettingsTabId {
@@ -1370,18 +1368,15 @@
 	async function reapplySavedRuntimeTargets() {
 		if (reapplyBusy || saveState === 'saving') return;
 		reapplyBusy = true;
-		reapplyError = '';
+		reapplyError = null;
 		try {
 			settingsApplyStatuses = await reapplySavedSettings();
 			addNotification('已保存配置已重新应用', 'success');
 		} catch (error) {
-			reapplyError = formatError(error);
+			const failure = presentSettingsFailure(error, 'reapply');
+			reapplyError = failure;
 			await refreshSettingsApplyStatus();
-			reportError(error, {
-				context: 'SettingsView',
-				message: '重新应用已保存配置失败',
-				log: false,
-			});
+			addNotification(`${failure.title}：${failure.message}`, failure.tone);
 		} finally {
 			reapplyBusy = false;
 		}
@@ -1418,7 +1413,7 @@
 			return false;
 		const securityChanged = dirtySettingsSectionIds.includes('security');
 		saveState = 'saving';
-		saveError = '';
+		saveError = null;
 		let settleSave!: () => void;
 		const saveSettled = new Promise<void>((resolve) => {
 			settleSave = resolve;
@@ -1584,7 +1579,8 @@
 			skipNextChatModelSync = false;
 			saveState = 'error';
 			const partialApplyFailure = isPartialConfigApplyError(e);
-			saveError = partialApplyFailure ? PARTIAL_APPLY_SAVE_MESSAGE : formatError(e);
+			const failure = presentSettingsFailure(e);
+			saveError = failure;
 			if (partialApplyFailure) {
 				await refreshSettingsApplyStatus();
 				try {
@@ -1616,11 +1612,7 @@
 				}
 			}
 			if (partialApplyFailure && mounted) captureSnapshot();
-			reportError(e, {
-				context: 'SettingsView',
-				message: partialApplyFailure ? PARTIAL_APPLY_SAVE_MESSAGE : '保存设置失败',
-				log: false,
-			});
+			addNotification(`${failure.title}：${failure.message}`, failure.tone);
 			return false;
 		} finally {
 			settleSave();
@@ -1658,32 +1650,38 @@
 			title="设置"
 			description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
 		/>
-		{#if visibleApplyStatuses.length > 0}
+		{#if visibleApplyStatuses.length > 0 || reapplyError}
 			<section class="settings-runtime-apply" aria-labelledby="settings-runtime-apply-title">
 				<div class="settings-runtime-apply__content">
 					<strong id="settings-runtime-apply-title">已保存配置的运行状态</strong>
-					<p>配置已写入；以下目标尚未完全生效。</p>
-					<ul>
-						{#each visibleApplyStatuses as status (`${status.target}:${status.result}`)}
-							<li>
-								<div class="settings-runtime-apply__row">
-									<strong>{runtimeTargetLabel(status.target)}</strong>
-									<span>{runtimeResultLabel(status.result)}</span>
-								</div>
-								<small>
-									期望版本 {status.expectedConfigVersion}；实际完整应用版本 {status.actualConfigVersion}
-								</small>
-								{#if status.reason}<small class="settings-runtime-apply__reason"
-										>{status.reason}</small
-									>{/if}
-							</li>
-						{/each}
-					</ul>
+					<p>
+						{visibleApplyStatuses.length > 0
+							? '配置已写入；以下目标尚未完全生效。'
+							: '已保存配置的重新应用未完成。'}
+					</p>
+					{#if visibleApplyStatuses.length > 0}
+						<ul>
+							{#each visibleApplyStatuses as status (`${status.target}:${status.result}`)}
+								<li>
+									<div class="settings-runtime-apply__row">
+										<strong>{runtimeTargetLabel(status.target)}</strong>
+										<span>{runtimeResultLabel(status.result)}</span>
+									</div>
+									<small>
+										期望版本 {status.expectedConfigVersion}；实际完整应用版本 {status.actualConfigVersion}
+									</small>
+									{#if status.reason}<small class="settings-runtime-apply__reason"
+											>{status.reason}</small
+										>{/if}
+								</li>
+							{/each}
+						</ul>
+					{/if}
 					{#if reapplyError}
-						<p class="settings-runtime-apply__error" role="alert">{reapplyError}</p>
+						<SettingsErrorNotice failure={reapplyError} />
 					{/if}
 				</div>
-				{#if visibleApplyStatuses.some((status) => status.result === 'retryable' || status.result === 'pending')}
+				{#if reapplyError || visibleApplyStatuses.some((status) => status.result === 'retryable' || status.result === 'pending')}
 					<MaterialButton
 						variant="outlined"
 						label={reapplyBusy ? '重新应用中…' : '重试已保存配置'}
@@ -1912,9 +1910,16 @@
 </WorkspaceSurface>
 
 <MaterialDialog open={leaveDialogOpen} title="未保存的更改" onClose={stayOnSettings}>
-	{#snippet children()}<p>
-			设置已修改但尚未保存。你可以放弃更改并离开，或先保存再离开。
-		</p>{/snippet}
+	{#snippet children()}
+		<p>
+			{saveError
+				? '设置未能保存。请查看错误说明后重试，或放弃更改并离开。'
+				: '设置已修改但尚未保存。你可以放弃更改并离开，或先保存再离开。'}
+		</p>
+		{#if saveError}
+			<SettingsErrorNotice failure={saveError} />
+		{/if}
+	{/snippet}
 	{#snippet footer()}
 		<MaterialButton
 			variant="text"
@@ -1925,8 +1930,8 @@
 		/>
 		<MaterialButton
 			variant="filled"
-			label={leaveSaving ? '保存中…' : '保存'}
-			ariaLabel="保存并离开"
+			label={leaveSaving ? '保存中…' : saveError ? '重试保存' : '保存'}
+			ariaLabel={saveError ? '重试保存并离开' : '保存并离开'}
 			onclick={leaveWithSaving}
 			disabled={leaveSaving || saveState === 'saving' || providerSaveBusy}
 		/>
@@ -2035,12 +2040,8 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 	}
-	.settings-runtime-apply__reason,
-	.settings-runtime-apply__error {
+	.settings-runtime-apply__reason {
 		overflow-wrap: anywhere;
-	}
-	.settings-runtime-apply__error {
-		color: var(--md-sys-color-error) !important;
 	}
 	.settings-search-area {
 		position: relative;

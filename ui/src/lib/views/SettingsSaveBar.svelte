@@ -1,12 +1,14 @@
 <script lang="ts">
+	import SettingsErrorNotice from '$lib/SettingsErrorNotice.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import type { SettingsFailurePresentation } from '$lib/settingsSaveFailure.ts';
 
 	type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 	interface Props {
 		dirty: boolean;
 		dirtySectionLabels: string[];
 		saveState: SaveState;
-		saveError: string;
+		saveError: SettingsFailurePresentation | null;
 		blocked?: boolean;
 		onDiscard: () => void;
 		onSave: () => Promise<void>;
@@ -24,8 +26,8 @@
 </script>
 
 <div class="save-bar">
-	{#if saveState === 'error'}
-		<p class="save-error" role="alert">{saveError}</p>
+	{#if saveState === 'error' && saveError}
+		<SettingsErrorNotice failure={saveError} />
 	{/if}
 	{#if dirty}
 		<div class="save-summary" aria-live="polite">
@@ -68,12 +70,8 @@
 		max-width: 100%;
 		min-width: 0;
 	}
-	.save-error {
+	:global(.settings-error) {
 		flex: 1 1 100%;
-		margin: 0;
-		color: var(--md-sys-color-error);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.save-summary {
 		display: flex;
