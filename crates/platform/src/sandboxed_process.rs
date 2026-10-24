@@ -13,6 +13,8 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 
+mod diagnostics;
+
 const PIPE_BUFFER_BYTES: usize = 16 * 1024;
 const PIPE_QUEUE_CHUNKS: usize = 4;
 const READ_CHUNK_BYTES: usize = 8 * 1024;
@@ -370,9 +372,10 @@ fn launch_with_fallback<T>(
             );
             return Ok((process, Some(notice)));
         }
-        Err(reason) => failures.push(AttemptFailure {
+        Err(failure) => failures.push(AttemptFailure {
             profile: NetworkProfile::Requested,
-            reason,
+            reason: failure.reason,
+            warnings: failure.warnings,
         }),
     }
 
@@ -382,7 +385,11 @@ fn launch_with_fallback<T>(
             Err(error) => {
                 failures.push(AttemptFailure {
                     profile,
-                    reason: haven_common::error::sanitize_error_text(&error.to_string()),
+                    reason: format!(
+                        "请求构造失败 [mxc.request_construction_failed]：{}",
+                        haven_common::error::sanitize_error_text(&error.to_string())
+                    ),
+                    warnings: Vec::new(),
                 });
                 continue;
             }
@@ -409,10 +416,20 @@ fn launch_with_fallback<T>(
                 );
                 return Ok((process, Some(notice)));
             }
-            Err(reason) => failures.push(AttemptFailure { profile, reason }),
+            Err(failure) => failures.push(AttemptFailure {
+                profile,
+                reason: failure.reason,
+                warnings: failure.warnings,
+            }),
         }
     }
 
+    let warning_note = format_warning_note(
+        &failures
+            .iter()
+            .flat_map(|failure| failure.warnings.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
     let details = failures
         .iter()
         .map(|failure| {
@@ -425,8 +442,8 @@ fn launch_with_fallback<T>(
         .collect::<Vec<_>>()
         .join("；");
     anyhow::bail!(
-        "MXC 无法在 WorkspaceWrite 隔离中启动 Shell；已尝试的策略：{}",
-        details
+        "MXC 无法在 WorkspaceWrite 隔离中启动 Shell；已尝试的策略：{}{warning_note}",
+        details,
     )
 }
 
@@ -440,6 +457,13 @@ enum ProbeRequirement {
 struct AttemptFailure {
     profile: NetworkProfile,
     reason: String,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug)]
+struct LaunchFailure {
+    reason: String,
+    warnings: Vec<String>,
 }
 
 fn launch_attempt<T>(
@@ -447,25 +471,25 @@ fn launch_attempt<T>(
     requirement: ProbeRequirement,
     probe: &mut impl FnMut(&mxc_sdk::v1::ContainerRequest) -> anyhow::Result<mxc_sdk::v1::ProbeOutput>,
     spawn: &mut impl FnMut(mxc_sdk::v1::ContainerRequest) -> anyhow::Result<T>,
-) -> Result<(T, mxc_sdk::v1::ProbeOutput), String> {
-    let probe_output = probe(&request).map_err(|error| {
-        format!(
-            "MXC 探测调用失败：{}",
-            haven_common::error::sanitize_error_text(&error.to_string())
-        )
+) -> Result<(T, mxc_sdk::v1::ProbeOutput), LaunchFailure> {
+    let probe_output = probe(&request).map_err(|error| LaunchFailure {
+        reason: diagnostics::format_mxc_failure("探测", &error),
+        warnings: Vec::new(),
     })?;
+    diagnostics::log_probe_warnings(&probe_output.warnings);
     let compatible = match requirement {
         ProbeRequirement::BaseContainer => probe_is_base_container(&probe_output),
         ProbeRequirement::CompatibleTier => probe_is_compatible_fallback(&probe_output),
     };
     if !compatible {
-        return Err(probe_rejection_reason(&probe_output, requirement));
+        return Err(LaunchFailure {
+            reason: probe_rejection_reason(&probe_output, requirement),
+            warnings: probe_output.warnings.clone(),
+        });
     }
-    let process = spawn(request).map_err(|error| {
-        format!(
-            "MXC 隔离进程启动失败：{}",
-            haven_common::error::sanitize_error_text(&error.to_string())
-        )
+    let process = spawn(request).map_err(|error| LaunchFailure {
+        reason: diagnostics::format_mxc_failure("启动", &error),
+        warnings: probe_output.warnings.clone(),
     })?;
     Ok((process, probe_output))
 }
@@ -476,18 +500,18 @@ fn probe_rejection_reason(
 ) -> String {
     if let Some(error) = probe.error.as_deref() {
         return format!(
-            "MXC 拒绝该策略：{}",
+            "探测拒绝该策略 [mxc.probe_rejected]：{}",
             haven_common::error::sanitize_error_text(error)
         );
     }
     match requirement {
         ProbeRequirement::BaseContainer => format!(
-            "原策略没有得到可完整执行的 BaseContainer（tier={}，DACL补强={:?}）",
+            "探测未找到可完整执行的 BaseContainer [mxc.base_container_unavailable]（tier={}，DACL补强={:?}）",
             probe.tier.unwrap_or("unknown"),
             probe.needs_dacl_augmentation
         ),
         ProbeRequirement::CompatibleTier => format!(
-            "MXC 没有报告可接受的兼容隔离层（tier={}，DACL补强={:?}）",
+            "探测未找到可接受的兼容隔离层 [mxc.compatible_tier_unavailable]（tier={}，DACL补强={:?}）",
             probe.tier.unwrap_or("unknown"),
             probe.needs_dacl_augmentation
         ),
@@ -513,13 +537,7 @@ fn network_profile_name(profile: NetworkProfile) -> &'static str {
 fn probe_container_request(
     request: &mxc_sdk::v1::ContainerRequest,
 ) -> anyhow::Result<mxc_sdk::v1::ProbeOutput> {
-    mxc_sdk::v1::probe(Some(request)).map_err(|error| {
-        let detail = error.remediation.as_ref().map_or_else(
-            || error.to_string(),
-            |remediation| format!("{error}; 建议：{remediation}"),
-        );
-        anyhow::anyhow!("{}", haven_common::error::sanitize_error_text(&detail))
-    })
+    mxc_sdk::v1::probe(Some(request)).map_err(anyhow::Error::new)
 }
 
 fn probe_is_base_container(probe: &mxc_sdk::v1::ProbeOutput) -> bool {
@@ -555,13 +573,7 @@ fn compatible_fallback_tier(
 fn spawn_container_request(
     request: mxc_sdk::v1::ContainerRequest,
 ) -> anyhow::Result<mxc_sdk::v1::MxcProcess> {
-    mxc_sdk::v1::spawn(request, Default::default()).map_err(|error| {
-        let detail = error.remediation.as_ref().map_or_else(
-            || error.to_string(),
-            |remediation| format!("{error}; 建议：{remediation}"),
-        );
-        anyhow::anyhow!("{}", haven_common::error::sanitize_error_text(&detail))
-    })
+    mxc_sdk::v1::spawn(request, Default::default()).map_err(anyhow::Error::new)
 }
 
 fn compatibility_notice(
@@ -605,17 +617,17 @@ fn compatibility_notice(
             .join("；");
         format!("前一档策略未能启动（{details}）。")
     };
-    let warning_note = format_warning_note(warnings);
+    let all_warnings = failures
+        .iter()
+        .flat_map(|failure| failure.warnings.iter().cloned())
+        .chain(warnings.iter().cloned())
+        .collect::<Vec<_>>();
+    let warning_note = format_warning_note(&all_warnings);
     format!("MXC 兼容隔离已启用（{tier}）。{failure_note}{dacl_note}{network_note}{warning_note}")
 }
 
 fn format_warnings(warnings: &[String]) -> String {
-    warnings
-        .iter()
-        .take(3)
-        .map(|warning| haven_common::error::sanitize_error_text(warning))
-        .collect::<Vec<_>>()
-        .join("; ")
+    diagnostics::format_warnings(warnings)
 }
 
 fn format_warning_note(warnings: &[String]) -> String {
@@ -1023,10 +1035,18 @@ mod tests {
             |request| {
                 probe_calls += 1;
                 probed_network.push(network_allows(request));
-                Ok(if probe_calls == 1 {
-                    probe_output("base-container", false, Vec::new())
-                } else {
-                    probe_output("appcontainer-dacl", true, Vec::new())
+                Ok(match probe_calls {
+                    1 => probe_output("base-container", false, Vec::new()),
+                    2 => probe_output(
+                        "appcontainer-dacl",
+                        true,
+                        vec!["Run `wxc-host-prep prepare-system-drive` (elevated).".into()],
+                    ),
+                    _ => probe_output(
+                        "appcontainer-dacl",
+                        true,
+                        vec!["Run `wxc-host-prep prepare-null-device` (elevated).".into()],
+                    ),
                 })
             },
             |request| {
@@ -1061,6 +1081,44 @@ mod tests {
         let notice = notice.expect("offline downgrade is user-visible");
         assert!(notice.contains("完全禁用"));
         assert!(notice.contains("public egress setup failed"));
+        assert!(notice.contains("mxc.host_prep.system_drive_acl_missing"));
+        assert!(notice.contains("wxc-host-prep.exe prepare-system-drive"));
+        assert!(notice.contains("mxc.host_prep.null_device_acl_missing"));
+        assert!(notice.contains("wxc-host-prep.exe prepare-null-device"));
+    }
+
+    #[test]
+    fn terminal_launch_failure_keeps_host_prep_actions_visible() {
+        let root = tempfile::tempdir().expect("create terminal failure fixture");
+        let mut probe_calls = 0;
+        let error = launch_with_fallback(
+            shell_request(root.path(), true),
+            |_| {
+                probe_calls += 1;
+                Ok(match probe_calls {
+                    1 => probe_output("base-container", false, Vec::new()),
+                    2 => probe_output(
+                        "appcontainer-dacl",
+                        true,
+                        vec!["wxc-host-prep prepare-system-drive is required".into()],
+                    ),
+                    _ => probe_output(
+                        "appcontainer-dacl",
+                        true,
+                        vec!["wxc-host-prep prepare-null-device is required".into()],
+                    ),
+                })
+            },
+            |_| -> anyhow::Result<()> { anyhow::bail!("MXC denied process creation") },
+        )
+        .expect_err("all isolated launch tiers should fail in this fixture")
+        .to_string();
+
+        assert!(error.contains("启动失败 [mxc.unknown_api_error]"));
+        assert!(error.contains("mxc.host_prep.system_drive_acl_missing"));
+        assert!(error.contains("wxc-host-prep.exe prepare-system-drive"));
+        assert!(error.contains("mxc.host_prep.null_device_acl_missing"));
+        assert!(error.contains("wxc-host-prep.exe prepare-null-device"));
     }
 
     #[test]
