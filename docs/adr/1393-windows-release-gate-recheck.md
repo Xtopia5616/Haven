@@ -6,12 +6,12 @@
 
 ## 背景
 
-ADR 0395 与路线图 §5.1 要求对当前 Windows 安装包验收真实交互生命周期、durable UI 恢复、rollback 竞态、安装升级卸载和物理磁盘耗尽。此前有 0.1.1 包的 UI/模型/附件 smoke 结果，但 NSIS 资源残留修复后需要在当前代码提交和 0.1.2 acceptance 包上复验适用门禁并更新未完成项。
+ADR 0395 与路线图 §5.1 原先要求对当前 Windows 安装包验收真实交互生命周期、durable UI 恢复、rollback 竞态、安装升级卸载和物理磁盘耗尽。物理 ENOSPC 项之后依用户要求由 [ADR 1394](1394-waive-physical-enospc-from-current-release-gate.md) 从本次 Gate 范围豁免；本 ADR 继续复验其余适用门禁并记录未完成项。
 
 ## 决定
 
 - 只签核已有直接证据的内容：当前代码完整 Rust/UI 质量门禁通过；0.1.2 acceptance 包的安装、升级、运行中升级、卸载和数据保留按 ADR 1392 通过。
-- 不以静态测试、旧版本交互结果或启动日志替代未完成的真实 UI/物理盘验收。Gate 保持 Open，直到路线图 §5.1 列出的每项均有当前包和隔离环境中的结果。
+- 不以静态测试、旧版本交互结果或启动日志替代未完成的真实 UI 验收。物理 ENOSPC 按 ADR 1394 豁免，不能标作通过；Gate 保持 Open，直到路线图 §5.1 其余必验项均有当前包和隔离环境中的结果。
 
 ## 验证与限制
 
@@ -26,6 +26,6 @@ ADR 0395 与路线图 §5.1 要求对当前 Windows 安装包验收真实交互�
 - 媒体设置页可见加载，包含附件策略和当前媒体限制，未产生未保存设置。附件按钮打开了隔离验收目录的系统文件选择器，并显示 `release-attachment.txt`（74 字节）。选择附件时，Computer Use 在按要求激活 Haven 并刷新后重试一次，仍拒绝输入：`point (1147, 454) is over msedgewebview2.exe "", not target window haven-app-binary.exe "Haven"`。未打开文件、未附加或发送；选择器当时仍等待人工关闭，因此媒体附件完整流程未通过。
 - 当前隔离数据库只读 `PRAGMA quick_check` 返回 `ok`，sessions/messages/session_events 数量均为 0；本轮没有发现数据库损坏。此前 ADR 1392 的 1 个 session/8 条 message 是安装卸载验收时的读数，不能替代当前 profile 的非空恢复验收。
 - 因 fixture 未监听，没有从当前包运行模型响应、工具确认通过路径或 Schedule/后台任务。durable UI 通知丢失补齐、rollback 与恢复并发仍未做真实 WebView 操作。
-- 当前 C 盘约余 7.23 GiB、D 盘约余 7.26 GiB。没有已配置 VM、可丢弃的挂载测试卷或管理员提升；没有填满宿主盘。物理 ENOSPC 的分类、用户提示和恢复操作仍未验收。VM 不是唯一办法：隔离的专用 VHD/测试卷也可验证应用看到的卷满错误；宿主 C/D 盘不能用来做耗尽测试。
+- 按 ADR 1394，当前 Gate 不再要求真实物理 ENOSPC 验收；该行为没有在 Windows 满卷场景实测，仍不可表述为通过。当前 C 盘约余 7.23 GiB、D 盘约余 7.26 GiB；未创建 VM/VHD，也没有填满宿主盘。SQLite `SQLITE_FULL` 与 I/O 错误的注入测试和恢复提示证据仍见 ADR 0395/0404。
 
-继续验收需要用户手动关闭仍打开的系统文件选择器、启动隔离模型 fixture（确认/Schedule 相关步骤），并提供一个可安全耗尽的独立测试卷或 VHD。不得填满用户的宿主系统盘或数据盘来替代隔离测试。
+继续验收需要用户手动关闭仍打开的系统文件选择器并启动隔离模型 fixture（确认/Schedule 相关步骤）。物理盘耗尽不属于本次 Gate。不得填满用户的宿主系统盘或数据盘。

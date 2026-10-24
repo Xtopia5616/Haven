@@ -1297,3 +1297,4 @@
 - [1391：为 WorkspaceWrite Shell 增加 MXC 兼容隔离 tier](1391-workspace-write-mxc-compatibility-tier.md)
 - [1392：修复 Windows NSIS 升级与卸载的哈希静态资源残留](1392-nsis-cleanup-content-hashed-resources.md)
 - [1393：Windows 发布 Gate 部分复验与开放项](1393-windows-release-gate-recheck.md)
+- [1394：将真实物理盘 ENOSPC 从本次发布 Gate 豁免](1394-waive-physical-enospc-from-current-release-gate.md)
