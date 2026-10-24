@@ -33,3 +33,5 @@ ADR 1368 为 WorkspaceWrite Shell 建立了 MXC ProcessContainer 路径。仓库
 首次 GUI 验收曾被 Node.js Windows 防火墙权限提示阻挡，提示由用户手动处理，自动化未更改防火墙规则。2026-10-24 续测时旧开发进程已经退出；主 checkout 为 `6f60ef1`，与 `527bcd3` 只有三份验收文档差异，运行代码相同。沿用原隔离 profile 重新执行上述 `cargo tauri dev` 命令后，真实窗口显示首屏、Settings 和安全与权限页。安全页明确展示“协作执行”“工作区范围”“受限网络”，并说明已开始调用保留旧工作区、子进程隔离由具体执行边界决定；本次只读核对，未修改安全设置。
 
 完整授权/确认、网络策略、子进程后代、取消/撤权及 backend 不可用时无 host fallback 的 UI/平台场景尚未验收；未配置模型 endpoint，也未通过 UI 发起 Shell。当前 Windows Computer Use 执行限制禁止自动修改应用内安全/隐私设置或通过 UI 运行终端命令，因此不以界面说明代替实际授权/执行证明。Slice 3 保持 Acceptance Open。
+
+2026-10-24 在当前提交 `a2b1720c463796a0bb1f81c4e5c4ecd7324fb8b3` 上，以 Rust 1.99.0、Node 24.21.0、pnpm 12.12.1 和隔离 `HAVEN_DATA_DIR` 再次启动开发版；AppState、Tauri 初始化和 bootstrap ready 完成，schema v61，SQLite integrity check 为 `ok`，未配置模型 endpoint 或使用真实数据/凭据。Windows 当前环境报告 Windows 10 Pro、build 29683，尚未据此确认满足 Windows 11 24H2 支持基线。首屏被 Windows Defender Firewall 的 Node.js 网络权限提示遮挡；按 computer-use skill 的规定未自动选择允许或取消，也未修改防火墙规则。此轮没有进一步交互，因此不计入 UI 验收；待用户处理提示后才能继续当前构建的只读界面核验。
