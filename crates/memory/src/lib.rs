@@ -55,8 +55,8 @@ pub use repositories::messages::{Message, PendingInputDisposition, PendingSessio
 #[cfg(feature = "test-support")]
 pub use repositories::partials::PartialMessageCheckpoint;
 pub use repositories::schedule_store::{
-    SchedulePlanInput, SchedulePlanRow, ScheduleRunFired, ScheduleRunRow, ScheduleStore,
-    ScheduleType, WatchedToolRunResult,
+    SchedulePlanInput, SchedulePlanRow, ScheduleRecoverySummary, ScheduleRunFired, ScheduleRunRow,
+    ScheduleStore, ScheduleType, WatchedToolRunResult,
 };
 pub use repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,

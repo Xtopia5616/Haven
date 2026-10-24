@@ -814,11 +814,13 @@ impl DatabaseScheduleAdapter {
 #[async_trait]
 impl AgentSchedulePort for DatabaseScheduleAdapter {
     async fn restore(&self) -> anyhow::Result<ScheduleRestoreSummary> {
+        let recovery = self
+            .store
+            .recover_interrupted(chrono::Utc::now().to_rfc3339())
+            .await?;
         Ok(ScheduleRestoreSummary {
-            interrupted_runs_marked_failed: self
-                .store
-                .fail_interrupted(chrono::Utc::now().to_rfc3339())
-                .await?,
+            interrupted_runs_marked_failed: recovery.failed_with_unknown_outcome,
+            interrupted_runs_requeued: recovery.requeued_before_execution,
         })
     }
 

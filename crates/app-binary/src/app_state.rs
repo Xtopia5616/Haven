@@ -4,6 +4,7 @@ use crate::commands::confirmation::AppConfirmationOwner;
 use crate::config_runtime::apply_log_level_to_handles;
 use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
+use crate::failed_transcriptions::FailedTranscriptionStore;
 use crate::recording_lifecycle::RecordingLifecycleOwner;
 use crate::router_media_builder::build_router_media;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
@@ -160,6 +161,11 @@ pub struct AppState {
     /// `rec-*` key is deliberately kept separate from durable `ses-*` ids.
     pub(crate) pending_recording_usage:
         Arc<std::sync::Mutex<HashMap<String, Vec<haven_llm::LlmCallUsage>>>>,
+    /// Bounded durable source audio for explicit retry after STT failure.
+    pub(crate) failed_transcriptions: FailedTranscriptionStore,
+    /// Bound simultaneous provider work; overflow is retained for explicit
+    /// retry instead of spawning an unbounded pile of audio tasks.
+    pub(crate) recording_transcription_slots: Arc<tokio::sync::Semaphore>,
     /// True once deferred startup (MCP discover + skills scan + audio
     /// prewarm) has finished. The UI polls / listens so the status chip can
     /// show 加载中 → 就绪 without blocking window creation.
@@ -518,6 +524,8 @@ impl AppState {
             chatgpt_plan_login: ChatGptPlanLoginOwner::default(),
             recording_lifecycle: RecordingLifecycleOwner::default(),
             pending_recording_usage: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            failed_transcriptions: FailedTranscriptionStore::production(),
+            recording_transcription_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             fail_initial_pending_recovery_once: AtomicBool::new(false),

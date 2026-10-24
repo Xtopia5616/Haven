@@ -10,6 +10,17 @@ import type { TranscriptSubmissionResultView } from './contracts/transcriptSubmi
  * @param {string} text
  * @returns the validated camelCase process result view
  */
-export function submitVoiceTranscript(text: string, recordingId?: string): Promise<TranscriptSubmissionResultView> {
-	return submitTranscript(text, { voice: true, recordingId, reducer: appSessionReducer });
+export function submitVoiceTranscript(
+	text: string,
+	recordingId: string | undefined,
+	voiceTarget: { sessionId: string | null; selectionVersion: number },
+	retryFileId?: string,
+): Promise<TranscriptSubmissionResultView> {
+	return submitTranscript(text, {
+		voice: true,
+		recordingId,
+		voiceTarget,
+		retryFileId,
+		reducer: appSessionReducer,
+	});
 }

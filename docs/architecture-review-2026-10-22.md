@@ -22,13 +22,13 @@
 |---|---|---|---|
 | R01 | 模型热切换与记忆/标题消费者 | 已完成：Agent consumers 共享热切换运行时；见 ADR 1370 | Completed |
 | R02 | 配置保存与运行时应用 | 已完成：显式重试和按目标版本状态；见 ADR 1384 | Completed |
-| R03 | 模型/媒体组合发布 | 已完成：单一共享代次句柄，目录失败保留旧目录；见 ADR 1385 | P1，单请求/操作范围 |
+| R03 | 模型/媒体组合发布 | 已完成：共享代次句柄，ReAct 每次新请求读取最新已发布代次；见 ADR 1385/1396 | Completed |
 | R04 | Session/交互/清理队列 | 主 owner 正确；清理通知使用无界通道 | P2，证明上界并隔离清理调度 |
-| R05 | 事件流与前端恢复 | 顺序扇出存在耦合；已有缓冲保护 | P2，定义订阅交付与补齐协议 |
-| R06 | 语音采集与转写 | 身份保护已存在；工作调度可改进 | P2，独立且有界的转写工作链 |
+| R05 | 事件流与前端恢复 | 聊天页以稳定 durable cursor 补齐并拒绝不稳定恢复快照；UI 自动测试通过，Windows 聚焦丢通知与 rollback 并发仍待验收 | Windows acceptance open，见 ADR 1397 |
+| R06 | 语音采集与转写 | 实施录音目标冻结、有限并发、失败保留与显式重试；自动门禁和 Windows 交互仍待完成 | P2，完成故障验收 |
 | R07 | 记忆抽取、检索、维护 | 存储边界合理；编排角色密集 | P2，按工作类型与数据来源收口 |
-| R08 | 受管资产与清理 | 已有租约/清理门；多个参与 owner | P2，收敛生命周期操作入口 |
-| R09 | ToolRun / Schedule / Workflow | 保留分离；投递拥塞与恢复待测 | P2，完善交接状态和故障矩阵 |
+| R08 | 受管资产与清理 | 已有租约、GC gate、引用核对和孤儿清理测试；renderer 重启与失败提交仍待 Windows 交互验收 | Acceptance Open |
+| R09 | ToolRun / Schedule / Workflow | 以 execution claim 划分安全重试与结果未知；自动故障矩阵待门禁 | P2，完成故障验收；Schedule UI 按 ADR 1395 豁免 |
 | R10 | LLM 路由与重试 | 请求策略已有快照 | P2，限制跨层总预算并解释路由 |
 | R11 | MCP / Skills / LSP | 连接、指引、执行各有生命周期 | P2，统一状态展示而保留领域 owner |
 | R12 | 前端聊天与设置 | 已拆 controllers/reducer | P2，收敛动作结果与页面协调职责 |
@@ -65,7 +65,7 @@
 
 **验收。** 在第二个发布点注入失败并并发发起聊天/媒体/记忆请求，检查新请求不会混用组合；在途请求持有旧代次。若选择允许部分发布，必须在查询/事件中报告精确实际状态，并禁止依赖不兼容组合的操作。
 
-**实施结论（2026-10-24，ADR 1385）。** Router、专用媒体客户端和 `MediaConfig` 现经 App 独占的 `ModelMediaPublisher` 一次切换；Agent、Memory 与 Tools 只能读取同一 `ModelMediaRuntime`。测试覆盖并发完整快照、旧代次在途 STT、router reload consumers，以及模型/媒体代次发布后注入 catalog rebuild 失败。catalog 是派生投影，失败时 registry 保留旧快照；Settings error reason 明确列出已原子发布的配置版本，媒体入口在执行时重新捕获当前代次并按当前能力 fail closed，管理诊断也从当前代次读取 router。原子保证止于单次 LLM 请求或媒体/provider 操作，不保证整个 ReAct turn 跨多次请求与工具执行固定代次；会话/后台任务代次接线另行审议。
+**实施结论（2026-10-24，ADR 1385；2026-10-25，ADR 1396）。** Router、专用媒体客户端和 `MediaConfig` 经 App 独占的 `ModelMediaPublisher` 一次切换；Agent、Memory 与 Tools 只能读取同一 `ModelMediaRuntime`。测试覆盖并发完整快照、旧代次在途 STT、router reload consumers，以及模型/媒体代次发布后注入 catalog rebuild 失败。catalog 是派生投影，失败时 registry 保留旧快照；Settings error reason 明确列出已原子发布的配置版本，媒体入口在执行时重新捕获当前代次并按当前能力 fail closed，管理诊断也从当前代次读取 router。配置代次不绑定 ReAct run、session 或后台任务：每个后续逻辑请求从共享运行时捕获最新完整快照，已开始的请求仍持有起始快照。fake A/B 集成测试覆盖同一个 ReAct run 中工具切换配置后，下一次模型请求命中 B；其余代次细节见 [ADR 1396](adr/1396-use-latest-model-generation-per-react-request.md)。
 
 ## 5. R04：会话状态保留单 owner，清理工作应有界且不阻塞主调度
 
@@ -93,6 +93,8 @@
 
 **验收。** A 转写未完成时开始 B；取消 A 不停止 B；A 的迟到结果不提交到用户刚选中的另一会话。新增请求必须明确绑定目标 session/新会话意图。设备拔出、长录音、VAD 自动停止、连续快速操作、退出期间转写分别测试。此处是改进与故障验证建议，未证明当前必然错投。
 
+**实施记录（2026-10-25，ADR 1399）。** 工具栏开始录音前同步目标；Capture 冻结 session/fresh-session 意图和 selection version，后台 STT 只使用该目标。并发转写有界为 2，失败、取消、退出与 admission 满时保留 WAV，启动回收孤儿/临时文件，同一 retry file 的并发重试幂等去重。UI/Rust 自动门禁通过；真实 Windows 麦克风/VAD、会话切换与重启后重试仍开放。
+
 ## 8. R07：记忆领域按数据语义和工作职责整理
 
 **证据。** [MemoryWorker](../crates/agent/src/memory_worker.rs) 同时关联 extraction、prefetch、dirty-memory patch、维护与 outbox；已有 semaphore 和关闭 token。[MemoryService](../crates/agent/src/memory_service.rs)、typed fact/recall/proposal stores 已分离；已有提案审核、来源核验、两跳召回及时间版本。
@@ -109,6 +111,8 @@
 
 **验收。** 文件已写但未登记、登记后消息提交失败、活动租约与 GC 并发、重启后 registry 为空、引用到期及路径身份替换。删除会话与用户明确删除文件分别定义；不能只根据进程内表判断磁盘文件无主。若引入持久资产索引，需独立 ADR 证明价值、明确事务/GC 协议及 schema 重置。
 
+**复核记录（2026-10-25）。** 现有 managed-media tests 已覆盖 upload staging rollback、pending/session lease 与 GC 竞争、引用读取失败 fail-closed、名称碰撞、注册资产被历史删除后 GC、symlink/reparse point 和源文件身份替换；本轮保留轻量 process-local registry，不引入持久资产索引。真实的消息提交失败及 renderer/应用重启交互仍在 Windows Gate 中，不能从这些单元测试推断已通过。
+
 ## 10. R09：任务、计划、编排保留三个独立生命周期
 
 **证据。** [ToolRunService](../crates/tools/src/tool_run_service.rs) 拥有后台执行/完成确认；[ScheduleService](../crates/tools/src/schedule_service.rs) 每 500ms claim、单 batch 32、fired channel 容量 256，然后逐条 send；嵌套步骤由既有 journal 恢复。当前界限比统一 job 引擎更清楚。
@@ -116,6 +120,8 @@
 **建议。** ToolRun 表达执行，Schedule 表达触发，Workflow 表达步骤图。统一的是查询中的来源关系、等待原因、取消与结果未知的语言，不是合并三张表/三种状态。claim 后到消费者接收之间的 durable 状态应可查询，明确“已触发”不等于“已开始副作用”。
 
 **验收。** 填满 fired channel 后退出/崩溃、consumer 消失、启动恢复、错过周期和重复终态投递。检查已 claim 未投递 occurrence 的最终分类，不在没有幂等证明时自动重放。依赖 ToolRun 完成触发仅触发一次可识别 occurrence；outbox 重投沿用稳定身份。
+
+**实施记录（2026-10-25，ADR 1398）。** channel 满时 poller 受背压；receiver 退出后回收尚未执行的 running occurrences。恢复在 SQLite immediate transaction 内与 execution claim 串行：无 claim 时使用同一 occurrence ID 安全重排队，有 claim 时记为 failed/结果未知并抑制自动重放。新增未 claim/已 claim/周期身份/消费者退出测试；Rust workspace 测试与严格 Clippy 通过，Schedule 真实 UI 不在本次 Gate（ADR 1395）。
 
 ## 11. R10：模型路由提供决策解释与完整调用预算
 

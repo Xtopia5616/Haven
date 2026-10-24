@@ -7,7 +7,10 @@ use crate::events::{
     TRANSCRIPTION_STARTED_EVENT, TranscriptionErrorEvent, TranscriptionResultEvent,
     TranscriptionStartedEvent,
 };
-use crate::recording_lifecycle::RecordingLifecycleGuard;
+use crate::failed_transcriptions::{
+    FailedTranscriptionRetryLease, FailedTranscriptionStore, FailedTranscriptionSummary,
+};
+use crate::recording_lifecycle::{RecordingLifecycleGuard, RecordingTargetSnapshot};
 use haven_common::error::sanitize_error_text;
 use haven_input::{RecordingReason, RecordingResult};
 use haven_tools::MediaTranscriptionStatus;
@@ -47,6 +50,37 @@ pub(crate) fn begin_recording(
     lifecycle: &RecordingLifecycleGuard<'_>,
 ) -> haven_common::types::RecordingId {
     state.recording_lifecycle.begin(lifecycle)
+}
+
+pub(crate) fn recording_target(
+    state: &AppState,
+    lifecycle: &RecordingLifecycleGuard<'_>,
+) -> RecordingTargetSnapshot {
+    state
+        .recording_lifecycle
+        .target(lifecycle)
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub async fn set_recording_target_session(
+    session_id: Option<String>,
+    selection_version: u64,
+    revision: u64,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if let Some(session_id) = session_id.as_deref() {
+        validate_command_id(session_id, "session_id", "ses")
+            .map_err(|error| log_err("set_recording_target_session", error))?;
+    }
+    let lifecycle = state.recording_lifecycle.lock().await;
+    state.recording_lifecycle.set_selected_target(
+        &lifecycle,
+        session_id,
+        selection_version,
+        revision,
+    );
+    Ok(())
 }
 
 /// Emit `recording:started` with the recording's ID. Used by both the
@@ -125,14 +159,41 @@ pub(crate) fn emit_recording_error(
 ///
 /// The transcript is **not** submitted to the agent here: the frontend
 /// listens for `transcription:result` and delivers the text through the same
-/// `submit_transcript` path as a typed message, so voice input continues the
-/// currently open session instead of always starting a new one.
-pub(crate) async fn finalize_transcription(
+/// `submit_transcript` path as a typed message, pinned to the session or
+/// fresh-session intent captured when recording started.
+struct TranscriptionFinalization {
+    recording_id: haven_common::types::RecordingId,
+    target: RecordingTargetSnapshot,
+    wav: Arc<Vec<u8>>,
+    duration_ms: u64,
+    retry_file_id: Option<String>,
+    capture_error: Option<String>,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+
+struct RetainedTranscriptionFailure<'a> {
+    recording_id: haven_common::types::RecordingId,
+    target: &'a RecordingTargetSnapshot,
+    wav: &'a [u8],
+    duration_ms: u64,
+    message: &'a str,
+    existing_retry_file_id: Option<String>,
+}
+
+async fn finalize_transcription(
     state: &Arc<AppState>,
     app: &tauri::AppHandle,
-    recording_id: haven_common::types::RecordingId,
-    result: RecordingResult,
+    request: TranscriptionFinalization,
 ) -> Option<String> {
+    let TranscriptionFinalization {
+        recording_id,
+        target,
+        wav,
+        duration_ms,
+        retry_file_id,
+        capture_error,
+        cancellation,
+    } = request;
     // Tell the UI STT is about to run, before the (potentially slow)
     // network call, so it can show a "transcribing" hint right away.
     emit_event_logged(
@@ -144,27 +205,34 @@ pub(crate) async fn finalize_transcription(
         "transcription_started",
     );
 
-    if let Some(error) = result.capture_error {
-        emit_event_logged(
+    if let Some(error) = capture_error {
+        persist_transcription_failure(
+            &state.failed_transcriptions,
             app,
-            TRANSCRIPTION_ERROR_EVENT,
-            TranscriptionErrorEvent {
+            RetainedTranscriptionFailure {
                 recording_id,
-                error: sanitize_error_text(&error),
+                target: &target,
+                wav: &wav,
+                duration_ms,
+                message: &error,
+                existing_retry_file_id: retry_file_id,
             },
-            "transcription_capture_error",
-        );
+        )
+        .await;
         return None;
     }
 
-    if result.pcm.is_empty() {
+    if wav.is_empty() {
         emit_event_logged(
             app,
             TRANSCRIPTION_RESULT_EVENT,
             TranscriptionResultEvent {
                 recording_id,
                 text: String::new(),
-                duration_ms: result.duration_ms,
+                duration_ms,
+                target_session_id: target.session_id,
+                selection_version: target.selection_version,
+                retry_file_id,
                 confidence: None,
             },
             "transcription_empty_capture",
@@ -172,11 +240,10 @@ pub(crate) async fn finalize_transcription(
         return None;
     }
 
-    let wav = result.encode_wav();
     let transcription = state
         .runtime
         .tools
-        .transcribe_recording(&wav, tokio_util::sync::CancellationToken::new())
+        .transcribe_recording(&wav, cancellation)
         .await;
     let llm_usage = transcription.llm_usage.clone();
 
@@ -212,7 +279,10 @@ pub(crate) async fn finalize_transcription(
                 TranscriptionResultEvent {
                     recording_id: recording_id.clone(),
                     text: text.clone(),
-                    duration_ms: result.duration_ms,
+                    duration_ms,
+                    target_session_id: target.session_id.clone(),
+                    selection_version: target.selection_version,
+                    retry_file_id: retry_file_id.clone(),
                     confidence: None,
                 },
                 "transcription_result",
@@ -234,7 +304,10 @@ pub(crate) async fn finalize_transcription(
                 TranscriptionResultEvent {
                     recording_id: recording_id.clone(),
                     text: String::new(),
-                    duration_ms: result.duration_ms,
+                    duration_ms,
+                    target_session_id: target.session_id.clone(),
+                    selection_version: target.selection_version,
+                    retry_file_id: retry_file_id.clone(),
                     confidence: None,
                 },
                 "transcription_empty_result",
@@ -250,16 +323,38 @@ pub(crate) async fn finalize_transcription(
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .remove(recording_id.as_str());
+            let (retry_file_id, retained_error) = match retry_file_id {
+                Some(retry_file_id) => (Some(retry_file_id), None),
+                None => match state
+                    .failed_transcriptions
+                    .save(&wav, duration_ms, &target)
+                    .await
+                {
+                    Ok(metadata) => (Some(metadata.retry_file_id), None),
+                    Err(error) => {
+                        tracing::warn!(
+                            recording_id = %recording_id,
+                            error = %sanitize_error_text(&error.to_string()),
+                            "failed transcription could not be retained"
+                        );
+                        (None, Some(error))
+                    }
+                },
+            };
+            let message = transcription
+                .error
+                .unwrap_or_else(|| "语音转写失败".to_string());
+            let message = match retained_error {
+                Some(_) => format!("{}（原录音未能保存）", sanitize_error_text(&message)),
+                None => sanitize_error_text(&message),
+            };
             emit_event_logged(
                 app,
                 TRANSCRIPTION_ERROR_EVENT,
                 TranscriptionErrorEvent {
                     recording_id,
-                    error: sanitize_error_text(
-                        &transcription
-                            .error
-                            .unwrap_or_else(|| "语音转写失败".to_string()),
-                    ),
+                    error: message,
+                    retry_file_id,
                 },
                 "transcription_error",
             );
@@ -336,6 +431,7 @@ pub(crate) struct RecordingStopCompletion<'a> {
     pub(crate) lifecycle: RecordingLifecycleGuard<'a>,
     pub(crate) stop_context: RecordingStopContext,
     pub(crate) recording_id: haven_common::types::RecordingId,
+    pub(crate) target: RecordingTargetSnapshot,
     pub(crate) result: RecordingResult,
     pub(crate) shell_update: RecordingStopShellUpdate,
 }
@@ -351,13 +447,19 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
     schedule: Schedule,
 ) where
     EmitStopped: FnOnce(haven_common::types::RecordingId, RecordingStopReasonDto, u64) + Send,
-    Schedule: FnOnce(haven_common::types::RecordingId, RecordingResult) -> ScheduleFuture + Send,
+    Schedule: FnOnce(
+            haven_common::types::RecordingId,
+            RecordingTargetSnapshot,
+            RecordingResult,
+        ) -> ScheduleFuture
+        + Send,
     ScheduleFuture: std::future::Future<Output = bool> + Send,
 {
     let RecordingStopCompletion {
         lifecycle,
         stop_context,
         recording_id,
+        target,
         result,
         shell_update,
     } = completion;
@@ -389,7 +491,7 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
     }
 
     drop(lifecycle);
-    if !schedule(recording_id.clone(), result).await {
+    if !schedule(recording_id.clone(), target, result).await {
         tracing::warn!(
             recording_id = %recording_id,
             "recording transcription task rejected during application shutdown"
@@ -399,16 +501,132 @@ pub(crate) async fn finish_recording_stop<EmitStopped, Schedule, ScheduleFuture>
 
 /// Register transcription as an app-scoped task so application shutdown
 /// cancels/joins it under the same owner as other runtime work.
-pub(crate) fn schedule_recording_transcription(
+pub(crate) async fn schedule_recording_transcription(
     state: Arc<AppState>,
     app: tauri::AppHandle,
     recording_id: haven_common::types::RecordingId,
+    target: RecordingTargetSnapshot,
     result: RecordingResult,
 ) -> bool {
+    let duration_ms = result.duration_ms;
+    let capture_error = result.capture_error.clone();
+    let wav = Arc::new(if !result.pcm.is_empty() {
+        result.encode_wav()
+    } else {
+        Vec::new()
+    });
+    let permit = if capture_error.is_none() && !wav.is_empty() {
+        match Arc::clone(&state.recording_transcription_slots).try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                persist_transcription_failure(
+                    &state.failed_transcriptions,
+                    &app,
+                    RetainedTranscriptionFailure {
+                        recording_id,
+                        target: &target,
+                        wav: &wav,
+                        duration_ms,
+                        message: "当前转写任务已满，请稍后重试",
+                        existing_retry_file_id: None,
+                    },
+                )
+                .await;
+                return true;
+            }
+        }
+    } else {
+        None
+    };
+    let failure = capture_error;
     let runtime = state.runtime.clone();
-    runtime.spawn("recording-transcription", async move {
-        let _ = finalize_transcription(&state, &app, recording_id, result).await;
-    })
+    let state_for_task = Arc::clone(&state);
+    let app_for_task = app.clone();
+    let id_for_fallback = recording_id.clone();
+    let target_for_fallback = target.clone();
+    let wav_for_fallback = Arc::clone(&wav);
+    let spawned = runtime.spawn_cancellable_with_child_token(
+        "recording-transcription",
+        move |shutdown| async move {
+            let _permit = permit;
+            let _ = finalize_transcription(
+                &state_for_task,
+                &app_for_task,
+                TranscriptionFinalization {
+                    recording_id,
+                    target,
+                    wav,
+                    duration_ms,
+                    retry_file_id: None,
+                    capture_error: failure,
+                    cancellation: shutdown,
+                },
+            )
+            .await;
+        },
+    );
+    if !spawned {
+        persist_transcription_failure(
+            &state.failed_transcriptions,
+            &app,
+            RetainedTranscriptionFailure {
+                recording_id: id_for_fallback,
+                target: &target_for_fallback,
+                wav: &wav_for_fallback,
+                duration_ms,
+                message: "应用正在退出，转写未能开始",
+                existing_retry_file_id: None,
+            },
+        )
+        .await;
+    }
+    spawned
+}
+
+async fn persist_transcription_failure(
+    store: &FailedTranscriptionStore,
+    app: &tauri::AppHandle,
+    failure: RetainedTranscriptionFailure<'_>,
+) {
+    let RetainedTranscriptionFailure {
+        recording_id,
+        target,
+        wav,
+        duration_ms,
+        message,
+        existing_retry_file_id,
+    } = failure;
+    let retry_file_id = if let Some(retry_file_id) = existing_retry_file_id {
+        Some(retry_file_id)
+    } else if !wav.is_empty() {
+        match store.save(wav, duration_ms, target).await {
+            Ok(metadata) => Some(metadata.retry_file_id),
+            Err(error) => {
+                tracing::warn!(
+                    recording_id = %recording_id,
+                    error = %sanitize_error_text(&error.to_string()),
+                    "failed transcription could not be retained"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    emit_event_logged(
+        app,
+        TRANSCRIPTION_ERROR_EVENT,
+        TranscriptionErrorEvent {
+            recording_id,
+            error: if retry_file_id.is_some() || wav.is_empty() {
+                sanitize_error_text(message)
+            } else {
+                format!("{}（原录音未能保存）", sanitize_error_text(message))
+            },
+            retry_file_id,
+        },
+        "transcription_retained_failure",
+    );
 }
 
 #[tauri::command]
@@ -530,6 +748,7 @@ pub async fn stop_recording(
             };
         }
     };
+    let target = recording_target(&state, &lifecycle);
     let detached_recording_id = state.recording_lifecycle.finish(&lifecycle);
     debug_assert_eq!(detached_recording_id.as_ref(), Some(&recording_id));
     let state_for_transcription = state.inner().clone();
@@ -541,19 +760,22 @@ pub async fn stop_recording(
             lifecycle,
             stop_context,
             recording_id,
+            target,
             result,
             shell_update: RecordingStopShellUpdate::StopIfRevision(stop_context.recording_revision),
         },
         move |recording_id, reason, duration_ms| {
             emit_recording_stopped(&app, recording_id, reason, Some(duration_ms));
         },
-        move |recording_id, result| async move {
+        move |recording_id, target, result| async move {
             schedule_recording_transcription(
                 state_for_transcription,
                 app_for_transcription,
                 recording_id,
+                target,
                 result,
             )
+            .await
         },
     )
     .await;
@@ -598,6 +820,98 @@ pub async fn cancel_recording(
 }
 
 #[tauri::command]
+pub async fn list_failed_transcriptions(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<FailedTranscriptionSummary>, String> {
+    if let Err(error) = state.failed_transcriptions.recover_orphans().await {
+        tracing::warn!(
+            error = %sanitize_error_text(&error.to_string()),
+            "failed transcription orphan cleanup failed"
+        );
+    }
+    state
+        .failed_transcriptions
+        .list()
+        .await
+        .map_err(|error| log_err("list_failed_transcriptions", error))
+}
+
+#[tauri::command]
+pub async fn retry_failed_transcription(
+    retry_file_id: String,
+    state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    validate_command_id(&retry_file_id, "retry_file_id", "file")
+        .map_err(|error| log_err("retry_failed_transcription", error))?;
+    let Some(retry_lease) = state
+        .failed_transcriptions
+        .claim_retry(&retry_file_id)
+        .map_err(|error| log_err("retry_failed_transcription", error))?
+    else {
+        // Duplicate IPC delivery while the same source is already running is
+        // an idempotent no-op, so a second click cannot enqueue duplicate STT.
+        return Ok(());
+    };
+    let data = state
+        .failed_transcriptions
+        .load(&retry_file_id)
+        .await
+        .map_err(|error| log_err("retry_failed_transcription", error))?;
+    schedule_retained_transcription(state.inner().clone(), app, data, retry_lease)
+        .await
+        .map_err(|error| log_err("retry_failed_transcription", error))
+}
+
+async fn schedule_retained_transcription(
+    state: Arc<AppState>,
+    app: tauri::AppHandle,
+    data: crate::failed_transcriptions::FailedTranscriptionData,
+    retry_lease: FailedTranscriptionRetryLease,
+) -> anyhow::Result<()> {
+    let permit = Arc::clone(&state.recording_transcription_slots)
+        .try_acquire_owned()
+        .map_err(|_| anyhow::anyhow!("转写任务正在运行，请稍后重试"))?;
+    let metadata = data.metadata;
+    let recording_id = haven_common::types::RecordingId::new();
+    let target = RecordingTargetSnapshot {
+        session_id: metadata.target_session_id,
+        selection_version: metadata.selection_version,
+        revision: 0,
+    };
+    let wav = Arc::new(data.wav);
+    let state_for_task = Arc::clone(&state);
+    let app_for_task = app.clone();
+    let retry_file_id = metadata.retry_file_id.clone();
+    let duration_ms = metadata.duration_ms;
+    let runtime = state.runtime.clone();
+    let spawned = runtime.spawn_cancellable_with_child_token(
+        "recording-transcription-retry",
+        move |shutdown| async move {
+            let _permit = permit;
+            let _retry_lease = retry_lease;
+            let _ = finalize_transcription(
+                &state_for_task,
+                &app_for_task,
+                TranscriptionFinalization {
+                    recording_id,
+                    target,
+                    wav,
+                    duration_ms,
+                    retry_file_id: Some(retry_file_id),
+                    capture_error: None,
+                    cancellation: shutdown,
+                },
+            )
+            .await;
+        },
+    );
+    anyhow::ensure!(spawned, "应用正在退出，请稍后重新打开后重试");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
 pub async fn submit_transcript(
     state: State<'_, Arc<AppState>>,
     transcript: String,
@@ -605,6 +919,7 @@ pub async fn submit_transcript(
     attachments: Option<Vec<haven_common::types::MessageAttachment>>,
     voice: Option<bool>,
     recording_id: Option<String>,
+    retry_file_id: Option<String>,
     delivery_mode: Option<haven_common::types::InputDeliveryMode>,
 ) -> Result<haven_agent::TranscriptSubmissionResult, String> {
     if let Some(session_id) = active_session_id.as_deref() {
@@ -613,6 +928,10 @@ pub async fn submit_transcript(
     }
     if let Some(recording_id) = recording_id.as_deref() {
         validate_command_id(recording_id, "recording_id", "rec")
+            .map_err(|error| log_err("submit_transcript", error))?;
+    }
+    if let Some(retry_file_id) = retry_file_id.as_deref() {
+        validate_command_id(retry_file_id, "retry_file_id", "file")
             .map_err(|error| log_err("submit_transcript", error))?;
     }
     let limits = state
@@ -729,6 +1048,15 @@ pub async fn submit_transcript(
         haven_agent::TranscriptSubmissionResult::Supplemented { .. } => {
             tracing::debug!(outcome = "supplemented", "submit_transcript completed");
         }
+    }
+    if let Some(retry_file_id) = retry_file_id.as_deref()
+        && let Err(error) = state.failed_transcriptions.remove(retry_file_id).await
+    {
+        tracing::warn!(
+            retry_file_id,
+            error = %sanitize_error_text(&error.to_string()),
+            "accepted transcription retry file cleanup failed"
+        );
     }
     Ok(result)
 }
@@ -916,6 +1244,7 @@ mod tests {
         let owner_for_schedule = owner.clone();
         let lifecycle = owner.lock().await;
         let old_recording_id = owner.begin(&lifecycle);
+        let target = owner.target(&lifecycle).unwrap_or_default();
         assert_eq!(owner.finish(&lifecycle), Some(old_recording_id.clone()));
 
         let (started_tx, started_rx) = oneshot::channel();
@@ -938,6 +1267,7 @@ mod tests {
                     lifecycle,
                     stop_context,
                     recording_id: old_recording_id.clone(),
+                    target,
                     result,
                     shell_update: RecordingStopShellUpdate::StopIfRevision(
                         stop_context.recording_revision,
@@ -957,7 +1287,7 @@ mod tests {
                     let shell = shell.clone();
                     let order = order.clone();
                     let expected_recording_id = old_recording_id.clone();
-                    move |recording_id, _result| async move {
+                    move |recording_id, _target, _result| async move {
                         assert_eq!(recording_id, expected_recording_id);
                         assert_eq!(
                             *order
@@ -1013,6 +1343,7 @@ mod tests {
         let owner = RecordingLifecycleOwner::default();
         let lifecycle = owner.lock().await;
         let recording_id = owner.begin(&lifecycle);
+        let target = owner.target(&lifecycle).unwrap_or_default();
         owner.finish(&lifecycle);
 
         let result = RecordingResult {
@@ -1027,6 +1358,7 @@ mod tests {
                 lifecycle,
                 stop_context,
                 recording_id,
+                target,
                 result,
                 shell_update: RecordingStopShellUpdate::StopIfRevision(
                     stop_context.recording_revision,
@@ -1035,7 +1367,7 @@ mod tests {
             |_recording_id, _reason, _duration_ms| {},
             {
                 let shell = shell.clone();
-                |_recording_id, _result| async move {
+                |_recording_id, _target, _result| async move {
                     assert!(shell.state().await.is_recording_toggle);
                     true
                 }
@@ -1072,6 +1404,7 @@ mod tests {
         let owner = RecordingLifecycleOwner::default();
         let lifecycle = owner.lock().await;
         let recording_id = owner.begin(&lifecycle);
+        let target = owner.target(&lifecycle).unwrap_or_default();
         owner.finish(&lifecycle);
         let result = RecordingResult {
             pcm: Vec::new(),
@@ -1087,6 +1420,7 @@ mod tests {
                 lifecycle,
                 stop_context,
                 recording_id,
+                target,
                 result,
                 shell_update: RecordingStopShellUpdate::RefreshCurrent,
             },
@@ -1096,7 +1430,7 @@ mod tests {
             },
             {
                 let shell = shell.clone();
-                move |_recording_id, _result| async move {
+                move |_recording_id, _target, _result| async move {
                     let state = shell.state().await;
                     assert!(state.is_recording);
                     assert!(state.is_recording_toggle);

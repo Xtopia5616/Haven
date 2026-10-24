@@ -81,6 +81,21 @@ describe('recording overlay controller', () => {
 		]);
 	});
 
+	it('synchronizes the selected conversation before opening the microphone', async () => {
+		const target = deferred<void>();
+		const syncStartTarget = vi.fn(() => target.promise);
+		const invoke = vi.fn<RecordingOverlayControllerDependencies['invoke']>();
+		const controller = createRecordingOverlayController({ invoke, syncStartTarget });
+
+		const starting = controller.startFromToolbar();
+		expect(syncStartTarget).toHaveBeenCalledOnce();
+		expect(invoke).not.toHaveBeenCalled();
+
+		target.resolve();
+		await starting;
+		expect(invoke).toHaveBeenCalledWith('start_recording');
+	});
+
 	it('handles a quick start-stop click and an automatic stop transition', async () => {
 		const start = deferred<void>();
 		const stop = deferred<void>();
@@ -92,13 +107,16 @@ describe('recording overlay controller', () => {
 		const starting = controller.toggleFromToolbar();
 		controller.onRecordingStarted({ recordingId: 'rec-b45ef09ef270833380a98055b9afbaa9' });
 		const stopping = controller.toggleFromToolbar();
+		expect(state(controller)).toMatchObject({ visible: true, isRecording: true });
+		start.resolve();
+		await starting;
+		await Promise.resolve();
 		expect(state(controller)).toMatchObject({ visible: false, isRecording: false });
 		controller.onRecordingStopped({
 			recordingId: 'rec-b45ef09ef270833380a98055b9afbaa9',
 			reason: 'silence',
 		});
 		expect(state(controller)).toMatchObject({ visible: true, processing: true });
-		start.resolve();
 		stop.resolve();
 		await Promise.all([starting, stopping]);
 		expect(invoke.mock.calls.map(([command]) => command)).toEqual([

@@ -615,6 +615,38 @@ describe('ChatSessionController event reconciliation', () => {
 		expect(harness.reducer.getEventSequenceWatermark(SESSION_ID)).toBe(8);
 	});
 
+	it('discards a snapshot while the durable cursor moves and recovers on the next poll', async () => {
+		const watermarks = [10, 11, 11, 11];
+		const harness = makeHarness({
+			runCommand: (command) =>
+				command === 'get_session_event_sequence_watermark'
+					? watermarks.shift()
+					: command === 'get_session_for_resume'
+						? resumeResponseFixture({
+								eventSequenceWatermark: 11,
+								messages: [
+									{
+										messageId: USER_MESSAGE_ID,
+										role: 'assistant',
+										content: 'durable transcript',
+										created_at: '2026-10-24T00:00:00Z',
+									},
+								],
+							})
+						: undefined,
+		});
+
+		await harness.controller.reconcileSessionEvents(SESSION_ID);
+		expect(harness.reducer.getEventSequenceWatermark(SESSION_ID)).toBe(0);
+		expect(harness.reducer.getMessages(SESSION_ID)).toEqual([]);
+
+		await harness.controller.reconcileSessionEvents(SESSION_ID);
+		expect(harness.reducer.getEventSequenceWatermark(SESSION_ID)).toBe(11);
+		expect(harness.reducer.getMessages(SESSION_ID)).toMatchObject([
+			{ id: USER_MESSAGE_ID, content: 'durable transcript' },
+		]);
+	});
+
 	it('checks the durable cursor without loading a transcript when no event was missed', async () => {
 		const harness = makeHarness({
 			runCommand: (command) =>

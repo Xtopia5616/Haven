@@ -59,6 +59,7 @@
 | `list_builtin_tool_manifests` | read | builtin manifest projection; schemas are dynamic extension data |
 | `list_fact_proposals` | read | bounded pending-only queue; credential-like values filtered |
 | `list_facts` | read | read-only fact projection |
+| `list_failed_transcriptions` | read | returns bounded app-owned retry metadata without audio bytes or transcript text |
 | `list_mcp_prompts` | execute | user-driven prompt discovery; enabled live target binding; no model callable surface |
 | `list_mcp_resource_templates` | execute | user-driven template discovery; enabled live target binding; bounded opaque URI templates |
 | `list_mcp_resources` | execute | explicit host discovery; enabled live target binding; bounded opaque resource metadata |
@@ -90,6 +91,7 @@
 | `reset_tool_circuits` | mutate | clears local circuit state only |
 | `resolve_confirmation` | mutate | owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending |
 | `respond_mcp_feature_input` | execute | explicit user response to a bounded form request; enabled live target binding; schema-validated answers |
+| `retry_failed_transcription` | execute | canonical file identity selects only an app-owned retained recording and reuses its capture-time session target |
 | `review_fact_proposal` | mutate | canonical fprop ID; one-shot transactional accept/reject |
 | `revoke_permission` | mutate | non-empty exact permanent key; session grants are retained |
 | `revoke_session_permission` | mutate | non-empty session id and capability; removes one session grant |
@@ -99,6 +101,7 @@
 | `search_session_history_filtered` | read | bounded page and date-filtered projection |
 | `set_hotkey_capture_active` | mutate | transient renderer key-capture state only; not persisted |
 | `set_reasoning_effort` | mutate | request kind selects the assigned model; validated before config save |
+| `set_recording_target_session` | mutate | validated transient session target for the next app-owned capture; monotonic revision rejects stale renderer updates |
 | `set_session_execution_mode` | mutate | canonical session id; binds one execution preset to that session |
 | `set_session_execution_workspace` | mutate | canonical session id; local directory is validated and bound to that session |
 | `set_skill_enabled` | mutate | AuthorizationPort; typed native admin operation persists the toggle |

@@ -287,6 +287,21 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "cancel clears the in-flight recording id",
     },
     CommandContract {
+        name: "set_recording_target_session",
+        boundary: CommandBoundary::Mutate,
+        security: "validated transient session target for the next app-owned capture; monotonic revision rejects stale renderer updates",
+    },
+    CommandContract {
+        name: "list_failed_transcriptions",
+        boundary: CommandBoundary::Read,
+        security: "returns bounded app-owned retry metadata without audio bytes or transcript text",
+    },
+    CommandContract {
+        name: "retry_failed_transcription",
+        boundary: CommandBoundary::Execute,
+        security: "canonical file identity selects only an app-owned retained recording and reuses its capture-time session target",
+    },
+    CommandContract {
         name: "submit_transcript",
         boundary: CommandBoundary::Execute,
         security: "attachment limits and file persistence are enforced",

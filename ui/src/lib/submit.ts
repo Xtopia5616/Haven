@@ -71,6 +71,7 @@ interface SubmitPayload extends SubmitOptions {
 	userSelectionVersion: number;
 	/** Fresh-start intent captured when this submission was accepted. */
 	freshStartAtEnqueue: boolean;
+	voiceTargetCaptured: boolean;
 }
 
 /** A queued submission awaiting the in-flight one to settle. */
@@ -161,7 +162,7 @@ function drainQueue(lane: SubmissionLane) {
 	// just created/activated a session (and cleared the fresh-start intent),
 	// move the whole remaining draft queue to that session so newly submitted
 	// messages cannot overtake it on a newly created session lane.
-	if (next.payload.pinnedSessionId == null) {
+	if (next.payload.pinnedSessionId == null && !next.payload.voiceTargetCaptured) {
 		const active = next.payload.reducer.snapshot().activeSessionId;
 		const intentStillFresh = get(newSessionIntentStore);
 		if (active && !intentStillFresh) {
@@ -217,6 +218,9 @@ interface SubmitOptions {
 	files?: ChatFileAttachment[] | null;
 	voice?: boolean;
 	recordingId?: string;
+	retryFileId?: string;
+	/** Capture-time destination. A null session id means a fresh conversation. */
+	voiceTarget?: { sessionId: string | null; selectionVersion: number };
 	/** Reuse only when multiple invocations represent the same user intent. */
 	submissionToken?: string;
 	/** The application-wide session reducer. */
@@ -230,6 +234,8 @@ export async function submitTranscript(
 		files = null,
 		voice = false,
 		recordingId,
+		retryFileId,
+		voiceTarget,
 		deliveryMode,
 		submissionToken,
 		reducer,
@@ -243,8 +249,14 @@ export async function submitTranscript(
 		recordingId,
 		deliveryMode,
 		pinnedSessionId: reducer.snapshot().activeSessionId,
-		userSelectionVersion: reducer.currentUserSelectionVersion(),
-		freshStartAtEnqueue: get(newSessionIntentStore),
+		userSelectionVersion:
+			voiceTarget?.selectionVersion ?? reducer.currentUserSelectionVersion(),
+		freshStartAtEnqueue: voiceTarget
+			? voiceTarget.sessionId == null
+			: get(newSessionIntentStore),
+		voiceTargetCaptured: voiceTarget !== undefined,
+		...(retryFileId ? { retryFileId } : {}),
+		...(voiceTarget ? { pinnedSessionId: voiceTarget.sessionId } : {}),
 		submissionToken:
 			submissionToken ?? (voice && recordingId ? `recording:${recordingId}` : undefined),
 		reducer,
@@ -279,6 +291,7 @@ async function doSubmit({
 	files = null,
 	voice = false,
 	recordingId,
+	retryFileId,
 	deliveryMode,
 	pinnedSessionId,
 	freshStartAtEnqueue,
@@ -321,6 +334,7 @@ async function doSubmit({
 			attachments: hasAttachments ? attachments : null,
 			voice,
 			...(recordingId ? { recordingId } : {}),
+			...(retryFileId ? { retryFileId } : {}),
 			...(deliveryMode ? { deliveryMode } : {}),
 		};
 		const result = await submitTranscriptCommand(request);
@@ -337,7 +351,7 @@ async function doSubmit({
 			// (older) submission. Cleared BEFORE the store write so the page's
 			// store→state follow effect (guarded by the intent) can adopt the
 			// new session when appropriate.
-			if (freshStartAtDispatch) {
+			if (freshStartAtDispatch && reducer.isUserSelectionCurrent(userSelectionVersion)) {
 				newSessionIntentStore.set(false);
 				if (browser) localStorage.removeItem(NEW_SESSION_INTENT_STORAGE_KEY);
 			}

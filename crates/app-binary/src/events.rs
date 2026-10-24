@@ -291,6 +291,11 @@ pub struct TranscriptionResultEvent {
     pub text: String,
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_session_id: Option<String>,
+    pub selection_version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_file_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
 }
 
@@ -305,6 +310,8 @@ pub struct TranscriptionStartedEvent {
 pub struct TranscriptionErrorEvent {
     pub recording_id: haven_common::types::RecordingId,
     pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_file_id: Option<String>,
 }
 
 /// User-facing recording failure. This is deliberately separate from a
@@ -892,11 +899,15 @@ mod tests {
             recording_id: recording_id(),
             text: "hello".into(),
             duration_ms: 500,
+            target_session_id: Some("ses-0123456789abcdef0123456789abcdef".into()),
+            selection_version: 3,
+            retry_file_id: None,
             confidence: Some(0.95),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"recording_id\":\"rec-"));
-        assert!(!json.contains("session_id"));
+        assert!(json.contains("\"target_session_id\":\"ses-"));
+        assert!(json.contains("\"selection_version\":3"));
         assert!(json.contains("\"confidence\":0.95"));
     }
 
@@ -914,6 +925,7 @@ mod tests {
         let ev = TranscriptionErrorEvent {
             recording_id: recording_id(),
             error: "timeout".into(),
+            retry_file_id: None,
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains("\"error\":\"timeout\""));

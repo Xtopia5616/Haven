@@ -13,6 +13,7 @@ mod config_runtime;
 mod desktop;
 mod event_bridge;
 mod events;
+mod failed_transcriptions;
 mod handlers;
 mod logging;
 mod notification;

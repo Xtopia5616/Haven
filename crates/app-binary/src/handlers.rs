@@ -208,6 +208,7 @@ async fn finish_shell_recording_stop(
         }
     };
 
+    let target = crate::commands::recording_target(&state, &lifecycle);
     let detached = state
         .recording_lifecycle
         .finish_if_current(&lifecycle, &recording_id);
@@ -221,6 +222,7 @@ async fn finish_shell_recording_stop(
             lifecycle,
             stop_context,
             recording_id,
+            target,
             result,
             shell_update: crate::commands::RecordingStopShellUpdate::RefreshCurrent,
         },
@@ -232,13 +234,15 @@ async fn finish_shell_recording_stop(
                 Some(duration_ms),
             );
         },
-        move |recording_id, result| async move {
+        move |recording_id, target, result| async move {
             crate::commands::schedule_recording_transcription(
                 state_for_transcription,
                 app_for_transcription,
                 recording_id,
+                target,
                 result,
             )
+            .await
         },
     )
     .await;

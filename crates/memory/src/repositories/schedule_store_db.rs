@@ -2,7 +2,7 @@ use anyhow::Context as _;
 use chrono::{DateTime, SecondsFormat, Utc};
 use haven_common::lifecycle::ScheduleRunStatus;
 use haven_common::types::{is_canonical_id, new_id};
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::schedule_store_types::*;
 use crate::Database;
@@ -238,7 +238,8 @@ impl Database {
                                 (watched.id IS NULL OR watched.status IN ('completed','failed','cancelled')))
                         )) OR
                         (s.schedule_type = 'recurring_session' AND
-                            s.active_schedule_run_id IS NULL AND s.next_due_at <= ?1)
+                            ((s.active_schedule_run_id IS NULL AND s.next_due_at <= ?1)
+                                OR (active.status = 'waiting' AND active.due_at <= ?1)))
                      )
                      ORDER BY COALESCE(s.next_due_at, s.due_at), s.id LIMIT ?2",
                 )?;
@@ -267,31 +268,40 @@ impl Database {
                         (run_id, due_at)
                     }
                     ScheduleType::RecurringSession => {
-                        let due_at: String = conn.query_row(
-                            "SELECT next_due_at FROM schedules WHERE id = ?1",
-                            [&schedule_id],
-                            |row| row.get(0),
-                        )?;
-                        let run_id = new_id("schrun");
-                        conn.execute(
-                            "INSERT INTO schedule_runs
-                                (id, schedule_id, owner_session_id, due_at, status, created_at)
-                             SELECT ?1, id, owner_session_id, next_due_at, 'waiting', ?2
-                             FROM schedules WHERE id = ?3 AND enabled = 1
-                                AND active_schedule_run_id IS NULL AND next_due_at <= ?2",
-                            rusqlite::params![run_id, now, schedule_id],
-                        )?;
-                        let changed = conn.execute(
-                            "UPDATE schedules SET active_schedule_run_id = ?2, updated_at = ?3
-                             WHERE id = ?1 AND enabled = 1 AND active_schedule_run_id IS NULL",
-                            rusqlite::params![schedule_id, run_id, now],
-                        )?;
-                        anyhow::ensure!(changed == 1, "recurring schedule claim was lost");
-                        (run_id, Some(due_at))
+                        if let Some(run_id) = existing_run_id {
+                            let due_at: Option<String> = conn.query_row(
+                                "SELECT due_at FROM schedule_runs WHERE id = ?1 AND status = 'waiting'",
+                                [&run_id],
+                                |row| row.get(0),
+                            )?;
+                            (run_id, due_at)
+                        } else {
+                            let due_at: String = conn.query_row(
+                                "SELECT next_due_at FROM schedules WHERE id = ?1",
+                                [&schedule_id],
+                                |row| row.get(0),
+                            )?;
+                            let run_id = new_id("schrun");
+                            conn.execute(
+                                "INSERT INTO schedule_runs
+                                    (id, schedule_id, owner_session_id, due_at, status, created_at)
+                                 SELECT ?1, id, owner_session_id, next_due_at, 'waiting', ?2
+                                 FROM schedules WHERE id = ?3 AND enabled = 1
+                                    AND active_schedule_run_id IS NULL AND next_due_at <= ?2",
+                                rusqlite::params![run_id, now, schedule_id],
+                            )?;
+                            let changed = conn.execute(
+                                "UPDATE schedules SET active_schedule_run_id = ?2, updated_at = ?3
+                                 WHERE id = ?1 AND enabled = 1 AND active_schedule_run_id IS NULL",
+                                rusqlite::params![schedule_id, run_id, now],
+                            )?;
+                            anyhow::ensure!(changed == 1, "recurring schedule claim was lost");
+                            (run_id, Some(due_at))
+                        }
                     }
                 };
                 let changed = conn.execute(
-                    "UPDATE schedule_runs SET status = 'running', started_at = ?2
+                    "UPDATE schedule_runs SET status = 'running', started_at = ?2, error_reason = NULL
                      WHERE id = ?1 AND status = 'waiting'",
                     rusqlite::params![schedule_run_id, now],
                 )?;
@@ -505,83 +515,14 @@ impl Database {
         let finished_at = canonical_timestamp(finished_at, "finished_at")?;
         let conn = self.try_conn()?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<bool> {
-            let meta: Option<(String, String)> = conn
-                .query_row(
-                    "SELECT schedule_id, status FROM schedule_runs WHERE id = ?1",
-                    [schedule_run_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            let Some((schedule_id, old_status)) = meta else {
-                return Ok(false);
-            };
-            if old_status != "running" {
-                return Ok(false);
-            }
-            let Some((schedule_type, anchor_at, interval_seconds)) = conn
-                .query_row(
-                    "SELECT schedule_type, anchor_at, interval_seconds FROM schedules WHERE id = ?1",
-                    [&schedule_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<i64>>(2)?)),
-                )
-                .optional()?
-            else {
-                anyhow::bail!("Schedule plan '{schedule_id}' not found");
-            };
-            conn.execute(
-                "UPDATE schedule_runs SET status = ?2, result_summary = ?3, error_reason = ?4,
-                     finished_at = ?5 WHERE id = ?1 AND status = 'running'",
-                rusqlite::params![
-                    schedule_run_id,
-                    status.as_str(),
-                    result_summary,
-                    error_reason,
-                    finished_at
-                ],
-            )?;
-            conn.execute(
-                "DELETE FROM schedule_execution_claims WHERE schedule_run_id = ?1",
-                [schedule_run_id],
-            )?;
-            if schedule_type == "once" {
-                conn.execute(
-                    "UPDATE schedules SET enabled = 0, active_schedule_run_id = NULL, updated_at = ?2
-                     WHERE id = ?1 AND active_schedule_run_id = ?3",
-                    rusqlite::params![schedule_id, finished_at, schedule_run_id],
-                )?;
-            } else {
-                let anchor_at =
-                    anchor_at.ok_or_else(|| anyhow::anyhow!("missing schedule anchor"))?;
-                let interval_seconds = u64::try_from(
-                    interval_seconds.ok_or_else(|| anyhow::anyhow!("missing schedule interval"))?,
-                )?;
-                let anchor = DateTime::parse_from_rfc3339(&anchor_at)?.with_timezone(&Utc);
-                let finished = DateTime::parse_from_rfc3339(&finished_at)?.with_timezone(&Utc);
-                let interval = i64::try_from(interval_seconds)?;
-                let periods = finished
-                    .signed_duration_since(anchor)
-                    .num_seconds()
-                    .max(0)
-                    .div_euclid(interval)
-                    .checked_add(1)
-                    .context("recurring Schedule tick count overflows")?;
-                let next_due_at = anchor
-                    .checked_add_signed(chrono::Duration::seconds(
-                        interval
-                            .checked_mul(periods)
-                            .context("recurring Schedule due time overflows")?,
-                    ))
-                    .context("recurring Schedule next due timestamp is out of range")?
-                    .to_rfc3339_opts(SecondsFormat::Millis, true);
-                conn.execute(
-                    "UPDATE schedules SET active_schedule_run_id = NULL, next_due_at = ?2, updated_at = ?3
-                     WHERE id = ?1 AND active_schedule_run_id = ?4 AND enabled = 1",
-                    rusqlite::params![schedule_id, next_due_at, finished_at, schedule_run_id],
-                )?;
-            }
-            Ok(true)
-        })();
+        let result = finish_schedule_run_in_transaction(
+            &conn,
+            schedule_run_id,
+            status,
+            result_summary,
+            error_reason,
+            &finished_at,
+        );
         match result {
             Ok(finished) => {
                 conn.execute_batch("COMMIT")?;
@@ -594,25 +535,167 @@ impl Database {
         }
     }
 
-    pub(super) fn fail_interrupted_schedule_runs(
+    pub(super) fn recover_interrupted_schedule_runs(
         &self,
         finished_at: &str,
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<ScheduleRecoverySummary> {
         let finished_at = canonical_timestamp(finished_at, "finished_at")?;
         let rows = self.list_live_schedule_runs()?;
-        let mut failed = 0;
+        let mut summary = ScheduleRecoverySummary::default();
         for row in rows
             .into_iter()
             .filter(|row| row.status == ScheduleRunStatus::Running)
         {
-            failed += usize::from(self.finish_schedule_run(
-                &row.schedule_run_id,
-                ScheduleRunStatus::Failed,
-                None,
-                Some("interrupted by process restart"),
-                &finished_at,
-            )?);
+            let conn = self.try_conn()?;
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let result = (|| -> anyhow::Result<Option<ScheduleRunStatus>> {
+                let is_running: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM schedule_runs WHERE id = ?1 AND status = 'running')",
+                    [&row.schedule_run_id],
+                    |row| row.get(0),
+                )?;
+                if !is_running {
+                    return Ok(None);
+                }
+                let has_execution_claim: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM schedule_execution_claims WHERE schedule_run_id = ?1)",
+                    [&row.schedule_run_id],
+                    |row| row.get(0),
+                )?;
+                if has_execution_claim {
+                    let finished = finish_schedule_run_in_transaction(
+                        &conn,
+                        &row.schedule_run_id,
+                        ScheduleRunStatus::Failed,
+                        None,
+                        Some(
+                            "process restarted after execution was claimed; side-effect outcome is unknown; automatic retry suppressed",
+                        ),
+                        &finished_at,
+                    )?;
+                    return Ok(finished.then_some(ScheduleRunStatus::Failed));
+                }
+                let changed = conn.execute(
+                    "UPDATE schedule_runs SET status = 'waiting', started_at = NULL,
+                         finished_at = NULL, error_reason = ?2
+                     WHERE id = ?1 AND status = 'running'
+                        AND NOT EXISTS(SELECT 1 FROM schedule_execution_claims WHERE schedule_run_id = ?1)",
+                    rusqlite::params![
+                        row.schedule_run_id,
+                        "process restarted before execution was claimed; safe to retry with the same occurrence ID"
+                    ],
+                )?;
+                Ok((changed == 1).then_some(ScheduleRunStatus::Waiting))
+            })();
+            match result {
+                Ok(status) => {
+                    conn.execute_batch("COMMIT")?;
+                    if status == Some(ScheduleRunStatus::Failed) {
+                        summary.failed_with_unknown_outcome += 1;
+                    } else if status == Some(ScheduleRunStatus::Waiting) {
+                        summary.requeued_before_execution += 1;
+                    }
+                }
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    return Err(error);
+                }
+            }
         }
-        Ok(failed)
+        Ok(summary)
     }
+}
+
+fn finish_schedule_run_in_transaction(
+    conn: &Connection,
+    schedule_run_id: &str,
+    status: ScheduleRunStatus,
+    result_summary: Option<&str>,
+    error_reason: Option<&str>,
+    finished_at: &str,
+) -> anyhow::Result<bool> {
+    anyhow::ensure!(
+        status.is_terminal(),
+        "ScheduleRun terminal status is required"
+    );
+    let meta: Option<(String, String)> = conn
+        .query_row(
+            "SELECT schedule_id, status FROM schedule_runs WHERE id = ?1",
+            [schedule_run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((schedule_id, old_status)) = meta else {
+        return Ok(false);
+    };
+    if old_status != "running" {
+        return Ok(false);
+    }
+    let Some((schedule_type, anchor_at, interval_seconds)) = conn
+        .query_row(
+            "SELECT schedule_type, anchor_at, interval_seconds FROM schedules WHERE id = ?1",
+            [&schedule_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        anyhow::bail!("Schedule plan '{schedule_id}' not found");
+    };
+    conn.execute(
+        "UPDATE schedule_runs SET status = ?2, result_summary = ?3, error_reason = ?4,
+             finished_at = ?5 WHERE id = ?1 AND status = 'running'",
+        rusqlite::params![
+            schedule_run_id,
+            status.as_str(),
+            result_summary,
+            error_reason,
+            finished_at
+        ],
+    )?;
+    conn.execute(
+        "DELETE FROM schedule_execution_claims WHERE schedule_run_id = ?1",
+        [schedule_run_id],
+    )?;
+    if schedule_type == "once" {
+        conn.execute(
+            "UPDATE schedules SET enabled = 0, active_schedule_run_id = NULL, updated_at = ?2
+             WHERE id = ?1 AND active_schedule_run_id = ?3",
+            rusqlite::params![schedule_id, finished_at, schedule_run_id],
+        )?;
+    } else {
+        let anchor_at = anchor_at.ok_or_else(|| anyhow::anyhow!("missing schedule anchor"))?;
+        let interval_seconds = u64::try_from(
+            interval_seconds.ok_or_else(|| anyhow::anyhow!("missing schedule interval"))?,
+        )?;
+        let anchor = DateTime::parse_from_rfc3339(&anchor_at)?.with_timezone(&Utc);
+        let finished = DateTime::parse_from_rfc3339(finished_at)?.with_timezone(&Utc);
+        let interval = i64::try_from(interval_seconds)?;
+        let periods = finished
+            .signed_duration_since(anchor)
+            .num_seconds()
+            .max(0)
+            .div_euclid(interval)
+            .checked_add(1)
+            .context("recurring Schedule tick count overflows")?;
+        let next_due_at = anchor
+            .checked_add_signed(chrono::Duration::seconds(
+                interval
+                    .checked_mul(periods)
+                    .context("recurring Schedule due time overflows")?,
+            ))
+            .context("recurring Schedule next due timestamp is out of range")?
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        conn.execute(
+            "UPDATE schedules SET active_schedule_run_id = NULL, next_due_at = ?2, updated_at = ?3
+             WHERE id = ?1 AND active_schedule_run_id = ?4 AND enabled = 1",
+            rusqlite::params![schedule_id, next_due_at, finished_at, schedule_run_id],
+        )?;
+    }
+    Ok(true)
 }

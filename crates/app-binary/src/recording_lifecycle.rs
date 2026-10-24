@@ -9,6 +9,15 @@
 pub(crate) struct RecordingLifecycleOwner {
     transition: tokio::sync::Mutex<()>,
     current_recording_id: std::sync::Mutex<Option<haven_common::types::RecordingId>>,
+    current_target: std::sync::Mutex<Option<RecordingTargetSnapshot>>,
+    selected_target: std::sync::Mutex<RecordingTargetSnapshot>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RecordingTargetSnapshot {
+    pub(crate) session_id: Option<String>,
+    pub(crate) selection_version: u64,
+    pub(crate) revision: u64,
 }
 
 pub(crate) struct RecordingLifecycleGuard<'a> {
@@ -33,8 +42,60 @@ impl RecordingLifecycleOwner {
             .current_recording_id
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_none() {
+            let target = self
+                .selected_target
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            *self
+                .current_target
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(target);
+            *current = Some(haven_common::types::RecordingId::new());
+        }
         current
-            .get_or_insert_with(haven_common::types::RecordingId::new)
+            .as_ref()
+            .expect("recording identity was reserved")
+            .clone()
+    }
+
+    /// Publish the renderer's latest conversation target for the next capture.
+    /// Monotonic revisions make delayed IPC calls harmless when users switch
+    /// sessions quickly. An active capture keeps its own frozen snapshot.
+    pub(crate) fn set_selected_target(
+        &self,
+        _guard: &RecordingLifecycleGuard<'_>,
+        session_id: Option<String>,
+        selection_version: u64,
+        revision: u64,
+    ) -> bool {
+        let mut selected = self
+            .selected_target
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if revision < selected.revision
+            || (revision == selected.revision
+                && (session_id != selected.session_id
+                    || selection_version != selected.selection_version))
+        {
+            return false;
+        }
+        *selected = RecordingTargetSnapshot {
+            session_id,
+            selection_version,
+            revision,
+        };
+        true
+    }
+
+    pub(crate) fn target(
+        &self,
+        _guard: &RecordingLifecycleGuard<'_>,
+    ) -> Option<RecordingTargetSnapshot> {
+        self.current_target
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
@@ -62,10 +123,18 @@ impl RecordingLifecycleOwner {
         &self,
         _guard: &RecordingLifecycleGuard<'_>,
     ) -> Option<haven_common::types::RecordingId> {
-        self.current_recording_id
+        let recording_id = self
+            .current_recording_id
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
+            .take();
+        if recording_id.is_some() {
+            self.current_target
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
+        }
+        recording_id
     }
 
     /// Detach an identity only if it still belongs to the caller's capture.
@@ -82,6 +151,10 @@ impl RecordingLifecycleOwner {
             return false;
         }
         current.take();
+        self.current_target
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
         true
     }
 }
@@ -151,5 +224,37 @@ mod tests {
         assert!(!owner.finish_if_current(&lifecycle, &stale));
         assert!(owner.matches_current(&lifecycle, &current));
         assert_eq!(owner.current(&lifecycle), Some(current));
+    }
+
+    #[tokio::test]
+    async fn capture_freezes_the_selected_session_and_selection_version() {
+        let owner = RecordingLifecycleOwner::default();
+        let lifecycle = owner.lock().await;
+        assert!(owner.set_selected_target(&lifecycle, Some("ses-a".into()), 4, 1));
+        let recording_id = owner.begin(&lifecycle);
+        assert_eq!(
+            owner.target(&lifecycle).unwrap(),
+            super::RecordingTargetSnapshot {
+                session_id: Some("ses-a".into()),
+                selection_version: 4,
+                revision: 1,
+            }
+        );
+
+        assert!(owner.set_selected_target(&lifecycle, Some("ses-b".into()), 5, 2));
+        assert_eq!(
+            owner.target(&lifecycle).unwrap().session_id.as_deref(),
+            Some("ses-a"),
+            "a selection change during transcription must not retarget the capture"
+        );
+        assert!(!owner.set_selected_target(&lifecycle, Some("ses-stale".into()), 3, 1));
+        assert_eq!(owner.finish(&lifecycle), Some(recording_id.clone()));
+
+        let next_recording_id = owner.begin(&lifecycle);
+        assert_ne!(recording_id, next_recording_id);
+        assert_eq!(
+            owner.target(&lifecycle).unwrap().session_id.as_deref(),
+            Some("ses-b")
+        );
     }
 }

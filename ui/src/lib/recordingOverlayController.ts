@@ -6,6 +6,7 @@ import type {
 	VadStatusPayload,
 } from './contracts/recording.ts';
 import type { TauriCommandName } from './contracts/generatedCommands.ts';
+import { syncRecordingTarget } from './recordingTarget.ts';
 import { invoke } from './tauri.ts';
 
 export type RecordingOverlayState = {
@@ -24,6 +25,8 @@ type RecordingCommandName = Extract<
 
 export interface RecordingOverlayControllerDependencies {
 	invoke: (command: RecordingCommandName) => Promise<unknown>;
+	/** Capture the current conversation target before the backend starts audio. */
+	syncStartTarget?: () => Promise<unknown>;
 	now?: () => number;
 	setInterval?: typeof globalThis.setInterval;
 	clearInterval?: typeof globalThis.clearInterval;
@@ -79,6 +82,7 @@ export function createRecordingOverlayController(
 	const terminalRecordingIds = new Set<string>();
 	let durationTimer: ReturnType<typeof setInterval> | null = null;
 	let lifecycleRevision = 0;
+	let pendingStart: Promise<void> | null = null;
 
 	function remember(recordingIds: Set<string>, recordingId: string | null) {
 		if (!recordingId) return;
@@ -126,19 +130,35 @@ export function createRecordingOverlayController(
 			startedAt: null,
 			vadState: 'silent',
 		});
+		const start = (async () => {
+			try {
+				await dependencies.syncStartTarget?.();
+				await dependencies.invoke('start_recording');
+			} catch {
+				// Rust emits the user-facing recording:error event. The command
+				// rejection only rolls back this optimistic state if no newer event
+				// or recording intent has superseded it.
+				if (lifecycleRevision === optimisticRevision) reset();
+			}
+		})();
+		pendingStart = start;
 		try {
-			await dependencies.invoke('start_recording');
-		} catch {
-			// Rust emits the user-facing recording:error event. The command
-			// rejection only rolls back this optimistic state if no newer event
-			// or recording intent has superseded it.
-			if (lifecycleRevision === optimisticRevision) reset();
+			await start;
+		} finally {
+			if (pendingStart === start) pendingStart = null;
 		}
 	}
 
 	async function stopFromToolbar() {
-		const before = get(overlayStore);
+		let before = get(overlayStore);
 		if (!before.isRecording) return startFromToolbar();
+		// A fast second click can arrive while target synchronization or the
+		// start IPC is still pending. Preserve start-before-stop command order.
+		if (pendingStart) {
+			await pendingStart;
+			before = get(overlayStore);
+			if (!before.isRecording) return;
+		}
 
 		const optimisticRevision = update({ isRecording: false, visible: false });
 		stopTimer();
@@ -279,4 +299,5 @@ export function createRecordingOverlayController(
 
 export const recordingOverlayController = createRecordingOverlayController({
 	invoke: (command: RecordingCommandName) => invoke(command),
+	syncStartTarget: syncRecordingTarget,
 });

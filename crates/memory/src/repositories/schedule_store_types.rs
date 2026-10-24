@@ -100,6 +100,17 @@ pub struct ScheduleRunRow {
     pub created_at: String,
 }
 
+/// Outcomes from recovering ScheduleRun rows left `running` by a prior process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScheduleRecoverySummary {
+    /// Rows with no durable execution claim were never admitted to side-effect
+    /// execution and can be retried with the same occurrence identity.
+    pub requeued_before_execution: usize,
+    /// Rows with an execution claim may have started a side effect; they are
+    /// terminally failed with an explicit unknown-outcome reason.
+    pub failed_with_unknown_outcome: usize,
+}
+
 /// Producer result supplied when a one-off schedule waits for a ToolRun.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchedToolRunResult {

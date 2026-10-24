@@ -271,6 +271,9 @@ impl ReActEngine {
 
         let tools = prepared_tools.definitions;
         let tool_token_estimate = prepared_tools.token_estimate;
+        // Capture the latest published model generation for this provider
+        // request. The snapshot stays fixed for this request and its retry
+        // cycle; the next ReAct turn captures again after tools or waits.
         let router = self.router();
         let mut request = choose_agent_request(&router, &request_context).await;
         let mut projection = request_context.project_for_capabilities(

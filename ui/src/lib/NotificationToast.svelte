@@ -2,7 +2,7 @@
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { notificationStore } from './notificationStore.ts';
+	import { notificationStore, selectNotificationAction } from './notificationStore.ts';
 	import type { Notification } from './notificationStore.ts';
 	import { getStatusColorTokens } from './statusColors.ts';
 	import Icon from './Icon.svelte';
@@ -66,6 +66,13 @@
 				<span class="toast-content">
 					<span class="toast-label">{getToastLabel(item.type)}</span>
 					<span class="toast-msg">{item.msg}</span>
+					{#if item.action}
+						<button
+							type="button"
+							class="toast-action"
+							onclick={() => selectNotificationAction(item.id)}
+						>{item.action.label}</button>
+					{/if}
 				</span>
 			</div>
 		{/each}
@@ -151,6 +158,22 @@
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 		overflow-wrap: anywhere;
 		white-space: normal;
+	}
+	.toast-action {
+		align-self: flex-start;
+		margin-top: 8px;
+		padding: 4px 10px;
+		border: 0;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--toast-background);
+		color: var(--toast-foreground);
+		font: inherit;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.toast-action:focus-visible {
+		outline: 2px solid var(--toast-accent);
+		outline-offset: 2px;
 	}
 	.toast-error {
 		border-color: color-mix(

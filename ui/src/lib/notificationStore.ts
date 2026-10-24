@@ -8,6 +8,7 @@ export type Notification = {
 	id: string;
 	msg: string;
 	type: NotificationType;
+	action?: { label: string; onSelect: () => void | Promise<void> };
 };
 
 export const notificationStore = writable<Notification[]>([]);
@@ -40,4 +41,30 @@ export function addNotification(
 			notificationStore.update((current) => current.filter((item) => item.id !== id));
 		}, duration);
 	}
+}
+
+/** Keep a recoverable action visible until the user chooses it. */
+export function addActionNotification(
+	msg: string,
+	type: NotificationType,
+	label: string,
+	onSelect: () => void | Promise<void>,
+) {
+	let id: string | null = null;
+	notificationStore.update((current) => {
+		if (current.some((item) => item.msg === msg && item.type === type)) return current;
+		id = `${Date.now()}-${notificationSeq++}-${Math.random().toString(36).slice(2, 6)}`;
+		return [...current, { id, msg, type, action: { label, onSelect } }];
+	});
+	if (id !== null) logger.info('notification', 'action notification enqueued');
+}
+
+export function selectNotificationAction(notificationId: string) {
+	let action: Notification['action'];
+	notificationStore.update((current) => {
+		const selected = current.find((item) => item.id === notificationId);
+		action = selected?.action;
+		return current.filter((item) => item.id !== notificationId);
+	});
+	if (action) void action.onSelect();
 }

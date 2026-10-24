@@ -38,6 +38,9 @@ export interface TranscriptionResultPayload {
 	recordingId: string;
 	text: string;
 	durationMs: number;
+	targetSessionId: string | null;
+	selectionVersion: number;
+	retryFileId?: string;
 }
 export interface RecordingErrorPayload {
 	recordingId: string;
@@ -46,6 +49,7 @@ export interface RecordingErrorPayload {
 export interface TranscriptionErrorPayload {
 	recordingId: string;
 	error: string;
+	retryFileId?: string;
 }
 
 export interface RecordingEventPayloadMap {
@@ -122,12 +126,21 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 		case 'recording:error':
 		case 'transcription:error': {
 			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
-			if (recordingId === null || !isString(payload.error)) return null;
+			const retryFileId = payload.retry_file_id;
+			if (
+				recordingId === null ||
+				!isString(payload.error) ||
+				(retryFileId !== undefined &&
+					retryFileId !== null &&
+					canonicalIdField(payload, 'retry_file_id', 'file') === null)
+			)
+				return null;
 			return {
 				...event,
 				payload: {
 					recordingId,
 					error: payload.error,
+					...(typeof retryFileId === 'string' ? { retryFileId } : {}),
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		}
@@ -143,12 +156,28 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 			const recordingId = canonicalIdField(payload, 'recording_id', 'rec');
 			const durationMs = payload.duration_ms;
 			const confidence = payload.confidence;
+			const rawTargetSessionId = payload.target_session_id;
+			const targetSessionId =
+				rawTargetSessionId === undefined || rawTargetSessionId === null
+					? null
+					: canonicalIdField(payload, 'target_session_id', 'ses');
+			const selectionVersion = payload.selection_version;
+			const retryFileId = payload.retry_file_id;
 			if (
 				recordingId === null ||
 				!isString(payload.text) ||
 				!isNumber(durationMs) ||
 				!Number.isSafeInteger(durationMs) ||
 				durationMs < 0 ||
+				(rawTargetSessionId !== undefined &&
+					rawTargetSessionId !== null &&
+					targetSessionId === null) ||
+				!isNumber(selectionVersion) ||
+				!Number.isSafeInteger(selectionVersion) ||
+				selectionVersion < 0 ||
+				(retryFileId !== undefined &&
+					retryFileId !== null &&
+					canonicalIdField(payload, 'retry_file_id', 'file') === null) ||
 				(confidence !== undefined &&
 					(!isFiniteNumber(confidence) || confidence < 0 || confidence > 1))
 			)
@@ -159,6 +188,9 @@ export function mapRecordingEvent<K extends RecordingEventName>(
 					recordingId,
 					text: payload.text,
 					durationMs,
+					targetSessionId,
+					selectionVersion,
+					...(typeof retryFileId === 'string' ? { retryFileId } : {}),
 				},
 			} as unknown as TauriEvent<RecordingEventPayloadMap[K]>;
 		}

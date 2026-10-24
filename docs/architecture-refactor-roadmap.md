@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
 > 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1–5 的实现及 Slice 3/4 验收已完成（ADR 1373–1383）；Slice 2 的执行预设、typed 资源合同、规范 `ResourcePolicy` 与精确边界扩展已完成（ADR 1374、1376–1381）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
-> 更新日期：2026-10-24
+> 更新日期：2026-10-25
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -76,7 +76,11 @@
 |---|---|
 | **Completed** | R12 继续生成的异步选择隔离（[ADR 1390](adr/1390-fence-continue-reload-by-user-selection.md)）：恢复快照与续写提交均校验发起时的会话和选择版本；重载成功/失败、切换会话、新建及切走再切回均有回归覆盖。R12 其余动作职责仍按源码证据复核，不视为整体完成。 |
 | **Completed** | R05 durable UI 事件补齐与 R12 的恢复/rollback 快照竞态切片（ADR 1386）：聊天页可见期间每 5 秒读取当前会话的轻量 durable cursor；序号跳跃或后端 cursor 前进时，双侧 cursor 稳定后才应用恢复投影。快照水位拒绝旧事件，rollback/continue 会使在途旧快照失效。自动化门禁通过后关闭此实现切片；真实 Windows 连续聚焦丢事件与 rollback 并发 UI 场景仍属于 §5.1 真实交互验收。R12 其余页面动作职责仍按审查报告作为候选。 |
-| **Completed** | 新一轮 R03：router、媒体客户端与 MediaConfig 经 App 独占 publisher 原子发布；Agent、Memory、Tools 只读同一代次。单次 provider/媒体操作捕获快照，在途操作保留旧代次；目录重建失败时旧目录保持原子且状态 reason 指明已发布版本。边界与测试见 [ADR 1385](adr/1385-atomic-model-media-generation-publication.md)。整个 ReAct turn 跨代次、后台任务与会话配置代次绑定仍属后续建议；顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
+| **Completed** | R03 模型代次：router、媒体客户端与 MediaConfig 经 App 独占 publisher 原子发布；Agent、Memory、Tools 只读同一代次。每个新 provider/媒体逻辑操作捕获当前最新快照，在途操作保持其起始代次；ReAct 的 run、session 与后台任务不 pin 代次，后续请求重新读取最新快照。目录重建失败时旧目录保持原子且状态 reason 指明已发布版本。见 [ADR 1385](adr/1385-atomic-model-media-generation-publication.md) 与 [ADR 1396](adr/1396-use-latest-model-generation-per-react-request.md)。 |
+| **Verification** | R05 UI durable event 补齐与 rollback 快照 fence：稳定 cursor 和快照代次隔离已有实现；新增 cursor 变化期间拒绝不稳定 snapshot、下一轮补齐和重新聚焦立即检查的回归测试，UI 自动测试通过。主窗口持续聚焦丢通知和恢复/rollback 并发仍是 §5.1 Windows 真实交互验收。见 [ADR 1397](adr/1397-reconcile-durable-ui-events-with-rollback-fences.md)。 |
+| **Verification** | R09 Schedule handoff：bounded fired queue 满时背压；消费者退出与进程重启时，无 execution claim 的 occurrence 按原 ID 安全重试，已有 claim 的 occurrence 终态标记结果未知且不自动重放；Rust workspace 测试与严格 Clippy 通过。Schedule UI 仍按 ADR 1395 豁免本次 Gate。见 [ADR 1398](adr/1398-schedule-handoff-recovery-outcome-boundary.md)。 |
+| **Verification** | R06 录音转写：冻结录音开始时的会话/fresh-session 目标；STT 并发上限为 2；失败源 WAV 保留并可重试，启动清理孤儿文件，同一来源的并发重试去重；UI/Rust 自动门禁通过。真实 Windows 麦克风/VAD、会话切换与重启后重试验收仍开放。见 [ADR 1399](adr/1399-bind-voice-transcription-to-capture-and-retain-failures.md)。 |
+| **Acceptance Open** | R08 受管附件资产：继续沿用 durable message references、session/pending leases 与现有 GC gate；既有测试已覆盖上传/GC 竞争、名称冲突、失败批次回滚、重启空 registry 路径和路径替换保护。当前仅通过源码与自动化证据复核，消息提交失败/renderer 重启后的真实端到端生命周期仍未验收；不新增持久资产索引。 |
 | **Completed** | 新一轮 R02：按 runtime target 显示期望/实际配置版本、结果与净化原因；可在共享 apply gate 下仅重试失败或尚未执行目标，状态见 [ADR 1384](adr/1384-explicit-reapply-of-saved-runtime-configuration.md)。 |
 | **Completed** | Slice 2 typed 资源合同（ADR 1374、1376–1381）：Files/HTTP/剪贴板/窗口/注册表与 MCP 远程调用均由可信 adapter 在执行前声明并验证；MCP 执行 proof 绑定连接配置/代次，持久资源授权绑定稳定配置与完整参数摘要。见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)、[ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1375](adr/1375-resource-scoped-persistent-permissions.md)、[ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md)、[ADR 1377](adr/1377-once-only-http-domain-boundary-extension.md)、[ADR 1378](adr/1378-typed-clipboard-resource-boundary.md)、[ADR 1379](adr/1379-typed-window-resource-boundary.md)、[ADR 1380](adr/1380-typed-registry-resource-boundary.md)、[ADR 1381](adr/1381-bind-mcp-invocations-to-remote-targets.md) 和[设计提案](execution-context-redesign.md)。 |
 | **Completed** | Execution-context Slice 3–4 验收完成。Slice 3 在 Windows 11 Insider build 29683 的真实 MXC BaseContainer 上验证 workspace 文件边界、三种网络策略、PowerShell 启动、MXC 后代进程取消/撤权；Slice 4 验证旧 exposure 迁移、三维 MCP 路由和 stale-call 拒绝测试，以及隔离 UI profile 的编辑保存与重启读回。未连接外部 MCP 服务或配置模型；Windows 发布 Gate 仍按 §5.1 开放。证据见[报告](execution-path-capability-audit-2026-10-23.md)、[ADR 1382](adr/1382-execution-path-capability-audit.md) 和 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)。 |

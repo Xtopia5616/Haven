@@ -157,8 +157,8 @@ export type ToolRunCompletionStatusDto = (typeof TOOL_RUN_COMPLETION_STATUS_DTO_
 export interface ToolRunEvent { tool_run_id: string; kind: ToolRunKindDto; tool_name: string; status?: ToolRunStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; output?: string; error?: string; error_reason?: string; preview?: string }
 export const TOOL_RUN_KIND_DTO_VALUES = ['background'] as const;
 export type ToolRunKindDto = (typeof TOOL_RUN_KIND_DTO_VALUES)[number];
-export interface TranscriptionErrorEvent { recording_id: string; error: string }
-export interface TranscriptionResultEvent { recording_id: string; text: string; duration_ms: number; confidence?: number }
+export interface TranscriptionErrorEvent { recording_id: string; error: string; retry_file_id?: string }
+export interface TranscriptionResultEvent { recording_id: string; text: string; duration_ms: number; target_session_id?: string; selection_version: number; retry_file_id?: string; confidence?: number }
 export interface TranscriptionStartedEvent { recording_id: string }
 export interface TrayStatusChangedEvent { status: TrayStatusEventValue; tooltip: string }
 export const TRAY_STATUS_EVENT_VALUE_VALUES = ['normal', 'recording', 'muted', 'busy'] as const;
@@ -168,6 +168,7 @@ export type VadSignalDto = (typeof VAD_SIGNAL_DTO_VALUES)[number];
 export const VAD_STATE_DTO_VALUES = ['silent', 'speech', 'silence_after_speech'] as const;
 export type VadStateDto = (typeof VAD_STATE_DTO_VALUES)[number];
 export interface VadStatusEvent { signal: VadSignalDto; state: VadStateDto }
+export interface FailedTranscriptionSummary { retryFileId: string; createdAtMs: number; durationMs: number }
 export const OCR_CREDENTIAL_FIELD_INPUT_VALUES = ['api_key', 'api_secret'] as const;
 export type OcrCredentialFieldInput = (typeof OCR_CREDENTIAL_FIELD_INPUT_VALUES)[number];
 export const ALIYUN_SEARCH_CONTENT_TYPE_INPUT_VALUES = ['snippet', 'summary', 'mainText'] as const;
@@ -6757,6 +6758,23 @@ export const LIST_FACT_PROPOSALS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const LIST_FAILED_TRANSCRIPTIONS_RESPONSE_SHAPE = { kind: 'array', items: {
+	kind: 'object',
+	fields: {
+		'retryFileId': {
+			optional: false,
+			shape: { kind: 'string' },
+		},
+		'createdAtMs': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'durationMs': {
+			optional: false,
+			shape: { kind: 'number' },
+		}
+	}
+} } as const;
 export const LIST_MCP_PROMPTS_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -8482,6 +8500,7 @@ export const RESPOND_MCP_FEATURE_INPUT_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const RETRY_FAILED_TRANSCRIPTION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const REVIEW_FACT_PROPOSAL_RESPONSE_SHAPE = { kind: 'union', anyOf: [
 	{
 		kind: 'object',
@@ -11891,6 +11910,7 @@ export const SETTINGS_RESPONSE_SHAPE = {
 } as const;
 export const SET_HOTKEY_CAPTURE_ACTIVE_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SET_REASONING_EFFORT_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const SET_RECORDING_TARGET_SESSION_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const SET_SESSION_EXECUTION_MODE_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -12163,6 +12183,10 @@ export const TRANSCRIPTION_ERROR_EVENT_PAYLOAD_SHAPE = {
 		'error': {
 			optional: false,
 			shape: { kind: 'string' },
+		},
+		'retry_file_id': {
+			optional: true,
+			shape: { kind: 'string' },
 		}
 	}
 } as const;
@@ -12180,6 +12204,18 @@ export const TRANSCRIPTION_RESULT_EVENT_PAYLOAD_SHAPE = {
 		'duration_ms': {
 			optional: false,
 			shape: { kind: 'number' },
+		},
+		'target_session_id': {
+			optional: true,
+			shape: { kind: 'string' },
+		},
+		'selection_version': {
+			optional: false,
+			shape: { kind: 'number' },
+		},
+		'retry_file_id': {
+			optional: true,
+			shape: { kind: 'string' },
 		},
 		'confidence': {
 			optional: true,
@@ -12262,6 +12298,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	list_builtin_tool_manifests: LIST_BUILTIN_TOOL_MANIFESTS_RESPONSE_SHAPE,
 	list_fact_proposals: LIST_FACT_PROPOSALS_RESPONSE_SHAPE,
 	list_facts: LIST_FACTS_RESPONSE_SHAPE,
+	list_failed_transcriptions: LIST_FAILED_TRANSCRIPTIONS_RESPONSE_SHAPE,
 	list_mcp_prompts: LIST_MCP_PROMPTS_RESPONSE_SHAPE,
 	list_mcp_resource_templates: LIST_MCP_RESOURCE_TEMPLATES_RESPONSE_SHAPE,
 	list_mcp_resources: LIST_MCP_RESOURCES_RESPONSE_SHAPE,
@@ -12293,6 +12330,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	reset_tool_circuits: RESET_TOOL_CIRCUITS_RESPONSE_SHAPE,
 	resolve_confirmation: RESOLVE_CONFIRMATION_RESPONSE_SHAPE,
 	respond_mcp_feature_input: RESPOND_MCP_FEATURE_INPUT_RESPONSE_SHAPE,
+	retry_failed_transcription: RETRY_FAILED_TRANSCRIPTION_RESPONSE_SHAPE,
 	review_fact_proposal: REVIEW_FACT_PROPOSAL_RESPONSE_SHAPE,
 	revoke_permission: REVOKE_PERMISSION_RESPONSE_SHAPE,
 	revoke_session_permission: REVOKE_SESSION_PERMISSION_RESPONSE_SHAPE,
@@ -12302,6 +12340,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	search_session_history_filtered: SEARCH_SESSION_HISTORY_FILTERED_RESPONSE_SHAPE,
 	set_hotkey_capture_active: SET_HOTKEY_CAPTURE_ACTIVE_RESPONSE_SHAPE,
 	set_reasoning_effort: SET_REASONING_EFFORT_RESPONSE_SHAPE,
+	set_recording_target_session: SET_RECORDING_TARGET_SESSION_RESPONSE_SHAPE,
 	set_session_execution_mode: SET_SESSION_EXECUTION_MODE_RESPONSE_SHAPE,
 	set_session_execution_workspace: SET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE,
 	set_skill_enabled: SET_SKILL_ENABLED_RESPONSE_SHAPE,
@@ -12455,6 +12494,7 @@ export interface TauriCommandMap {
 	list_builtin_tool_manifests: { request: undefined; response: BuiltinToolManifestListResponse };
 	list_fact_proposals: { request: { cursor?: MemoryFactProposalCursorInput | null; limit?: number | null }; response: MemoryFactProposalPageResponse };
 	list_facts: { request: { source?: MemoryFactSourceInput | null; cursor?: MemoryFactCursorInput | null; limit?: number | null }; response: MemoryFactPageResponse };
+	list_failed_transcriptions: { request: undefined; response: FailedTranscriptionSummary[] };
 	list_mcp_prompts: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpPromptList };
 	list_mcp_resource_templates: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpResourceTemplateList };
 	list_mcp_resources: { request: { name: string; targetBinding: string; forceRefresh: boolean }; response: McpResourceList };
@@ -12486,6 +12526,7 @@ export interface TauriCommandMap {
 	reset_tool_circuits: { request: undefined; response: void };
 	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: PermissionEffectInput; scope: PermissionScopeInput; target: PermissionTargetInput; resourceTarget?: PermissionResourceTargetInput | null }; response: ConfirmationResolutionResult };
 	respond_mcp_feature_input: { request: { name: string; targetBinding: string; requestId: number; answers: Record<string, McpElicitationAnswerInput> }; response: McpFeatureCallOutcome };
+	retry_failed_transcription: { request: { retryFileId: string }; response: void };
 	review_fact_proposal: { request: { proposalId: string; decision: FactProposalDecisionInput }; response: MemoryFactProposalReviewResponse };
 	revoke_permission: { request: { key: string }; response: void };
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
@@ -12495,6 +12536,7 @@ export interface TauriCommandMap {
 	search_session_history_filtered: { request: { query?: string | null; status?: SessionHistoryStatusFilterInput | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { requestKind: RequestKindInput; effort?: ReasoningEffortSelectionInput | null }; response: void };
+	set_recording_target_session: { request: { sessionId?: string | null; selectionVersion: number; revision: number }; response: void };
 	set_session_execution_mode: { request: { sessionId: string; mode: ExecutionModeInput }; response: SessionExecutionModeResponse };
 	set_session_execution_workspace: { request: { sessionId: string; root?: string | null }; response: SessionExecutionWorkspaceResponse };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
@@ -12506,7 +12548,7 @@ export interface TauriCommandMap {
 	start_chatgpt_plan_login: { request: { providerName: string }; response: LoginStart };
 	start_recording: { request: undefined; response: void };
 	stop_recording: { request: undefined; response: void };
-	submit_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: TranscriptSubmissionResult };
+	submit_transcript: { request: { transcript: string; activeSessionId?: string | null; attachments?: MessageAttachmentInput[] | null; voice?: boolean | null; recordingId?: string | null; retryFileId?: string | null; deliveryMode?: InputDeliveryModeInput | null }; response: TranscriptSubmissionResult };
 	subscribe_mcp_resource: { request: { name: string; targetBinding: string; uri: string }; response: boolean };
 	switch_model: { request: { requestKind: RequestKindInput; modelConfigId: string }; response: void };
 	toggle_mcp_server: { request: { name: string; enabled: boolean }; response: void };
@@ -12587,6 +12629,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	list_builtin_tool_manifests: { boundary: 'read', security: "builtin manifest projection; schemas are dynamic extension data" },
 	list_fact_proposals: { boundary: 'read', security: "bounded pending-only queue; credential-like values filtered" },
 	list_facts: { boundary: 'read', security: "read-only fact projection" },
+	list_failed_transcriptions: { boundary: 'read', security: "returns bounded app-owned retry metadata without audio bytes or transcript text" },
 	list_mcp_prompts: { boundary: 'execute', security: "user-driven prompt discovery; enabled live target binding; no model callable surface" },
 	list_mcp_resource_templates: { boundary: 'execute', security: "user-driven template discovery; enabled live target binding; bounded opaque URI templates" },
 	list_mcp_resources: { boundary: 'execute', security: "explicit host discovery; enabled live target binding; bounded opaque resource metadata" },
@@ -12618,6 +12661,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	reset_tool_circuits: { boundary: 'mutate', security: "clears local circuit state only" },
 	resolve_confirmation: { boundary: 'mutate', security: "owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending" },
 	respond_mcp_feature_input: { boundary: 'execute', security: "explicit user response to a bounded form request; enabled live target binding; schema-validated answers" },
+	retry_failed_transcription: { boundary: 'execute', security: "canonical file identity selects only an app-owned retained recording and reuses its capture-time session target" },
 	review_fact_proposal: { boundary: 'mutate', security: "canonical fprop ID; one-shot transactional accept/reject" },
 	revoke_permission: { boundary: 'mutate', security: "non-empty exact permanent key; session grants are retained" },
 	revoke_session_permission: { boundary: 'mutate', security: "non-empty session id and capability; removes one session grant" },
@@ -12627,6 +12671,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	search_session_history_filtered: { boundary: 'read', security: "bounded page and date-filtered projection" },
 	set_hotkey_capture_active: { boundary: 'mutate', security: "transient renderer key-capture state only; not persisted" },
 	set_reasoning_effort: { boundary: 'mutate', security: "request kind selects the assigned model; validated before config save" },
+	set_recording_target_session: { boundary: 'mutate', security: "validated transient session target for the next app-owned capture; monotonic revision rejects stale renderer updates" },
 	set_session_execution_mode: { boundary: 'mutate', security: "canonical session id; binds one execution preset to that session" },
 	set_session_execution_workspace: { boundary: 'mutate', security: "canonical session id; local directory is validated and bound to that session" },
 	set_skill_enabled: { boundary: 'mutate', security: "AuthorizationPort; typed native admin operation persists the toggle" },

@@ -187,3 +187,143 @@ async fn cancellation_cannot_take_a_claimed_schedule_execution() {
         ScheduleRunStatus::Running
     );
 }
+
+#[tokio::test]
+async fn restart_requeues_unclaimed_occurrences_with_their_stable_identity() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let owner = db.create_session("unclaimed schedule restart").unwrap();
+    let store = ScheduleStore::new(db);
+    let plan = store
+        .create(tool_plan(owner.session_id, timestamp(1_800_000_000)))
+        .await
+        .unwrap();
+    let first = store
+        .claim_due(timestamp(1_800_000_001), 1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+
+    let recovered = store
+        .recover_interrupted(timestamp(1_800_000_002))
+        .await
+        .unwrap();
+    assert_eq!(recovered.requeued_before_execution, 1);
+    assert_eq!(recovered.failed_with_unknown_outcome, 0);
+    let waiting = store
+        .get_run(first.run.schedule_run_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.status, ScheduleRunStatus::Waiting);
+    assert!(
+        waiting
+            .error_reason
+            .as_deref()
+            .unwrap()
+            .contains("safe to retry")
+    );
+
+    let retried = store
+        .claim_due(timestamp(1_800_000_003), 1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(retried.run.schedule_run_id, first.run.schedule_run_id);
+    assert_eq!(retried.plan.schedule_id, plan.schedule_id);
+}
+
+#[tokio::test]
+async fn restart_marks_claimed_occurrences_unknown_and_never_replays_them() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let owner = db.create_session("claimed schedule restart").unwrap();
+    let store = ScheduleStore::new(db);
+    let plan = store
+        .create(tool_plan(owner.session_id, timestamp(1_800_000_000)))
+        .await
+        .unwrap();
+    let fired = store
+        .claim_due(timestamp(1_800_000_001), 1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(
+        store
+            .claim_execution(
+                fired.run.schedule_run_id.clone(),
+                fired.run.schedule_run_id.clone(),
+            )
+            .await
+            .unwrap()
+    );
+
+    let recovered = store
+        .recover_interrupted(timestamp(1_800_000_002))
+        .await
+        .unwrap();
+    assert_eq!(recovered.requeued_before_execution, 0);
+    assert_eq!(recovered.failed_with_unknown_outcome, 1);
+    let failed = store
+        .get_run(fired.run.schedule_run_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(failed.status, ScheduleRunStatus::Failed);
+    let reason = failed.error_reason.unwrap();
+    assert!(reason.contains("outcome is unknown"));
+    assert!(reason.contains("automatic retry suppressed"));
+    assert!(store.list_enabled().await.unwrap().is_empty());
+    assert!(
+        store
+            .claim_due(timestamp(1_800_000_003), 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(plan.schedule_id, fired.plan.schedule_id);
+}
+
+#[tokio::test]
+async fn restart_requeues_the_same_recurring_occurrence_before_execution() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let owner = db.create_session("recurring restart owner").unwrap();
+    let store = ScheduleStore::new(db);
+    let plan = store
+        .create(SchedulePlanInput {
+            owner_session_id: owner.session_id,
+            schedule_type: ScheduleType::RecurringSession,
+            title: "Recurring restart test".into(),
+            body: "Create one session".into(),
+            mode: ScheduleMode::NewSession,
+            due_at: Some(timestamp(1_800_000_000)),
+            watch_tool_run_id: None,
+            tool_name: None,
+            tool_args: None,
+            prompt: Some("Review the notes".into()),
+            interval_seconds: Some(3_600),
+        })
+        .await
+        .unwrap();
+    let first = store
+        .claim_due(timestamp(1_800_000_001), 1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+
+    let recovered = store
+        .recover_interrupted(timestamp(1_800_000_002))
+        .await
+        .unwrap();
+    assert_eq!(recovered.requeued_before_execution, 1);
+    let retried = store
+        .claim_due(timestamp(1_800_000_003), 1)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(retried.run.schedule_run_id, first.run.schedule_run_id);
+    assert_eq!(retried.plan.schedule_id, plan.schedule_id);
+}

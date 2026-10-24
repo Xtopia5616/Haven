@@ -160,6 +160,52 @@ describe('submitTranscript', () => {
 		expect(messagesFor(SESSION_DRAFT)[0].content).toBe('延迟中的发送');
 	});
 
+	it('routes a late voice transcript to its capture-time session without switching the UI back', async () => {
+		invokeMock.mockResolvedValue(supplemented(SESSION_A));
+		select(SESSION_A);
+		const capturedSelectionVersion = reducer.currentUserSelectionVersion();
+		reducer.beginUserSelection();
+		select(SESSION_B);
+
+		await submitTranscript('captured in A', {
+			voice: true,
+			recordingId: 'rec-00000000000000000000000000000001',
+			voiceTarget: { sessionId: SESSION_A, selectionVersion: capturedSelectionVersion },
+		});
+
+		expect(invoke).toHaveBeenCalledWith(
+			'submit_transcript',
+			expect.objectContaining({ activeSessionId: SESSION_A }),
+		);
+		expect(messagesFor(SESSION_A)[0].content).toBe('captured in A');
+		expect(reducer.snapshot().activeSessionId).toBe(SESSION_B);
+	});
+
+	it('keeps a capture-time fresh-session target when the user switches before transcription ends', async () => {
+		invokeMock.mockResolvedValue({
+			SessionCreated: {
+				session_id: SESSION_DRAFT,
+				message_id: 'msg-000001187bdf63db7309fc558e38e38e',
+			},
+		});
+		const capturedSelectionVersion = reducer.currentUserSelectionVersion();
+		reducer.beginUserSelection();
+		select(SESSION_B);
+
+		await submitTranscript('captured as a new conversation', {
+			voice: true,
+			recordingId: 'rec-00000000000000000000000000000002',
+			voiceTarget: { sessionId: null, selectionVersion: capturedSelectionVersion },
+		});
+
+		expect(invoke).toHaveBeenCalledWith(
+			'submit_transcript',
+			expect.objectContaining({ activeSessionId: null }),
+		);
+		expect(messagesFor(SESSION_DRAFT)[0].content).toBe('captured as a new conversation');
+		expect(reducer.snapshot().activeSessionId).toBe(SESSION_B);
+	});
+
 	it('passes the recording id so ingress STT usage can bind to the session', async () => {
 		invokeMock.mockResolvedValue({
 			SessionCreated: {

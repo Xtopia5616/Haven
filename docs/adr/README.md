@@ -1299,3 +1299,7 @@
 - [1393：Windows 发布 Gate 部分复验与开放项](1393-windows-release-gate-recheck.md)
 - [1394：将真实物理盘 ENOSPC 从本次发布 Gate 豁免](1394-waive-physical-enospc-from-current-release-gate.md)
 - [1395：将 Schedule 真实 UI 验收从本次发布 Gate 豁免](1395-waive-schedule-ui-from-current-release-gate.md)
+- [1396：ReAct 每次模型请求读取当前已发布配置代次](1396-use-latest-model-generation-per-react-request.md)
+- [1397：用稳定 durable cursor 补齐 UI 事件并隔离 rollback](1397-reconcile-durable-ui-events-with-rollback-fences.md)
+- [1398：Schedule handoff 以执行 claim 区分安全重试与结果未知](1398-schedule-handoff-recovery-outcome-boundary.md)
+- [1399：语音转写绑定录音目标并保留可重试源音频](1399-bind-voice-transcription-to-capture-and-retain-failures.md)

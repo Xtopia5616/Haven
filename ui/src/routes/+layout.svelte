@@ -5,7 +5,8 @@
 		updateReactExecutionPhase,
 	} from '$lib/reactExecutionPhaseStore.ts';
 	import { recordingOverlayController } from '$lib/recordingOverlayController.ts';
-	import { addNotification } from '$lib/notificationStore.ts';
+	import { syncRecordingTarget } from '$lib/recordingTarget.ts';
+	import { addActionNotification, addNotification } from '$lib/notificationStore.ts';
 	import {
 		isNotificationInAppEnabled,
 		onNotificationSettingsChanged,
@@ -23,7 +24,7 @@
 		cancelToolRun,
 		finalizeBackgroundToolRunMessages,
 	} from '$lib/toolRunStore.ts';
-	import { sessionResumeTargetStore } from '$lib/sessionIntentStore.ts';
+	import { newSessionIntentStore, sessionResumeTargetStore } from '$lib/sessionIntentStore.ts';
 	import { appSessionReducer, createSessionSelectorStore } from '$lib/sessionReducer.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
@@ -603,8 +604,26 @@
 	let activeSessionId = $state(appSessionReducer.snapshot().activeSessionId);
 	let runEndNotice = $state(appSessionReducer.snapshot().runEndNotice);
 	let interactionDict = $state(appSessionReducer.snapshot().interactions);
+	let freshStartIntent = $state(get(newSessionIntentStore));
 	$effect(() => syncStore(sessionsStore, (v) => (sessions = v)));
 	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
+	$effect(() => syncStore(newSessionIntentStore, (v) => (freshStartIntent = v)));
+	$effect(() => {
+		if (isTauri()) {
+			// Read reactive selection values to schedule this sync after each
+			// session/fresh-start change. The shared helper owns revision ordering
+			// and snapshots the reducer's canonical target.
+			void activeSessionId;
+			void freshStartIntent;
+			syncRecordingTarget().catch((error) => {
+					reportError(error, {
+						context: '+layout',
+						message: '语音录音目标同步失败',
+						log: false,
+					});
+			});
+		}
+	});
 	$effect(() => syncStore(runEndNoticeStore, (v) => (runEndNotice = v)));
 	$effect(() => syncStore(interactionsStore, (v) => (interactionDict = v)));
 	const activeSessionStatusLabel = $derived(
@@ -626,6 +645,28 @@
 	const taskCenterVisible = $derived(
 		activeTab === 'memory' && $page.url.searchParams.get('section') === 'tasks',
 	);
+
+	async function retryFailedTranscription(retryFileId: string) {
+		try {
+			await invoke('retry_failed_transcription', { retryFileId });
+			addNotification('已重新提交语音转写', 'info', 2500);
+		} catch (error) {
+			addActionNotification('原录音仍已保留，可再次重试', 'error', '重试转写', () =>
+				retryFailedTranscription(retryFileId),
+			);
+			reportError(error, {
+				context: '+layout',
+				message: '语音转写重试失败',
+				log: false,
+			});
+		}
+	}
+
+	function showFailedTranscription(retryFileId: string, message = '语音转写失败，原录音已保留') {
+		addActionNotification(message, 'error', '重试转写', () =>
+			retryFailedTranscription(retryFileId),
+		);
+	}
 
 	// Permission confirmations belong to the application shell, not the chat
 	// page. The chat page is kept mounted but hidden when another workspace is
@@ -814,6 +855,22 @@
 		});
 		runtime = isTauri() ? 'tauri' : 'browser';
 		if (isTauri()) {
+			void invoke('list_failed_transcriptions')
+				.then((pending) => {
+					for (const recording of pending) {
+						showFailedTranscription(
+							recording.retryFileId,
+							'有一条语音转写未完成，原录音仍已保留',
+						);
+					}
+				})
+				.catch((error) =>
+					reportError(error, {
+						context: '+layout',
+						message: '读取待重试语音失败',
+						log: false,
+					}),
+				);
 			listBuiltinToolManifests()
 				.then((result) => setToolManifests(result?.tools))
 				.catch((error) =>
@@ -920,11 +977,23 @@
 						recordingOverlayController.onTranscriptionFinished(data.recordingId);
 						const text = (data.text || '').trim();
 						if (text) {
-							// Same path as a typed message (see `submitVoiceTranscript`):
-							// appends the voice message, submits with the current
-							// `activeSessionId`, and migrates the message into the session if
-							// the backend created a fresh one.
-							submitVoiceTranscript(text, data.recordingId).catch((e) => {
+							// Submit into the session captured at recording start. A slow STT
+							// request must not follow a later session switch.
+							submitVoiceTranscript(
+								text,
+								data.recordingId,
+								{
+									sessionId: data.targetSessionId,
+									selectionVersion: data.selectionVersion,
+								},
+								data.retryFileId,
+							).catch((e) => {
+								if (data.retryFileId) {
+									showFailedTranscription(
+										data.retryFileId,
+										'语音未能写入会话，原录音已保留',
+									);
+								}
 								reportError(e, {
 									context: '+layout',
 									message: '语音提交失败',
@@ -938,6 +1007,12 @@
 							if (durationMs > 0 && durationMs < 1000) {
 								addNotification('录音时间太短，请再试一次', 'warning', 3000);
 							} else {
+								if (data.retryFileId) {
+									showFailedTranscription(
+										data.retryFileId,
+										'未检测到语音，原录音仍已保留，可重试',
+									);
+								}
 								addNotification('未检测到语音，请再试一次', 'error', 4000);
 							}
 						}
@@ -949,6 +1024,9 @@
 							'error',
 							5000,
 						);
+						if (data.retryFileId) {
+							showFailedTranscription(data.retryFileId, `${data.error}（原录音已保留）`);
+						}
 						recordingOverlayController.onTranscriptionFinished(data.recordingId);
 					},
 				}),

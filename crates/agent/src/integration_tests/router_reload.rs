@@ -1,6 +1,7 @@
 use super::support::*;
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, Weak};
 
 struct GenerationClient {
     label: &'static str,
@@ -212,5 +213,144 @@ async fn router_reload_reaches_title_inference_prompt_recall_and_index() {
         .unwrap();
     assert!(agent.memory_worker.fast_chat_for_test().await.is_err());
     assert_eq!(client_b.embeddings.load(Ordering::SeqCst), 3);
+    agent.shutdown_background_tasks().await;
+}
+
+struct SwapRouterDuringTool {
+    agent: Arc<Mutex<Option<Weak<AgentLayer>>>>,
+    next_router: Arc<LlmRouter>,
+}
+
+#[async_trait]
+impl Tool for SwapRouterDuringTool {
+    fn name(&self) -> String {
+        "swap_model_generation".into()
+    }
+
+    fn description(&self) -> String {
+        "Publishes the next model generation during a ReAct run".into()
+    }
+
+    fn risk_level(&self, _: &serde_json::Value) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn execute(
+        &self,
+        _: serde_json::Value,
+        _: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let agent = self
+            .agent
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .expect("test agent is installed before the ReAct run");
+        agent.replace_router_for_test(self.next_router.clone())?;
+        Ok(ToolResult::ok(serde_json::json!({"published": true})))
+    }
+}
+
+fn tool_call_response(name: &str, id: &str, text: &str) -> ScriptedResponse {
+    ScriptedResponse::Chunk(StreamChunk {
+        tool_call_updates: Vec::new(),
+        text: Some(text.into()),
+        tool_calls: vec![CanonicalToolCall {
+            tool_call_id: id.into(),
+            name: name.into(),
+            arguments: serde_json::json!({}),
+        }],
+        finish_reason: Some(FinishReason::ToolCalls),
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+    })
+}
+
+#[tokio::test]
+async fn one_react_run_uses_the_latest_model_generation_for_each_request() {
+    let client_a = Arc::new(ScriptedMock::new(vec![tool_call_response(
+        "swap_model_generation",
+        "switch-generation",
+        "Publishing the next model generation.",
+    )]));
+    let client_b = Arc::new(ScriptedMock::new(vec![tool_call_response(
+        "final_answer",
+        "finish-with-latest-generation",
+        "Answered with the latest model generation.",
+    )]));
+    let router_a = Arc::new(LlmRouter::new_with_test_clients(
+        client_a.clone(),
+        client_a.clone(),
+        client_a.clone(),
+        client_a.clone(),
+    ));
+    let router_b = Arc::new(LlmRouter::new_with_test_clients(
+        client_b.clone(),
+        client_b.clone(),
+        client_b.clone(),
+        client_b.clone(),
+    ));
+    let database = Arc::new(Database::open_in_memory().unwrap());
+    let tools = Arc::new(ToolsFacade::new());
+    let agent_slot = Arc::new(Mutex::new(None));
+    tools
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(SwapRouterDuringTool {
+            agent: agent_slot.clone(),
+            next_router: router_b,
+        }) as ToolHandle)
+        .await
+        .unwrap();
+    let executor = Arc::new(SessionSupervisor::new_for_test(
+        database.clone(),
+        tools.clone(),
+        1,
+    ));
+    let limits = ContextLimitsConfig::default();
+    let memory = memory_service_for_test(database, router_a.clone(), &limits);
+    let startup = AgentLayer::build(
+        memory,
+        executor.clone(),
+        crate::AgentToolPorts::from_tools_facade(tools),
+        router_a,
+        10,
+        20,
+        limits,
+    );
+    let agent = Arc::new(startup.agent);
+    *agent_slot.lock().unwrap() = Some(Arc::downgrade(&agent));
+    agent.set_emitter(make_recording_emitter());
+    let session = executor
+        .create_session("model configuration changes mid-run")
+        .await
+        .unwrap();
+
+    agent
+        .run_session_from_id(&session.session_id)
+        .await
+        .unwrap();
+
+    assert_eq!(client_a.seen.lock().unwrap().len(), 1);
+    assert_eq!(
+        client_b.seen.lock().unwrap().len(),
+        1,
+        "the next request in the same active ReAct run must capture the newly published generation"
+    );
+    assert_eq!(
+        executor
+            .get_active_session_status(&session.session_id)
+            .await,
+        Some(SessionStatus::Paused)
+    );
     agent.shutdown_background_tasks().await;
 }

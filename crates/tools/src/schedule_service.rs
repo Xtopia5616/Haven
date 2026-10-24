@@ -63,6 +63,7 @@ impl From<ScheduleRunFired> for ScheduleRunTriggered {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScheduleRestoreSummary {
     pub interrupted_runs_marked_failed: usize,
+    pub interrupted_runs_requeued: usize,
 }
 
 /// Owns Schedule plans, trigger polling, durable execution claims, and fired
@@ -208,7 +209,7 @@ impl ScheduleService {
         }
 
         let store = self.require_store().await?;
-        let interrupted_runs_marked_failed = store.fail_interrupted(timestamp_now()).await?;
+        let recovery = store.recover_interrupted(timestamp_now()).await?;
         let service = Arc::clone(self);
         lifecycle.task = Some(tokio::spawn(async move {
             service.run_scheduler(store).await;
@@ -216,7 +217,8 @@ impl ScheduleService {
         lifecycle.restore_complete = true;
 
         Ok(ScheduleRestoreSummary {
-            interrupted_runs_marked_failed,
+            interrupted_runs_marked_failed: recovery.failed_with_unknown_outcome,
+            interrupted_runs_requeued: recovery.requeued_before_execution,
         })
     }
 
@@ -272,15 +274,39 @@ impl ScheduleService {
             };
             for occurrence in fired {
                 let occurrence = ScheduleRunTriggered::from(occurrence);
-                let sent = tokio::select! {
-                    _ = self.cancellation.cancelled() => return,
-                    result = self.fired_tx.send(occurrence) => result,
-                };
-                if sent.is_err() {
+                if !self.send_triggered(occurrence).await {
+                    if !self.cancellation.is_cancelled() {
+                        self.recover_unaccepted_runs(&store).await;
+                    }
                     tracing::warn!("Schedule fired receiver was dropped; stopping trigger worker");
                     return;
                 }
             }
+        }
+    }
+
+    /// Backpressure the poller when the bounded fired queue is full. A
+    /// cancelled send leaves the durable occurrence unexecuted and startup
+    /// recovery can retry it unless an execution claim was persisted.
+    async fn send_triggered(&self, occurrence: ScheduleRunTriggered) -> bool {
+        tokio::select! {
+            _ = self.cancellation.cancelled() => false,
+            result = self.fired_tx.send(occurrence) => result.is_ok(),
+        }
+    }
+
+    async fn recover_unaccepted_runs(&self, store: &ScheduleStore) {
+        match store.recover_interrupted(timestamp_now()).await {
+            Ok(summary) if summary != Default::default() => tracing::warn!(
+                requeued = summary.requeued_before_execution,
+                outcome_unknown = summary.failed_with_unknown_outcome,
+                "recovered Schedule occurrences after trigger consumer exit"
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::error!(
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to recover Schedule occurrences after trigger consumer exit"
+            ),
         }
     }
 }
@@ -290,11 +316,12 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::{SecondsFormat, TimeZone, Utc};
+    use haven_common::lifecycle::ScheduleRunStatus;
     use haven_common::schedule::ScheduleMode;
     use haven_memory::{Database, SchedulePlanInput, ScheduleStore, ScheduleType};
     use tokio::sync::Barrier;
 
-    use super::ScheduleService;
+    use super::{ScheduleService, test_triggered};
 
     fn timestamp(seconds: i64) -> String {
         Utc.timestamp_opt(seconds, 0)
@@ -341,6 +368,7 @@ mod tests {
         let summary = service.restore().await.unwrap();
 
         assert_eq!(summary.interrupted_runs_marked_failed, 0);
+        assert_eq!(summary.interrupted_runs_requeued, 0);
         assert_eq!(
             store
                 .get_run(schedule_run_id)
@@ -376,7 +404,9 @@ mod tests {
         let (first_summary, second_summary, ()) = tokio::join!(first, second, release);
 
         assert_eq!(first_summary.interrupted_runs_marked_failed, 0);
+        assert_eq!(first_summary.interrupted_runs_requeued, 0);
         assert_eq!(second_summary.interrupted_runs_marked_failed, 0);
+        assert_eq!(second_summary.interrupted_runs_requeued, 0);
         assert_eq!(
             store
                 .get_run(schedule_run_id)
@@ -387,6 +417,128 @@ mod tests {
             haven_common::lifecycle::ScheduleRunStatus::Running
         );
         service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_full_fired_queue_backpressures_and_rejects_after_consumer_exit() {
+        let service = Arc::new(ScheduleService::new());
+        let receiver = service.take_fired_receiver().unwrap();
+        for _ in 0..super::FIRED_CHANNEL_CAPACITY {
+            service
+                .fired_tx
+                .try_send(test_triggered())
+                .expect("the bounded test queue should accept exactly its capacity");
+        }
+        assert_eq!(receiver.capacity(), 0);
+
+        let sender_service = service.clone();
+        let pending_send =
+            tokio::spawn(async move { sender_service.send_triggered(test_triggered()).await });
+        tokio::task::yield_now().await;
+        assert!(
+            !pending_send.is_finished(),
+            "a full queue must hold the poller at bounded backpressure"
+        );
+        drop(receiver);
+        assert!(!pending_send.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn consumer_exit_requeues_claimed_but_unaccepted_occurrences() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let owner = db.create_session("schedule consumer exit owner").unwrap();
+        let store = ScheduleStore::new(db);
+        store
+            .create(SchedulePlanInput {
+                owner_session_id: owner.session_id,
+                schedule_type: ScheduleType::Once,
+                title: "Retry after consumer exit".into(),
+                body: "No execution claim was written".into(),
+                mode: ScheduleMode::Tool,
+                due_at: Some(timestamp(1_900_000_000)),
+                watch_tool_run_id: None,
+                tool_name: Some("notify".into()),
+                tool_args: Some(serde_json::json!({})),
+                prompt: None,
+                interval_seconds: None,
+            })
+            .await
+            .unwrap();
+        let mut claimed = store.claim_due(timestamp(1_900_000_001), 1).await.unwrap();
+        let occurrence_id = claimed.pop().unwrap().run.schedule_run_id;
+        let service = ScheduleService::new();
+
+        service.recover_unaccepted_runs(&store).await;
+
+        let recovered = store.get_run(occurrence_id.clone()).await.unwrap().unwrap();
+        assert_eq!(recovered.schedule_run_id, occurrence_id);
+        assert_eq!(recovered.status, ScheduleRunStatus::Waiting);
+        assert!(recovered.error_reason.unwrap().contains("safe to retry"));
+    }
+
+    #[tokio::test]
+    async fn dropped_fired_receiver_recovers_the_occurrence_from_the_scheduler_loop() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let owner = db
+            .create_session("dropped Schedule consumer owner")
+            .unwrap();
+        let store = ScheduleStore::new(db);
+        let due_at = timestamp(chrono::Utc::now().timestamp() - 1);
+        let plan = store
+            .create(SchedulePlanInput {
+                owner_session_id: owner.session_id,
+                schedule_type: ScheduleType::Once,
+                title: "Recover a dropped trigger".into(),
+                body: "No consumer accepted this occurrence".into(),
+                mode: ScheduleMode::Tool,
+                due_at: Some(due_at),
+                watch_tool_run_id: None,
+                tool_name: Some("notify".into()),
+                tool_args: Some(serde_json::json!({})),
+                prompt: None,
+                interval_seconds: None,
+            })
+            .await
+            .unwrap();
+        let service = Arc::new(ScheduleService::new());
+        service.set_store(Some(store.clone())).await;
+        drop(service.take_fired_receiver().unwrap());
+        service.restore().await.unwrap();
+
+        let recovered = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let run = store
+                    .get_run(plan.active_schedule_run_id.clone().unwrap())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if run.status == ScheduleRunStatus::Waiting && run.error_reason.is_some() {
+                    break run;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the scheduler should recover after its fired receiver exits");
+
+        assert!(recovered.error_reason.unwrap().contains("safe to retry"));
+        service.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+fn test_triggered() -> ScheduleRunTriggered {
+    ScheduleRunTriggered {
+        schedule_run_id: haven_common::types::new_id("schrun"),
+        schedule_id: haven_common::types::new_id("sched"),
+        session_id: None,
+        title: "queue pressure fixture".into(),
+        body: "queue pressure fixture".into(),
+        mode: ScheduleMode::Tool,
+        tool_name: Some("notify".into()),
+        tool_args: Some(serde_json::json!({})),
+        prompt: None,
+        watched_tool_run: None,
     }
 }
 

@@ -1475,6 +1475,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cleanup_preserves_durable_reference_after_registry_restart() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let batch = root.path().join("file-0123456789abcdef0123456789abcdef");
+        let file = batch.join("recovered.txt");
+        tokio::fs::create_dir_all(&batch).await.unwrap();
+        tokio::fs::write(&file, "durable reference").await.unwrap();
+
+        // A new process has an empty registry. The persisted message path is
+        // still sufficient to protect a referenced upload from collection.
+        let removed = cleanup_unreferenced_upload_batches(
+            root.path().to_path_buf(),
+            haven_tools::ManagedAssetRegistry::default(),
+            vec![file.clone()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(removed, 0);
+        assert!(file.exists());
+    }
+
+    #[tokio::test]
     async fn test_cleanup_preserves_active_session_lease_without_message_reference() {
         use tempfile::TempDir;
 

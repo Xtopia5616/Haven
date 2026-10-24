@@ -238,10 +238,11 @@ foreach ($file in $uiFiles) {
 # route/infrastructure modules may invoke only commands whose full lifecycle or
 # policy they already own.
 $ownedCommands = @{
-    '+layout.svelte' = @('get_bootstrap_status', 'check_llm_connection', 'resolve_confirmation')
+    '+layout.svelte' = @('get_bootstrap_status', 'check_llm_connection', 'resolve_confirmation', 'retry_failed_transcription', 'list_failed_transcriptions')
     'errorHandling.ts' = @('log_frontend_error')
     'externalCommands.ts' = @('open_external')
     'recordingOverlayController.ts' = @('start_recording', 'stop_recording', 'cancel_recording')
+    'recordingTarget.ts' = @('set_recording_target_session')
     'scheduleCommands.ts' = @('list_schedules', 'cancel_schedule')
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
     'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource', 'respond_mcp_feature_input', 'cancel_mcp_feature_input', 'list_mcp_prompts', 'get_mcp_prompt', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')

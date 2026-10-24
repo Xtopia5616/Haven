@@ -1041,10 +1041,14 @@ impl AgentLayer {
                     result = schedules.restore() => result,
                 };
                 match restore_result {
-                    Ok(summary) if summary.interrupted_runs_marked_failed > 0 => {
+                    Ok(summary)
+                        if summary.interrupted_runs_marked_failed > 0
+                            || summary.interrupted_runs_requeued > 0 =>
+                    {
                         tracing::info!(
                             interrupted_runs_marked_failed = summary.interrupted_runs_marked_failed,
-                            "marked interrupted ScheduleRun occurrences as failed"
+                            interrupted_runs_requeued = summary.interrupted_runs_requeued,
+                            "recovered interrupted ScheduleRun occurrences"
                         );
                     }
                     Ok(_) => {}

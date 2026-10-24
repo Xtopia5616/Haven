@@ -10,8 +10,8 @@ mod schedule_store_db;
 mod schedule_store_types;
 
 pub use schedule_store_types::{
-    SchedulePlanInput, SchedulePlanRow, ScheduleRunFired, ScheduleRunRow, ScheduleType,
-    WatchedToolRunResult,
+    SchedulePlanInput, SchedulePlanRow, ScheduleRecoverySummary, ScheduleRunFired, ScheduleRunRow,
+    ScheduleType, WatchedToolRunResult,
 };
 
 use std::sync::Arc;
@@ -133,11 +133,14 @@ impl ScheduleStore {
             .await
     }
 
-    /// Mark prior-process in-flight occurrences failed; executing side effects
-    /// are never replayed after a crash.
-    pub async fn fail_interrupted(&self, finished_at: String) -> anyhow::Result<usize> {
+    /// Recover prior-process occurrences. Rows without an execution claim are
+    /// safely requeued with the same ID; claimed rows fail closed as unknown.
+    pub async fn recover_interrupted(
+        &self,
+        finished_at: String,
+    ) -> anyhow::Result<ScheduleRecoverySummary> {
         self.db
-            .run_blocking(move |db| db.fail_interrupted_schedule_runs(&finished_at))
+            .run_blocking(move |db| db.recover_interrupted_schedule_runs(&finished_at))
             .await
     }
 }

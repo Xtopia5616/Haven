@@ -542,6 +542,7 @@ describe('recordingEventListeners', () => {
 					recording_id: 'rec-740e8385526b3df7e1871ffaa127850a',
 					text: 'hello',
 					duration_ms: 800,
+					selection_version: 1,
 				},
 			},
 		] as const;

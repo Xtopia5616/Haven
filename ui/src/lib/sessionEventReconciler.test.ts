@@ -57,4 +57,25 @@ describe('session event reconciler', () => {
 		await vi.advanceTimersByTimeAsync(2_000);
 		expect(reconcile).toHaveBeenCalledTimes(2);
 	});
+
+	it('rechecks immediately when the focused window becomes visible', async () => {
+		let visible = false;
+		const reconcile = vi.fn(async () => {});
+		const reconciler = createSessionEventReconciler({
+			getActiveSessionId: () => 'ses-00000000000000000000000000000003',
+			isVisible: () => visible,
+			reconcile,
+			intervalMs: 60_000,
+		});
+		reconciler.start();
+
+		visible = true;
+		window.dispatchEvent(new Event('focus'));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(reconcile).toHaveBeenCalledExactlyOnceWith(
+			'ses-00000000000000000000000000000003',
+		);
+		reconciler.dispose();
+	});
 });
