@@ -45,7 +45,6 @@ const ACTOR_RELEASE_CAPACITY: usize = 1;
 /// apply to answers because an ask reply is still a user-owned follow-up.
 pub(crate) const CONTEXT_QUEUE_MAX_ITEMS: usize = 64;
 pub(crate) const CONTEXT_QUEUE_MAX_CHARS: usize = 64 * 1024;
-pub(crate) const CONTEXT_ITEM_MAX_CHARS: usize = 8 * 1024;
 pub(crate) const CONTEXT_ITEM_MAX_ATTACHMENTS: usize = 8;
 pub(crate) const CONTEXT_ITEM_MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const CONTEXT_QUEUE_MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
@@ -1613,7 +1612,7 @@ fn queue_follow_up(
     is_answer: bool,
     message_id: Option<String>,
 ) -> anyhow::Result<()> {
-    validate_context_item(&text, &attachments)?;
+    validate_context_attachments(&attachments)?;
     if let Some(mid) = message_id.as_deref()
         && state
             .follow_up_queue
@@ -1648,7 +1647,7 @@ fn queue_steering(
     attachments: Vec<MessageAttachment>,
     message_id: Option<String>,
 ) -> anyhow::Result<()> {
-    validate_context_item(&text, &attachments)?;
+    validate_context_attachments(&attachments)?;
     if let Some(mid) = message_id.as_deref()
         && state
             .steering_queue
@@ -1681,7 +1680,7 @@ fn enqueue_tool_run_result(
     tool_run_result_id: String,
     text: String,
 ) -> anyhow::Result<()> {
-    validate_context_item(&text, &[])?;
+    validate_context_attachments(&[])?;
     if queue
         .iter()
         .any(|item| item.tool_run_result_id == tool_run_result_id)
@@ -1705,14 +1704,7 @@ fn attachment_bytes(attachments: &[MessageAttachment]) -> usize {
         .sum()
 }
 
-fn validate_context_item(text: &str, attachments: &[MessageAttachment]) -> anyhow::Result<()> {
-    let chars = text.chars().count();
-    if chars > CONTEXT_ITEM_MAX_CHARS {
-        anyhow::bail!(
-            "context item exceeds {} characters; input was retained by durable ingress and must be retried",
-            CONTEXT_ITEM_MAX_CHARS
-        );
-    }
+fn validate_context_attachments(attachments: &[MessageAttachment]) -> anyhow::Result<()> {
     if attachments.len() > CONTEXT_ITEM_MAX_ATTACHMENTS {
         anyhow::bail!(
             "context item exceeds {} attachments; input was retained by durable ingress and must be retried",
@@ -1753,7 +1745,10 @@ fn ensure_queue_capacity(
             CONTEXT_QUEUE_MAX_ITEMS
         );
     }
-    if chars.saturating_add(new_chars) > CONTEXT_QUEUE_MAX_CHARS {
+    // Let one large item enter an otherwise empty queue. The aggregate cap
+    // still applies as soon as there is backlog, while large user inputs are
+    // no longer rejected only because they exceed the normal queue budget.
+    if (item_count > 0 || chars > 0) && chars.saturating_add(new_chars) > CONTEXT_QUEUE_MAX_CHARS {
         anyhow::bail!(
             "{kind} queue exceeds {} characters; input was retained by durable ingress and is deferred",
             CONTEXT_QUEUE_MAX_CHARS
@@ -1776,8 +1771,13 @@ struct ContextBatchBudget {
 }
 
 fn fits_budget(budget: &ContextBatchBudget, chars: usize, attachment_bytes: usize) -> bool {
+    // A single item may exceed the normal text batch budget. Without this
+    // exception it would remain at the queue head forever and never be
+    // delivered. The queue capacity still bounds the surrounding backlog.
+    let text_fits =
+        budget.chars.saturating_add(chars) <= CONTEXT_BATCH_MAX_CHARS || budget.items == 0;
     budget.items < CONTEXT_BATCH_MAX_ITEMS
-        && budget.chars.saturating_add(chars) <= CONTEXT_BATCH_MAX_CHARS
+        && text_fits
         && budget.attachment_bytes.saturating_add(attachment_bytes)
             <= CONTEXT_BATCH_MAX_ATTACHMENT_BYTES
 }
@@ -2496,18 +2496,24 @@ mod queue_tests {
     }
 
     #[test]
-    fn oversized_items_are_rejected_without_truncation() {
+    fn large_context_items_are_accepted_and_drained_alone() {
         let mut state = empty_state();
-        let error = queue_follow_up(
-            &mut state,
-            "x".repeat(CONTEXT_ITEM_MAX_CHARS + 1),
-            Vec::new(),
-            false,
-            None,
-        )
-        .expect_err("oversized input must apply back-pressure");
-        assert!(error.to_string().contains("retained"));
+        let text = "x".repeat(CONTEXT_QUEUE_MAX_CHARS + 1);
+        let result = queue_follow_up(&mut state, text.clone(), Vec::new(), false, None);
+        result.expect("a large input should fit when the queue is otherwise empty");
+        assert_eq!(state.follow_up_chars, text.chars().count());
+
+        let mut budget = ContextBatchBudget::default();
+        let taken = take_follow_ups(
+            &mut state.follow_up_queue,
+            &mut state.follow_up_chars,
+            &mut state.follow_up_attachment_bytes,
+            &mut budget,
+        );
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].text, text);
         assert!(state.follow_up_queue.is_empty());
+        assert_eq!(state.follow_up_chars, 0);
     }
 
     #[test]
