@@ -41,7 +41,7 @@ fn cancellation_observation(
 
 fn rejection_observation(tool_name: &str) -> String {
     format!(
-        "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+        "The user declined confirmation for operation '{}'. Ask what they want to do next; any new attempt needs fresh confirmation.",
         tool_name
     )
 }
@@ -1043,7 +1043,7 @@ impl ReActEngine {
                     request.status == crate::interaction::InteractionStatus::Expired
                 }) {
                     format!(
-                        "The operation '{}' was not executed because confirmation timed out. Do not retry it; ask the user to confirm again if it is still needed.",
+                        "Confirmation for operation '{}' expired before execution. Ask whether it is still needed and request fresh confirmation.",
                         planned.tool_call.tool_name
                     )
                 } else {
@@ -1224,7 +1224,8 @@ mod tests {
         let error = rejection_observation("shell");
 
         assert!(error.contains("shell"));
-        assert!(error.contains("Do NOT retry it"));
+        assert!(error.contains("declined confirmation"));
+        assert!(error.contains("fresh confirmation"));
     }
 
     #[tokio::test]

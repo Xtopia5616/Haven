@@ -170,7 +170,7 @@ impl ToolBatchState {
                 ToolOperationScope::Session => "session",
             };
             step_result.push_str(&format!(
-                "\n\n[needs_user_decision] This {scope}-scoped operation is not proven safe to replay (idempotency={idempotency:?}, error_class={error_class:?}). Do not retry it automatically; ask the user whether to verify or perform it again."
+                "\n\n[needs_user_decision] This {scope}-scoped operation has no proven safe replay path (idempotency={idempotency:?}, error_class={error_class:?}). Check its outcome and ask the user whether to verify it or perform it again."
             ));
         }
 

@@ -31,7 +31,7 @@ impl ToolAdmission for DefaultToolAdmission {
                 } else {
                     BeforeToolCallDecision::Block {
                         error: format!(
-                            "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                            "The user declined confirmation for operation '{}'. Ask what they want to do next; any new attempt needs fresh confirmation.",
                             request.tool_name
                         ),
                     }
@@ -53,7 +53,7 @@ impl ToolAdmission for DefaultToolAdmission {
                 }
                 AuthorizationDecision::Blocked { reason, .. } => BeforeToolCallDecision::Block {
                     error: format!(
-                        "operation '{}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                        "operation '{}' was blocked before execution by the security policy ({reason}). Explain the policy boundary and use an authorized capability, or ask the user whether they want to change that setting.",
                         request.tool_name
                     ),
                 },

@@ -586,7 +586,7 @@ impl SessionSupervisor {
                         success: false,
                         output: Value::Null,
                         error: Some(format!(
-                            "operation '{tool_name}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach."
+                            "operation '{tool_name}' was blocked before execution by the security policy ({reason}). Explain the policy boundary and use an authorized capability, or ask the user whether they want to change that setting."
                         )),
                         error_class: Some(haven_common::tools::ToolErrorClass::Permission),
                         retryability: haven_common::tools::ToolRetryability::NotRetryable,
@@ -624,7 +624,7 @@ impl SessionSupervisor {
                                 success: false,
                                 output: Value::Null,
                                 error: Some(format!(
-                                    "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                                    "The user declined confirmation for operation '{}'. Ask what they want to do next; any new attempt needs fresh confirmation.",
                                     tool_name
                                 )),
                                 error_class: Some(haven_common::tools::ToolErrorClass::Permission),
