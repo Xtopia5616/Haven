@@ -130,7 +130,6 @@
 	import { isCanonicalEntityId } from '$lib/contracts/wireGuards.ts';
 	import type { ReActExecutionPhaseSnapshot } from '$lib/reactExecutionPhaseStore.ts';
 
-	let chatPageEl = $state<HTMLElement | null>(null);
 	let composerRef = $state<{
 		setDraft: (text: string) => void;
 		appendDraft: (text: string) => void;
@@ -202,9 +201,7 @@
 	const hasPendingDelivery = $derived(
 		activeSessionMessages.some(
 			(message) =>
-				message.role === 'user' &&
-				!!message.deliveryMode &&
-				message.received !== true,
+				message.role === 'user' && !!message.deliveryMode && message.received !== true,
 		),
 	);
 	let activeSessionWorkingDocument = $state(
@@ -899,8 +896,8 @@
 		syncStore(sessionResumeTargetStore, (value) => sessionStartup.applyResumeTarget(value)),
 	);
 
-	// Measure the composer overlay and reserve the same clearance under messages.
-	$effect(() => chatViewController.observeComposerClearance(chatPageEl, browser));
+	// Preserve scroll-follow intent when the available reading area changes.
+	$effect(() => chatViewController.observeLayout(browser));
 
 	onMount(async () => {
 		executionWorkspaceStore.refresh();
@@ -1369,7 +1366,7 @@
 	);
 </script>
 
-<div class="chat-page responsive-layout-transition" bind:this={chatPageEl}>
+<div class="chat-page responsive-layout-transition">
 	<RollbackDialog
 		open={rollbackDialog.open}
 		stepNumber={rollbackDialog.stepNumber}
@@ -1573,13 +1570,13 @@
 			onsubmit={askInteraction.handleInputSubmit}
 			onstop={interruptOutput}
 		>
-			{#snippet toolbarLeft()}
+			{#snippet contextControls()}
 				<PendingInteractionsMenu
 					items={pendingInteractionItems}
 					onSelect={openPendingInteraction}
 				/>
 			{/snippet}
-			{#snippet toolbarRight()}
+			{#snippet modelControls()}
 				<ModelToolbar
 					{modelMenuOpen}
 					{currentModelName}
@@ -1676,8 +1673,7 @@
 		overflow-x: clip;
 		overscroll-behavior-x: none;
 		touch-action: pan-y;
-		padding: var(--md-sys-space-lg) var(--chat-inline-gutter)
-			calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-sm));
+		padding: var(--md-sys-space-lg) var(--chat-inline-gutter) var(--md-sys-space-sm);
 	}
 	:global(.messages-area.drag-scroll--active) {
 		cursor: grabbing;
@@ -1685,7 +1681,7 @@
 	.jump-bottom-anchor {
 		position: absolute;
 		right: var(--chat-inline-gutter);
-		bottom: calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-sm));
+		bottom: var(--md-sys-space-sm);
 		display: flex;
 		z-index: 5;
 		pointer-events: none;
@@ -1751,10 +1747,10 @@
 	@media screen and (max-height: 560px) {
 		.messages-area {
 			padding-top: var(--md-sys-space-sm);
-			padding-bottom: calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-sm));
+			padding-bottom: var(--md-sys-space-sm);
 		}
 		.jump-bottom-anchor {
-			bottom: calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-xs));
+			bottom: var(--md-sys-space-xs);
 		}
 	}
 

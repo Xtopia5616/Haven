@@ -34,7 +34,7 @@ describe('SessionTimeline', () => {
 		});
 
 		const prompt = '请把这段会议记录整理成摘要和待办清单。';
-		await fireEvent.click(screen.getByRole('button', { name: prompt }));
+		await fireEvent.click(screen.getByRole('button', { name: `整理内容 ${prompt}` }));
 		expect(onWelcomePrompt).toHaveBeenCalledTimes(1);
 		expect(onWelcomePrompt).toHaveBeenCalledWith(prompt);
 		expect(onConfigureModel).not.toHaveBeenCalled();
@@ -46,7 +46,13 @@ describe('SessionTimeline', () => {
 
 	it('renders the message timeline immediately when the first message arrives', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: '你好' }],
+			messages: [
+				{
+					id: 'msg-00000000000000000000000000000001',
+					role: 'user' as const,
+					content: '你好',
+				},
+			],
 		});
 
 		expect(document.querySelector('.message-list')).toBeTruthy();
@@ -91,7 +97,7 @@ describe('SessionTimeline', () => {
 				{
 					toolRunId: 'toolrun-00000000000000000000000000000001',
 					kind: 'background',
-						toolName: 'files.write',
+					toolName: 'files.write',
 					status: 'running',
 					sessionId: 'ses-00000000000000000000000000000001',
 					startedAt: '2026-10-03T03:00:00Z',
@@ -120,7 +126,13 @@ describe('SessionTimeline', () => {
 
 	it('passes through the continue handler for a user-tail conversation', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: '继续处理' }],
+			messages: [
+				{
+					id: 'msg-00000000000000000000000000000001',
+					role: 'user' as const,
+					content: '继续处理',
+				},
+			],
 			showContinueButton: true,
 		});
 
@@ -134,7 +146,13 @@ describe('SessionTimeline', () => {
 
 	it('removes the continue handler while it is unavailable', () => {
 		render(SessionTimeline, {
-			messages: [{ id: 'msg-00000000000000000000000000000001', role: 'user' as const, content: '继续处理' }],
+			messages: [
+				{
+					id: 'msg-00000000000000000000000000000001',
+					role: 'user' as const,
+					content: '继续处理',
+				},
+			],
 			showContinueButton: true,
 			continueDisabled: true,
 		});

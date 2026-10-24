@@ -66,8 +66,8 @@
 		allowEmptySubmit?: boolean;
 		onsubmit?: (payload: ComposerSubmitPayload) => void;
 		onstop?: () => void;
-		toolbarLeft?: Snippet;
-		toolbarRight?: Snippet;
+		contextControls?: Snippet;
+		modelControls?: Snippet;
 		maxImages?: number;
 		maxImageBytes?: number;
 		maxImageDim?: number;
@@ -97,8 +97,8 @@
 		allowEmptySubmit = false,
 		onsubmit = undefined,
 		onstop = undefined,
-		toolbarLeft = undefined,
-		toolbarRight = undefined,
+		contextControls = undefined,
+		modelControls = undefined,
 		// Attachment & compression limits, driven by the settings "媒体"
 		// page via [context_limits]; defaults mirror the backend config.
 		maxImages = 4,
@@ -781,32 +781,35 @@
 			class="md-input chat-input"
 			autocomplete="off"></textarea>
 	</div>
+	<div class="composer-context">
+		{@render contextControls?.()}
+		{#if deliveryModeAvailable && !hasPendingInteractions && !confirmationAwaiting && !askAwaiting}
+			<div
+				class="delivery-mode-group"
+				role="group"
+				aria-label="消息投递方式"
+				title={hasPendingDelivery ? '有待处理消息；送达后才能继续发送' : undefined}
+			>
+				<MaterialChoiceChip
+					label="安全边界调整"
+					selected={deliveryMode === 'steering'}
+					disabled={deliveryModeDisabled}
+					className="delivery-mode-chip"
+					onSelect={() => (deliveryMode = 'steering')}
+				/>
+				<MaterialChoiceChip
+					label="完成后追加"
+					selected={deliveryMode === 'follow_up'}
+					disabled={deliveryModeDisabled}
+					className="delivery-mode-chip"
+					onSelect={() => (deliveryMode = 'follow_up')}
+				/>
+			</div>
+		{/if}
+	</div>
 	<div class="toolbar-row md-toolbar">
 		<div class="toolbar-left">
-			{@render toolbarLeft?.()}
-			{#if deliveryModeAvailable && !hasPendingInteractions && !confirmationAwaiting && !askAwaiting}
-				<div
-					class="delivery-mode-group"
-					role="group"
-					aria-label="消息投递方式"
-					title={hasPendingDelivery ? '有待处理消息；送达后才能继续发送' : undefined}
-				>
-					<MaterialChoiceChip
-						label="安全边界调整"
-						selected={deliveryMode === 'steering'}
-						disabled={deliveryModeDisabled}
-						className="delivery-mode-chip"
-						onSelect={() => (deliveryMode = 'steering')}
-					/>
-					<MaterialChoiceChip
-						label="完成后追加"
-						selected={deliveryMode === 'follow_up'}
-						disabled={deliveryModeDisabled}
-						className="delivery-mode-chip"
-						onSelect={() => (deliveryMode = 'follow_up')}
-					/>
-				</div>
-			{/if}
+			{@render modelControls?.()}
 		</div>
 		<div class="toolbar-right">
 			<MaterialIconButton
@@ -831,7 +834,6 @@
 				icon={recordingState.isRecording ? 'pause' : 'mic'}
 				onclick={handleRecordClick}
 			></MaterialIconButton>
-			{@render toolbarRight?.()}
 			<MaterialIconButton
 				size="toolbar"
 				variant={stopMode ? 'danger' : 'primary'}
@@ -866,10 +868,7 @@
 		--md-comp-toolbar-height: var(--md-comp-button-small-height);
 		--md-comp-icon-button-size: var(--md-comp-toolbar-height);
 		--md-comp-toolbar-gap: clamp(var(--md-sys-space-xs), 1cqi, var(--md-sys-space-sm));
-		position: absolute;
-		left: 50%;
-		bottom: var(--md-sys-space-md);
-		transform: translateX(-50%);
+		position: relative;
 		z-index: 4;
 		background: transparent;
 		border: 1px solid var(--md-sys-color-outline-variant);
@@ -889,7 +888,7 @@
 			),
 			calc(100% - 2 * var(--chat-inline-gutter, var(--md-sys-space-md)))
 		);
-		margin: 0;
+		margin: 0 auto var(--md-sys-space-md);
 		width: 100%;
 		transition:
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
@@ -1057,10 +1056,10 @@
 		gap: var(--md-comp-toolbar-gap);
 		padding-inline: 0;
 		padding-top: var(--md-sys-space-xs);
-		border-top: 1px solid var(--md-sys-color-outline-variant);
+		border-top: 0;
 	}
 	.toolbar-left {
-		flex: 1 1 10rem;
+		flex: 1 1 0;
 		max-width: 100%;
 		min-width: 0;
 		flex-wrap: wrap;
@@ -1112,38 +1111,37 @@
 		color: var(--md-sys-color-on-primary-container);
 	}
 
-	@container conversation (max-width: 700px) {
-		.input-area {
-			padding-inline: var(--md-sys-space-md);
-		}
-		.toolbar-row {
-			align-items: flex-start;
-		}
-		.toolbar-left,
-		.toolbar-right {
-			flex: 1 1 auto;
-		}
-		.toolbar-right {
-			justify-content: flex-end;
-			margin-left: 0;
-		}
+	.composer-context:empty {
+		display: none;
+	}
+	.composer-context {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--md-sys-space-xs);
+	}
+	.delivery-mode-group {
+		flex-wrap: wrap;
 	}
 
 	@container conversation (max-width: 455px) {
-		.toolbar-left,
-		.toolbar-right {
-			width: 100%;
+		.input-area {
+			padding-inline: var(--md-sys-space-sm);
+		}
+		.toolbar-row {
+			gap: var(--md-sys-space-xs);
+		}
+		.toolbar-left {
+			flex: 1 1 0;
 		}
 		.toolbar-right {
-			/* Keep the four action buttons as one compact cluster on narrow
-			 * windows instead of stretching them across the whole row. */
-			justify-content: flex-end;
+			flex: 0 0 auto;
+			flex-wrap: nowrap;
 		}
 	}
 
 	@media screen and (max-height: 560px) {
 		.input-area {
-			bottom: var(--md-sys-space-xs);
+			margin-bottom: var(--md-sys-space-xs);
 			gap: var(--md-sys-space-2xs);
 			padding: var(--md-sys-space-xs) var(--md-sys-space-sm) 2px;
 			border-radius: var(--md-sys-shape-medium);
@@ -1176,7 +1174,7 @@
 			max-width: 120px;
 		}
 		:global(.model-switch) {
-			max-width: 130px;
+			max-width: 100%;
 		}
 	}
 </style>

@@ -722,7 +722,7 @@
 			color-mix(in srgb, var(--md-sys-color-primary) 20%, var(--md-sys-color-outline-variant));
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large)
 			var(--md-sys-shape-extra-small) var(--md-sys-shape-large);
-		box-shadow: var(--md-sys-elevation-1);
+		box-shadow: none;
 	}
 	.bubble.assistant {
 		margin-right: auto;
@@ -730,10 +730,10 @@
 		max-width: var(--md-sys-chat-surface-width);
 		background: var(--md-sys-color-surface-container-low);
 		color: var(--md-sys-color-on-surface);
-		border: 1px solid var(--md-sys-color-outline-variant);
+		border: 1px solid transparent;
 		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) var(--md-sys-shape-large)
 			var(--md-sys-shape-extra-small);
-		box-shadow: var(--md-sys-elevation-1);
+		box-shadow: none;
 	}
 	.bubble.assistant:not(.tool):not(.thinking) {
 		width: var(--md-sys-chat-surface-width);

@@ -1,6 +1,5 @@
 import {
 	CHAT_SCROLL_SETTLED_THRESHOLD,
-	chatBottomOverlayClearance,
 	isChatNearBottom,
 	shouldFollowChatScroll,
 } from './chatScroll.ts';
@@ -26,7 +25,8 @@ export function createChatViewController(dependencies: ChatViewControllerDepende
 	let disposed = false;
 
 	const requestFrame =
-		dependencies.requestFrame ?? ((callback: FrameRequestCallback) => requestAnimationFrame(callback));
+		dependencies.requestFrame ??
+		((callback: FrameRequestCallback) => requestAnimationFrame(callback));
 	const setTimer = dependencies.setTimer ?? setTimeout;
 	const clearTimer = dependencies.clearTimer ?? clearTimeout;
 	const createResizeObserver =
@@ -71,7 +71,8 @@ export function createChatViewController(dependencies: ChatViewControllerDepende
 			}
 			const currentMessages = dependencies.getMessagesElement();
 			if (isDead() || !currentMessages) return;
-			if (dependencies.getAutoFollow()) currentMessages.scrollTop = currentMessages.scrollHeight;
+			if (dependencies.getAutoFollow())
+				currentMessages.scrollTop = currentMessages.scrollHeight;
 			bubbles.forEach((bubble) => bubble.style.removeProperty('content-visibility'));
 		};
 		requestFrame(finish);
@@ -120,27 +121,20 @@ export function createChatViewController(dependencies: ChatViewControllerDepende
 		}, 700);
 	}
 
-	function observeComposerClearance(page: HTMLElement | null, browser: boolean) {
-		if (!browser || !page || !hasResizeObserver) return;
-		const composer = page.querySelector('.input-area') as HTMLElement | null;
-		if (!composer) return;
+	function observeLayout(browser: boolean) {
+		const messages = dependencies.getMessagesElement();
+		if (!browser || !messages || !hasResizeObserver) return;
+		// The composer occupies its own flex row. Observe the remaining reading
+		// area so attachments, header settings and window resizing keep follow
+		// intent without pulling a reader away from older messages.
 		const update = () => {
-			const pageRect = page.getBoundingClientRect();
-			const composerRect = composer.getBoundingClientRect();
-			const clearance = chatBottomOverlayClearance(pageRect.bottom, composerRect.top);
-			page.style.setProperty('--chat-composer-clearance', `${clearance}px`);
-			// The clearance padding changes scrollHeight. Preserve follow intent.
 			if (dependencies.getAutoFollow()) scrollToBottom();
 		};
 		const observer = createResizeObserver(update);
 		if (!observer) return;
-		observer.observe(composer);
-		observer.observe(page);
+		observer.observe(messages);
 		update();
-		return () => {
-			observer.disconnect();
-			page.style.removeProperty('--chat-composer-clearance');
-		};
+		return () => observer.disconnect();
 	}
 
 	function dispose() {
@@ -153,7 +147,7 @@ export function createChatViewController(dependencies: ChatViewControllerDepende
 		dispose,
 		jumpToBottom,
 		onScroll,
-		observeComposerClearance,
+		observeLayout,
 		scrollToBottom,
 		scrollToBottomAfterOpen,
 		setAutoFollow: dependencies.setAutoFollow,

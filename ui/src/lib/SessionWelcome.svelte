@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { fly } from 'svelte/transition';
 	import Logo from './Logo.svelte';
+	import Icon from './Icon.svelte';
+	import type { IconName } from './icons.ts';
 
 	interface Props {
 		hotkeyBinding?: string;
@@ -18,18 +20,28 @@
 		onConfigureModel = () => {},
 	}: Props = $props();
 
-	const examplePrompts = [
-		'请把这段会议记录整理成摘要和待办清单。',
-		'帮我检查当前工作区最近修改的文件，并总结改动。',
-		'提醒我明天下午 3 点准备周会。',
+	const examplePrompts: { title: string; prompt: string; icon: IconName }[] = [
+		{ title: '整理内容', prompt: '请把这段会议记录整理成摘要和待办清单。', icon: 'file' },
+		{
+			title: '处理工作',
+			prompt: '帮我检查当前工作区最近修改的文件，并总结改动。',
+			icon: 'folder',
+		},
+		{ title: '安排提醒', prompt: '提醒我明天下午 3 点准备周会。', icon: 'clock' },
 	];
 </script>
 
 <div class="welcome" in:fly={{ y: animated ? 12 : 0, duration: animated ? 330 : 0 }}>
 	<div class="welcome-mark"><Logo size={48} /></div>
-	<h2>Haven</h2>
-	<span class="welcome-kicker">本地 AI 助手</span>
-	<p>输入任务，Haven 会在需要时调用本地工具协助完成。</p>
+	<span class="welcome-kicker">Haven · 本地 AI 助手</span>
+	<h2>今天想完成什么？</h2>
+	<p>从一个问题或任务开始，一起把事情做好。</p>
+	{#if showModelSetup}
+		<div class="welcome-setup">
+			<span>开始前先配置一个聊天模型。</span>
+			<button type="button" onclick={() => onConfigureModel()}>配置模型</button>
+		</div>
+	{/if}
 	<div class="welcome-hints" aria-label="可用输入方式">
 		<span>直接输入</span>
 		<span>{hotkeyBinding} 语音</span>
@@ -38,18 +50,17 @@
 	<div class="welcome-examples" aria-label="试试这样提问">
 		<p>试试这样开始</p>
 		<div class="welcome-examples__list">
-			{#each examplePrompts as prompt (prompt)}
-				<button type="button" onclick={() => onSelectPrompt(prompt)}>{prompt}</button>
+			{#each examplePrompts as example (example.title)}
+				<button type="button" onclick={() => onSelectPrompt(example.prompt)}>
+					<span class="welcome-example-title"
+						><Icon name={example.icon} size={18} />{example.title}</span
+					>
+					<span>{example.prompt}</span>
+				</button>
 			{/each}
 		</div>
 		<span class="welcome-examples__hint">选择示例只会填入输入框，确认后再发送。</span>
 	</div>
-	{#if showModelSetup}
-		<div class="welcome-setup">
-			<span>开始前先配置一个聊天模型。</span>
-			<button type="button" onclick={() => onConfigureModel()}>配置模型</button>
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -73,11 +84,11 @@
 	}
 	.welcome h2 {
 		font-family: var(--md-ref-typeface-brand);
-		font-size: clamp(1.5rem, 1rem + 2cqi, 2.5rem);
+		font-size: clamp(1.5rem, 1rem + 2cqi, 2rem);
 		font-weight: 700;
 		letter-spacing: 0;
 		line-height: var(--md-sys-typescale-display-line-height);
-		color: var(--md-sys-color-primary);
+		color: var(--md-sys-color-on-surface);
 	}
 	.welcome-kicker {
 		margin-top: 0;
@@ -103,8 +114,8 @@
 	}
 	.welcome-hints span {
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-full);
+		border: 0;
+		border-radius: var(--md-sys-shape-small);
 		background: var(--md-sys-color-surface-container-low);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
@@ -130,9 +141,9 @@
 	.welcome-examples__list button {
 		overflow-wrap: anywhere;
 		min-height: 56px;
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-medium);
+		padding: var(--md-sys-space-lg);
+		border: 1px solid transparent;
+		border-radius: var(--md-sys-shape-large);
 		background: var(--md-sys-color-surface-container-low);
 		color: var(--md-sys-color-on-surface);
 		font: inherit;
@@ -144,6 +155,17 @@
 			background-color var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard),
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+	.welcome-example-title {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		margin-bottom: var(--md-sys-space-sm);
+		color: var(--md-sys-color-primary);
+		font-weight: 600;
+	}
+	.welcome-examples__list button > span:last-child {
+		color: var(--md-sys-color-on-surface-variant);
 	}
 	.welcome-examples__list button:hover {
 		border-color: var(--md-sys-color-primary);
@@ -192,6 +214,7 @@
 		}
 		.welcome-examples__list button {
 			min-height: 44px;
+			padding: var(--md-sys-space-md);
 		}
 	}
 	@media screen and (max-height: 560px) {
@@ -200,6 +223,7 @@
 			padding-block: var(--md-sys-space-md);
 			gap: var(--md-sys-space-sm);
 		}
+		.welcome-examples__hint,
 		.welcome-mark,
 		.welcome-kicker,
 		.welcome-hints {

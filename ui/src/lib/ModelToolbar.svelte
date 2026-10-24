@@ -215,7 +215,7 @@
 		gap: var(--md-sys-space-xs);
 		width: auto;
 		min-width: 0;
-		max-width: min(100%, 16rem, 42cqi);
+		max-width: min(100%, 16rem);
 		height: var(--md-comp-toolbar-height);
 		padding: 0 var(--md-sys-space-sm);
 		border: 1px solid var(--md-sys-color-outline-variant);
@@ -238,7 +238,7 @@
 	}
 	.model-menu {
 		position: absolute;
-		right: 0;
+		left: 0;
 		bottom: calc(100% + 8px);
 		z-index: 1000;
 		min-width: min(
@@ -383,7 +383,7 @@
 	}
 	@container conversation (max-width: 640px) {
 		.model-menu {
-			/* Reserve the composer insets and the adjacent send button. */
+			/* Keep the menu within the conversation column, including its insets. */
 			min-width: min(
 				var(--md-comp-settings-control-width),
 				calc(100cqi - 6 * var(--md-sys-space-md))
@@ -391,7 +391,7 @@
 			max-width: calc(100cqi - 6 * var(--md-sys-space-md));
 		}
 		:global(.md-btn.model-switch-btn) {
-			max-width: min(100%, 16rem, 65cqi);
+			max-width: min(100%, 16rem);
 		}
 	}
 </style>

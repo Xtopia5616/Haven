@@ -11,7 +11,7 @@ function messagesViewport(overrides: Record<string, unknown> = {}) {
 		scrollHeight: 1200,
 		scrollTop: 300,
 		clientHeight: 400,
-		querySelector: vi.fn((selector: string) => selector === '.message-list' ? list : null),
+		querySelector: vi.fn((selector: string) => (selector === '.message-list' ? list : null)),
 		scrollTo: vi.fn(),
 		...overrides,
 	};
@@ -107,52 +107,50 @@ describe('createChatViewController', () => {
 		expect(harness.getAutoFollow()).toBe(false);
 
 		harness.controller.jumpToBottom();
-		Object.defineProperty(viewport, 'scrollTop', { value: 800, writable: true, configurable: true });
+		Object.defineProperty(viewport, 'scrollTop', {
+			value: 800,
+			writable: true,
+			configurable: true,
+		});
 		await vi.advanceTimersByTimeAsync(700);
 		expect(harness.getAutoFollow()).toBe(true);
 		expect(harness.followChanges).toEqual([true, false, true, true]);
 	});
 
-	it('measures composer clearance, follows resize changes and disconnects the observer', () => {
-		const harness = createHarness();
-		const { viewport } = messagesViewport();
-		harness.setMessages(viewport);
-		const style = { setProperty: vi.fn(), removeProperty: vi.fn() };
-		const composer = { getBoundingClientRect: () => ({ top: 580 }) };
-		const page = {
-			querySelector: vi.fn(() => composer),
-			getBoundingClientRect: () => ({ bottom: 900 }),
-			style,
-		} as unknown as HTMLElement;
-		const observed: Element[] = [];
-		const disconnect = vi.fn();
-		let onResize: ResizeObserverCallback | undefined;
-		const observer = {
-			observe: (element: Element) => observed.push(element),
-			disconnect,
-		};
-		const view = createChatViewController({
-			getMessagesElement: () => viewport,
-			getAutoFollow: () => true,
-			setAutoFollow: vi.fn(),
-			isDisposed: () => false,
-			requestFrame: vi.fn(() => 1),
-			createResizeObserver: (callback) => {
-				onResize = callback;
-				return observer;
-			},
-		});
-
-		const cleanup = view.observeComposerClearance(page, true);
-		expect(observed).toEqual([composer, page]);
-		expect(style.setProperty).toHaveBeenCalledWith('--chat-composer-clearance', '320px');
-		expect(harness.frames).toHaveLength(0);
-		onResize?.([], observer as unknown as ResizeObserver);
-		expect(style.setProperty).toHaveBeenCalledTimes(2);
-		cleanup?.();
-		expect(disconnect).toHaveBeenCalledOnce();
-		expect(style.removeProperty).toHaveBeenCalledWith('--chat-composer-clearance');
-	});
+	it.each([true, false])(
+		'preserves follow intent %s when the reading area resizes',
+		(following) => {
+			const { viewport } = messagesViewport();
+			const observed: Element[] = [];
+			const disconnect = vi.fn();
+			let frame: FrameRequestCallback | undefined;
+			const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+				frame = callback;
+				return 1;
+			});
+			let onResize: ResizeObserverCallback | undefined;
+			const observer = { observe: (element: Element) => observed.push(element), disconnect };
+			const view = createChatViewController({
+				getMessagesElement: () => viewport,
+				getAutoFollow: () => following,
+				setAutoFollow: vi.fn(),
+				isDisposed: () => false,
+				requestFrame,
+				createResizeObserver: (callback) => {
+					onResize = callback;
+					return observer;
+				},
+			});
+			const cleanup = view.observeLayout(true);
+			expect(observed).toEqual([viewport]);
+			onResize?.([], observer as unknown as ResizeObserver);
+			expect(requestFrame).toHaveBeenCalledTimes(following ? 1 : 0);
+			frame?.(0);
+			expect(viewport.scrollTop).toBe(following ? viewport.scrollHeight : 300);
+			cleanup?.();
+			expect(disconnect).toHaveBeenCalledOnce();
+		},
+	);
 
 	it('ignores scheduled scroll work after disposal', () => {
 		const harness = createHarness();

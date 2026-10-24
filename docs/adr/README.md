@@ -1292,3 +1292,4 @@
 - [1386：自动补齐漏收的会话事件并隔离 rollback 快照](1386-reconcile-missed-session-events-and-fence-rollback-snapshots.md)
 - [1387：为 Settings 失败提供可操作说明与安全诊断](1387-actionable-settings-failure-presentation.md)
 - [1388：区分工具拒绝与结果不确定时的 Agent 提示](1388-distinguish-tool-denial-and-replay-guidance.md)
+- [1389：对话界面分层与正常占位输入区](1389-conversation-layout-and-flow-composer.md)
