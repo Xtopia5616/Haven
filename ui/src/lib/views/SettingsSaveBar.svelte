@@ -7,11 +7,20 @@
 		dirtySectionLabels: string[];
 		saveState: SaveState;
 		saveError: string;
+		blocked?: boolean;
 		onDiscard: () => void;
 		onSave: () => Promise<void>;
 	}
 
-	let { dirty, dirtySectionLabels, saveState, saveError, onDiscard, onSave }: Props = $props();
+	let {
+		dirty,
+		dirtySectionLabels,
+		saveState,
+		saveError,
+		blocked = false,
+		onDiscard,
+		onSave,
+	}: Props = $props();
 </script>
 
 <div class="save-bar">
@@ -32,7 +41,7 @@
 				className="save-action-btn"
 				label="放弃"
 				onclick={onDiscard}
-				disabled={saveState === 'saving'}
+				disabled={saveState === 'saving' || blocked}
 			/>
 		{/if}
 		<div class="save-button-status" aria-live="polite" aria-busy={saveState === 'saving'}>
@@ -43,7 +52,7 @@
 				label={saveState === 'saving' ? '保存中…' : dirty ? '保存更改' : '保存'}
 				ariaLabel={saveState === 'saving' ? '正在保存设置' : '保存设置更改'}
 				onclick={onSave}
-				disabled={!dirty || saveState === 'saving'}
+				disabled={!dirty || saveState === 'saving' || blocked}
 			/>
 		</div>
 	</div>

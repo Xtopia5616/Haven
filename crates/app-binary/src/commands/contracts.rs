@@ -424,6 +424,11 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "writes provider secret to secure storage and returns only an opaque reference",
     },
     CommandContract {
+        name: "reassign_staged_provider_credential",
+        boundary: CommandBoundary::Mutate,
+        security: "moves one exact staged provider API key reference to another provider name without exposing its secret",
+    },
+    CommandContract {
         name: "start_chatgpt_plan_login",
         boundary: CommandBoundary::Execute,
         security: "starts a state- and PKCE-bound loopback OAuth callback and returns only the official authorization URL",

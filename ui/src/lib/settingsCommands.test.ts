@@ -14,6 +14,7 @@ import {
 	cancelChatGptPlanLogin,
 	discardStagedChatGptPlanCredential,
 	reassignStagedChatGptPlanCredential,
+	reassignStagedProviderCredential,
 	revokePermission,
 	revokeSessionPermission,
 	runMemoryMaintenance,
@@ -103,6 +104,7 @@ describe('Settings commands', () => {
 			.mockResolvedValueOnce(2)
 			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce('cred-0000008c3defb1edb984fe2ac71c71c7')
+			.mockResolvedValueOnce(undefined)
 			.mockResolvedValueOnce({
 				loginId: 'login-1',
 				authorizationUrl: 'https://auth.openai.com/authorize',
@@ -139,6 +141,10 @@ describe('Settings commands', () => {
 		expect(await stageProviderCredential({ providerName: 'provider', apiKey: 'secret' })).toBe(
 			'cred-0000008c3defb1edb984fe2ac71c71c7',
 		);
+		await reassignStagedProviderCredential({
+			credentialRef: 'cred-0000008c3defb1edb984fe2ac71c71c7',
+			providerName: 'renamed-provider',
+		});
 		await expect(startChatGptPlanLogin({ providerName: 'chatgpt' })).resolves.toEqual({
 			loginId: 'login-1',
 			authorizationUrl: 'https://auth.openai.com/authorize',
@@ -190,6 +196,13 @@ describe('Settings commands', () => {
 			['reset_session_permissions'],
 			['set_hotkey_capture_active', { active: true }],
 			['stage_provider_credential', { providerName: 'provider', apiKey: 'secret' }],
+			[
+				'reassign_staged_provider_credential',
+				{
+					credentialRef: 'cred-0000008c3defb1edb984fe2ac71c71c7',
+					providerName: 'renamed-provider',
+				},
+			],
 			['start_chatgpt_plan_login', { providerName: 'chatgpt' }],
 			['complete_chatgpt_plan_login', { loginId: 'login-1', providerName: 'chatgpt' }],
 			['cancel_chatgpt_plan_login', { loginId: 'login-1' }],
@@ -210,6 +223,31 @@ describe('Settings commands', () => {
 			['update_settings', settingsRequest],
 			['enable_autostart'],
 			['disable_autostart'],
+		]);
+	});
+
+	it('serializes a new credential stage after staged-credential cleanup', async () => {
+		let finishDiscard!: () => void;
+		invokeMock.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					finishDiscard = resolve;
+				}) as never,
+		);
+		invokeMock.mockResolvedValueOnce('cred-0000008c3defb1edb984fe2ac71c71c7' as never);
+
+		const discard = discardStagedCredentials();
+		const stage = stageProviderCredential({ providerName: 'provider', apiKey: 'secret' });
+		await Promise.resolve();
+
+		expect(invokeMock).toHaveBeenCalledTimes(1);
+		expect(invokeMock).toHaveBeenCalledWith('discard_staged_credentials');
+
+		finishDiscard();
+		await Promise.all([discard, stage]);
+		expect(invokeMock.mock.calls).toEqual([
+			['discard_staged_credentials'],
+			['stage_provider_credential', { providerName: 'provider', apiKey: 'secret' }],
 		]);
 	});
 

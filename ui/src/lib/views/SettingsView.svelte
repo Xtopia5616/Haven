@@ -439,10 +439,12 @@
 	let leaveDialogResolve: ((ok: boolean) => void) | null = null;
 	let leaveSaving = $state(false);
 	let saveState = $state<'idle' | 'saving' | 'saved' | 'error'>('idle');
+	let providerSaveBusy = $state(false);
+	let settingsSaveSettled: Promise<void> | null = null;
 	let saveError = $state('');
-	let settingsApplyStatuses = $state<
-		TauriCommandResponse<'get_settings_runtime_apply_status'>
-	>([]);
+	let settingsApplyStatuses = $state<TauriCommandResponse<'get_settings_runtime_apply_status'>>(
+		[],
+	);
 	let reapplyBusy = $state(false);
 	let reapplyError = $state('');
 	let visibleApplyStatuses = $derived(
@@ -568,6 +570,27 @@
 	}
 	function captureSnapshot() {
 		savedSnapshot = JSON.stringify(buildPersistableSettings());
+	}
+	function isSettingsRecord(value: unknown): value is Record<string, unknown> {
+		return typeof value === 'object' && value !== null && !Array.isArray(value);
+	}
+	function mergeChangedSettingsFields(
+		baseline: unknown,
+		draft: unknown,
+		latest: unknown,
+	): unknown {
+		if (JSON.stringify(draft) === JSON.stringify(baseline)) return latest;
+		if (!isSettingsRecord(baseline) || !isSettingsRecord(draft) || !isSettingsRecord(latest)) {
+			return draft;
+		}
+
+		const merged = { ...latest };
+		for (const [key, draftValue] of Object.entries(draft)) {
+			if (JSON.stringify(draftValue) !== JSON.stringify(baseline[key])) {
+				merged[key] = mergeChangedSettingsFields(baseline[key], draftValue, latest[key]);
+			}
+		}
+		return merged;
 	}
 	function isSettingsFormDirty() {
 		return (
@@ -896,6 +919,7 @@
 	}
 
 	function discardChanges() {
+		if (saveState === 'saving' || providerSaveBusy) return;
 		requestDiscardStagedCredentials();
 		if (!savedSnapshot) return;
 		try {
@@ -1011,11 +1035,13 @@
 		resolve?.(ok);
 	}
 	function leaveWithoutSaving() {
+		if (saveState === 'saving' || providerSaveBusy) return;
 		discardChanges();
 		hookDraftState.discard();
 		finishLeaveDialog(true);
 	}
 	async function leaveWithSaving() {
+		if (saveState === 'saving' || providerSaveBusy) return;
 		leaveSaving = true;
 		if (await saveAllChanges()) finishLeaveDialog(true);
 		else leaveSaving = false;
@@ -1028,7 +1054,11 @@
 		mounted = false;
 		if (settingsSearchHighlightTimer) clearTimeout(settingsSearchHighlightTimer);
 		highlightedSearchTarget?.classList.remove('settings-search-target');
-		requestDiscardStagedCredentials();
+		if (settingsSaveSettled) {
+			void settingsSaveSettled.then(requestDiscardStagedCredentials);
+		} else {
+			requestDiscardStagedCredentials();
+		}
 		eventRegistrations?.dispose();
 		eventRegistrations = null;
 		registerSettingsLeaveGuard(null);
@@ -1384,10 +1414,16 @@
 
 	/** @returns {Promise<boolean>} */
 	async function saveSettings() {
-		if (!settingsLoaded || !savedSnapshot || saveState === 'saving') return false;
+		if (!settingsLoaded || !savedSnapshot || saveState === 'saving' || providerSaveBusy)
+			return false;
 		const securityChanged = dirtySettingsSectionIds.includes('security');
 		saveState = 'saving';
 		saveError = '';
+		let settleSave!: () => void;
+		const saveSettled = new Promise<void>((resolve) => {
+			settleSave = resolve;
+		});
+		settingsSaveSettled = saveSettled;
 		try {
 			validateModelProviderBindings();
 			await reconcileChatModelBeforeSave();
@@ -1489,6 +1525,17 @@
 				},
 			};
 			const baseline = JSON.parse(savedSnapshot) as Record<string, unknown>;
+			if (securityChanged) {
+				const latestSettings = await loadSettings();
+				if (!latestSettings?.security) {
+					throw new Error('无法读取最新安全设置，未保存此次安全设置变更。');
+				}
+				settingsValues.security = mergeChangedSettingsFields(
+					baseline.security,
+					settingsValues.security,
+					latestSettings.security,
+				) as typeof settingsValues.security;
+			}
 			const settingsPatch = Object.fromEntries(
 				Object.entries(settingsValues).filter(
 					([key, value]) => JSON.stringify(value) !== JSON.stringify(baseline[key]),
@@ -1575,6 +1622,9 @@
 				log: false,
 			});
 			return false;
+		} finally {
+			settleSave();
+			if (settingsSaveSettled === saveSettled) settingsSaveSettled = null;
 		}
 	}
 
@@ -1623,7 +1673,9 @@
 								<small>
 									期望版本 {status.expectedConfigVersion}；实际完整应用版本 {status.actualConfigVersion}
 								</small>
-								{#if status.reason}<small class="settings-runtime-apply__reason">{status.reason}</small>{/if}
+								{#if status.reason}<small class="settings-runtime-apply__reason"
+										>{status.reason}</small
+									>{/if}
 							</li>
 						{/each}
 					</ul>
@@ -1656,7 +1708,13 @@
 				/>
 			</aside>
 			<div class="settings-main workspace-secondary-main">
-				<div id="settings-panel" role="tabpanel" aria-label={activeSettingsSection.label}>
+				<div
+					id="settings-panel"
+					role="tabpanel"
+					aria-label={activeSettingsSection.label}
+					aria-busy={saveState === 'saving'}
+					inert={saveState === 'saving'}
+				>
 					<WorkspaceSectionHeader
 						title={activeSettingsSection.label}
 						description={activeSettingsSection.description}
@@ -1665,6 +1723,7 @@
 							<SettingsSaveBar
 								dirty={anySettingsDirty}
 								dirtySectionLabels={dirtySettingsSectionLabels}
+								blocked={providerSaveBusy}
 								{saveState}
 								{saveError}
 								onDiscard={discardAndReset}
@@ -1773,6 +1832,8 @@
 								<ModelSettings
 									section={modelSection}
 									active={settingsTab === 'models' || settingsTab === 'media'}
+									settingsSaving={saveState === 'saving'}
+									onProviderSaveBusy={(busy) => (providerSaveBusy = busy)}
 									{llmConfig}
 									{audio}
 									{stt}
@@ -1860,14 +1921,14 @@
 			label="放弃"
 			ariaLabel="放弃更改并离开"
 			onclick={leaveWithoutSaving}
-			disabled={leaveSaving}
+			disabled={leaveSaving || saveState === 'saving' || providerSaveBusy}
 		/>
 		<MaterialButton
 			variant="filled"
 			label={leaveSaving ? '保存中…' : '保存'}
 			ariaLabel="保存并离开"
 			onclick={leaveWithSaving}
-			disabled={leaveSaving}
+			disabled={leaveSaving || saveState === 'saving' || providerSaveBusy}
 		/>
 	{/snippet}
 </MaterialDialog>

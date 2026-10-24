@@ -8092,6 +8092,7 @@ export const REAPPLY_SAVED_SETTINGS_RESPONSE_SHAPE = { kind: 'array', items: {
 	}
 } } as const;
 export const REASSIGN_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE = { kind: 'null' } as const;
+export const REASSIGN_STAGED_PROVIDER_CREDENTIAL_RESPONSE_SHAPE = { kind: 'null' } as const;
 export const RECALL_MEMORY_RESPONSE_SHAPE = { kind: 'array', items: {
 	kind: 'object',
 	fields: {
@@ -12280,6 +12281,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	read_mcp_resource: READ_MCP_RESOURCE_RESPONSE_SHAPE,
 	reapply_saved_settings: REAPPLY_SAVED_SETTINGS_RESPONSE_SHAPE,
 	reassign_staged_chatgpt_plan_credential: REASSIGN_STAGED_CHATGPT_PLAN_CREDENTIAL_RESPONSE_SHAPE,
+	reassign_staged_provider_credential: REASSIGN_STAGED_PROVIDER_CREDENTIAL_RESPONSE_SHAPE,
 	recall_memory: RECALL_MEMORY_RESPONSE_SHAPE,
 	reconnect_mcp_server: RECONNECT_MCP_SERVER_RESPONSE_SHAPE,
 	refresh_mcp_servers: REFRESH_MCP_SERVERS_RESPONSE_SHAPE,
@@ -12472,6 +12474,7 @@ export interface TauriCommandMap {
 	read_mcp_resource: { request: { name: string; targetBinding: string; uri: string; forceRefresh: boolean }; response: McpFeatureCallOutcome };
 	reapply_saved_settings: { request: undefined; response: SettingsRuntimeTargetStatus[] };
 	reassign_staged_chatgpt_plan_credential: { request: { credentialRef: string; providerName: string }; response: void };
+	reassign_staged_provider_credential: { request: { credentialRef: string; providerName: string }; response: void };
 	recall_memory: { request: { query: string; kind?: MemoryRecallKindInput | null; limit?: number | null }; response: MemoryRecallItem[] };
 	reconnect_mcp_server: { request: { name: string }; response: void };
 	refresh_mcp_servers: { request: undefined; response: McpRefreshResult };
@@ -12603,6 +12606,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	read_mcp_resource: { boundary: 'execute', security: "explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content" },
 	reapply_saved_settings: { boundary: 'mutate', security: "reapplies only pending live targets from the latest saved config snapshot under the shared config apply gate" },
 	reassign_staged_chatgpt_plan_credential: { boundary: 'mutate', security: "moves one exact staged ChatGPT credential reference to another ChatGPT plan provider name without exposing its secret" },
+	reassign_staged_provider_credential: { boundary: 'mutate', security: "moves one exact staged provider API key reference to another provider name without exposing its secret" },
 	recall_memory: { boundary: 'read', security: "bounded and credential-filtered recall" },
 	reconnect_mcp_server: { boundary: 'execute', security: "AuthorizationPort; typed native operation reconnects one existing configured server after final version check" },
 	refresh_mcp_servers: { boundary: 'execute', security: "AuthorizationPort; one batch over persisted config diff and its affected targets; no renderer process arguments" },

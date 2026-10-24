@@ -25,6 +25,7 @@
 		completeChatGptPlanLogin,
 		discardStagedChatGptPlanCredential,
 		reassignStagedChatGptPlanCredential,
+		reassignStagedProviderCredential,
 		startChatGptPlanLogin,
 	} from '$lib/settingsCommands.ts';
 	import { CONCURRENCY_BOUNDS } from '$lib/contracts/settings.ts';
@@ -69,8 +70,10 @@
 		mcpServerNames?: string[];
 		loaded?: boolean;
 		searching?: boolean;
+		settingsSaving?: boolean;
 		onDiscoverySettled?: (fills: DiscoveredModelMetadataFill[]) => void;
 		onProviderDiscoveryFailure?: (providerName: string, staticCatalog: boolean) => void;
+		onProviderSaveBusy?: (busy: boolean) => void;
 	}
 	import {
 		PROVIDER_PRESET_OPTIONS,
@@ -102,8 +105,10 @@
 		mcpServerNames = [],
 		loaded = false,
 		searching = false,
+		settingsSaving = false,
 		onDiscoverySettled = () => {},
 		onProviderDiscoveryFailure = (_providerName, _staticCatalog) => {},
+		onProviderSaveBusy = () => {},
 	}: Props = $props();
 
 	function modelFor(id: string): ModelDraft | null {
@@ -275,6 +280,7 @@
 		else startEditProvider(idx);
 	}
 	function startAddProvider() {
+		if (settingsSaving) return;
 		providerDialog = {
 			idx: null,
 			form: {
@@ -294,6 +300,7 @@
 		};
 	}
 	function startEditProvider(idx: number) {
+		if (settingsSaving) return;
 		const provider = llmConfig.providers[idx];
 		providerDialog = {
 			idx,
@@ -316,7 +323,7 @@
 	}
 	function closeProviderDialog() {
 		const form = providerDialog?.form;
-		if (form?.chatgpt_plan_saving) return;
+		if (settingsSaving || form?.chatgpt_plan_saving) return;
 		const loginId = form?.chatgpt_plan_login_id;
 		const stagedCredentialRef = form?.api_key_ref;
 		const credentialIsInDraft = stagedCredentialRef
@@ -336,7 +343,7 @@
 	}
 	async function connectChatGptPlan() {
 		const form = providerDialog?.form;
-		if (!form || form.chatgpt_plan_connecting) return;
+		if (settingsSaving || !form || form.chatgpt_plan_connecting) return;
 		const providerName = form.name.trim();
 		if (!providerName) {
 			addNotification('请先填写 Provider 名称', 'error', 3000);
@@ -390,7 +397,7 @@
 		}
 	}
 	async function saveProvider() {
-		if (!providerDialog?.form) return;
+		if (settingsSaving || !providerDialog?.form) return;
 		const { idx, form } = providerDialog;
 		const name = form.name.trim();
 		if (!name) {
@@ -424,19 +431,40 @@
 		const preset = providerPreset(form.preset);
 		const isChatGptPlan = preset.provider === 'chatgpt-plan';
 		const previousIsChatGptPlan = previous?.provider === 'chatgpt-plan';
-		if (isChatGptPlan && form.api_key_ref) {
+		const reassignProviderApiKey =
+			!isChatGptPlan &&
+			!previousIsChatGptPlan &&
+			!!previous?.api_key_ref &&
+			previous.name !== name;
+		if ((isChatGptPlan && form.api_key_ref) || reassignProviderApiKey) {
 			form.chatgpt_plan_saving = true;
+			onProviderSaveBusy(true);
 			try {
-				await reassignStagedChatGptPlanCredential({
-					credentialRef: form.api_key_ref,
-					providerName: name,
-				});
+				if (isChatGptPlan && form.api_key_ref) {
+					await reassignStagedChatGptPlanCredential({
+						credentialRef: form.api_key_ref,
+						providerName: name,
+					});
+				} else if (form.api_key_ref) {
+					await reassignStagedProviderCredential({
+						credentialRef: form.api_key_ref,
+						providerName: name,
+					});
+				}
 			} catch {
 				form.chatgpt_plan_saving = false;
-				addNotification('无法将 ChatGPT 凭据关联到此 Provider，请重新连接', 'error', 3500);
+				onProviderSaveBusy(false);
+				addNotification(
+					isChatGptPlan
+						? '无法将 ChatGPT 凭据关联到此 Provider，请重新连接'
+						: '无法将 API Key 关联到此 Provider，请重新填写',
+					'error',
+					3500,
+				);
 				return;
 			}
 			form.chatgpt_plan_saving = false;
+			onProviderSaveBusy(false);
 		}
 		const provider = {
 			...(previous || {}),
@@ -504,6 +532,7 @@
 		discovery.refreshAllModels(true);
 	}
 	function deleteProvider(idx: number) {
+		if (settingsSaving) return;
 		const provider = llmConfig.providers[idx];
 		if (!provider) return;
 		if (llmConfig.models.some((model) => model.providerName === provider.name)) {
@@ -525,6 +554,7 @@
 		addNotification(`已删除 Provider ${provider.name}`, 'success', 2000);
 	}
 	function applyApiStylePreset(style: string) {
+		if (settingsSaving) return;
 		const form = providerDialog?.form;
 		if (!form) return;
 		const previousIsChatGptPlan = providerPreset(form.preset).provider === 'chatgpt-plan';

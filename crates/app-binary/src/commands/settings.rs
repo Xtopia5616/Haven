@@ -268,6 +268,20 @@ pub async fn stage_provider_credential(
         .map_err(|error| log_err("stage_provider_credential", error))
 }
 
+/// Reassign one staged provider API key to the provider name in the current Settings draft.
+#[tauri::command]
+pub async fn reassign_staged_provider_credential(
+    state: State<'_, Arc<AppState>>,
+    credential_ref: String,
+    provider_name: String,
+) -> Result<(), String> {
+    state
+        .runtime
+        .config_service
+        .reassign_staged_provider_credential(&credential_ref, &provider_name)
+        .map_err(|error| log_err("reassign_staged_provider_credential", error))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatGptPlanLoginComplete {

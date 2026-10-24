@@ -78,6 +78,7 @@
 | `read_mcp_resource` | execute | explicit UI selection; enabled live target binding; opaque URI; bounded untrusted content |
 | `reapply_saved_settings` | mutate | reapplies only pending live targets from the latest saved config snapshot under the shared config apply gate |
 | `reassign_staged_chatgpt_plan_credential` | mutate | moves one exact staged ChatGPT credential reference to another ChatGPT plan provider name without exposing its secret |
+| `reassign_staged_provider_credential` | mutate | moves one exact staged provider API key reference to another provider name without exposing its secret |
 | `recall_memory` | read | bounded and credential-filtered recall |
 | `reconnect_mcp_server` | execute | AuthorizationPort; typed native operation reconnects one existing configured server after final version check |
 | `refresh_mcp_servers` | execute | AuthorizationPort; one batch over persisted config diff and its affected targets; no renderer process arguments |

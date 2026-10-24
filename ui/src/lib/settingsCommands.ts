@@ -11,16 +11,31 @@ import { parseCountResponse } from '$lib/contracts/count.ts';
 import type { TauriCommandRequest, TauriCommandResponse } from './contracts/generatedCommands.ts';
 import { invoke } from '$lib/tauri.ts';
 
+let credentialOperationQueue: Promise<void> = Promise.resolve();
+
+function serializeCredentialOperation<T>(operation: () => Promise<T>): Promise<T> {
+	const result = credentialOperationQueue.then(operation, operation);
+	credentialOperationQueue = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	return result;
+}
+
 /** Load Settings through the single runtime boundary used by renderer callers. */
 export function loadSettings(): Promise<SettingsPayload | null> {
 	return invoke('get_settings').then(parseSettingsPayload);
 }
 
-export function getLifecycleHooksSettings(): Promise<TauriCommandResponse<'get_lifecycle_hooks_settings'>> {
+export function getLifecycleHooksSettings(): Promise<
+	TauriCommandResponse<'get_lifecycle_hooks_settings'>
+> {
 	return invoke('get_lifecycle_hooks_settings');
 }
 
-export function saveLifecycleHooks(hooks: TauriCommandRequest<'save_lifecycle_hooks'>['hooks']): Promise<void> {
+export function saveLifecycleHooks(
+	hooks: TauriCommandRequest<'save_lifecycle_hooks'>['hooks'],
+): Promise<void> {
 	return invoke('save_lifecycle_hooks', { hooks });
 }
 
@@ -39,7 +54,7 @@ export function pickExecutionWorkspaceDirectory(): Promise<string | null> {
 
 /** Drop staged credentials that were not included in a successful Settings save. */
 export function discardStagedCredentials(): Promise<void> {
-	return invoke('discard_staged_credentials');
+	return serializeCredentialOperation(() => invoke('discard_staged_credentials'));
 }
 
 /** Read the durable per-session permission grants shown by Settings. */
@@ -94,7 +109,18 @@ export function setHotkeyCaptureActive(active: boolean): Promise<void> {
 export function stageProviderCredential(
 	request: TauriCommandRequest<'stage_provider_credential'>,
 ): Promise<string> {
-	return invoke('stage_provider_credential', request).then(parseStagedCredentialReference);
+	return serializeCredentialOperation(() =>
+		invoke('stage_provider_credential', request).then(parseStagedCredentialReference),
+	);
+}
+
+/** Move a staged provider key when the Settings draft renames its provider. */
+export function reassignStagedProviderCredential(
+	request: TauriCommandRequest<'reassign_staged_provider_credential'>,
+): Promise<void> {
+	return serializeCredentialOperation(() =>
+		invoke('reassign_staged_provider_credential', request),
+	);
 }
 
 /** Begin Sign in with ChatGPT using Haven's local loopback callback. */
@@ -122,34 +148,42 @@ export function cancelChatGptPlanLogin(
 export function discardStagedChatGptPlanCredential(
 	request: TauriCommandRequest<'discard_staged_chatgpt_plan_credential'>,
 ): Promise<void> {
-	return invoke('discard_staged_chatgpt_plan_credential', request);
+	return serializeCredentialOperation(() =>
+		invoke('discard_staged_chatgpt_plan_credential', request),
+	);
 }
 
 /** Move a staged ChatGPT credential when the Settings draft renames its provider. */
 export function reassignStagedChatGptPlanCredential(
 	request: TauriCommandRequest<'reassign_staged_chatgpt_plan_credential'>,
 ): Promise<void> {
-	return invoke('reassign_staged_chatgpt_plan_credential', request);
+	return serializeCredentialOperation(() =>
+		invoke('reassign_staged_chatgpt_plan_credential', request),
+	);
 }
 
 /** Stage an Alibaba AI Search key in secure storage for one model config. */
 export function stageIndependentSearchCredential(
 	request: TauriCommandRequest<'stage_independent_search_credential'>,
 ): Promise<string> {
-	return invoke('stage_independent_search_credential', request).then(parseStagedCredentialReference);
+	return serializeCredentialOperation(() =>
+		invoke('stage_independent_search_credential', request).then(parseStagedCredentialReference),
+	);
 }
 
 /** Stage an OCR key or secret in secure storage and return its opaque reference. */
 export function stageOcrCredential(
 	request: TauriCommandRequest<'stage_ocr_credential'>,
 ): Promise<string> {
-	return invoke('stage_ocr_credential', request).then(parseStagedCredentialReference);
+	return serializeCredentialOperation(() =>
+		invoke('stage_ocr_credential', request).then(parseStagedCredentialReference),
+	);
 }
 
 /** Persist a complete Settings update through the generated command contract. */
 export function updateSettings(request: TauriCommandRequest<'update_settings'>): Promise<void> {
 	validateSettingsNumbers(request.settings);
-	return invoke('update_settings', request);
+	return serializeCredentialOperation(() => invoke('update_settings', request));
 }
 
 /** Read per-target config versions and retryable runtime-apply state. */
@@ -160,9 +194,7 @@ export function getSettingsRuntimeApplyStatus(): Promise<
 }
 
 /** Reapply pending live targets from the latest saved Settings snapshot. */
-export function reapplySavedSettings(): Promise<
-	TauriCommandResponse<'reapply_saved_settings'>
-> {
+export function reapplySavedSettings(): Promise<TauriCommandResponse<'reapply_saved_settings'>> {
 	return invoke('reapply_saved_settings');
 }
 

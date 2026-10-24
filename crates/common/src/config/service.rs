@@ -265,6 +265,66 @@ impl ConfigService {
         )
     }
 
+    /// Move one staged provider API key to the provider name selected by the
+    /// current Settings draft, without exposing or rewriting its secret.
+    pub fn reassign_staged_provider_credential(
+        &self,
+        reference: &str,
+        provider_name: &str,
+    ) -> anyhow::Result<()> {
+        crate::config::validate_credential_reference(reference)?;
+        if provider_name.trim().is_empty() {
+            anyhow::bail!("provider name is required");
+        }
+        let mut state = self.lock_state_mut()?;
+        let source_slot = state
+            .staged_credentials
+            .iter()
+            .find_map(|(slot, staged_reference)| {
+                (matches!(slot, CredentialSlot::ProviderApiKey(_)) && staged_reference == reference)
+                    .then(|| slot.clone())
+            });
+        let Some(source_slot) = source_slot else {
+            let active_owner = state.loader.config().llm.providers.iter().any(|provider| {
+                !super::is_chatgpt_plan_provider(&provider.provider)
+                    && provider.api_key_ref.as_deref() == Some(reference)
+            });
+            anyhow::ensure!(active_owner, "provider API key is not staged or active");
+            return Ok(());
+        };
+        let target_slot = CredentialSlot::ProviderApiKey(provider_name.to_string());
+        if source_slot == target_slot {
+            return Ok(());
+        }
+        if state
+            .loader
+            .config()
+            .llm
+            .providers
+            .iter()
+            .any(|provider| provider.name == provider_name)
+        {
+            anyhow::bail!("provider API key cannot be assigned to another provider type");
+        }
+        anyhow::ensure!(
+            !state.staged_credentials.contains_key(&target_slot),
+            "another provider API key is already staged for this provider"
+        );
+        anyhow::ensure!(
+            !state
+                .staged_credentials
+                .contains_key(&CredentialSlot::ProviderChatGptPlan(
+                    provider_name.to_string()
+                )),
+            "a ChatGPT credential is already staged for this provider"
+        );
+        state.staged_credentials.remove(&source_slot);
+        state
+            .staged_credentials
+            .insert(target_slot, reference.to_string());
+        Ok(())
+    }
+
     /// Stage the protected ChatGPT plan OAuth record for a dedicated provider.
     /// The serialized token bundle is kept in the secure store and only its
     /// opaque `cred-*` reference is returned to the settings draft.
@@ -931,6 +991,72 @@ mod tests {
         assert_eq!(
             service.read_chatgpt_plan_credential(&reference).unwrap(),
             "protected-token-bundle"
+        );
+    }
+
+    #[test]
+    fn staged_provider_api_key_follows_provider_rename_before_settings_save() {
+        let (service, _dir) = service();
+        let reference = service
+            .stage_provider_credential("original-name", "api-key")
+            .unwrap();
+
+        let rename_without_reassign = service
+            .edit(|config| {
+                config.llm.providers.push(crate::config::ProviderConfig {
+                    name: "renamed".into(),
+                    provider: "openai".into(),
+                    api_key_ref: Some(reference.clone()),
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(
+            rename_without_reassign
+                .to_string()
+                .contains("provider credential reference does not belong to this configuration")
+        );
+
+        service
+            .reassign_staged_provider_credential(&reference, "renamed")
+            .unwrap();
+
+        service
+            .edit(|config| {
+                config.llm.providers.push(crate::config::ProviderConfig {
+                    name: "renamed".into(),
+                    provider: "openai".into(),
+                    api_key_ref: Some(reference.clone()),
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .unwrap();
+
+        let persisted_reference = service
+            .snapshot()
+            .unwrap()
+            .config
+            .llm
+            .providers
+            .into_iter()
+            .find(|provider| provider.name == "renamed")
+            .and_then(|provider| provider.api_key_ref);
+        assert_eq!(persisted_reference.as_deref(), Some(reference.as_str()));
+
+        service.discard_staged_credentials().unwrap();
+        assert_eq!(
+            service
+                .snapshot()
+                .unwrap()
+                .config
+                .llm
+                .providers
+                .iter()
+                .find(|provider| provider.name == "renamed")
+                .and_then(|provider| provider.api_key_ref.as_deref()),
+            Some(reference.as_str())
         );
     }
 

@@ -852,6 +852,7 @@ pub(crate) fn run() {
             commands::settings::trust_hook_workspace,
             commands::settings::untrust_hook_workspace,
             commands::settings::stage_provider_credential,
+            commands::settings::reassign_staged_provider_credential,
             commands::settings::start_chatgpt_plan_login,
             commands::settings::complete_chatgpt_plan_login,
             commands::settings::cancel_chatgpt_plan_login,
