@@ -1499,6 +1499,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cleanup_removes_duplicate_orphan_uploads_and_keeps_referenced_copy() {
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let keep_batch = root.path().join("file-0123456789abcdef0123456789abcdef");
+        let duplicate_batches = [
+            root.path().join("file-fedcba9876543210fedcba9876543210"),
+            root.path().join("file-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        ];
+        let keep_file = keep_batch.join("same.txt");
+        tokio::fs::create_dir_all(&keep_batch).await.unwrap();
+        tokio::fs::write(&keep_file, b"same asset bytes")
+            .await
+            .unwrap();
+        for batch in &duplicate_batches {
+            tokio::fs::create_dir_all(batch).await.unwrap();
+            tokio::fs::write(batch.join("same.txt"), b"same asset bytes")
+                .await
+                .unwrap();
+        }
+
+        let removed = cleanup_unreferenced_upload_batches(
+            root.path().to_path_buf(),
+            haven_tools::ManagedAssetRegistry::default(),
+            vec![keep_file.clone()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(removed, duplicate_batches.len());
+        assert!(keep_file.exists(), "the referenced copy must survive GC");
+        assert!(duplicate_batches.iter().all(|batch| !batch.exists()));
+    }
+
+    #[tokio::test]
     async fn test_cleanup_preserves_active_session_lease_without_message_reference() {
         use tempfile::TempDir;
 

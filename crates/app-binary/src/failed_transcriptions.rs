@@ -86,6 +86,11 @@ impl FailedTranscriptionStore {
             "recording exceeds the failed-transcription retention limit"
         );
         let _guard = self.gate.lock().await;
+        // Saving a newly failed recording can race the renderer's startup
+        // listing. Reap incomplete prior writes under the same store gate so
+        // an orphan sidecar cannot make `list_at` reject this recording and
+        // cause the just-failed audio to be lost.
+        recover_orphans_at(&self.root).await?;
         let existing = list_at(&self.root).await?;
         anyhow::ensure!(
             existing.len() < MAX_FAILED_TRANSCRIPTIONS,
@@ -363,6 +368,49 @@ mod tests {
         assert_eq!(store.recover_orphans().await.unwrap(), 2);
         assert_eq!(store.list().await.unwrap().len(), 1);
         assert!(store.load(&saved.retry_file_id).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn saving_a_failure_cleans_orphans_before_reading_retained_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FailedTranscriptionStore::new(temp.path().to_path_buf());
+        let orphan_id = "file-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let orphan_json = temp.path().join(format!("{orphan_id}.json"));
+        tokio::fs::write(
+            &orphan_json,
+            serde_json::json!({
+                "retry_file_id": orphan_id,
+                "created_at_ms": 1,
+                "duration_ms": 10,
+                "target_session_id": null,
+                "selection_version": 0
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+        let orphan_wav = temp
+            .path()
+            .join("file-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.wav");
+        tokio::fs::write(&orphan_wav, b"orphan").await.unwrap();
+        let staging = temp
+            .path()
+            .join(".file-cccccccccccccccccccccccccccccccc.json.tmp");
+        tokio::fs::write(&staging, b"partial").await.unwrap();
+
+        let saved = store
+            .save(b"new retained wav", 20, &RecordingTargetSnapshot::default())
+            .await
+            .expect("an orphan sidecar must not block retention of the new failure");
+
+        assert!(!orphan_json.exists());
+        assert!(!orphan_wav.exists());
+        assert!(!staging.exists());
+        assert_eq!(store.list().await.unwrap().len(), 1);
+        assert_eq!(
+            store.load(&saved.retry_file_id).await.unwrap().wav,
+            b"new retained wav"
+        );
     }
 
     #[tokio::test]
