@@ -224,6 +224,10 @@ impl ShellTool {
                             haven_common::types::NetworkPolicy::Deny
                                 | haven_common::types::NetworkPolicy::Restricted
                         ),
+                        matches!(
+                            shell_context.shell.to_ascii_lowercase().as_str(),
+                            "powershell" | "pwsh"
+                        ),
                     )?;
                     let process = haven_platform::sandboxed_process::SandboxedProcess::spawn(
                         request,
@@ -629,6 +633,7 @@ fn sandboxed_shell_request(
     std_cmd: &std::process::Command,
     readwrite_paths: Vec<PathBuf>,
     allow_network: bool,
+    allow_desktop_handle_access: bool,
 ) -> anyhow::Result<haven_platform::sandboxed_process::SandboxedProcessRequest> {
     use haven_platform::sandboxed_process::SandboxedProcessRequest;
     use std::ffi::{OsStr, OsString};
@@ -680,6 +685,7 @@ fn sandboxed_shell_request(
         readonly_paths,
         environment,
         allow_network,
+        allow_desktop_handle_access,
     })
 }
 
@@ -908,6 +914,215 @@ mod tests {
             !outside_root.join("outside.txt").exists(),
             "MXC must deny a write outside the configured workspace root"
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer support"]
+    async fn workspace_write_shell_applies_mxc_network_policy_to_host_loopback() {
+        use haven_common::types::NetworkPolicy;
+        use std::{
+            io::Write,
+            net::TcpListener,
+            sync::mpsc,
+            thread,
+            time::{Duration, Instant},
+        };
+
+        for (network_policy, should_connect) in [
+            (NetworkPolicy::Deny, false),
+            (NetworkPolicy::Restricted, false),
+            (NetworkPolicy::Open, true),
+        ] {
+            let temp = tempdir().expect("create isolated MXC network fixture");
+            let workspace_root = temp.path().join("workspace");
+            std::fs::create_dir(&workspace_root).expect("create workspace root");
+            let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+            let listener =
+                TcpListener::bind(("127.0.0.1", 0)).expect("bind isolated loopback listener");
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
+            let (accepted_tx, accepted_rx) = mpsc::channel();
+            let listener_thread = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            let _ = stream.write_all(b"accepted");
+                            let _ = accepted_tx.send(true);
+                            return;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = accepted_tx.send(false);
+            });
+
+            let script = format!(
+                "$client = New-Object Net.Sockets.TcpClient; $connected = $false; try {{ $task = $client.ConnectAsync('127.0.0.1', {port}); $connected = $task.Wait(2000) -and $client.Connected }} catch {{ }}; $client.Close(); if ($connected) {{ exit 0 }} else {{ exit 17 }}"
+            );
+            let (execution_authorization, _) =
+                crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                    &workspace_root,
+                    network_policy,
+                );
+            let context = crate::ToolExecutionContext {
+                execution_workspace: Some(workspace.clone()),
+                execution_authorization: Some(execution_authorization),
+                ..Default::default()
+            };
+            let tool = ShellTool {
+                execution_workspace: workspace,
+                ..ShellTool::default()
+            };
+            let result = tool
+                .run_with_execution_context(
+                    ShellParams {
+                        command: script,
+                        shell: Some("powershell".into()),
+                        silent: Some(true),
+                        cwd: None,
+                        step_id: None,
+                        session_id: None,
+                    },
+                    CancellationToken::new(),
+                    Some(&context),
+                )
+                .await
+                .expect("MXC must launch the authorized Workspace Write shell");
+
+            let exit_code = result.output["exit_code"].as_i64();
+            let host_listener_accepted = accepted_rx
+                .recv_timeout(Duration::from_secs(6))
+                .expect("loopback listener must report whether a connection arrived");
+            listener_thread
+                .join()
+                .expect("loopback listener thread must not panic");
+
+            assert_eq!(exit_code, Some(if should_connect { 0 } else { 17 }));
+            assert_eq!(host_listener_accepted, should_connect);
+        }
+    }
+
+    #[cfg(windows)]
+    async fn workspace_write_shell_descendant_stops_on_cancel_or_revocation(
+        revoke_authorization: bool,
+    ) {
+        use std::{
+            path::Path,
+            time::{Duration, Instant},
+        };
+
+        fn powershell_literal(path: &Path) -> String {
+            path.to_string_lossy().replace('\'', "''")
+        }
+
+        let temp = tempdir().expect("create isolated MXC process fixture");
+        let workspace_root = temp.path().join("workspace");
+        std::fs::create_dir(&workspace_root).expect("create workspace root");
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let pid_file = workspace_root.join("mxc-shell-descendant.pid");
+        let error_file = workspace_root.join("mxc-shell-descendant-error.txt");
+        let mut descendant =
+            crate::process_test_support::DescendantProcessMarker::new(pid_file.clone());
+        let marker = powershell_literal(&pid_file);
+        let error_marker = powershell_literal(&error_file);
+        let command = format!(
+            "$ErrorActionPreference = 'Stop'; try {{ $start = New-Object System.Diagnostics.ProcessStartInfo; $start.FileName = [System.IO.Path]::Combine($PSHOME, 'powershell.exe'); $start.Arguments = '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60'; $start.UseShellExecute = $false; $child = [System.Diagnostics.Process]::Start($start); [System.IO.File]::WriteAllText('{marker}', $child.Id.ToString()) }} catch {{ [System.IO.File]::WriteAllText('{error_marker}', $_.Exception.ToString()); exit 18 }}; Start-Sleep -Seconds 60"
+        );
+
+        let (execution_authorization, authorization) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                haven_common::types::NetworkPolicy::Deny,
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let cancel = CancellationToken::new();
+        let run_cancel = cancel.clone();
+        let run = tokio::spawn(async move {
+            ShellTool {
+                execution_workspace: workspace,
+                ..ShellTool::default()
+            }
+            .run_with_execution_context(
+                ShellParams {
+                    command,
+                    shell: Some("powershell".into()),
+                    silent: Some(true),
+                    cwd: None,
+                    step_id: None,
+                    session_id: None,
+                },
+                run_cancel,
+                Some(&context),
+            )
+            .await
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            match descendant.pid() {
+                Ok(pid) => break Some(pid),
+                Err(_) if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(_) => break None,
+            }
+        };
+        let Some(pid) = pid else {
+            cancel.cancel();
+            let result = tokio::time::timeout(Duration::from_secs(10), run)
+                .await
+                .expect("MXC Shell must stop after a missing-descendant probe")
+                .expect("MXC Shell task must not panic")
+                .expect("MXC Shell adapter must return its process result");
+            panic!(
+                "MXC Shell must start a descendant before lifecycle interruption; script_error={:?}; shell_result={:?}",
+                std::fs::read_to_string(&error_file).ok(),
+                result.output
+            );
+        };
+
+        if revoke_authorization {
+            authorization
+                .set_execution_mode(haven_common::types::ExecutionMode::Analyze)
+                .await;
+        } else {
+            cancel.cancel();
+        }
+        let result = tokio::time::timeout(Duration::from_secs(10), run)
+            .await
+            .expect("MXC Shell lifecycle interruption must complete")
+            .expect("MXC Shell task must not panic")
+            .expect("MXC Shell adapter must report cancellation as a result");
+        assert_eq!(result.outcome, ToolExecutionOutcome::Cancelled);
+        descendant
+            .wait_for_exit(pid, Duration::from_secs(5))
+            .expect("MXC lifecycle interruption must terminate its descendant");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer support"]
+    async fn workspace_write_shell_cancellation_terminates_mxc_descendants() {
+        workspace_write_shell_descendant_stops_on_cancel_or_revocation(false).await;
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer support"]
+    async fn workspace_write_shell_revocation_terminates_mxc_descendants() {
+        workspace_write_shell_descendant_stops_on_cancel_or_revocation(true).await;
     }
 
     #[test]

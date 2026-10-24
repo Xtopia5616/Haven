@@ -28,6 +28,10 @@ pub struct SandboxedProcessRequest {
     pub readonly_paths: Vec<PathBuf>,
     pub environment: Vec<(OsString, OsString)>,
     pub allow_network: bool,
+    /// PowerShell needs desktop handles to initialize inside BaseContainer.
+    /// The process still keeps clipboard, input injection, system settings,
+    /// and desktop control restrictions.
+    pub allow_desktop_handle_access: bool,
 }
 
 /// A live MXC process with async pipes and cancellation-safe lifecycle calls.
@@ -217,9 +221,12 @@ fn make_async_writer(mut writer: Box<dyn Write + Send>) -> tokio::io::DuplexStre
 fn build_container_request(
     request: SandboxedProcessRequest,
 ) -> anyhow::Result<mxc_sdk::v1::ContainerRequest> {
+    use mxc_sdk::v1::configs::{
+        ProcessContainerConfig, ProcessContainerUi, ProcessContainerUiIsolation,
+    };
     use mxc_sdk::v1::{
-        ContainerRequest, FilesystemPolicy, NetworkAction, NetworkEgressPolicy,
-        NetworkIngressPolicy, NetworkPolicy,
+        ClipboardPolicy, ContainerRequest, Containment, FilesystemPolicy, NetworkAction,
+        NetworkEgressPolicy, NetworkIngressPolicy, NetworkPolicy, UiPolicy,
     };
 
     let working_directory = normalize_directory(&request.working_directory, "working directory")?;
@@ -259,6 +266,20 @@ fn build_container_request(
     } else {
         NetworkAction::Deny
     };
+    let ui = request.allow_desktop_handle_access.then_some(UiPolicy {
+        disable: false,
+        clipboard: ClipboardPolicy::None,
+        allow_input_injection: false,
+    });
+    let mut process_container_ui = ProcessContainerUi::default();
+    process_container_ui.isolation = if request.allow_desktop_handle_access {
+        ProcessContainerUiIsolation::Desktop
+    } else {
+        ProcessContainerUiIsolation::Container
+    };
+    let mut process_container_config = ProcessContainerConfig::default();
+    process_container_config.ui = Some(process_container_ui);
+    let containment = Containment::ProcessContainer(process_container_config);
 
     Ok(ContainerRequest {
         filesystem: Some(FilesystemPolicy {
@@ -283,6 +304,8 @@ fn build_container_request(
             }),
             runtime_config: None,
         }),
+        ui,
+        containment,
         working_directory: Some(path_to_string(&working_directory)),
         environment: Some(environment),
         // `shell_runtime` already supplies Haven's filtered environment. Do
@@ -416,6 +439,7 @@ mod tests {
                 OsString::from("C:\\Windows\\System32"),
             )],
             allow_network: false,
+            allow_desktop_handle_access: false,
         })
         .expect("build MXC request");
 
@@ -427,5 +451,53 @@ mod tests {
                 "C:\\Windows\\System32".to_owned()
             )])
         );
+        assert!(request.ui.is_none());
+        let mxc_sdk::v1::Containment::ProcessContainer(config) = request.containment else {
+            panic!("Windows shell requests use ProcessContainer containment");
+        };
+        assert_eq!(
+            config
+                .ui
+                .expect("ProcessContainer UI defaults are explicit")
+                .isolation,
+            mxc_sdk::v1::configs::ProcessContainerUiIsolation::Container
+        );
+    }
+
+    #[test]
+    fn powershell_desktop_compatibility_keeps_other_ui_restrictions() {
+        use mxc_sdk::v1::configs::{ProcessContainerSystemSettings, ProcessContainerUiIsolation};
+        use mxc_sdk::v1::{ClipboardPolicy, Containment};
+
+        let root = tempfile::tempdir().expect("create MXC UI fixture");
+        let request = build_container_request(SandboxedProcessRequest {
+            program: OsString::from("powershell.exe"),
+            arguments: Vec::new(),
+            working_directory: root.path().to_path_buf(),
+            readwrite_paths: vec![root.path().to_path_buf()],
+            readonly_paths: Vec::new(),
+            environment: Vec::new(),
+            allow_network: false,
+            allow_desktop_handle_access: true,
+        })
+        .expect("build PowerShell MXC request");
+
+        let ui = request
+            .ui
+            .expect("PowerShell requires Win32 UI initialization");
+        assert!(!ui.disable, "PowerShell requires Win32 system calls");
+        assert_eq!(ui.clipboard, ClipboardPolicy::None);
+        assert!(!ui.allow_input_injection);
+
+        let Containment::ProcessContainer(config) = request.containment else {
+            panic!("Windows shell requests use ProcessContainer containment");
+        };
+        let ui = config
+            .ui
+            .expect("ProcessContainer UI settings are explicit");
+        assert_eq!(ui.isolation, ProcessContainerUiIsolation::Desktop);
+        assert!(!ui.desktop_system_control);
+        assert_eq!(ui.system_settings, ProcessContainerSystemSettings::None);
+        assert!(!ui.ime);
     }
 }

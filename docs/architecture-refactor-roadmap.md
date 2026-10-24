@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1–5 的实现已完成（ADR 1373–1374、1376–1383）；Slice 3 的 Windows capability 验收与 Slice 4 的配置/目录/调用交互验收仍开放，见 §5。Slice 2 的执行预设、typed 资源合同、规范 `ResourcePolicy` 与精确边界扩展已完成（ADR 1374、1376–1381）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
+> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1–5 的实现及 Slice 3/4 验收已完成（ADR 1373–1383）；Slice 2 的执行预设、typed 资源合同、规范 `ResourcePolicy` 与精确边界扩展已完成（ADR 1374、1376–1381）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
 > 更新日期：2026-10-24
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -79,7 +79,7 @@
 | **Completed** | 新一轮 R03：router、媒体客户端与 MediaConfig 经 App 独占 publisher 原子发布；Agent、Memory、Tools 只读同一代次。单次 provider/媒体操作捕获快照，在途操作保留旧代次；目录重建失败时旧目录保持原子且状态 reason 指明已发布版本。边界与测试见 [ADR 1385](adr/1385-atomic-model-media-generation-publication.md)。整个 ReAct turn 跨代次、后台任务与会话配置代次绑定仍属后续建议；顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
 | **Completed** | 新一轮 R02：按 runtime target 显示期望/实际配置版本、结果与净化原因；可在共享 apply gate 下仅重试失败或尚未执行目标，状态见 [ADR 1384](adr/1384-explicit-reapply-of-saved-runtime-configuration.md)。 |
 | **Completed** | Slice 2 typed 资源合同（ADR 1374、1376–1381）：Files/HTTP/剪贴板/窗口/注册表与 MCP 远程调用均由可信 adapter 在执行前声明并验证；MCP 执行 proof 绑定连接配置/代次，持久资源授权绑定稳定配置与完整参数摘要。见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)、[ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1375](adr/1375-resource-scoped-persistent-permissions.md)、[ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md)、[ADR 1377](adr/1377-once-only-http-domain-boundary-extension.md)、[ADR 1378](adr/1378-typed-clipboard-resource-boundary.md)、[ADR 1379](adr/1379-typed-window-resource-boundary.md)、[ADR 1380](adr/1380-typed-registry-resource-boundary.md)、[ADR 1381](adr/1381-bind-mcp-invocations-to-remote-targets.md) 和[设计提案](execution-context-redesign.md)。 |
-| **Acceptance Open** | Execution-context Slice 3–4 的实现见 ADR 1382–1383；验收仍开放。Slice 3 需在受支持 Windows 环境验证 MXC/进程能力边界；Slice 4 需验收 `availability`、`catalog`、`invocation` 的 Settings 交互与旧 exposure 配置迁移。静态 capability 报告和自动化用例不替代真实平台/配置验收。见[报告](execution-path-capability-audit-2026-10-23.md)、[ADR 1382](adr/1382-execution-path-capability-audit.md) 和 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)。 |
+| **Completed** | Execution-context Slice 3–4 验收完成。Slice 3 在 Windows 11 Insider build 29683 的真实 MXC BaseContainer 上验证 workspace 文件边界、三种网络策略、PowerShell 启动、MXC 后代进程取消/撤权；Slice 4 验证旧 exposure 迁移、三维 MCP 路由和 stale-call 拒绝测试，以及隔离 UI profile 的编辑保存与重启读回。未连接外部 MCP 服务或配置模型；Windows 发布 Gate 仍按 §5.1 开放。证据见[报告](execution-path-capability-audit-2026-10-23.md)、[ADR 1382](adr/1382-execution-path-capability-audit.md) 和 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -95,11 +95,7 @@
 
 可以提前准备隔离 profile、安装器和物理盘耗尽环境；最终验收必须使用交互生命周期等 IPC/UI 变更完成后的最新构建。此项是发布签核门，不阻塞不影响发布路径的独立模块整理。
 
-**2026-10-24 部分 Windows 证据：** 在 R03 提交 `527bcd3` 的独立开发 profile 上，bootstrap ready、schema v61、SQLite integrity check 和旧 MCP exposure 五值迁移均通过；生产 Shell/MXC 路径的根内写入成功、兄弟目录写入拒绝测试通过。用户手动处理 Node.js 防火墙提示后，在运行代码相同、仅增加验收文档的 `6f60ef1` 上重启该 profile，真实首屏、Settings、安全页及 MCP 卡片/三维编辑器读取与菜单选项核对通过，迁移配置重启可读；只读取消后配置哈希不变。安全策略编辑保存、完整调用/撤权交互、安装/升级/卸载、用户数据保留与物理 ENOSPC 仍未验收。详细环境、命令和范围见 [ADR 1382](adr/1382-execution-path-capability-audit.md) 与 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)。这只是开发版部分验收，不关闭 Slice 3/4 Acceptance 或 Windows Gate；最终门禁仍须在隔离环境的最新构建上完成。
-
-**2026-10-24 当前代码只读 UI 复核：** 在提交 `a2b1720c463796a0bb1f81c4e5c4ecd7324fb8b3` 的隔离 profile 上，用户手动允许 Node.js 防火墙提示后，主界面、Settings 安全与权限页及 Tools > MCP 空状态页均可显示；没有配置 MCP 服务器，未修改 Haven 设置，也未发起工具调用。Windows 当前环境报告 Windows 10 Pro build 29683，尚未确认满足 Windows 11 24H2 支持基线。此证据不关闭 Slice 3/4 Acceptance 或 Windows Gate；范围和未验收项见 [ADR 1382](adr/1382-execution-path-capability-audit.md)。
-
-**2026-10-24 当前代码 MCP 配置复核：** 在 `aa03f46` 的隔离 profile 上迁移禁用的旧 exposure fixture；MCP 卡片、三项策略编辑器和三组菜单可只读查看，取消后配置哈希不变，同一 profile 重启后仍显示已迁移配置。无 MCP server 连接或工具调用；编辑保存及调用路由未验收。详情见 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)，Slice 4 Acceptance 与 Windows Gate 继续开放。
+**当前 Gate 状态：Open。** Slice 3/4 已在独立开发 profile 和真实 Windows MXC 进程测试中验收；主机为 Windows 11 专业版 Insider Preview `10.0.29683`。Slice 3 的宿主根目录写入/拒绝、`Deny/Restricted/Open` loopback 网络行为、PowerShell 兼容、MXC 后代进程取消与撤权均通过；Slice 4 的隔离 MCP fixture 编辑保存、应用重启读回及本地路由/迁移测试通过。MCP fixture 保持 disabled，没有外部服务器调用或模型会话；工具链实际为 Rust 1.99.0、Node 24.20.0、pnpm 12.12.1（仓库固定 Node 24.21.0，本机没有该版本）。Windows Gate 剩余首启/会话/媒体/后台定时任务/恢复与 rollback 完整流程、安装升级卸载与数据保留、物理 ENOSPC；见 [ADR 1382](adr/1382-execution-path-capability-audit.md) 和 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)。
 
 ### 5.2 交互生命周期所有权（行为已收口；恢复覆盖纳入新一轮）
 

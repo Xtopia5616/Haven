@@ -57,3 +57,11 @@
 工具 → MCP 页面显示 server 已停用、已断开、4 条覆盖；编辑器读取到迁移后的默认值与覆盖文本。只展开三组菜单读取选项，分别为 availability `enabled/disabled`、catalog `direct/deferred/hidden`、invocation `none/native/codemode/native_and_codemode`；没有选择新值，点击 Cancel 后 SHA-256 `4A44EDE3974648DCB1670AAF83EEDAF1D81B2F6BCA3BD43A296F3A04805049D5` 未变化。关闭应用并用同一 profile 重启后，MCP 卡片仍显示 server 已停用和 4 条覆盖，配置哈希保持不变，确认本次迁移结果可重启读取。server 的 command 为空且始终禁用；未连接 server 或发起工具调用。
 
 本次不验证编辑保存、连接后 catalog 实际发现、native/Code Mode 调用与撤权、未知旧值恢复或完整 MXC/进程权限边界。系统报告 Windows 10 Pro build 29683，尚未确认满足 Windows 11 24H2 支持基线；Slice 4 Acceptance 与 Windows Gate 继续开放。
+
+### Slice 4 验收完成（2026-10-24；Windows 发布 Gate 仍开放）
+
+更正先前平台识别：`Get-CimInstance Win32_OperatingSystem` 返回 `Microsoft Windows 11 专业版 Insider Preview`、`10.0.29683`，不是 Windows 10。隔离 profile `target/acceptance-slice-3-4-2026-10-24` 中配置了一个 `enabled=false`、无可启动命令的 MCP fixture；服务始终保持断开。Settings 的 availability、catalog、invocation 编辑器将默认值保存为 `disabled + hidden + none`，保留四条已有覆盖；关闭并重启同一隔离 profile 后，MCP 卡片显示“已停用 / 已断开 / 默认已禁用 / 4 条覆盖”，磁盘配置读回与保存结果一致。此前在该 fixture 上还验证了三组菜单选项、一次性 High Risk 确认和取消行为；安全设置变更只作用于隔离 profile，结束时已恢复 workspace/restricted。
+
+代码验收包括 legacy exposure 迁移、exact/wildcard resolver、native/deferred/Code Mode/both 适配器路由、disabled 与 stale session call 拒绝、MCP 配置 generation 变化拒绝，以及按配置解析 `load_mcp` transport 与确认边界。相关 MCP exposure 测试 5 项、旧配置迁移测试 1 项及 `mcp_integration` 7 项通过；完整 `cargo test --workspace --locked`、strict Clippy 和此前记录的 UI/IPC 门禁通过。未连接真实外部 MCP server、未调用真实用户工具或配置模型；remote catalog 交互通过本地 MCP fixture 和受控测试覆盖。
+
+以上完成 Slice 4 对配置迁移、Settings 保存/重启读回和调用路由的验收；发布 Gate 仍开放，边界见路线图 §5.1。

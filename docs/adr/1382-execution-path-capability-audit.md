@@ -37,3 +37,19 @@ ADR 1368 为 WorkspaceWrite Shell 建立了 MXC ProcessContainer 路径。仓库
 2026-10-24 在当前代码提交 `a2b1720c463796a0bb1f81c4e5c4ecd7324fb8b3` 上，以 Rust 1.99.0、Node 24.21.0、pnpm 12.12.1 和隔离 `HAVEN_DATA_DIR` 再次启动开发版；AppState、Tauri 初始化和 bootstrap ready 完成，schema v61，SQLite integrity check 为 `ok`，未配置模型 endpoint 或使用真实数据/凭据。Windows 当前环境报告 Windows 10 Pro、build 29683，尚未据此确认满足 Windows 11 24H2 支持基线。首屏最初被 Windows Defender Firewall 的 Node.js 网络权限提示遮挡；用户手动允许后窗口正常显示，自动化未修改防火墙规则。随后只读核对主界面、Settings 安全与权限页，以及 Tools > MCP 空状态页：安全页显示“协作执行”、工作区范围、受限网络和“已应用”状态；MCP 页可达，显示 0 个已配置服务器及添加入口。未修改 Haven 安全设置、MCP 配置或其它应用配置；核对后开发进程已关闭。
 
 这只证明当前隔离 profile 下首屏及相关页面可显示、MCP 空状态可达。没有 MCP 配置，因此未验收服务添加/连接、填充后的 availability/catalog、invocation、旧 exposure 配置迁移、编辑保存与重启恢复；也没有配置模型或发起 Shell 调用。完整 MXC/进程权限负向 UI 验收仍未完成。Windows 支持基线尚未确认，Slice 3 保持 Acceptance Open。
+
+### Slice 3 验收完成（2026-10-24；Windows 发布 Gate 仍开放）
+
+本次验收主机经 `Get-CimInstance Win32_OperatingSystem` 确认为 `Microsoft Windows 11 专业版 Insider Preview`，版本 `10.0.29683`。隔离 profile 与数据目录为 `target/acceptance-slice-3-4-2026-10-24`；没有配置模型、接入真实 MCP server 或使用个人 Haven 数据。实际工具链为 Rust 1.99.0、Node 24.20.0、pnpm 12.12.1；仓库固定 Node 24.21.0，但本机没有该版本，故 UI 门禁结果注明使用 Node 24.20.0。
+
+在真实 Windows host 上显式运行被默认忽略的 MXC 测试：
+
+- `cargo test --locked -p haven-tools workspace_write_shell_ -- --ignored --nocapture --test-threads=1`：4 项通过。生产 Shell/MXC 路径验证授权 workspace 内写入成功、兄弟目录写入失败；本机 loopback listener 验证 `Deny` 与 `Restricted` 均不通、`Open` 可连接；取消和撤销执行授权均终止 MXC 内由 PowerShell 启动的后代进程。
+- `cargo test --locked -p haven-platform sandboxed_process::tests -- --nocapture`：3 项通过。覆盖请求环境隔离、默认 UI 策略及 PowerShell UI 例外。
+- `cargo test --workspace --locked` 和 `cargo clippy --workspace --locked -- -D warnings` 通过；`cargo fmt --all -- --check` 通过。UI `check`、1492 tests/169 files、`build`，IPC contracts/events 与 ADR index 检查也通过；UI 检查使用 Node 24.20.0。
+
+验收发现 PowerShell 在 MXC BaseContainer 的默认 UI 限制下不能初始化。生产请求现仅对 `powershell` / `pwsh` 设置 `ui.disable=false` 与 `isolation=desktop`；剪贴板、输入注入、系统设置、桌面控制与 IME 仍拒绝。`cmd` 保持默认 UI 限制。该设置及预期兼容性与 MXC 官方 [PowerShell BaseContainer 限制说明](https://github.com/microsoft/mxc/blob/main/docs/playground-limitations.md)一致；实际 PowerShell 网络策略测试通过。
+
+Shell 的 `WorkspaceWrite` 分支在 MXC probe、策略构造或 spawn 失败时直接返回错误，不存在 host-process 替代分支；本次在已支持并成功 probe 的主机上没有人为破坏 MXC 安装来触发“后端不可用”，对此负向路径做了源码控制流复核。独立 profile 的默认 WorkspaceWrite/Restricted 设置下，native admin 编辑被后端拒绝且配置未改变；没有配置模型，因此未以模型驱动一次完整聊天 Shell 调用。授权/撤销与生命周期另外由 Windows Shell/MXC 测试直接驱动真实执行 permit。
+
+这些结果关闭 execution-context Slice 3 的验收；首启全流程、安装升级卸载、用户数据保留与物理 ENOSPC 仍属于 §5.1 Windows 发布 Gate，不由本 Slice 签核。

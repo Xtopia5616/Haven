@@ -51,3 +51,9 @@
 ## 验证范围
 
 本报告基于当前工作树静态搜索与调用链阅读；它没有证明每种真实 Windows host policy 或 MXC backend 的运行状态。Windows MXC 负向行为与发布验收仍需在 Windows 环境按[路线图 Gate](architecture-refactor-roadmap.md#51-windows-发布验收gate--open)执行。
+
+## Windows 运行时验收补充（2026-10-24）
+
+Slice 3 已在 Windows 11 专业版 Insider Preview `10.0.29683` 的真实 host 上完成 MXC BaseContainer 验收。显式执行 `cargo test --locked -p haven-tools workspace_write_shell_ -- --ignored --nocapture --test-threads=1`，4 项通过：workspace 根内写入成功、兄弟目录写入拒绝；宿主 loopback 对 `Deny` / `Restricted` 拒绝、对 `Open` 允许；MXC 沙箱内子进程在取消与授权撤销时都被终止。PowerShell 默认 UI 策略曾导致 `STATUS_DLL_INIT_FAILED`；Shell 现在仅为 PowerShell 选择 MXC desktop UI isolation，并保留剪贴板、输入注入、系统设置、桌面控制和 IME 限制。平台策略单测 3 项通过。MXC probe 或 spawn 出错仍直接返回失败，无 host shell fallback；当前支持主机的 backend-unavailable 分支未被人为制造，已复核错误传播控制流。
+
+Rust 全 workspace 测试与 strict Clippy 均通过。该运行时补充不把 Job Object、Skill、MCP stdio、LSP 或其它 host process 误报为 MXC 资源隔离；它只证明前台 Shell `WorkspaceWrite` 的这组实际策略。完整安装/升级/卸载、数据保留与 ENOSPC 仍属于独立 Windows 发布 Gate，见[路线图 §5.1](architecture-refactor-roadmap.md#51-windows-发布验收gate--open)和 [ADR 1382](adr/1382-execution-path-capability-audit.md)。
