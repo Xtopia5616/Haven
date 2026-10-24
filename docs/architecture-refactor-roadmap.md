@@ -86,16 +86,17 @@
 
 在隔离的 Windows profile 或 VM 上使用当前构建完成并记录：
 
-- 首启、Settings、会话、工具确认、媒体、后台/定时任务、恢复与回滚的真实 UI 流程；
+- 首启、Settings、会话、工具确认、媒体、后台任务、恢复与回滚的真实 UI 流程；
 - 主窗口持续聚焦期间丢弃一次 durable UI 通知，确认游标轮询补齐 transcript；让恢复读取与 rollback 并发，确认旧分支不会覆盖回滚投影；
 - 当前安装包的安装、升级、卸载，以及卸载后的用户数据保留行为；
 - **本次 Gate 豁免（ADR 1394）**：不要求真实 Windows 物理卷 ENOSPC 测试。现有 SQLite `SQLITE_FULL` 故障注入与错误恢复提示仍按 ADR 0395/0404 保留，但不声称完成物理卷耗尽验收。
+- **本次 Gate 豁免（ADR 1395）**：不要求 Schedule 创建、触发和结果展示的真实 UI 验收。此范围豁免不是 Schedule UI 通过证据；后台 ToolRun 等其他项目不受影响。
 
 用最新代码和安装产物复跑适用的 Rust/UI 门禁，并在 ADR 中记录实际构建版本、schema、环境、结果与限制。ADR 0395 中早期 profile 和门禁结果是当时的历史证据，不能当作当前工作树或当前安装包的通过结论。
 
 可以提前准备隔离 profile 和安装器；最终验收必须使用交互生命周期等 IPC/UI 变更完成后的最新构建。此项是发布签核门，不阻塞不影响发布路径的独立模块整理。
 
-**当前 Gate 状态：Open。** Slice 3/4 已在独立开发 profile 和真实 Windows MXC 进程测试中验收；主机为 Windows 11 专业版 Insider Preview `10.0.29683`。Slice 3 的宿主根目录写入/拒绝、`Deny/Restricted/Open` loopback 网络行为、PowerShell 兼容、MXC 后代进程取消与撤权均通过；Slice 4 的隔离 MCP fixture 编辑保存、应用重启读回及本地路由/迁移测试通过。MCP fixture 保持 disabled，没有外部服务器调用。工具链为 Rust 1.99.0、Node 24.21.0、pnpm 12.12.1。Windows NSIS 验收包 `0.1.2` 在隔离 profile 完成 `0.1.0 → 0.1.2` 升级、运行中旧进程升级和卸载：升级后 UI 资源与当前构建 75 个文件完全一致，卸载删除整个安装目录且保留配置/数据库；发现并修复内容哈希资源残留，详见 [ADR 1392](adr/1392-nsis-cleanup-content-hashed-resources.md)。提交 `09123d9` 后重跑 workspace Rust 测试、严格 Clippy、Svelte check 与 UI 测试，均通过（UI 169 文件、1493 项）。当前 0.1.2 包已从隔离 profile 正常启动，并通过唯一 Haven 窗口检查；设置、媒体设置、124 项内置工具、会话空态、历史页和任务页均正常加载且未改动配置。媒体附件选择器打开到隔离 fixture 目录，但 `@oai/sky` 在激活并刷新后重试仍报告 `point (1147, 454) is over msedgewebview2.exe`，未选择或发送文件。Provider 配置指向 `127.0.0.1:34197`，但 fixture 未监听，模型交互、确认通过路径及 Schedule/后台任务仍未验证。当前隔离数据库只读检查为 `quick_check=ok`、sessions/messages/events 均为 0，不能视作恢复验收。durable UI 通知丢失补齐与 rollback/恢复并发未做真实交互验收。真实 Windows 物理卷 ENOSPC 按 [ADR 1394](adr/1394-waive-physical-enospc-from-current-release-gate.md) 由用户决定从本次 Gate 豁免，不是测试通过；既有 `SQLITE_FULL` 注入与恢复提示证据仍见 ADR 0395/0404。C 盘约余 7.23 GiB、D 盘约余 7.26 GiB；没有填满宿主盘。详细结果见 [ADR 1393](adr/1393-windows-release-gate-recheck.md)、[ADR 1394](adr/1394-waive-physical-enospc-from-current-release-gate.md)、[ADR 1382](adr/1382-execution-path-capability-audit.md)、[ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md) 和 [ADR 1392](adr/1392-nsis-cleanup-content-hashed-resources.md)。
+**当前 Gate 状态：Open。** Slice 3/4 已在独立开发 profile 和真实 Windows MXC 进程测试中验收；主机为 Windows 11 专业版 Insider Preview `10.0.29683`。Slice 3 的宿主根目录写入/拒绝、`Deny/Restricted/Open` loopback 网络行为、PowerShell 兼容、MXC 后代进程取消与撤权均通过；Slice 4 的隔离 MCP fixture 编辑保存、应用重启读回及本地路由/迁移测试通过。MCP fixture 保持 disabled，没有外部服务器调用。工具链为 Rust 1.99.0、Node 24.21.0、pnpm 12.12.1。Windows NSIS 验收包 `0.1.2` 在隔离 profile 完成 `0.1.0 → 0.1.2` 升级、运行中旧进程升级和卸载：升级后 UI 资源与当前构建 75 个文件完全一致，卸载删除整个安装目录且保留配置/数据库；发现并修复内容哈希资源残留，详见 [ADR 1392](adr/1392-nsis-cleanup-content-hashed-resources.md)。提交 `09123d9` 后重跑 workspace Rust 测试、严格 Clippy、Svelte check 与 UI 测试，均通过（UI 169 文件、1493 项）。当前 0.1.2 包已从隔离 profile 正常启动，并通过唯一 Haven 窗口检查；设置、媒体设置、124 项内置工具、会话空态、历史页和任务页均正常加载且未改动配置。媒体附件选择器打开到隔离 fixture 目录，但 `@oai/sky` 在激活并刷新后重试仍报告 `point (1147, 454) is over msedgewebview2.exe`，未选择或发送文件。Provider 配置指向 `127.0.0.1:34197`，但 fixture 未监听，模型交互、确认通过路径及后台任务仍未验证。当前隔离数据库只读检查为 `quick_check=ok`、sessions/messages/events 均为 0，不能视作恢复验收。Schedule 真实 UI 按 [ADR 1395](adr/1395-waive-schedule-ui-from-current-release-gate.md) 由用户决定从本次 Gate 豁免，不是测试通过。durable UI 通知丢失补齐与 rollback/恢复并发未做真实交互验收。真实 Windows 物理卷 ENOSPC 按 [ADR 1394](adr/1394-waive-physical-enospc-from-current-release-gate.md) 由用户决定从本次 Gate 豁免，不是测试通过；既有 `SQLITE_FULL` 注入与恢复提示证据仍见 ADR 0395/0404。C 盘约余 7.23 GiB、D 盘约余 7.26 GiB；没有填满宿主盘。详细结果见 [ADR 1393](adr/1393-windows-release-gate-recheck.md)、[ADR 1394](adr/1394-waive-physical-enospc-from-current-release-gate.md)、[ADR 1395](adr/1395-waive-schedule-ui-from-current-release-gate.md)、[ADR 1382](adr/1382-execution-path-capability-audit.md)、[ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md) 和 [ADR 1392](adr/1392-nsis-cleanup-content-hashed-resources.md)。
 
 ### 5.2 交互生命周期所有权（行为已收口；恢复覆盖纳入新一轮）
 
