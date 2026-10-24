@@ -3238,6 +3238,7 @@ export const GET_PERFORMANCE_METRICS_RESPONSE_SHAPE = {
 		}
 	}
 } as const;
+export const GET_SESSION_EVENT_SEQUENCE_WATERMARK_RESPONSE_SHAPE = { kind: 'number' } as const;
 export const GET_SESSION_EXECUTION_MODE_RESPONSE_SHAPE = {
 	kind: 'object',
 	fields: {
@@ -12248,6 +12249,7 @@ export const TAURI_COMMAND_RESPONSE_SHAPES = {
 	get_log_info: GET_LOG_INFO_RESPONSE_SHAPE,
 	get_mcp_prompt: GET_MCP_PROMPT_RESPONSE_SHAPE,
 	get_performance_metrics: GET_PERFORMANCE_METRICS_RESPONSE_SHAPE,
+	get_session_event_sequence_watermark: GET_SESSION_EVENT_SEQUENCE_WATERMARK_RESPONSE_SHAPE,
 	get_session_execution_mode: GET_SESSION_EXECUTION_MODE_RESPONSE_SHAPE,
 	get_session_execution_workspace: GET_SESSION_EXECUTION_WORKSPACE_RESPONSE_SHAPE,
 	get_session_for_resume: GET_SESSION_FOR_RESUME_RESPONSE_SHAPE,
@@ -12439,6 +12441,7 @@ export interface TauriCommandMap {
 	get_log_info: { request: undefined; response: LogInfo };
 	get_mcp_prompt: { request: { name: string; targetBinding: string; promptName: string; arguments: Record<string, string> }; response: McpFeatureCallOutcome };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
+	get_session_event_sequence_watermark: { request: { sessionId: string }; response: number };
 	get_session_execution_mode: { request: { sessionId: string }; response: SessionExecutionModeResponse };
 	get_session_execution_workspace: { request: { sessionId: string }; response: SessionExecutionWorkspaceResponse };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
@@ -12569,6 +12572,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_log_info: { boundary: 'read', security: "path is optional; no environment details" },
 	get_mcp_prompt: { boundary: 'execute', security: "explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages" },
 	get_performance_metrics: { boundary: 'read', security: "bounded content-free backend counters plus renderer stream counters" },
+	get_session_event_sequence_watermark: { boundary: 'read', security: "canonical session id; returns only its durable event high-water mark" },
 	get_session_execution_mode: { boundary: 'read', security: "canonical session id; reads its durable execution mode" },
 	get_session_execution_workspace: { boundary: 'read', security: "canonical session id; reads its durable workspace binding" },
 	get_session_for_resume: { boundary: 'read', security: "session-scoped persisted projection" },

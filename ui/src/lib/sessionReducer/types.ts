@@ -76,6 +76,9 @@ export interface SessionTokenStats {
 
 export interface SessionReplayState {
 	eventSequenceBySession: Record<string, string[]>;
+	eventSequenceWatermarkBySession: Record<string, number>;
+	resumeSnapshotWatermarkBySession: Record<string, number>;
+	eventSequenceGapsBySession: Record<string, boolean>;
 	chunkSeqByMessage: Record<string, number>;
 	blockIdsBySession: Record<string, Record<string, StreamBlockIds>>;
 }
@@ -246,7 +249,14 @@ export const initialSessionState: SessionReducerState = {
 	workingDocuments: {},
 	workingDocumentSequences: {},
 	workingDocumentEventWatermarks: {},
-	replay: { eventSequenceBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
+	replay: {
+		eventSequenceBySession: {},
+		eventSequenceWatermarkBySession: {},
+		resumeSnapshotWatermarkBySession: {},
+		eventSequenceGapsBySession: {},
+		chunkSeqByMessage: {},
+		blockIdsBySession: {},
+	},
 	pendingMessageOwners: {},
 };
 

@@ -16,6 +16,7 @@
 	import { createChatEventController } from '$lib/chatEventController.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionStartup } from '$lib/chatSessionStartup.ts';
+	import { createSessionEventReconciler } from '$lib/sessionEventReconciler.ts';
 	import { createChatViewController } from '$lib/chatViewController.ts';
 	import { projectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
@@ -33,6 +34,7 @@
 		deleteSession,
 		listSessionHistory,
 		getSessionForResume,
+		getSessionEventSequenceWatermark,
 		getLatestSessionForResume,
 		getSessionLineage,
 		listRuntimeSessions,
@@ -1008,6 +1010,7 @@
 		// only makes the session resumable for follow-up messages).
 		await sessionStartup.loadInitialSessions(initialSessionResumeTarget);
 		if (dead) return;
+		sessionEventReconciler.start();
 
 		// Session just opened (history resume or auto-resume): scroll to
 		// the real bottom, forcing the estimated content-visibility heights to
@@ -1033,6 +1036,7 @@
 		// merges the store with the DB copy).
 		flushChunksNow();
 		chatEventController?.dispose();
+		sessionEventReconciler.dispose();
 		sessionStartup.dispose();
 		chatViewController.dispose();
 		if (browser) {
@@ -1067,6 +1071,7 @@
 	const chatSessionController = createChatSessionController({
 		commands: {
 			getSessionForResume,
+			getSessionEventSequenceWatermark,
 			rollbackSession,
 			forkSessionFromMessage,
 			endSession: endSessionCommand,
@@ -1105,6 +1110,11 @@
 		setContinuePending: (pending) => (continuePending = pending),
 		setInterruptPending: (pending) => (interruptPending = pending),
 		setAutoFollow: (follow) => chatViewController.setAutoFollow(follow),
+	});
+	const sessionEventReconciler = createSessionEventReconciler({
+		getActiveSessionId: () => sessionReducer.snapshot().activeSessionId,
+		isVisible: () => browser && document.visibilityState === 'visible',
+		reconcile: (sessionId) => chatSessionController.reconcileSessionEvents(sessionId),
 	});
 
 	function confirmRollbackAction() {

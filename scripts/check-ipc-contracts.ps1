@@ -138,14 +138,14 @@ Assert-Contains $diagnosticsCommands 'parsePerformanceMetricsSnapshot\(value\)' 
 Assert-Contains $diagnosticsCommands "from './contracts/diagnostics.ts'" 'diagnostics command adapters use the diagnostics contract owner'
 $countContracts = Get-Source 'ui/src/lib/contracts/count.ts'
 Assert-Contains $countContracts 'isSafeUnsignedInteger\(value\)' 'scalar count responses are non-negative safe integers'
-$countCommands = @('clear_facts', 'clear_tool_run_history', 'count_session_history', 'count_session_history_search', 'delete_all_sessions', 'reset_session_permissions', 'run_memory_maintenance')
+$countCommands = @('clear_facts', 'clear_tool_run_history', 'count_session_history', 'count_session_history_search', 'delete_all_sessions', 'get_session_event_sequence_watermark', 'reset_session_permissions', 'run_memory_maintenance')
 $numericResponses = Get-Matches $generated '(?m)^\s{1,2}([a-z][a-z0-9_]*):\s*\{[^\r\n]*response:\s*number(?:;|\s*\})'
 Assert-SetEqual 'numeric scalar command responses vs count adapters' $numericResponses $countCommands
 foreach ($command in $countCommands) {
     $source = switch ($command) {
         'clear_facts' { Get-Source 'ui/src/lib/memoryCommands.ts' }
         'clear_tool_run_history' { Get-Source 'ui/src/lib/toolRunCommands.ts' }
-        { $_ -in @('count_session_history', 'count_session_history_search', 'delete_all_sessions') } { Get-Source 'ui/src/lib/sessionCommands.ts' }
+        { $_ -in @('count_session_history', 'count_session_history_search', 'delete_all_sessions', 'get_session_event_sequence_watermark') } { Get-Source 'ui/src/lib/sessionCommands.ts' }
         { $_ -in @('reset_session_permissions', 'run_memory_maintenance') } { Get-Source 'ui/src/lib/settingsCommands.ts' }
     }
     Assert-Contains $source ("invoke\('" + $command + "'[\s\S]{0,180}?parseCountResponse\(value,\s*'" + $command + "'\)") "$command response uses safe count validation"
@@ -246,7 +246,7 @@ $ownedCommands = @{
     'toolRunCommands.ts' = @('list_tool_runs', 'list_tool_run_history', 'clear_tool_run_history', 'cancel_tool_run')
     'toolsCommands.ts' = @('list_builtin_tool_manifests', 'list_mcp_servers', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource', 'subscribe_mcp_resource', 'unsubscribe_mcp_resource', 'respond_mcp_feature_input', 'cancel_mcp_feature_input', 'list_mcp_prompts', 'get_mcp_prompt', 'list_skills', 'reset_tool_circuits', 'refresh_mcp_servers', 'set_skill_enabled', 'set_tool_enabled', 'refresh_skills', 'open_skills_dir', 'add_mcp_server', 'update_mcp_server', 'remove_mcp_server', 'reconnect_mcp_server', 'toggle_mcp_server', 'execute_skill')
     'memoryCommands.ts' = @('list_facts', 'add_fact', 'delete_fact', 'clear_facts', 'recall_memory', 'list_fact_proposals', 'review_fact_proposal')
-    'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'count_session_history', 'count_session_history_search', 'get_session_for_resume', 'get_latest_session_for_resume', 'submit_transcript', 'reopen_session', 'get_session_execution_workspace', 'set_session_execution_workspace', 'get_session_execution_mode', 'set_session_execution_mode', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'fork_session_from_message', 'end_session', 'interrupt_session', 'continue_session')
+    'sessionCommands.ts' = @('list_runtime_sessions', 'get_session_lineage', 'list_session_history', 'search_session_history_filtered', 'count_session_history', 'count_session_history_search', 'get_session_for_resume', 'get_session_event_sequence_watermark', 'get_latest_session_for_resume', 'submit_transcript', 'reopen_session', 'get_session_execution_workspace', 'set_session_execution_workspace', 'get_session_execution_mode', 'set_session_execution_mode', 'delete_session', 'delete_all_sessions', 'update_session_title', 'rollback_session', 'fork_session_from_message', 'end_session', 'interrupt_session', 'continue_session')
     'modelDiscoveryCommands.ts' = @('discover_models')
     'diagnosticsCommands.ts' = @('get_log_info', 'read_log_tail', 'check_shell_available', 'get_api_key_status', 'get_performance_metrics')
     'settingsCommands.ts' = @('get_settings', 'get_settings_runtime_apply_status', 'get_lifecycle_hooks_settings', 'save_lifecycle_hooks', 'trust_hook_workspace', 'untrust_hook_workspace', 'pick_execution_workspace_directory', 'discard_staged_credentials', 'list_session_permissions', 'is_autostart_enabled', 'run_memory_maintenance', 'revoke_permission', 'revoke_session_permission', 'reset_permissions', 'reset_session_permissions', 'set_hotkey_capture_active', 'stage_provider_credential', 'start_chatgpt_plan_login', 'complete_chatgpt_plan_login', 'cancel_chatgpt_plan_login', 'discard_staged_chatgpt_plan_credential', 'reassign_staged_chatgpt_plan_credential', 'stage_independent_search_credential', 'stage_ocr_credential', 'update_settings', 'reapply_saved_settings', 'enable_autostart', 'disable_autostart')

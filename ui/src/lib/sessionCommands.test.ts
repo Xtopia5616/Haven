@@ -7,6 +7,7 @@ import {
 	getLatestSessionForResume,
 	getSessionLineage,
 	getSessionForResume,
+	getSessionEventSequenceWatermark,
 	interruptSession,
 	listRuntimeSessions,
 	listSessionHistory,
@@ -287,6 +288,19 @@ describe('session history command boundary', () => {
 			['get_session_for_resume', request],
 			['get_latest_session_for_resume'],
 		]);
+	});
+
+	it('reads the durable session event cursor through the validated command boundary', async () => {
+		const request = { sessionId };
+		invokeMock.mockResolvedValueOnce(42 as never);
+
+		await expect(getSessionEventSequenceWatermark(request)).resolves.toBe(42);
+		expect(invokeMock).toHaveBeenCalledWith('get_session_event_sequence_watermark', request);
+
+		invokeMock.mockResolvedValueOnce(-1 as never);
+		await expect(getSessionEventSequenceWatermark(request)).rejects.toThrow(
+			'Invalid get_session_event_sequence_watermark count response',
+		);
 	});
 
 	it('rejects a canonical resume response owned by another requested session', async () => {

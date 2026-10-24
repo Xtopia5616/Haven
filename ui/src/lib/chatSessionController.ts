@@ -29,6 +29,7 @@ export interface ChatSessionControllerDependencies {
 		| 'continueSession'
 		| 'endSession'
 		| 'forkSessionFromMessage'
+		| 'getSessionEventSequenceWatermark'
 		| 'getSessionForResume'
 		| 'interruptSession'
 		| 'rollbackSession'
@@ -71,6 +72,7 @@ export class ChatSessionController {
 	private continueInFlight = false;
 	private interruptInFlight = false;
 	private forkInFlight = false;
+	private lastReconciliationErrorAt = 0;
 
 	constructor(dependencies: ChatSessionControllerDependencies) {
 		this.dependencies = dependencies;
@@ -104,6 +106,57 @@ export class ChatSessionController {
 		}
 	}
 
+	/** Repair committed transcript events that the renderer did not receive. */
+	async reconcileSessionEvents(sessionId: string | null): Promise<void> {
+		if (!sessionId || this.rollbackInFlight || this.continueInFlight) return;
+		const snapshotVersion = this.dependencies.reducer.beginResumeSnapshot(sessionId);
+		try {
+			const watermarkBefore = await this.dependencies.commands.getSessionEventSequenceWatermark({
+				sessionId,
+			});
+			if (
+				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(sessionId, snapshotVersion)
+			)
+				return;
+			const knownWatermark = this.dependencies.reducer.getEventSequenceWatermark(sessionId);
+			if (
+				watermarkBefore <= knownWatermark &&
+				!this.dependencies.reducer.needsEventReconciliation(sessionId)
+			)
+				return;
+
+			const result = await this.dependencies.commands.getSessionForResume({ sessionId });
+			if (
+				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(sessionId, snapshotVersion)
+			)
+				return;
+			const watermarkAfter = await this.dependencies.commands.getSessionEventSequenceWatermark({
+				sessionId,
+			});
+			if (
+				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(sessionId, snapshotVersion) ||
+				watermarkBefore !== watermarkAfter ||
+				result.eventSequenceWatermark !== watermarkAfter
+			)
+				return;
+			if (
+				watermarkAfter <= this.dependencies.reducer.getEventSequenceWatermark(sessionId) &&
+				!this.dependencies.reducer.needsEventReconciliation(sessionId)
+			)
+				return;
+
+			this.applyResumeSnapshot(sessionId, result, { preserveStreamingOnly: true });
+		} catch (error) {
+			const now = Date.now();
+			if (now - this.lastReconciliationErrorAt >= 30_000) {
+				this.lastReconciliationErrorAt = now;
+				this.report(error, '自动同步消息失败');
+			}
+		} finally {
+			this.dependencies.reducer.finishResumeSnapshot(sessionId);
+		}
+	}
+
 	async confirmRollbackAction(request: RollbackRequest): Promise<void> {
 		const sessionId = this.dependencies.getActiveSessionId();
 		if (!sessionId || this.rollbackInFlight) return;
@@ -114,6 +167,7 @@ export class ChatSessionController {
 		}
 
 		this.rollbackInFlight = true;
+		this.dependencies.reducer.invalidateResumeSnapshots(sessionId);
 		this.dependencies.setRollbackLoading(true);
 		try {
 			await this.dependencies.commands.rollbackSession({
@@ -260,6 +314,7 @@ export class ChatSessionController {
 		if (!sessionId || this.continueInFlight) return;
 		const userSelectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
 		this.continueInFlight = true;
+		this.dependencies.reducer.invalidateResumeSnapshots(sessionId);
 		this.dependencies.setContinuePending(true);
 
 		const currentMessages = this.dependencies.reducer.getMessages(sessionId);
@@ -351,13 +406,28 @@ export class ChatSessionController {
 			selectionVersion?: number;
 		} = {},
 	): Promise<boolean> {
-		const result = await this.dependencies.commands.getSessionForResume({ sessionId });
-		if (
-			options.selectionVersion != null &&
-			!this.isUserSessionSelectionCurrent(options.selectionVersion)
-		) {
-			return false;
+		const snapshotVersion = this.dependencies.reducer.beginResumeSnapshot(sessionId);
+		try {
+			const result = await this.dependencies.commands.getSessionForResume({ sessionId });
+			if (
+				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(sessionId, snapshotVersion) ||
+				(options.selectionVersion != null &&
+					!this.isUserSessionSelectionCurrent(options.selectionVersion))
+			) {
+				return false;
+			}
+			this.applyResumeSnapshot(sessionId, result, options);
+			return true;
+		} finally {
+			this.dependencies.reducer.finishResumeSnapshot(sessionId);
 		}
+	}
+
+	private applyResumeSnapshot(
+		sessionId: string,
+		result: Awaited<ReturnType<ChatSessionControllerDependencies['commands']['getSessionForResume']>>,
+		options: { preserveStreamingOnly?: boolean; excludeMessageIds?: string[] },
+	): void {
 		this.dependencies.dispatch({
 			type: 'session/messages/resume-loaded',
 			sessionId,
@@ -372,7 +442,6 @@ export class ChatSessionController {
 			...(options.preserveStreamingOnly ? { preserveStreamingOnly: true } : {}),
 			...(options.excludeMessageIds ? { excludeMessageIds: options.excludeMessageIds } : {}),
 		});
-		return true;
 	}
 
 	private report(error: unknown, message: string): void {

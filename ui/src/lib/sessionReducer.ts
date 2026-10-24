@@ -143,6 +143,11 @@ function updateWorkingDocument(
 ): SessionReducerState {
 	if (
 		action.eventSequence <=
+		(state.replay.resumeSnapshotWatermarkBySession[action.sessionId] ?? 0)
+	)
+		return state;
+	if (
+		action.eventSequence <=
 		(state.workingDocumentEventWatermarks[action.sessionId] ?? -1)
 	)
 		return state;
@@ -159,6 +164,23 @@ function updateWorkingDocument(
 		workingDocumentEventWatermarks: {
 			...state.workingDocumentEventWatermarks,
 			[action.sessionId]: action.eventSequence,
+		},
+		replay: {
+			...state.replay,
+			eventSequenceWatermarkBySession: {
+				...state.replay.eventSequenceWatermarkBySession,
+				[action.sessionId]: Math.max(
+					state.replay.eventSequenceWatermarkBySession[action.sessionId] ?? 0,
+					action.eventSequence,
+				),
+			},
+			eventSequenceGapsBySession: {
+				...state.replay.eventSequenceGapsBySession,
+				...(action.eventSequence >
+				(state.replay.eventSequenceWatermarkBySession[action.sessionId] ?? 0) + 1
+					? { [action.sessionId]: true }
+					: {}),
+			},
 		},
 	};
 }
@@ -218,7 +240,40 @@ export function reduceSession(
 			return reduceInteraction(reduceTranscript(inputState, action), action);
 
 		case 'session/messages/resume-loaded':
-			return resumeSession(inputState, action);
+			if (
+				action.eventSequenceWatermark != null &&
+				action.eventSequenceWatermark <
+					(inputState.replay.eventSequenceWatermarkBySession[action.sessionId] ?? 0)
+			)
+				return inputState;
+			{
+				const resumed = resumeSession(inputState, action);
+				if (action.eventSequenceWatermark == null) return resumed;
+				return {
+					...resumed,
+					replay: {
+						...resumed.replay,
+						eventSequenceWatermarkBySession: {
+							...resumed.replay.eventSequenceWatermarkBySession,
+							[action.sessionId]: Math.max(
+								resumed.replay.eventSequenceWatermarkBySession[action.sessionId] ?? 0,
+								action.eventSequenceWatermark,
+							),
+						},
+						resumeSnapshotWatermarkBySession: {
+							...resumed.replay.resumeSnapshotWatermarkBySession,
+							[action.sessionId]: Math.max(
+								resumed.replay.resumeSnapshotWatermarkBySession[action.sessionId] ?? 0,
+								action.eventSequenceWatermark,
+							),
+						},
+						eventSequenceGapsBySession: {
+							...resumed.replay.eventSequenceGapsBySession,
+							[action.sessionId]: false,
+						},
+					},
+				};
+			}
 
 		case 'session/working-document-updated':
 			return updateWorkingDocument(inputState, action);
@@ -266,6 +321,8 @@ type SessionStateListener = (state: SessionReducerState) => void;
 export class SessionReducer {
 	private state: SessionReducerState;
 	private userSelectionVersion = 0;
+	private readonly resumeSnapshotVersions = new Map<string, number>();
+	private readonly pendingResumeSnapshots = new Map<string, number>();
 	private readonly listeners = new Set<SessionStateListener>();
 	private readonly stateStore?: Writable<SessionReducerState>;
 
@@ -299,6 +356,45 @@ export class SessionReducer {
 		return messagesOf(this.state, sessionId);
 	}
 
+	getEventSequenceWatermark(sessionId: string): number {
+		return this.state.replay.eventSequenceWatermarkBySession[sessionId] ?? 0;
+	}
+
+	needsEventReconciliation(sessionId: string): boolean {
+		return this.state.replay.eventSequenceGapsBySession[sessionId] === true;
+	}
+
+	beginResumeSnapshot(sessionId: string): number {
+		this.pendingResumeSnapshots.set(
+			sessionId,
+			(this.pendingResumeSnapshots.get(sessionId) ?? 0) + 1,
+		);
+		return this.resumeSnapshotVersions.get(sessionId) ?? 0;
+	}
+
+	isResumeSnapshotVersionCurrent(sessionId: string, version: number): boolean {
+		return (this.resumeSnapshotVersions.get(sessionId) ?? 0) === version;
+	}
+
+	finishResumeSnapshot(sessionId: string): void {
+		const remaining = (this.pendingResumeSnapshots.get(sessionId) ?? 1) - 1;
+		if (remaining > 0) {
+			this.pendingResumeSnapshots.set(sessionId, remaining);
+			return;
+		}
+		this.pendingResumeSnapshots.delete(sessionId);
+		this.resumeSnapshotVersions.delete(sessionId);
+	}
+
+	/** Invalidate snapshots that started before a timeline-mutating command. */
+	invalidateResumeSnapshots(sessionId: string): void {
+		if (!this.pendingResumeSnapshots.has(sessionId)) return;
+		this.resumeSnapshotVersions.set(
+			sessionId,
+			(this.resumeSnapshotVersions.get(sessionId) ?? 0) + 1,
+		);
+	}
+
 	getPendingInteractionRequestIds(sessionId: string): string[] {
 		return Object.values(this.state.interactions || {})
 			.filter(
@@ -319,6 +415,23 @@ export class SessionReducer {
 	}
 
 	dispatch(action: SessionAction): SessionReducerState {
+		if (
+			action.type === 'session/messages/truncated' ||
+			action.type === 'session/replay-reset' ||
+			action.type === 'session/messages/cleared' ||
+			action.type === 'session/memory-cleared'
+		) {
+			this.invalidateResumeSnapshots(action.sessionId);
+		} else if (action.type === 'session/deleted' && action.sessionId) {
+			this.invalidateResumeSnapshots(action.sessionId);
+		} else if (action.type === 'session/cleared' || action.type === 'sessions/cleared') {
+			for (const sessionId of new Set([
+				...Object.keys(this.state.messages),
+				...this.pendingResumeSnapshots.keys(),
+			])) {
+				this.invalidateResumeSnapshots(sessionId);
+			}
+		}
 		const next = reduceSession(this.state, action);
 		if (next === this.state) return this.state;
 		this.state = next;

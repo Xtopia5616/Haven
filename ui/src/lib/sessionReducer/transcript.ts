@@ -60,6 +60,9 @@ export function reduceTranscript(
 				messages: draft.length ? { [DRAFT_SESSION_ID]: draft } : {},
 				replay: {
 					eventSequenceBySession: {},
+					eventSequenceWatermarkBySession: {},
+					resumeSnapshotWatermarkBySession: {},
+					eventSequenceGapsBySession: {},
 					chunkSeqByMessage: {},
 					blockIdsBySession: {},
 				},

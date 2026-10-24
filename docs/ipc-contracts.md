@@ -47,6 +47,7 @@
 | `get_log_info` | read | path is optional; no environment details |
 | `get_mcp_prompt` | execute | explicit user-selected prompt and declared arguments; enabled live target binding; bounded untrusted messages |
 | `get_performance_metrics` | read | bounded content-free backend counters plus renderer stream counters |
+| `get_session_event_sequence_watermark` | read | canonical session id; returns only its durable event high-water mark |
 | `get_session_execution_mode` | read | canonical session id; reads its durable execution mode |
 | `get_session_execution_workspace` | read | canonical session id; reads its durable workspace binding |
 | `get_session_for_resume` | read | session-scoped persisted projection |
@@ -131,6 +132,7 @@ repository source 值后显式投影字段，repository 新增字段不会自动
 | `list_runtime_sessions` | read | 当前进程中驻留且未终结的会话列表；Rust `session_id` / `input_text` / `waiting_reason` 在 renderer 边界映射为 `sessionId` / `inputText` / `waitingReason`；响应仅包含会话切换器所需字段 |
 | `get_session_lineage` | read | 当前会话的父会话和直接子会话 |
 | `get_session_for_resume` | read | 恢复指定会话所需的持久化投影，包含当前工作文档、其活动 sequence 与同一事件快照的 append-only `event_sequence_watermark` |
+| `get_session_event_sequence_watermark` | read | 只读取指定会话 append-only `session_events` 的最大 sequence，用于检测 renderer 漏收的提交事件 |
 | `get_latest_session_for_resume` | read | 最近持久化会话及恢复投影（含当前工作文档与事件水位） |
 | `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | mutate | 会话生命周期控制；中断保留会话 |
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |

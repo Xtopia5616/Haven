@@ -75,6 +75,7 @@ export function acceptEventSequence(
 ): SessionReducerState | null {
 	if (eventSequence == null || !Number.isFinite(eventSequence) || !identity) return state;
 	const replay = replayOf(state);
+	if (eventSequence <= (replay.resumeSnapshotWatermarkBySession[sessionId] ?? 0)) return null;
 	const previous = replay.eventSequenceBySession[sessionId] || [];
 	const key = `${eventSequence}:${identity}`;
 	if (previous.includes(key)) return null;
@@ -86,6 +87,16 @@ export function acceptEventSequence(
 		replay: {
 			...replay,
 			eventSequenceBySession: { ...replay.eventSequenceBySession, [sessionId]: seen },
+			eventSequenceWatermarkBySession: {
+				...replay.eventSequenceWatermarkBySession,
+				[sessionId]: Math.max(replay.eventSequenceWatermarkBySession[sessionId] ?? 0, eventSequence),
+			},
+			eventSequenceGapsBySession: {
+				...replay.eventSequenceGapsBySession,
+				...(eventSequence > (replay.eventSequenceWatermarkBySession[sessionId] ?? 0) + 1
+					? { [sessionId]: true }
+					: {}),
+			},
 		},
 	};
 }
@@ -97,9 +108,22 @@ export function clearReplayForSession(
 ): SessionReducerState {
 	const replay = replayOf(state);
 	const eventSequenceBySession = { ...replay.eventSequenceBySession };
+	const eventSequenceWatermarkBySession = { ...replay.eventSequenceWatermarkBySession };
+	const resumeSnapshotWatermarkBySession = { ...replay.resumeSnapshotWatermarkBySession };
+	const eventSequenceGapsBySession = { ...replay.eventSequenceGapsBySession };
 	const blockIdsBySession = { ...replay.blockIdsBySession };
 	const chunkSeqByMessage = { ...replay.chunkSeqByMessage };
-	if (!preserveEventSequence) delete eventSequenceBySession[sessionId];
+	if (!preserveEventSequence) {
+		delete eventSequenceBySession[sessionId];
+		delete eventSequenceWatermarkBySession[sessionId];
+		delete resumeSnapshotWatermarkBySession[sessionId];
+		delete eventSequenceGapsBySession[sessionId];
+	} else {
+		resumeSnapshotWatermarkBySession[sessionId] = Math.max(
+			resumeSnapshotWatermarkBySession[sessionId] ?? 0,
+			eventSequenceWatermarkBySession[sessionId] ?? 0,
+		);
+	}
 	for (const ids of Object.values(blockIdsBySession[sessionId] || {})) {
 		if (ids.thoughtId) delete chunkSeqByMessage[ids.thoughtId];
 		if (ids.reasoningId) delete chunkSeqByMessage[ids.reasoningId];
@@ -108,6 +132,14 @@ export function clearReplayForSession(
 	for (const message of messagesOf(state, sessionId)) delete chunkSeqByMessage[message.id];
 	return {
 		...state,
-		replay: { ...replay, eventSequenceBySession, blockIdsBySession, chunkSeqByMessage },
+		replay: {
+			...replay,
+			eventSequenceBySession,
+			eventSequenceWatermarkBySession,
+			resumeSnapshotWatermarkBySession,
+			eventSequenceGapsBySession,
+			blockIdsBySession,
+			chunkSeqByMessage,
+		},
 	};
 }

@@ -378,6 +378,11 @@ pub(crate) const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "session-scoped persisted projection",
     },
     CommandContract {
+        name: "get_session_event_sequence_watermark",
+        boundary: CommandBoundary::Read,
+        security: "canonical session id; returns only its durable event high-water mark",
+    },
+    CommandContract {
         name: "get_latest_session_for_resume",
         boundary: CommandBoundary::Read,
         security: "most recent persisted session only",

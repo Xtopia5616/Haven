@@ -20,6 +20,97 @@ const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState =
 });
 
 describe('SessionReducer', () => {
+	it('tracks event gaps and uses a recovered snapshot to fence late delivery', () => {
+		const sessionId = 'ses-00000000000000000000000000000065';
+		let state = reduceSession(initialSessionState, {
+			type: 'agent/thought',
+			payload: {
+				sessionId,
+				thought: 'live event',
+				stepNumber: 1,
+				runId: 1,
+				messageId: 'step-00000000000000000000000000000065',
+				eventSequence: 4,
+			},
+		});
+		expect(state.replay.eventSequenceWatermarkBySession[sessionId]).toBe(4);
+		expect(state.replay.eventSequenceGapsBySession[sessionId]).toBe(true);
+
+		state = reduceSession(state, {
+			type: 'session/messages/resume-loaded',
+			sessionId,
+			messages: [{ id: 'step-00000000000000000000000000000065', role: 'assistant', content: 'recovered' }],
+			eventSequenceWatermark: 4,
+		});
+		expect(state.replay.eventSequenceGapsBySession[sessionId]).toBe(false);
+		expect(state.replay.resumeSnapshotWatermarkBySession[sessionId]).toBe(4);
+
+		const late = reduceSession(state, {
+			type: 'agent/thought',
+			payload: {
+				sessionId,
+				thought: 'late duplicate',
+				stepNumber: 1,
+				runId: 1,
+				messageId: 'step-00000000000000000000000000000066',
+				eventSequence: 4,
+			},
+		});
+		expect(late).toBe(state);
+	});
+
+	it('rejects a resume snapshot older than the latest live event watermark', () => {
+		const sessionId = 'ses-00000000000000000000000000000067';
+		const live = reduceSession(initialSessionState, {
+			type: 'agent/thought',
+			payload: {
+				sessionId,
+				thought: 'newer live event',
+				stepNumber: 1,
+				runId: 1,
+				messageId: 'step-00000000000000000000000000000067',
+				eventSequence: 10,
+			},
+		});
+		const stale = reduceSession(live, {
+			type: 'session/messages/resume-loaded',
+			sessionId,
+			messages: [{ id: 'msg-00000000000000000000000000000067', role: 'assistant', content: 'stale' }],
+			eventSequenceWatermark: 9,
+		});
+		expect(stale).toBe(live);
+	});
+
+	it('fences late pre-rollback events immediately when replay is reset', () => {
+		const sessionId = 'ses-00000000000000000000000000000068';
+		const beforeRollback = reduceSession(initialSessionState, {
+			type: 'agent/thought',
+			payload: {
+				sessionId,
+				thought: 'old branch',
+				stepNumber: 5,
+				runId: 1,
+				messageId: 'step-00000000000000000000000000000068',
+				eventSequence: 20,
+			},
+		});
+		const reset = reduceSession(beforeRollback, { type: 'session/replay-reset', sessionId });
+		const lateOldBranchEvent = reduceSession(reset, {
+			type: 'agent/thought',
+			payload: {
+				sessionId,
+				thought: 'late old branch',
+				stepNumber: 5,
+				runId: 1,
+				messageId: 'step-00000000000000000000000000000069',
+				eventSequence: 20,
+			},
+		});
+
+		expect(reset.replay.resumeSnapshotWatermarkBySession[sessionId]).toBe(20);
+		expect(lateOldBranchEvent).toBe(reset);
+	});
+
 	it('restores the latest working document and ignores stale live updates', () => {
 		const sessionId = 'ses-00000000000000000000000000000061';
 		let state = reduceSession(initialSessionState, {
@@ -180,6 +271,9 @@ describe('SessionReducer', () => {
 			llmUsage: { [sessionId]: [{ usageId: 'usage-00000000000000000000000000000041' }] },
 			replay: {
 				eventSequenceBySession: { [sessionId]: ['1'] },
+				eventSequenceWatermarkBySession: {},
+				resumeSnapshotWatermarkBySession: {},
+				eventSequenceGapsBySession: {},
 				chunkSeqByMessage: { [sessionMessage.id]: 1 },
 				blockIdsBySession: { [sessionId]: {} },
 			},
@@ -202,6 +296,9 @@ describe('SessionReducer', () => {
 		expect(cleared.llmUsage).toEqual({});
 		expect(cleared.replay).toEqual({
 			eventSequenceBySession: {},
+			eventSequenceWatermarkBySession: {},
+			resumeSnapshotWatermarkBySession: {},
+			eventSequenceGapsBySession: {},
 			chunkSeqByMessage: {},
 			blockIdsBySession: {},
 		});

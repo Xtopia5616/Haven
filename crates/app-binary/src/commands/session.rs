@@ -860,6 +860,33 @@ pub async fn get_session_for_resume(
     resume_session_from_store(state.runtime.session_store.clone(), &session_id).await
 }
 
+/// Read only the durable session event high-water mark so the chat renderer
+/// can detect a missed committed event without rebuilding the transcript on
+/// every reconciliation tick.
+#[tauri::command]
+pub async fn get_session_event_sequence_watermark(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<u64, String> {
+    validate_command_id(&session_id, "session_id", "ses")
+        .map_err(|error| log_err("get_session_event_sequence_watermark", error))?;
+    let sequence = state
+        .runtime
+        .session_store
+        .latest_sequence_cancellable(&session_id, tokio_util::sync::CancellationToken::new())
+        .await
+        .map_err(|error| log_err("get_session_event_sequence_watermark", error))?;
+    let sequence = u64::try_from(sequence)
+        .map_err(|error| log_err("get_session_event_sequence_watermark", error))?;
+    if sequence > 9_007_199_254_740_991 {
+        return Err(log_err(
+            "get_session_event_sequence_watermark",
+            "event sequence exceeds the JavaScript safe integer range",
+        ));
+    }
+    Ok(sequence)
+}
+
 /// Return the most recent persisted session with its messages and steps for
 /// the chat page to resume on app start. Returns `None` when no session exists.
 #[tauri::command]

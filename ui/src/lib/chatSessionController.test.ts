@@ -16,7 +16,9 @@ const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
 const CREATED_SESSION_ID = 'ses-00000000000000000000000000000003';
 const USER_MESSAGE_ID = 'msg-00000000000000000000000000000001';
 
-function resumeResponseFixture(overrides: Partial<ResumeTranscriptProjectionInput> = {}) {
+function resumeResponseFixture(
+	overrides: Partial<ResumeTranscriptProjectionInput> & { eventSequenceWatermark?: number } = {},
+) {
 	return {
 		session: { id: SESSION_ID, status: 'paused' },
 		messages: [],
@@ -24,6 +26,7 @@ function resumeResponseFixture(overrides: Partial<ResumeTranscriptProjectionInpu
 		usage: null,
 		llm_usage: [],
 		interactions: [],
+		eventSequenceWatermark: 0,
 		...overrides,
 	};
 }
@@ -92,6 +95,8 @@ function makeHarness(
 			(await runCommand('fork_session_from_message', request)) as string,
 		getSessionForResume: async (request) =>
 			(await runCommand('get_session_for_resume', request)) as SessionResumeResponse,
+		getSessionEventSequenceWatermark: async (request) =>
+			Number((await runCommand('get_session_event_sequence_watermark', request)) ?? 0),
 	};
 
 	const dependencies: ChatSessionControllerDependencies = {
@@ -451,6 +456,93 @@ describe('ChatSessionController continue', () => {
 
 		expect(harness.inputDrafts).toEqual([]);
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
+	});
+
+	it('does not let a pre-rollback resume snapshot overwrite the rolled-back transcript', async () => {
+		let resolveStaleSnapshot!: (value: SessionResumeResponse) => void;
+		let resumeCall = 0;
+		const staleSnapshot = new Promise<SessionResumeResponse>((resolve) => {
+			resolveStaleSnapshot = resolve;
+		});
+		const harness = makeHarness({
+			runCommand: (command) => {
+				if (command !== 'get_session_for_resume') return undefined;
+				resumeCall++;
+				if (resumeCall === 1) return staleSnapshot;
+				return resumeResponseFixture({
+					eventSequenceWatermark: 12,
+					messages: [
+						{
+							messageId: USER_MESSAGE_ID,
+							role: 'assistant',
+							content: '回滚后的内容',
+							created_at: '2026-10-20T00:00:00Z',
+						},
+					],
+				});
+			},
+		});
+
+		const pendingStaleSync = harness.controller.resyncSessionMessages(SESSION_ID);
+		await harness.controller.confirmRollbackAction({
+			stepNumber: 7,
+			role: 'assistant',
+			content: '',
+			messageId: 'step-00000000000000000000000000000007',
+		});
+		resolveStaleSnapshot(
+			resumeResponseFixture({
+				eventSequenceWatermark: 8,
+				messages: [
+					{
+						messageId: USER_MESSAGE_ID,
+						role: 'assistant',
+						content: '回滚前的内容',
+						created_at: '2026-10-19T00:00:00Z',
+					},
+				],
+			}) as unknown as SessionResumeResponse,
+		);
+		await pendingStaleSync;
+
+		expect(harness.reducer.getMessages(SESSION_ID)).toMatchObject([
+			{ id: USER_MESSAGE_ID, content: '回滚后的内容' },
+		]);
+	});
+});
+
+describe('ChatSessionController event reconciliation', () => {
+	it('backfills a silently missed committed event only after a stable cursor advance', async () => {
+		const harness = makeHarness({
+			runCommand: (command) =>
+				command === 'get_session_event_sequence_watermark'
+					? 8
+					: command === 'get_session_for_resume'
+						? resumeResponseFixture({ eventSequenceWatermark: 8 })
+						: undefined,
+		});
+
+		await harness.controller.reconcileSessionEvents(SESSION_ID);
+
+		expect(harness.commandCalls.map((call) => call.command)).toEqual([
+			'get_session_event_sequence_watermark',
+			'get_session_for_resume',
+			'get_session_event_sequence_watermark',
+		]);
+		expect(harness.reducer.getEventSequenceWatermark(SESSION_ID)).toBe(8);
+	});
+
+	it('checks the durable cursor without loading a transcript when no event was missed', async () => {
+		const harness = makeHarness({
+			runCommand: (command) =>
+				command === 'get_session_event_sequence_watermark' ? 0 : undefined,
+		});
+
+		await harness.controller.reconcileSessionEvents(SESSION_ID);
+
+		expect(harness.commandCalls.map((call) => call.command)).toEqual([
+			'get_session_event_sequence_watermark',
+		]);
 	});
 });
 

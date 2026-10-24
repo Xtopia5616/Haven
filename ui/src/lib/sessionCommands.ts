@@ -54,6 +54,14 @@ export async function getSessionForResume(
 	return parseSessionResumeResponse(value, request.sessionId);
 }
 
+/** Read the latest committed event cursor without loading the session transcript. */
+export async function getSessionEventSequenceWatermark(
+	request: TauriCommandRequest<'get_session_event_sequence_watermark'>,
+): Promise<number> {
+	const value: unknown = await invoke('get_session_event_sequence_watermark', request);
+	return parseCountResponse(value, 'get_session_event_sequence_watermark');
+}
+
 /** Load the most recent persisted session projection for startup resume. */
 export async function getLatestSessionForResume(): Promise<SessionResumeResponse | null> {
 	const value: unknown = await invoke('get_latest_session_for_resume');

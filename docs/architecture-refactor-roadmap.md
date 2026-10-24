@@ -74,6 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
+| **Completed** | R05 durable UI 事件补齐与 R12 的恢复/rollback 快照竞态切片（ADR 1386）：聊天页可见期间每 5 秒读取当前会话的轻量 durable cursor；序号跳跃或后端 cursor 前进时，双侧 cursor 稳定后才应用恢复投影。快照水位拒绝旧事件，rollback/continue 会使在途旧快照失效。自动化门禁通过后关闭此实现切片；真实 Windows 连续聚焦丢事件与 rollback 并发 UI 场景仍属于 §5.1 真实交互验收。R12 其余页面动作职责仍按审查报告作为候选。 |
 | **Completed** | 新一轮 R03：router、媒体客户端与 MediaConfig 经 App 独占 publisher 原子发布；Agent、Memory、Tools 只读同一代次。单次 provider/媒体操作捕获快照，在途操作保留旧代次；目录重建失败时旧目录保持原子且状态 reason 指明已发布版本。边界与测试见 [ADR 1385](adr/1385-atomic-model-media-generation-publication.md)。整个 ReAct turn 跨代次、后台任务与会话配置代次绑定仍属后续建议；顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
 | **Completed** | 新一轮 R02：按 runtime target 显示期望/实际配置版本、结果与净化原因；可在共享 apply gate 下仅重试失败或尚未执行目标，状态见 [ADR 1384](adr/1384-explicit-reapply-of-saved-runtime-configuration.md)。 |
 | **Completed** | Slice 2 typed 资源合同（ADR 1374、1376–1381）：Files/HTTP/剪贴板/窗口/注册表与 MCP 远程调用均由可信 adapter 在执行前声明并验证；MCP 执行 proof 绑定连接配置/代次，持久资源授权绑定稳定配置与完整参数摘要。见 [ADR 1373](adr/1373-session-scoped-execution-workspace.md)、[ADR 1374](adr/1374-session-execution-mode-and-resource-contracts.md)、[ADR 1375](adr/1375-resource-scoped-persistent-permissions.md)、[ADR 1376](adr/1376-canonical-resource-policy-and-boundary-extension.md)、[ADR 1377](adr/1377-once-only-http-domain-boundary-extension.md)、[ADR 1378](adr/1378-typed-clipboard-resource-boundary.md)、[ADR 1379](adr/1379-typed-window-resource-boundary.md)、[ADR 1380](adr/1380-typed-registry-resource-boundary.md)、[ADR 1381](adr/1381-bind-mcp-invocations-to-remote-targets.md) 和[设计提案](execution-context-redesign.md)。 |
@@ -85,6 +86,7 @@
 按 ADR 0395 的验收范围，在隔离的 Windows profile 或 VM 上使用当前构建完成并记录：
 
 - 首启、Settings、会话、工具确认、媒体、后台/定时任务、恢复与回滚的真实 UI 流程；
+- 主窗口持续聚焦期间丢弃一次 durable UI 通知，确认游标轮询补齐 transcript；让恢复读取与 rollback 并发，确认旧分支不会覆盖回滚投影；
 - 当前安装包的安装、升级、卸载，以及卸载后的用户数据保留行为；
 - 物理磁盘空间耗尽时的错误分类、用户提示和恢复操作。
 
