@@ -973,6 +973,9 @@
 		// be emitted into the small registration gap and the modal never appears.
 		await eventController.register();
 		if (dead) return;
+		// Start durable-event recovery before startup's session resume can wait on
+		// a slow reopen. The active session is read dynamically on every check.
+		sessionEventReconciler.start();
 
 		// Load configured Chat profiles and the current route primary for the
 		// toolbar. Fire-and-forget so loading settings never delays chat
@@ -1007,7 +1010,8 @@
 		// only makes the session resumable for follow-up messages).
 		await sessionStartup.loadInitialSessions(initialSessionResumeTarget);
 		if (dead) return;
-		sessionEventReconciler.start();
+		// Startup may have selected or resumed a session after the first check.
+		void sessionEventReconciler.reconcileNow();
 
 		// Session just opened (history resume or auto-resume): scroll to
 		// the real bottom, forcing the estimated content-visibility heights to

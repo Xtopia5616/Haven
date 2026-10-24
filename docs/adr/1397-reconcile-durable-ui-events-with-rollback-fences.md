@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受；UI 自动测试已通过（2026-10-25）。真实 Windows 持续聚焦丢通知与 rollback 并发交互验收仍开放，归属发布 Gate §5.1。
+已接受；UI 自动测试与 Windows 持续聚焦丢通知验收已通过（2026-10-25）。恢复与 rollback 并发交互验收仍开放，归属发布 Gate §5.1。
 
 ## 背景
 
@@ -18,7 +18,9 @@ Session 事件发布后，主窗口仍可能因 renderer 短暂丢监听而漏�
 ## 验证
 
 - UI 测试覆盖漏收事件补齐、稳定 cursor 校验、cursor 在 snapshot 获取期间前进时拒绝结果并在下一轮恢复、窗口持续可见轮询及重新聚焦立即补查、rollback 使旧恢复结果失效。
-- Windows 真实交互尚未执行：隔离 profile 中主窗口持续聚焦丢弃一次 durable 通知并验证补齐；并发触发恢复和 rollback，验证旧分支不回写。
+- 本轮 `corepack pnpm exec vitest run --maxWorkers=4` 全量 UI 测试 169 个文件、1499 项通过；`corepack pnpm run check` 为 0 错误、0 警告。
+- 隔离 Windows profile 的 Haven 窗口保持前台可见时，通过独立测试进程直接向隔离数据库追加 seq 13 durable event（不发送 UI 事件）；reconciler 从 cursor 12 检出前进，读取稳定水位 13 的恢复快照并更新 reducer。该用例验证了持续聚焦时漏通知后的补齐。
+- 恢复读取与 rollback 并发的真实 UI 交互尚未执行；自动测试覆盖旧快照失效，但不能替代该 Windows 验收。
 
 ## 影响与回滚
 

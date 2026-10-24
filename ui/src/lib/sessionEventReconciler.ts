@@ -34,6 +34,7 @@ export function createSessionEventReconciler(dependencies: SessionEventReconcile
 		timer = window.setInterval(() => void reconcileNow(), intervalMs);
 		window.addEventListener('focus', onFocus);
 		document.addEventListener('visibilitychange', onVisibilityChange);
+		void reconcileNow();
 	}
 
 	function dispose(): void {

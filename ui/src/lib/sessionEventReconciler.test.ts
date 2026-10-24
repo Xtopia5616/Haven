@@ -4,6 +4,21 @@ import { createSessionEventReconciler } from './sessionEventReconciler.ts';
 afterEach(() => vi.useRealTimers());
 
 describe('session event reconciler', () => {
+	it('checks the active visible session as soon as it starts', async () => {
+		const sessionId = 'ses-00000000000000000000000000000004';
+		const reconcile = vi.fn(async () => {});
+		const reconciler = createSessionEventReconciler({
+			getActiveSessionId: () => sessionId,
+			isVisible: () => true,
+			reconcile,
+		});
+
+		reconciler.start();
+		await Promise.resolve();
+		expect(reconcile).toHaveBeenCalledExactlyOnceWith(sessionId);
+		reconciler.dispose();
+	});
+
 	it('checks only the active session while the page is visible', async () => {
 		vi.useFakeTimers();
 		let sessionId: string | null = null;

@@ -2,7 +2,7 @@
 
 ## 状态
 
-实现及自动化门禁已通过；真实 Windows 竞态交互验收仍 Open — 2026-10-24。对应架构审查 R05/R12。
+实现及自动化门禁已通过；持续聚焦丢事件的隔离 Windows 验收已通过（2026-10-25），恢复与 rollback 并发交互仍 Open。对应架构审查 R05/R12。
 
 ## 背景
 
@@ -28,7 +28,8 @@ Agent durable UI publisher 与前端 reducer 已按事件 sequence 去重，但 
 - Chat controller 回归覆盖漏收事件补齐、cursor 未变化时跳过完整恢复请求，以及 pre-rollback 请求不能覆盖 rollback 后投影。
 - Reconciler 回归覆盖页面可见性、当前会话选择、轮询不重叠与 dispose 清理。
 - `scripts/check-ipc-contracts.ps1`、`scripts/check-adr-index.ps1`、`cargo fmt --all -- --check`、`cargo test --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`、`corepack pnpm run check`、`corepack pnpm run test:run` 与 `corepack pnpm run build` 均通过。
-- `cargo tauri dev` 在隔离的 `HAVEN_DATA_DIR` 下启动成功，Windows WebView 首屏可用；尚未完成真实漏收通知与 rollback 并发操作，因此 §5.1 的这两项交互验收仍保持 Open。
+- `cargo tauri dev` 在隔离的 `HAVEN_DATA_DIR` 下启动成功，Windows WebView 首屏可用。2026-10-25 隔离验收中，Haven 主窗口保持前台可见时由独立测试进程直接追加未广播的 durable event；UI 从 cursor 12 检出 seq 13 并应用稳定恢复快照，验证持续聚焦丢事件后的补齐。
+- 恢复请求与 rollback 并发的真实 UI 操作仍未执行；旧快照 fence 有自动化覆盖，§5.1 的 Windows 并发交互项继续 Open。
 
 ## 数据、回滚与风险
 
