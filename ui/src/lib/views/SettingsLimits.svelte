@@ -585,7 +585,7 @@
 			<span>{allLimitDangerOpen ? '折叠全部高影响项目' : '展开全部高影响项目'}</span>
 		</MaterialButton>
 	</div>
-	<div class="limits-grid">
+	<div class="limits-grid motion-list">
 		{#each limitViews as group}
 			<MaterialCard variant="outlined" className="format-card limit-card">
 				<h3>{group.title}</h3>

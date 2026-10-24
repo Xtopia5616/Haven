@@ -23,7 +23,7 @@
 	}: Props = $props();
 </script>
 
-<section class="settings-section {className}" aria-label={ariaLabel}>
+<section class="settings-section motion-list {className}" aria-label={ariaLabel}>
 	{#if header}
 		<div class="settings-section__header">{@render header()}</div>
 	{:else if title}

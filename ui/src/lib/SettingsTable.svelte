@@ -20,7 +20,7 @@
 	<div class="settings-table-header" role="row">
 		{@render header()}
 	</div>
-	<div class="settings-table-body" role="rowgroup">
+	<div class="settings-table-body motion-list" role="rowgroup">
 		{@render children()}
 	</div>
 </div>

@@ -170,7 +170,7 @@
 </script>
 
 {#if ['deepseek', 'perplexity', 'dashscope', 'mistral', 'zhipu'].includes(providerId)}
-	<section class="independent-search" aria-label="独立搜索 API 设置">
+	<section class="independent-search motion-surface-enter" aria-label="独立搜索 API 设置">
 		<div class="search-heading">
 			<div>
 				<h4>独立搜索 API</h4>
@@ -188,7 +188,7 @@
 		</div>
 
 		{#if model.independent_search?.provider === 'deepseek_search'}
-			<div class="search-options">
+			<div class="search-options motion-list">
 				<div class="settings-field-layout">
 					<label class="field-label" for="{fieldId}-count">返回结果数</label>
 					<MaterialNumberField
@@ -229,7 +229,7 @@
 				<p class="search-hint">IP 仅在这里手动填写时发送；原始问题还需模型在搜索工具调用中提供。</p>
 			</div>
 		{:else if model.independent_search?.provider === 'perplexity_search'}
-			<div class="search-options">
+			<div class="search-options motion-list">
 				<div class="settings-field-layout">
 					<label class="field-label" for="{fieldId}-type">搜索类型</label>
 					<MaterialSelect
@@ -340,7 +340,7 @@
 				{/each}
 			</div>
 		{:else if model.independent_search?.provider === 'aliyun_ai_search'}
-			<div class="search-options">
+			<div class="search-options motion-list">
 				<div class="settings-field-layout wide-field">
 					<label class="field-label" for="{fieldId}-endpoint">AI Search 接入地址</label>
 					<input
@@ -439,7 +439,7 @@
 				<p class="search-hint wide-field">API Key 会单独存入 Windows Credential Manager。接入地址和工作空间可在 AI Search 控制台的 API Keys 页面查看。</p>
 			</div>
 		{:else if model.independent_search?.provider === 'mistral_web_search'}
-			<div class="search-options">
+			<div class="search-options motion-list">
 				<label class="option-toggle">
 					<input
 						type="checkbox"

@@ -12,7 +12,7 @@
 	let { id, title, count, children }: Props = $props();
 </script>
 
-<section class="history-list-group" aria-labelledby={`history-group-${id}`}>
+<section class="history-list-group motion-list" aria-labelledby={`history-group-${id}`}>
 	<div class="history-list-group-header">
 		<h3 id={`history-group-${id}`}>{title}</h3>
 		<CountChip {count} label="条记录" />

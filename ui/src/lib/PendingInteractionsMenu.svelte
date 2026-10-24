@@ -36,7 +36,7 @@
 		/>
 		{#if open}
 			<div
-				class="pending-interactions-menu motion-menu-enter"
+				class="pending-interactions-menu motion-menu-enter motion-list"
 				role="menu"
 				aria-label="待操作项目"
 			>

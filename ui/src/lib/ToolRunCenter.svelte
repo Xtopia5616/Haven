@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import WorkspaceSearch from './WorkspaceSearch.svelte';
 	/**
 	 * Unified task list/detail view. The route owns loading, event merging and
@@ -177,6 +178,7 @@
 							{#each group.rows as row (row.toolRunId)}
 								<article
 									class="task-card workspace-item-card motion-list-item"
+									out:fade={{ duration: 140 }}
 									class:selected={selectedToolRunId === row.toolRunId &&
 										detailOpen}
 								>

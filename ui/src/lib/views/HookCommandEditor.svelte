@@ -96,7 +96,7 @@
 				maxlength="256"
 			/></label
 		>
-		<p role="status">
+		<p class="motion-surface-enter" role="status">
 			{!hook.enabled
 				? '已停用，不会执行'
 				: hookMatches(hook, testTool)
@@ -104,16 +104,16 @@
 					: '不匹配此工具'} · 区分大小写，只有 * 是通配符。
 		</p>
 	{:else if hook.matcher !== null && hook.matcher !== '*'}
-		<p class="warning" role="status">
+		<p class="warning motion-surface-enter" role="status">
 			此事件没有工具名，当前 matcher 会使这条 Hook 永远不触发。清空 matcher 或设为 *。
 		</p>
 	{/if}
-	{#if veto}<p>
+	{#if veto}<p class="motion-surface-enter">
 			stdout 为空表示允许；也可返回 &#123;"decision":"allow"&#125; 或
 			&#123;"decision":"deny","reason":"…"&#125;。调试信息写 stderr。
 		</p>{/if}
 	{#if errors.length}
-		<ul class="errors" aria-label="命令校验错误">
+		<ul class="errors motion-list" aria-label="命令校验错误">
 			{#each errors as error}<li>{error}</li>{/each}
 		</ul>
 	{/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import Icon from './Icon.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import MaterialButton from './MaterialButton.svelte';
@@ -42,7 +43,7 @@
 	}
 </script>
 
-<aside class="session-rail" aria-label="会话列表">
+<aside class="session-rail" aria-label="会话列表" in:fade={{ duration: 160 }}>
 	<div class="session-rail__heading">
 		<div>
 			<p class="session-rail__eyebrow">会话空间</p>
@@ -76,9 +77,9 @@
 	</div>
 	<div class="session-rail__scroll">
 		{#if switchableSessions.length > 0}
-			<ul class="session-rail__list">
+			<ul class="session-rail__list motion-list">
 				{#each switchableSessions as session (session.sessionId)}
-					<li class="motion-list-item">
+					<li class="motion-list-item" out:fade={{ duration: 140 }}>
 						<button
 							type="button"
 							class="session-rail__item"
@@ -107,7 +108,7 @@
 				{/each}
 			</ul>
 		{:else}
-			<div class="session-rail__empty">
+			<div class="session-rail__empty motion-surface-enter">
 				<Icon name="chat" size={20} />
 				<strong>从一个新会话开始</strong>
 				<span>你的会话会显示在这里</span>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -107,7 +108,11 @@
 			{@const providerModels = modelsForProvider(provider.name)}
 			{@const catalogLoaded = Array.isArray(modelsByProvider[provider.name])}
 			{@const catalogCount = modelsByProvider[provider.name]?.length ?? 0}
-			<section class="provider-section" aria-label={`Provider ${provider.name}`}>
+			<section
+				class="provider-section"
+				aria-label={`Provider ${provider.name}`}
+				out:fade={{ duration: 140 }}
+			>
 				<div class="provider-card">
 					<div class="provider-main">
 						<div class="provider-title">

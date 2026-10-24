@@ -1663,7 +1663,10 @@
 			description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
 		/>
 		{#if visibleApplyStatuses.length > 0 || reapplyError}
-			<section class="settings-runtime-apply" aria-labelledby="settings-runtime-apply-title">
+			<section
+				class="settings-runtime-apply motion-surface-enter"
+				aria-labelledby="settings-runtime-apply-title"
+			>
 				<div class="settings-runtime-apply__content">
 					<strong id="settings-runtime-apply-title">已保存配置的运行状态</strong>
 					<p>
@@ -1672,7 +1675,7 @@
 							: '已保存配置的重新应用未完成。'}
 					</p>
 					{#if visibleApplyStatuses.length > 0}
-						<ul>
+						<ul class="motion-list">
 							{#each visibleApplyStatuses as status (`${status.target}:${status.result}`)}
 								<li>
 									<div class="settings-runtime-apply__row">
@@ -1762,7 +1765,7 @@
 						{#if settingsSearchQuery.trim()}
 							<div
 								id="settings-search-results"
-								class="settings-search__results"
+								class="settings-search__results motion-list"
 								role="region"
 								aria-label="设置搜索结果"
 								aria-live="polite"
@@ -1796,7 +1799,11 @@
 						{/if}
 					</div>
 					{#if visitedSettingsTabs.includes('behavior')}
-						<div hidden={settingsTab !== 'behavior'} data-settings-section="behavior">
+						<div
+							hidden={settingsTab !== 'behavior'}
+							class:motion-surface-enter={settingsTab === 'behavior'}
+							data-settings-section="behavior"
+						>
 							<SettingsBehavior
 								{hotkeyMode}
 								{hotkeyBinding}
@@ -1816,6 +1823,7 @@
 					{#if visitedSettingsTabs.includes('appearance')}
 						<div
 							hidden={settingsTab !== 'appearance'}
+							class:motion-surface-enter={settingsTab === 'appearance'}
 							data-settings-section="appearance"
 						>
 							<SettingsAppearance
@@ -1828,6 +1836,7 @@
 					{#if visitedSettingsTabs.includes('diagnostics')}
 						<div
 							hidden={settingsTab !== 'diagnostics'}
+							class:motion-surface-enter={settingsTab === 'diagnostics'}
 							data-settings-section="diagnostics"
 						>
 							<SettingsDiagnostics {log} />
@@ -1836,6 +1845,8 @@
 					{#if visitedSettingsTabs.includes('models') || visitedSettingsTabs.includes('media')}
 						<div
 							hidden={settingsTab !== 'models' && settingsTab !== 'media'}
+							class:motion-surface-enter={settingsTab === 'models' ||
+								settingsTab === 'media'}
 							data-settings-section={settingsTab}
 						>
 							{#if settingsLoaded}
@@ -1877,7 +1888,11 @@
 						</div>
 					{/if}
 					{#if visitedSettingsTabs.includes('security')}
-						<div hidden={settingsTab !== 'security'} data-settings-section="security">
+						<div
+							hidden={settingsTab !== 'security'}
+							class:motion-surface-enter={settingsTab === 'security'}
+							data-settings-section="security"
+						>
 							<SettingsSecurity
 								{security}
 								{sessionPermissions}
@@ -1893,7 +1908,11 @@
 						</div>
 					{/if}
 					{#if visitedSettingsTabs.includes('hooks')}
-						<div hidden={settingsTab !== 'hooks'} data-settings-section="hooks">
+						<div
+							hidden={settingsTab !== 'hooks'}
+							class:motion-surface-enter={settingsTab === 'hooks'}
+							data-settings-section="hooks"
+						>
 							<SettingsHooks
 								active={settingsTab === 'hooks'}
 								onDraftState={(draft) => (hookDraftState = draft)}
@@ -1901,7 +1920,11 @@
 						</div>
 					{/if}
 					{#if visitedSettingsTabs.includes('limits')}
-						<div hidden={settingsTab !== 'limits'} data-settings-section="limits">
+						<div
+							hidden={settingsTab !== 'limits'}
+							class:motion-surface-enter={settingsTab === 'limits'}
+							data-settings-section="limits"
+						>
 							<SettingsLimits
 								{contextLimits}
 								modelContextWindows={llmConfig.models.map(
@@ -1911,7 +1934,11 @@
 						</div>
 					{/if}
 					{#if visitedSettingsTabs.includes('about')}
-						<div hidden={settingsTab !== 'about'} data-settings-section="about">
+						<div
+							hidden={settingsTab !== 'about'}
+							class:motion-surface-enter={settingsTab === 'about'}
+							data-settings-section="about"
+						>
 							<SettingsAbout />
 						</div>
 					{/if}
@@ -1956,7 +1983,7 @@
 	onClose={() => (providerDiscoveryAlert = { providerName: '', staticCatalog: false })}
 >
 	{#snippet children()}
-		<div class="provider-discovery-notice" role="alert">
+		<div class="provider-discovery-notice motion-surface-enter" role="alert">
 			{#if providerDiscoveryAlert.staticCatalog}
 				<p>
 					Provider「{providerDiscoveryAlert.providerName}」已添加。该协议没有在线模型列表接口，当前显示内置模型目录，因此无法验证

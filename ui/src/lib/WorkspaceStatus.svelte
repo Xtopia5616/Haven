@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import StatusDot from './StatusDot.svelte';
 	import type { LlmConnectionStatus } from '$lib/contracts/generatedCommands.ts';
@@ -166,10 +167,17 @@
 <div class="status-switch">
 	<div class="status-chip" role="status" aria-label={`状态：${statusLabel}`} title={statusTitle}>
 		<StatusDot color={statusColor} animate={statusAnimating} />
-		<span class:recording-text={overlay.isRecording} class="status-text">{statusLabel}</span>
+		{#key statusLabel}
+			<span
+				class:recording-text={overlay.isRecording}
+				class="status-text"
+				in:fade={{ duration: 140 }}
+				out:fade={{ duration: 100 }}>{statusLabel}</span
+			>
+		{/key}
 	</div>
 	{#if hasTaskActivity}
-		<div class="task-action">
+		<div class="task-action" in:fade={{ duration: 160 }} out:fade={{ duration: 100 }}>
 			<MaterialIconButton
 				size="toolbar"
 				variant="ghost"
@@ -179,7 +187,11 @@
 				onclick={() => onOpenTasks?.()}
 			/>
 			{#if taskCount > 0}
-				<span class="status-badge" aria-hidden="true">{taskCount}</span>
+				{#key taskCount}
+					<span class="status-badge" aria-hidden="true" in:fade={{ duration: 120 }}
+						>{taskCount}</span
+					>
+				{/key}
 			{/if}
 		</div>
 	{/if}
@@ -207,6 +219,14 @@
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		font-family: inherit;
+		transition:
+			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+	}
+	.status-text {
+		white-space: nowrap;
+		transition: color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
 	.task-action {
 		position: relative;

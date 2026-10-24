@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { tick, type ComponentProps } from 'svelte';
+	import { fade } from 'svelte/transition';
 	import SessionRail from './SessionRail.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import { sessionSidebarLayoutStore } from './sessionSidebarLayoutStore.ts';
@@ -57,7 +58,7 @@
 	style={`--session-sidebar-width: ${width}px`}
 >
 	{#if collapsed}
-		<div class="session-sidebar__compact">
+		<div class="session-sidebar__compact" in:fade={{ duration: 160 }}>
 			<MaterialIconButton
 				label="展开会话栏"
 				title="展开会话栏"
@@ -108,6 +109,7 @@
 		width: var(--session-sidebar-width);
 		min-height: 0;
 		background: var(--md-sys-color-surface-container-low);
+		transition: width var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-standard);
 	}
 	.session-sidebar.collapsed {
 		width: 48px;
@@ -136,5 +138,6 @@
 	}
 	.dragging {
 		user-select: none;
+		transition: none;
 	}
 </style>

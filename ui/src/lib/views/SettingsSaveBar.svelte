@@ -30,7 +30,7 @@
 		<SettingsErrorNotice failure={saveError} />
 	{/if}
 	{#if dirty}
-		<div class="save-summary" aria-live="polite">
+		<div class="save-summary motion-surface-enter" aria-live="polite">
 			<strong>有未保存更改</strong>
 			<span>{dirtySectionLabels.length ? dirtySectionLabels.join('、') : '设置'}</span>
 		</div>

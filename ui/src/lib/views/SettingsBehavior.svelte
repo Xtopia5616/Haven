@@ -179,7 +179,7 @@
 			/>
 		</SettingsField>
 		{#if defaultShell === 'pwsh' && shellAvailable.pwsh === false}
-			<div class="shell-warning" role="status">
+			<div class="shell-warning motion-surface-enter" role="status">
 				<p>未检测到 PowerShell 7，命令将无法执行。请先安装：</p>
 				<code>winget install Microsoft.PowerShell</code>
 			</div>

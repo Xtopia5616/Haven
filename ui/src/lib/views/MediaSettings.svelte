@@ -251,7 +251,7 @@
 			</p>
 		</div>
 	</MaterialCard>
-	<div class="card-list">
+	<div class="card-list motion-list">
 		{#each INPUT_FORMATS as format (format.id)}
 			<MaterialCard variant="outlined" className="settings-card">
 				<div class="card-head">
@@ -317,7 +317,7 @@
 							推荐：「模型」页 Audio Model 选 Whisper / Gemini 等，此处 Provider
 							选「音频模型」。也可选已配置 Provider 或 MCP。
 						</p>
-						<div class="stt-grid">
+						<div class="stt-grid motion-list">
 							<div class="model-field settings-field-layout">
 								<span class="field-label">转写服务</span><MaterialSelect
 									id="voice-stt-provider"
@@ -412,7 +412,7 @@
 							模型会在需要用户听到内容时调用 media 的 speak 操作；选「模型」页已添加的
 							Provider。TTS 只产生扬声器输出，不会自动触发通知。
 						</p>
-						<div class="stt-grid">
+						<div class="stt-grid motion-list">
 							<div class="model-field settings-field-layout">
 								<span class="field-label">语音合成服务</span><MaterialSelect
 									id="tts-provider"
@@ -554,7 +554,7 @@
 							「提取文字」意图走 OCR；推荐选视觉模型。专用云 OCR
 							失败或低置信度时回落到 Image Model。
 						</p>
-						<div class="stt-grid">
+						<div class="stt-grid motion-list">
 							<div class="model-field settings-field-layout">
 								<span class="field-label">OCR 服务</span><MaterialSelect
 									id="img-ocr-provider"
@@ -636,7 +636,7 @@
 							「画一只猫」「生成海报」等请求生成图片并附到消息；需 OpenAI 兼容或
 							Gemini Provider。
 						</p>
-						<div class="stt-grid">
+						<div class="stt-grid motion-list">
 							<div class="model-field settings-field-layout">
 								<span class="field-label">图像生成服务</span><MaterialSelect
 									id="ig-provider"

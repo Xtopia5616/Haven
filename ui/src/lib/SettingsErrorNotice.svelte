@@ -9,7 +9,7 @@
 	let { failure }: Props = $props();
 </script>
 
-<section class="settings-error" data-tone={failure.tone} role="alert">
+<section class="settings-error motion-surface-enter" data-tone={failure.tone} role="alert">
 	<Icon
 		name={failure.tone === 'warning' ? 'alertTriangle' : 'alertCircle'}
 		size={20}

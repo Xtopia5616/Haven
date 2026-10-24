@@ -585,7 +585,11 @@
 </script>
 
 {#if visitedMedia}
-	<div hidden={section !== 'media'} data-settings-section="media">
+	<div
+		hidden={section !== 'media'}
+		class:motion-surface-enter={section === 'media'}
+		data-settings-section="media"
+	>
 		<MediaSettings
 			{llmConfig}
 			{audio}
@@ -603,7 +607,11 @@
 {/if}
 
 {#if visitedModels}
-	<div hidden={section !== 'models'} data-settings-section="models">
+	<div
+		hidden={section !== 'models'}
+		class:motion-surface-enter={section === 'models'}
+		data-settings-section="models"
+	>
 		<SettingsSection className="model-section" ariaLabel="模型配置">
 			<ProviderList
 				providers={llmConfig.providers || []}
@@ -653,7 +661,7 @@
 					tone="info"
 				/>
 			</div>
-			<div class="policy-list">
+			<div class="policy-list motion-surface-enter">
 				{#if (llmConfig.request_policies || []).length}
 					<SettingsTable
 						ariaLabel="请求路由策略"

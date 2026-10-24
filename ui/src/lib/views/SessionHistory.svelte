@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import WorkspaceSearch from '$lib/WorkspaceSearch.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -196,6 +197,7 @@
 								<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
 								<article
 									class="session-item workspace-item-card motion-list-item"
+									out:fade={{ duration: 140 }}
 									aria-label={`打开并继续会话：${displayTitle(session)}`}
 									role="button"
 									tabindex="0"

@@ -55,6 +55,9 @@
 		font-weight: 700;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		white-space: nowrap;
+		transition:
+			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
 	.md-badge--compact {
 		padding: 1px 6px;

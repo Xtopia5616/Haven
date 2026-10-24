@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import type { SchedulePlanPayload } from '$lib/contracts/schedule.ts';
@@ -61,9 +62,9 @@
 	{:else if schedules.length === 0}
 		<AsyncState title="暂无定时任务" message="安排 Schedule 计划后，会显示下一次触发时间。" />
 	{:else}
-		<ul class="schedule-list">
+		<ul class="schedule-list motion-list">
 			{#each schedules as plan (plan.scheduleId)}
-				<li class="schedule-card motion-list-item">
+				<li class="schedule-card motion-list-item" out:fade={{ duration: 140 }}>
 					<div class="schedule-copy">
 						<div class="schedule-title-row">
 							<h3>{plan.title}</h3>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -113,10 +114,11 @@
 <div class="facts-view">
 	<section class="fact-browser" aria-label="已保存事实">
 		{#if factsLoaded && facts.length > 0}
-			<div class="fact-list" role="list" aria-label="已保存事实列表">
+			<div class="fact-list motion-list" role="list" aria-label="已保存事实列表">
 				{#each facts as fact (fact.factId)}
 					<article
 						class="fact-card workspace-item-card motion-list-item"
+						out:fade={{ duration: 140 }}
 						class:selected={selectedFactId === fact.factId && detailOpen}
 					>
 						<button

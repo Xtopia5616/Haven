@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { fade } from 'svelte/transition';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import HookCommandEditor from './HookCommandEditor.svelte';
@@ -263,10 +264,12 @@
 		{#if loading}
 			<p class="hooks-muted">正在读取 Hook 配置…</p>
 		{:else if !settings}
-			<p class="hooks-error" role="alert">{errorMessage}</p>
+			<p class="hooks-error motion-surface-enter" role="alert">{errorMessage}</p>
 			<MaterialButton variant="outlined" label="重试" onclick={() => void reload()} />
 		{:else}
-			{#if errorMessage}<p class="hooks-error" role="alert">{errorMessage}</p>{/if}
+			{#if errorMessage}
+				<p class="hooks-error motion-surface-enter" role="alert">{errorMessage}</p>
+			{/if}
 			<div class="hooks-toolbar">
 				<label
 					>事件筛选<select class="md-input" bind:value={eventFilter}
@@ -288,7 +291,7 @@
 						: ''}</span
 				>
 			</div>
-			{#if template !== 'blank'}<p class="hooks-note">
+			{#if template !== 'blank'}<p class="hooks-note motion-surface-enter">
 					模板只填充启动参数。请在执行工作区创建对应 scripts/hook
 					脚本，或将参数改为已有脚本的绝对路径。
 				</p>{/if}
@@ -312,32 +315,36 @@
 							? ' · 尚未配置'
 							: ''}
 					</p>
-					{#each hooks[event.key] as hook, index (`${event.key}-${index}`)}
-						<HookCommandEditor
-							{hook}
-							{index}
-							count={hooks[event.key].length}
-							eventLabel={event.label}
-							veto={event.veto}
-							toolEvent={event.key === 'pre_tool_use' ||
-								event.key === 'post_tool_use'}
-							disabled={saving}
-							onPatch={(patch) => patchHook(event.key, index, patch)}
-							onMove={(offset) => moveHook(event.key, index, offset)}
-							onRemove={() => removeHook(event.key, index)}
-							onDuplicate={() => {
-								if (hooks[event.key].length < MAX_HOOKS_PER_EVENT)
-									replaceHookList(event.key, [
-										...hooks[event.key].slice(0, index + 1),
-										structuredClone($state.snapshot(hook)),
-										...hooks[event.key].slice(index + 1),
-									]);
-							}}
-						/>
-					{/each}
+					<div class="hook-command-list motion-list">
+						{#each hooks[event.key] as hook, index (`${event.key}-${index}`)}
+							<div class="hook-command-motion">
+								<HookCommandEditor
+									{hook}
+									{index}
+									count={hooks[event.key].length}
+									eventLabel={event.label}
+									veto={event.veto}
+									toolEvent={event.key === 'pre_tool_use' ||
+										event.key === 'post_tool_use'}
+									disabled={saving}
+									onPatch={(patch) => patchHook(event.key, index, patch)}
+									onMove={(offset) => moveHook(event.key, index, offset)}
+									onRemove={() => removeHook(event.key, index)}
+									onDuplicate={() => {
+										if (hooks[event.key].length < MAX_HOOKS_PER_EVENT)
+											replaceHookList(event.key, [
+												...hooks[event.key].slice(0, index + 1),
+												structuredClone($state.snapshot(hook)),
+												...hooks[event.key].slice(index + 1),
+											]);
+									}}
+								/>
+							</div>
+						{/each}
+					</div>
 				</section>
 			{/each}
-			{#if validationErrors.length}<p class="hooks-error" role="status">
+			{#if validationErrors.length}<p class="hooks-error motion-surface-enter" role="status">
 					有 {validationErrors.length} 项待修正（包含筛选隐藏的事件），请查看各命令下方提示。
 				</p>{/if}
 			<HookConfigTransfer
@@ -381,11 +388,11 @@
 			<MaterialButton variant="outlined" label="选择并信任目录" onclick={trustWorkspace} />
 		</div>
 		{#if trustedWorkspaces.length === 0}
-			<p class="hooks-muted">没有已信任的项目目录。</p>
+			<p class="hooks-muted motion-surface-enter">没有已信任的项目目录。</p>
 		{:else}
-			<ul class="trusted-workspaces">
+			<ul class="trusted-workspaces motion-list">
 				{#each trustedWorkspaces as path (path)}
-					<li>
+					<li out:fade={{ duration: 140 }}>
 						<code>{path}</code>
 						<MaterialButton
 							variant="text"
@@ -412,9 +419,9 @@
 			/>
 		</div>
 		{#if diagnostics.length === 0}
-			<p class="hooks-muted">触发 Hook 后会在这里显示运行状态。</p>
+			<p class="hooks-muted motion-surface-enter">触发 Hook 后会在这里显示运行状态。</p>
 		{:else}
-			<div class="hook-diagnostics">
+			<div class="hook-diagnostics motion-list">
 				{#each diagnostics as item (item.event)}
 					<div class="hook-diagnostic-row">
 						<strong>{item.event}</strong>

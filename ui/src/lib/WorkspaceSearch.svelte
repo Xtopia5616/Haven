@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import Icon from './Icon.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 
@@ -53,14 +54,20 @@
 		onkeydown={onKeydown}
 	/>
 	{#if value}
-		<MaterialIconButton
-			label={`清空${label}`}
-			icon="close"
-			variant="ghost"
-			size="dense"
-			{disabled}
-			onclick={clear}
-		/>
+		<span
+			class="workspace-search__clear"
+			in:fade={{ duration: 120 }}
+			out:fade={{ duration: 90 }}
+		>
+			<MaterialIconButton
+				label={`清空${label}`}
+				icon="close"
+				variant="ghost"
+				size="dense"
+				{disabled}
+				onclick={clear}
+			/>
+		</span>
 	{/if}
 </div>
 
@@ -87,6 +94,10 @@
 		--search-height: var(--md-comp-textfield-container-height);
 		border-radius: var(--md-sys-shape-small);
 		font-size: var(--md-sys-typescale-body-small-size);
+	}
+	.workspace-search__clear {
+		display: inline-flex;
+		flex: 0 0 auto;
 	}
 	input {
 		flex: 1;

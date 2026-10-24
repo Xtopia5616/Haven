@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { fade } from 'svelte/transition';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -65,9 +66,9 @@
 	</header>
 
 	{#if proposals.length > 0}
-		<div class="proposal-review__list" role="list" aria-label="推断事实提案列表">
+		<div class="proposal-review__list motion-list" role="list" aria-label="推断事实提案列表">
 			{#each proposals as proposal (proposal.proposalId)}
-				<article class="proposal-card" role="listitem">
+				<article class="proposal-card" role="listitem" out:fade={{ duration: 140 }}>
 					<div class="proposal-card__content">
 						<div class="proposal-card__heading">
 							<strong>{proposal.predicate}</strong>
