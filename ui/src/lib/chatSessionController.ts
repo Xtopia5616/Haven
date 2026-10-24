@@ -334,11 +334,20 @@ export class ChatSessionController {
 			// A failed reload does not prove that visible messages were partial.
 			try {
 				await this.reloadSessionMessages(sessionId, {
+					selectionVersion: userSelectionVersion,
 					preserveStreamingOnly: true,
 					excludeMessageIds: [...preContinueMessageIds],
 				});
 			} catch {
 				// Keep the current view until a later sync succeeds.
+			}
+
+			// Reload can settle after a newer selection, even when it fails.
+			if (
+				!this.dependencies.reducer.isUserSelectionCurrent(userSelectionVersion) ||
+				this.dependencies.getActiveSessionId() !== sessionId
+			) {
+				return;
 			}
 
 			this.dependencies.dispatch({ type: 'session/replay-reset', sessionId });

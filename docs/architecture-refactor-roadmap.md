@@ -74,6 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
+| **Completed** | R12 继续生成的异步选择隔离（[ADR 1390](adr/1390-fence-continue-reload-by-user-selection.md)）：恢复快照与续写提交均校验发起时的会话和选择版本；重载成功/失败、切换会话、新建及切走再切回均有回归覆盖。R12 其余动作职责仍按源码证据复核，不视为整体完成。 |
 | **Completed** | R05 durable UI 事件补齐与 R12 的恢复/rollback 快照竞态切片（ADR 1386）：聊天页可见期间每 5 秒读取当前会话的轻量 durable cursor；序号跳跃或后端 cursor 前进时，双侧 cursor 稳定后才应用恢复投影。快照水位拒绝旧事件，rollback/continue 会使在途旧快照失效。自动化门禁通过后关闭此实现切片；真实 Windows 连续聚焦丢事件与 rollback 并发 UI 场景仍属于 §5.1 真实交互验收。R12 其余页面动作职责仍按审查报告作为候选。 |
 | **Completed** | 新一轮 R03：router、媒体客户端与 MediaConfig 经 App 独占 publisher 原子发布；Agent、Memory、Tools 只读同一代次。单次 provider/媒体操作捕获快照，在途操作保留旧代次；目录重建失败时旧目录保持原子且状态 reason 指明已发布版本。边界与测试见 [ADR 1385](adr/1385-atomic-model-media-generation-publication.md)。整个 ReAct turn 跨代次、后台任务与会话配置代次绑定仍属后续建议；顺序见[分领域审查 §16](architecture-review-2026-10-22.md#16-建议实施顺序与每项交付标准)。 |
 | **Completed** | 新一轮 R02：按 runtime target 显示期望/实际配置版本、结果与净化原因；可在共享 apply gate 下仅重试失败或尚未执行目标，状态见 [ADR 1384](adr/1384-explicit-reapply-of-saved-runtime-configuration.md)。 |

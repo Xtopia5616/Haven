@@ -365,6 +365,89 @@ describe('ChatSessionController continue', () => {
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
 	});
 
+	it.each(
+		(['resolved', 'rejected'] as const).flatMap((outcome) =>
+			(['other-session', 'new-session', 'away-and-back'] as const).flatMap((selection) =>
+				(['original-user', 'assistant-output'] as const).map((strategy) => ({
+					outcome,
+					selection,
+					strategy,
+				})),
+			),
+		),
+	)(
+		'abandons $strategy continuation after $selection during a $outcome reload',
+		async ({ outcome, selection, strategy }) => {
+			let resolveReload!: (value: ReturnType<typeof resumeResponseFixture>) => void;
+			let rejectReload!: (error: Error) => void;
+			let signalReloadStarted!: () => void;
+			const reloadStarted = new Promise<void>((resolve) => {
+				signalReloadStarted = resolve;
+			});
+			const reload = new Promise<ReturnType<typeof resumeResponseFixture>>(
+				(resolve, reject) => {
+					resolveReload = resolve;
+					rejectReload = reject;
+				},
+			);
+			const harness = makeHarness({
+				runCommand: (command) => {
+					if (command !== 'get_session_for_resume') return;
+					signalReloadStarted();
+					return reload;
+				},
+			});
+			addMessages(harness.reducer, {
+				id: USER_MESSAGE_ID,
+				role: 'user',
+				content: '原会话输入',
+			});
+			if (strategy === 'assistant-output') {
+				addMessages(
+					harness.reducer,
+					{ id: USER_MESSAGE_ID, role: 'user', content: '原会话输入' },
+					{
+						id: 'step-00000000000000000000000000000014',
+						role: 'assistant',
+						content: '已有一段',
+						type: 'thought',
+					},
+				);
+			}
+
+			const pendingContinue = harness.controller.handleContinue();
+			await reloadStarted;
+			harness.controller.beginUserSessionSelection();
+			const selectedSessionId = selection === 'new-session' ? null : OTHER_SESSION_ID;
+			harness.reducer.dispatch({ type: 'session/selected', sessionId: selectedSessionId });
+			if (selection === 'away-and-back') {
+				harness.controller.beginUserSessionSelection();
+				harness.reducer.dispatch({ type: 'session/selected', sessionId: SESSION_ID });
+			}
+			if (outcome === 'resolved') resolveReload(resumeResponseFixture());
+			else rejectReload(new Error('reload unavailable'));
+			await pendingContinue;
+
+			expect(harness.submitCalls).toEqual([]);
+			expect(harness.autoFollow).toEqual([]);
+			expect(
+				harness.actions.filter(
+					(action) =>
+						action.type === 'session/replay-reset' ||
+						action.type === 'session/messages/resume-loaded',
+				),
+			).toEqual([]);
+			expect(harness.reducer.snapshot().activeSessionId).toBe(
+				selection === 'away-and-back' ? SESSION_ID : selectedSessionId,
+			);
+			expect(
+				harness.reducer.getMessages(SESSION_ID).map((message) => message.content),
+			).toContain('原会话输入');
+			expect(harness.continuePending).toEqual([true, false]);
+			expect(harness.reportedErrors).toEqual([]);
+		},
+	);
+
 	it('preserves pending interactions when a resume snapshot contains none', async () => {
 		const harness = makeHarness();
 		harness.reducer.dispatch({
