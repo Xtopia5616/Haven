@@ -30,4 +30,6 @@ ADR 1368 为 WorkspaceWrite Shell 建立了 MXC ProcessContainer 路径。仓库
 
 真实 Windows/MXC 负向测试命令 `cargo test -p haven-tools --locked workspace_write_shell_is_confined_to_configured_roots_by_mxc -- --ignored --nocapture --test-threads=1` 通过（1 passed）。该测试走生产 Shell/MXC 路径，配置根内写入成功，兄弟目录写入被拒绝。
 
-完整授权/确认、网络策略、子进程后代、取消/撤权及 backend 不可用时无 host fallback 的 UI/平台场景尚未验收。开发版 GUI 被 Node.js Windows 防火墙权限提示阻挡；自动化未处理该安全提示。Slice 3 保持 Acceptance Open。
+首次 GUI 验收曾被 Node.js Windows 防火墙权限提示阻挡，提示由用户手动处理，自动化未更改防火墙规则。2026-10-24 续测时旧开发进程已经退出；主 checkout 为 `6f60ef1`，与 `527bcd3` 只有三份验收文档差异，运行代码相同。沿用原隔离 profile 重新执行上述 `cargo tauri dev` 命令后，真实窗口显示首屏、Settings 和安全与权限页。安全页明确展示“协作执行”“工作区范围”“受限网络”，并说明已开始调用保留旧工作区、子进程隔离由具体执行边界决定；本次只读核对，未修改安全设置。
+
+完整授权/确认、网络策略、子进程后代、取消/撤权及 backend 不可用时无 host fallback 的 UI/平台场景尚未验收；未配置模型 endpoint，也未通过 UI 发起 Shell。当前 Windows Computer Use 执行限制禁止自动修改应用内安全/隐私设置或通过 UI 运行终端命令，因此不以界面说明代替实际授权/执行证明。Slice 3 保持 Acceptance Open。

@@ -44,4 +44,8 @@
 
 在 Windows 11 Insider 29683、Rust 1.99.0、Node 24.21.0、pnpm 12.12.1 上，以 `527bcd3336cc6d6526c3ce6a172f778918b0dbae` 为基线，通过 `cargo tauri dev --config crates/app-binary/tauri.dev.conf.json` 在独立 `HAVEN_DATA_DIR` 启动开发版。禁用的旧配置 fixture 覆盖五种 exposure 值；启动迁移将 `deferred` 转为 `enabled + deferred + native`，`direct` / `model_only` 转为 `enabled + direct + native`，`hidden` 转为 `disabled + hidden + none`，`codemode` 转为 `enabled + hidden + codemode`。五种结果均通过精确持久化断言；测试 server 保持 disabled，未启动 MCP 进程或访问网络。数据库 schema v61，SQLite integrity check 返回 `ok`。
 
-Node.js Windows 防火墙权限提示挡住了 GUI；自动化未处理安全提示，也未通过 UI 修改应用内安全/隐私设置。因此 Settings 保存/重启、native/Code Mode stale-call 行为和未知旧值恢复仍未实测，Slice 4 保持 Acceptance Open。
+首次 GUI 验收被 Node.js Windows 防火墙权限提示挡住，提示随后由用户手动处理；自动化未操作该提示或改变防火墙规则。2026-10-24 在仅包含三份验收文档增量的 `6f60ef1` 上，沿用原隔离 profile 重新执行上述开发版启动命令，验证已持久化迁移配置能再次加载。
+
+真实 Windows UI 验证：首屏与 Settings 正常显示；工具 → MCP 卡片显示测试 server“已停用”“已断开”、默认“可调用 · 按需发现 · 原生调用”和“4 条覆盖”。打开编辑器后，Availability、Catalog、Invocation 分别显示 `enabled`、`deferred`、`native`；四条覆盖文本与迁移结果一致。只展开菜单核对选项：Availability 为 enabled/disabled，Catalog 为 direct/deferred/hidden，Invocation 为 none/native/codemode/native_and_codemode，未选择新值。取消后 server 仍 disabled；配置 SHA-256 与首次迁移后的 `886c4d51bf472bc9cabc61a40668da6dec6665b14a556c3c54ee3aae2ea1afbe` 相同，未发生配置写入或 MCP 启动。
+
+当前 Windows Computer Use 执行限制禁止自动修改应用内安全/隐私设置，因此未通过 UI 修改并保存 availability/invocation；“已迁移配置重启读取”不等于“编辑器修改后保存/重启”通过。native/Code Mode stale-call 行为和未知旧值恢复也仍未实测，Slice 4 保持 Acceptance Open。复现界面读取可沿用该禁用 fixture：启动隔离开发版 → 工具 → MCP → 编辑 → 展开三个菜单 → Cancel；不得把静态选项展示当作真实调用路由验收。
