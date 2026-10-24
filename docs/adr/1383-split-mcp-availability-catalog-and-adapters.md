@@ -49,3 +49,11 @@
 真实 Windows UI 验证：首屏与 Settings 正常显示；工具 → MCP 卡片显示测试 server“已停用”“已断开”、默认“可调用 · 按需发现 · 原生调用”和“4 条覆盖”。打开编辑器后，Availability、Catalog、Invocation 分别显示 `enabled`、`deferred`、`native`；四条覆盖文本与迁移结果一致。只展开菜单核对选项：Availability 为 enabled/disabled，Catalog 为 direct/deferred/hidden，Invocation 为 none/native/codemode/native_and_codemode，未选择新值。取消后 server 仍 disabled；配置 SHA-256 与首次迁移后的 `886c4d51bf472bc9cabc61a40668da6dec6665b14a556c3c54ee3aae2ea1afbe` 相同，未发生配置写入或 MCP 启动。
 
 当前 Windows Computer Use 执行限制禁止自动修改应用内安全/隐私设置，因此未通过 UI 修改并保存 availability/invocation；“已迁移配置重启读取”不等于“编辑器修改后保存/重启”通过。native/Code Mode stale-call 行为和未知旧值恢复也仍未实测，Slice 4 保持 Acceptance Open。复现界面读取可沿用该禁用 fixture：启动隔离开发版 → 工具 → MCP → 编辑 → 展开三个菜单 → Cancel；不得把静态选项展示当作真实调用路由验收。
+
+### 当前代码复核（2026-10-24；Slice 4 部分验收，Acceptance Open）
+
+在提交 `aa03f46` 的当前工作树上，以固定 Rust 1.99.0、Node 24.21.0、pnpm 12.12.1 启动开发版；相对 `a2b1720` 的新增提交均为验收文档。使用新隔离 profile `target/acceptance-mcp-ui-codex-2026-10-24`，预置一个 `enabled = false`、空 command 的 stdio server，`default = "deferred"`，并用 `direct`、`hidden`、`codemode`、`model_only` 四个旧值构成 per-tool overrides。启动完成后配置已迁移并写成规范三字段：默认 `enabled + deferred + native`；四条覆盖分别为 `calendar_* → enabled + direct + native`、`private_* → disabled + hidden + none`、`batch_* → enabled + hidden + codemode`、`legacy_* → enabled + direct + native`。该 profile 未配置模型或凭据。
+
+工具 → MCP 页面显示 server 已停用、已断开、4 条覆盖；编辑器读取到迁移后的默认值与覆盖文本。只展开三组菜单读取选项，分别为 availability `enabled/disabled`、catalog `direct/deferred/hidden`、invocation `none/native/codemode/native_and_codemode`；没有选择新值，点击 Cancel 后 SHA-256 `4A44EDE3974648DCB1670AAF83EEDAF1D81B2F6BCA3BD43A296F3A04805049D5` 未变化。关闭应用并用同一 profile 重启后，MCP 卡片仍显示 server 已停用和 4 条覆盖，配置哈希保持不变，确认本次迁移结果可重启读取。server 的 command 为空且始终禁用；未连接 server 或发起工具调用。
+
+本次不验证编辑保存、连接后 catalog 实际发现、native/Code Mode 调用与撤权、未知旧值恢复或完整 MXC/进程权限边界。系统报告 Windows 10 Pro build 29683，尚未确认满足 Windows 11 24H2 支持基线；Slice 4 Acceptance 与 Windows Gate 继续开放。

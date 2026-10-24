@@ -98,6 +98,8 @@
 
 **2026-10-24 当前代码只读 UI 复核：** 在提交 `a2b1720c463796a0bb1f81c4e5c4ecd7324fb8b3` 的隔离 profile 上，用户手动允许 Node.js 防火墙提示后，主界面、Settings 安全与权限页及 Tools > MCP 空状态页均可显示；没有配置 MCP 服务器，未修改 Haven 设置，也未发起工具调用。Windows 当前环境报告 Windows 10 Pro build 29683，尚未确认满足 Windows 11 24H2 支持基线。此证据不关闭 Slice 3/4 Acceptance 或 Windows Gate；范围和未验收项见 [ADR 1382](adr/1382-execution-path-capability-audit.md)。
 
+**2026-10-24 当前代码 MCP 配置复核：** 在 `aa03f46` 的隔离 profile 上迁移禁用的旧 exposure fixture；MCP 卡片、三项策略编辑器和三组菜单可只读查看，取消后配置哈希不变，同一 profile 重启后仍显示已迁移配置。无 MCP server 连接或工具调用；编辑保存及调用路由未验收。详情见 [ADR 1383](adr/1383-split-mcp-availability-catalog-and-adapters.md)，Slice 4 Acceptance 与 Windows Gate 继续开放。
+
 ### 5.2 交互生命周期所有权（行为已收口；恢复覆盖纳入新一轮）
 
 Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request identity 路由；Session grant、resolve event/status 与 actor 唤醒顺序有明确的持久化和失败契约。交互 replay 失败保持 fail-closed，pending session 恢复有界并可取消地重试。当前行为契约与逐项验证见 ADR 0423/0424、0507–0522。2026-10-17 源码审计当时发现 AppCommand pending 状态、入队/过期和 resolve continuation 分散于 `app_state.rs`、`commands/mod.rs`、`commands/session.rs`；该 owner 已按 ADR 1302 收拢，且未重定义既有交互契约。
