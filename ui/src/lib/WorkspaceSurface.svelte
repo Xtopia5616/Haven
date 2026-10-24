@@ -34,13 +34,7 @@
 		min-height: 100%;
 		padding: var(--md-sys-space-lg);
 		border-radius: var(--md-sys-shape-large);
-		background:
-			linear-gradient(
-				180deg,
-				color-mix(in srgb, var(--md-sys-color-primary) 4%, transparent),
-				transparent 220px
-			),
-			var(--md-sys-color-surface-container-lowest);
+		background: var(--md-sys-color-surface-container-lowest);
 		color: var(--md-sys-color-on-surface);
 		transition: background-color var(--md-sys-motion-duration-medium)
 			var(--md-sys-motion-easing-standard);

@@ -326,17 +326,17 @@ const CALLBACK_PAGE_STYLE: &str = r#"
 	:root {
 		color-scheme: light dark;
 		font-family: "Roboto", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
-		--primary: #3378d6;
-		--surface: #f7f8fc;
+		--primary: #2c5090;
+		--surface: #f6f8fb;
 		--card: #ffffff;
-		--on-surface: #1a1b22;
-		--on-surface-variant: #46464f;
-		--outline: #c3c9d5;
-		--container: #f1f3f8;
+		--on-surface: #202b3c;
+		--on-surface-variant: #536176;
+		--outline: #c7d1df;
+		--container: #f0f3f7;
 		--success: #006548;
-		--success-container: #cef5e3;
-		--error: #ba1a1a;
-		--error-container: #ffdad6;
+		--success-container: #e2f2ea;
+		--error: #b13e42;
+		--error-container: #f9e8e7;
 	}
 	* { box-sizing: border-box; }
 	body {
@@ -375,17 +375,17 @@ const CALLBACK_PAGE_STYLE: &str = r#"
 	@media (max-width: 480px) { .shell { padding: 16px; } .card { padding: 24px 20px 20px; border-radius: 24px; } }
 	@media (prefers-color-scheme: dark) {
 		:root {
-			--primary: #a5c8ff;
-			--surface: #181b24;
-			--card: #222631;
-			--on-surface: #e3e2e9;
-			--on-surface-variant: #c7c5d0;
-			--outline: #414754;
-			--container: #292e3b;
-			--success: #73d9af;
-			--success-container: #004d34;
-			--error: #ffb4ab;
-			--error-container: #93000a;
+			--primary: #8b9fc2;
+			--surface: #171c24;
+			--card: #1d232d;
+			--on-surface: #e5ebf3;
+			--on-surface-variant: #b8c4d4;
+			--outline: #435166;
+			--container: #232b37;
+			--success: #83cfac;
+			--success-container: #203e33;
+			--error: #f0a5a5;
+			--error-container: #492b31;
 		}
 		.card { box-shadow: 0 2px 12px rgba(0, 0, 0, .24); }
 	}
