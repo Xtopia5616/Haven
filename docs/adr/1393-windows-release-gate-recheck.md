@@ -21,9 +21,11 @@ ADR 0395 与路线图 §5.1 要求对当前 Windows 安装包验收真实交互�
 - `cargo clippy --workspace --locked -- -D warnings`：通过。
 - `corepack pnpm run check`：0 errors、0 warnings。
 - `corepack pnpm run test:run`：169 个文件、1493 项通过。
-- 对 0.1.2 acceptance 包启动的日志显示 AppState、Tauri 初始化和 bootstrap ready 完成；当前隔离模型 endpoint `127.0.0.1:34197` 未运行，因此没有在此轮从当前包完成模型交互、确认或 Schedule/后台任务流程。
-- Computer Use 经 `node_repl` 与 `@oai/sky` 可初始化。首次选中的 Haven window id `21236804` 在 `get_window` 时已经失效；刷新后当前窗口列表返回两个同名 Haven 候选 `135420` 与 `4984338`。按 Computer Use 流程未猜选窗口、未执行点击或输入；当前包的可见 UI 流程仍未验收。
-- 尚未在当前包执行 durable UI 通知丢失补齐或 rollback 与恢复并发的真实 WebView 操作。
-- 系统 C 盘约剩余 7.4 GiB、D 盘约剩余 7.1 GiB，无已配置的 VM，当前执行 token 无管理员提升。没有填满宿主盘，也没有创建挂载 VHD；物理 ENOSPC 的分类、用户提示和恢复操作未验收。
+- 当前从 0.1.2 acceptance 安装目录启动的进程使用隔离 `target/acceptance-release-20261024` profile；`@oai/sky` 返回且只返回一个 Haven 窗口。设置页正常加载：对话/行为默认值、模型配置和媒体配置均可见，未修改配置。Provider `Haven Acceptance Local` 指向 `http://127.0.0.1:34197/v1`，API Key 只确认“已配置”，不读取或记录其值；目录为“未加载”，应用状态为“模型不可用”。端口检查确认 fixture 当前未监听。
+- 对话、内置工具、历史和任务页面可见加载：对话初始为空；选择示例只填入草稿，再清空草稿成功，没有发送消息或持久化会话。内置工具目录加载 124 项操作。历史页显示 0 条会话；任务页显示 0 个后台任务、0 个定时计划。
+- 媒体设置页可见加载，包含附件策略和当前媒体限制，未产生未保存设置。附件按钮打开了隔离验收目录的系统文件选择器，并显示 `release-attachment.txt`（74 字节）。选择附件时，Computer Use 在按要求激活 Haven 并刷新后重试一次，仍拒绝输入：`point (1147, 454) is over msedgewebview2.exe "", not target window haven-app-binary.exe "Haven"`。未打开文件、未附加或发送；选择器当时仍等待人工关闭，因此媒体附件完整流程未通过。
+- 当前隔离数据库只读 `PRAGMA quick_check` 返回 `ok`，sessions/messages/session_events 数量均为 0；本轮没有发现数据库损坏。此前 ADR 1392 的 1 个 session/8 条 message 是安装卸载验收时的读数，不能替代当前 profile 的非空恢复验收。
+- 因 fixture 未监听，没有从当前包运行模型响应、工具确认通过路径或 Schedule/后台任务。durable UI 通知丢失补齐、rollback 与恢复并发仍未做真实 WebView 操作。
+- 当前 C 盘约余 7.23 GiB、D 盘约余 7.26 GiB。没有已配置 VM、可丢弃的挂载测试卷或管理员提升；没有填满宿主盘。物理 ENOSPC 的分类、用户提示和恢复操作仍未验收。VM 不是唯一办法：隔离的专用 VHD/测试卷也可验证应用看到的卷满错误；宿主 C/D 盘不能用来做耗尽测试。
 
-继续验收需要一个稳定的 Haven UI 窗口、隔离模型 fixture（确认/Schedule 相关步骤）、以及可安全耗尽的 Windows 测试盘或 VM。不得填满用户的宿主系统盘或数据盘来替代隔离测试。
+继续验收需要用户手动关闭仍打开的系统文件选择器、启动隔离模型 fixture（确认/Schedule 相关步骤），并提供一个可安全耗尽的独立测试卷或 VHD。不得填满用户的宿主系统盘或数据盘来替代隔离测试。
