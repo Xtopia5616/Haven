@@ -1290,3 +1290,4 @@
 - [1384：显式重新应用已保存的运行时配置](1384-explicit-reapply-of-saved-runtime-configuration.md)
 - [1385：模型与媒体配置使用共享代次原子发布](1385-atomic-model-media-generation-publication.md)
 - [1386：自动补齐漏收的会话事件并隔离 rollback 快照](1386-reconcile-missed-session-events-and-fence-rollback-snapshots.md)
+- [1387：为 Settings 失败提供可操作说明与安全诊断](1387-actionable-settings-failure-presentation.md)

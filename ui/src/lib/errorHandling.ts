@@ -1,4 +1,5 @@
 import { addNotification, NOTIFICATION_DURATIONS } from './notificationStore.ts';
+import type { NotificationType } from './notificationStore.ts';
 import { formatError } from './formatError.ts';
 import logger from './logger.ts';
 import { invoke } from './tauri.ts';
@@ -19,6 +20,8 @@ export type ErrorReportOptions = {
 	includeDetail?: boolean;
 	/** Exact user-facing toast text for global errors. */
 	notificationMessage?: string;
+	/** Use warning when the failed operation left a recoverable partial state. */
+	notificationType?: Extract<NotificationType, 'error' | 'warning'>;
 	/** Stable category mirrored to Rust; never contains error or payload text. */
 	failureKind?: FrontendFailureKindInput;
 };
@@ -59,7 +62,8 @@ export function reportError(error: unknown, options: ErrorReportOptions): string
 		}).catch(() => {});
 	}
 	if (options.notify !== false) {
-		addNotification(notificationMessage, 'error', NOTIFICATION_DURATIONS.error);
+		const type = options.notificationType ?? 'error';
+		addNotification(notificationMessage, type, NOTIFICATION_DURATIONS[type]);
 	}
 	return notificationMessage;
 }

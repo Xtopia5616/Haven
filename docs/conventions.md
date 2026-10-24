@@ -301,7 +301,7 @@ try {
 - 失败文案统一由 `reportError` 生成；错误详情、文案前缀和最终 toast 都经过 `formatError`，处理 `unknown`、脱敏、折叠换行并限制长度，禁止页面自行 `${e}` 拼接。前端 console 与外部服务错误日志仅记录稳定类别和固定描述；Rust 内部命令错误按 1.3.3 记录清洗后的摘要。任何日志都不记录 Error 对象、通知正文或未脱敏的错误详情。
 - `+layout.svelte` 注册 `error` / `unhandledrejection` 最后防线：记录 `global` 上下文并显示通用错误提示。已被低层记录的对象错误不会再次记 ERROR。
 - 页面级重复逻辑可收敛为局部 helper（先例：settings 的 `notifyFetch`，带 per-key 节流）。
-- 仅展示的 error toast（例如输入校验、会话/MCP/录音状态事件）调用 `addNotification`；捕获到的异常使用 `reportError`，不得再以 `logger.*` + error toast 拼装两套路径。
+- 仅展示的 error toast（例如输入校验、会话/MCP/录音状态事件）调用 `addNotification`；捕获到的异常使用 `reportError`，不得再以 `logger.*` + error toast 拼装两套路径。异常仍表示配置已写入等可恢复部分状态时，可通过 `notificationType: 'warning'` 保持统一错误入口并准确表达严重级别。
 - 可静默的后台刷新、清理与状态同步异常仍走 `reportError(..., { notify: false })`；若底层（如 `invoke`）已经记录，则再传 `log: false`。聚合操作逐项静默上报，再由操作汇总结果显示一次状态 toast。
 - `logger.*` 只用于非异常诊断和明确的可恢复降级（例如语法高亮失败后回退为纯文本、图片压缩失败后继续用原图）；用户触发的失败不得只写日志。
 - 事件监听注册失败：只走 `events.ts`（内部 `logger.error` 后吞掉，不阻塞 mount）；页面不得裸 `listen`。

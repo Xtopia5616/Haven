@@ -1376,7 +1376,13 @@
 			const failure = presentSettingsFailure(error, 'reapply');
 			reapplyError = failure;
 			await refreshSettingsApplyStatus();
-			addNotification(`${failure.title}：${failure.message}`, failure.tone);
+			reportError(error, {
+				context: 'SettingsView',
+				message: failure.title,
+				log: false,
+				notificationMessage: `${failure.title}：${failure.message}`,
+				notificationType: failure.tone,
+			});
 		} finally {
 			reapplyBusy = false;
 		}
@@ -1612,7 +1618,13 @@
 				}
 			}
 			if (partialApplyFailure && mounted) captureSnapshot();
-			addNotification(`${failure.title}：${failure.message}`, failure.tone);
+			reportError(e, {
+				context: 'SettingsView',
+				message: failure.title,
+				log: false,
+				notificationMessage: `${failure.title}：${failure.message}`,
+				notificationType: failure.tone,
+			});
 			return false;
 		} finally {
 			settleSave();

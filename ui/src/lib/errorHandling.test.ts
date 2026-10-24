@@ -82,4 +82,22 @@ describe('errorHandling', () => {
 		});
 		spy.mockRestore();
 	});
+
+	it('uses a warning toast for a recoverable partial failure through the canonical path', () => {
+		const error = new Error('runtime target unavailable');
+
+		reportError(error, {
+			context: 'SettingsView',
+			message: '设置已保存，但部分功能尚未生效',
+			log: false,
+			notificationMessage: '设置已保存，但部分功能尚未生效：可稍后重试',
+			notificationType: 'warning',
+		});
+
+		expect(get(notificationStore)[0]).toMatchObject({
+			msg: '设置已保存，但部分功能尚未生效：可稍后重试',
+			type: 'warning',
+		});
+		expect(invoke).not.toHaveBeenCalled();
+	});
 });
