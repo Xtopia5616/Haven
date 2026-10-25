@@ -9,6 +9,9 @@ use haven_common::types::{NetworkPolicy, SandboxMode};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(windows)]
+const MAX_MXC_WRITE_ROOT_INSPECTED_ENTRIES: usize = 1_000_000;
+
 /// Short-lived side-effect capability derived from one proof-verified tool
 /// attempt. Acquiring it holds a read lock on the live policy through the
 /// protected operation, so a policy/workspace update either wins first and
@@ -465,8 +468,22 @@ impl ExecutionPolicyPermit {
             );
         }
 
+        let write_scope = normalize_directory_roots(write_scope);
+        #[cfg(windows)]
+        for writable in &write_scope {
+            writable
+                .ensure_no_hardlinked_files(MAX_MXC_WRITE_ROOT_INSPECTED_ENTRIES)
+                .map_err(|error| {
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "refusing MXC Shell because writable hard-link safety could not be verified"
+                    );
+                    "MXC cannot safely isolate a writable directory containing hard-linked files or exceeding the inspection limit".to_owned()
+                })?;
+        }
+
         Ok(WorkspaceShellFilesystemPolicy {
-            readwrite_roots: normalize_directory_roots(write_scope),
+            readwrite_roots: write_scope,
             readonly_roots: normalize_directory_roots(readonly),
             protected_readonly_paths,
             denied_paths,

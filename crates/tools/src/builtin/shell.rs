@@ -1221,6 +1221,543 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer and captureDenials support"]
+    async fn workspace_write_shell_captures_denials_before_any_retry() {
+        use haven_common::types::NetworkPolicy;
+
+        let temp = tempdir().expect("create isolated MXC denial fixture");
+        let workspace_root = temp.path().join("workspace");
+        let outside_root = temp.path().join("outside");
+        std::fs::create_dir(&workspace_root).expect("create workspace root");
+        std::fs::create_dir(&outside_root).expect("create denied root");
+        let outside_file = outside_root.join("blocked.txt");
+        std::fs::write(&outside_file, "outside-original").expect("create existing denied target");
+        let marker = workspace_root.join("first-run.txt");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; Add-Content -LiteralPath '{marker}' -Value 'ran'; try {{ Set-Content -LiteralPath '{outside_file}' -Value 'changed' -ErrorAction Stop }} catch {{ exit 23 }}; exit 41",
+            marker = marker.to_string_lossy().replace('\'', "''"),
+            outside_file = outside_file.to_string_lossy().replace('\'', "''"),
+        );
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (execution_authorization, _) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Deny,
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let tool = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        };
+        let result = tool
+            .run_with_execution_context(
+                ShellParams {
+                    command: script,
+                    shell: Some("powershell".into()),
+                    silent: Some(true),
+                    cwd: Some(workspace_root.to_string_lossy().into_owned()),
+                    step_id: None,
+                    session_id: None,
+                    resource_extensions: Vec::new(),
+                },
+                CancellationToken::new(),
+                Some(&context),
+            )
+            .await
+            .expect("MXC must launch the first Workspace Write attempt");
+
+        assert!(!result.success, "the outside write must remain denied");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().lines().count(),
+            1,
+            "a denied first attempt must not retry itself"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_file).unwrap().trim(),
+            "outside-original",
+            "the MXC denial must preserve the existing outside file"
+        );
+        assert_eq!(
+            result.output["exit_code"].as_i64(),
+            Some(23),
+            "PowerShell must reach and catch the denied outside write; output: {:?}; error: {:?}",
+            result.output,
+            result.error
+        );
+        let access = &result.output["sandbox_access"];
+        assert_eq!(access["capture_status"], "captured");
+        assert_eq!(access["capture_complete"], true);
+        assert_eq!(access["denied_resources_truncated"], false);
+        assert!(access["total_denials"].as_u64().unwrap_or_default() > 0);
+        assert!(
+            access["denied_resources"]
+                .as_array()
+                .is_some_and(|denials| {
+                    denials.iter().any(|denial| {
+                        denial["resource_type"] == "file"
+                            && matches!(denial["access_type"].as_str(), Some("read" | "write"))
+                            && denial["resource"].as_str().is_some_and(|resource| {
+                                resource.to_ascii_lowercase().ends_with("\\blocked.txt")
+                            })
+                    })
+                }),
+            "MXC denial records did not identify the outside write: {:?}; shell output: {:?}; error: {:?}",
+            access["denied_resources"],
+            result.output["output"],
+            result.error
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer support"]
+    async fn workspace_write_shell_blocks_junction_aliases() {
+        use haven_common::types::NetworkPolicy;
+
+        let temp = tempdir().expect("create isolated MXC junction fixture");
+        let workspace_root = temp.path().join("workspace");
+        let outside_root = temp.path().join("outside");
+        std::fs::create_dir(&workspace_root).expect("create workspace root");
+        std::fs::create_dir(&outside_root).expect("create outside root");
+        let junction = workspace_root.join("outside-junction");
+        let junction_target = outside_root.join("junction-write.txt");
+
+        let junction_script = format!(
+            "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path '{junction}' -Target '{outside_root}' | Out-Null",
+            junction = junction.to_string_lossy().replace('\'', "''"),
+            outside_root = outside_root.to_string_lossy().replace('\'', "''"),
+        );
+        let junction_setup = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                &encoded_powershell_command(&junction_script),
+            ])
+            .output()
+            .expect("create junction with Windows PowerShell");
+        assert!(
+            junction_setup.status.success(),
+            "junction setup failed: {}",
+            String::from_utf8_lossy(&junction_setup.stderr)
+        );
+
+        let script = format!(
+            "$ErrorActionPreference='Stop'; try {{ Set-Content -LiteralPath '{junction_target}' -Value junction-changed -ErrorAction Stop; exit 17 }} catch {{ exit 0 }}",
+            junction_target = junction_target.to_string_lossy().replace('\'', "''"),
+        );
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (execution_authorization, _) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Deny,
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let result = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        }
+        .run_with_execution_context(
+            ShellParams {
+                command: script,
+                shell: Some("powershell".into()),
+                silent: Some(true),
+                cwd: Some(workspace_root.to_string_lossy().into_owned()),
+                step_id: None,
+                session_id: None,
+                resource_extensions: Vec::new(),
+            },
+            CancellationToken::new(),
+            Some(&context),
+        )
+        .await
+        .expect("MXC must launch the path-alias attempt");
+
+        assert_eq!(
+            result.output["exit_code"].as_i64(),
+            Some(0),
+            "MXC should block writes through a junction; target {:?}; MXC output {:?}; error {:?}",
+            std::fs::read_to_string(&junction_target).ok(),
+            result.output,
+            result.error
+        );
+        assert!(
+            !junction_target.exists(),
+            "junction must not expose its target"
+        );
+        assert!(result.output["sandbox_access"]["capture_complete"] == true);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows host with MXC BaseContainer support"]
+    async fn workspace_write_shell_refuses_preexisting_hardlink_aliases() {
+        use haven_common::types::NetworkPolicy;
+
+        let temp = tempdir().expect("create isolated MXC hardlink fixture");
+        let workspace_root = temp.path().join("workspace");
+        let outside_root = temp.path().join("outside");
+        std::fs::create_dir(&workspace_root).expect("create workspace root");
+        std::fs::create_dir(&outside_root).expect("create outside root");
+        let hardlink_target = outside_root.join("hardlink-target.txt");
+        let hardlink_alias = workspace_root.join("hardlink-alias.txt");
+        let marker = workspace_root.join("should-not-run.txt");
+        std::fs::write(&hardlink_target, "hardlink-original")
+            .expect("create outside hardlink target");
+        std::fs::hard_link(&hardlink_target, &hardlink_alias)
+            .expect("create hardlink alias within the authorized root");
+
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (execution_authorization, _) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Deny,
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let result = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        }
+        .run_with_execution_context(
+            ShellParams {
+                command: format!(
+                    "$ErrorActionPreference='Stop'; Set-Content -LiteralPath '{}' -Value started; Set-Content -LiteralPath '{}' -Value changed",
+                    marker.to_string_lossy().replace('\'', "''"),
+                    hardlink_alias.to_string_lossy().replace('\'', "''"),
+                ),
+                shell: Some("powershell".into()),
+                silent: Some(true),
+                cwd: Some(workspace_root.to_string_lossy().into_owned()),
+                step_id: None,
+                session_id: None,
+                resource_extensions: Vec::new(),
+            },
+            CancellationToken::new(),
+            Some(&context),
+        )
+        .await;
+
+        let error = result
+            .expect_err("MXC cannot safely enforce a writable root with a hard link")
+            .to_string();
+        assert!(
+            error.contains("hard-linked files"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            !marker.exists(),
+            "preflight rejection must happen before spawn"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&hardlink_target).unwrap(),
+            "hardlink-original",
+            "preflight must preserve the outside hardlink target"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer support"]
+    async fn workspace_write_shell_cannot_create_an_outside_hardlink_alias() {
+        use haven_common::types::NetworkPolicy;
+
+        let temp = tempdir().expect("create isolated MXC hardlink creation fixture");
+        let workspace_root = temp.path().join("workspace");
+        let outside_root = temp.path().join("outside");
+        std::fs::create_dir(&workspace_root).expect("create workspace root");
+        std::fs::create_dir(&outside_root).expect("create outside root");
+        let outside_file = outside_root.join("source.txt");
+        let alias = workspace_root.join("created-alias.txt");
+        std::fs::write(&outside_file, "outside-original").expect("create outside hardlink source");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; $status='blocked'; try {{ New-Item -ItemType HardLink -Path '{alias}' -Target '{outside_file}' -ErrorAction Stop | Out-Null; Set-Content -LiteralPath '{alias}' -Value changed -ErrorAction Stop; $status='written' }} catch {{ }}; if ($status -eq 'blocked') {{ exit 0 }} else {{ exit 17 }}",
+            alias = alias.to_string_lossy().replace('\'', "''"),
+            outside_file = outside_file.to_string_lossy().replace('\'', "''"),
+        );
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (execution_authorization, _) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Deny,
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let result = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        }
+        .run_with_execution_context(
+            ShellParams {
+                command: script,
+                shell: Some("powershell".into()),
+                silent: Some(true),
+                cwd: Some(workspace_root.to_string_lossy().into_owned()),
+                step_id: None,
+                session_id: None,
+                resource_extensions: Vec::new(),
+            },
+            CancellationToken::new(),
+            Some(&context),
+        )
+        .await
+        .expect("MXC must launch the hardlink-creation attempt");
+
+        assert_eq!(
+            result.output["exit_code"].as_i64(),
+            Some(0),
+            "MXC must deny creating a link to an outside file: {:?}; {:?}",
+            result.output,
+            result.error
+        );
+        assert!(
+            !alias.exists(),
+            "the outside source must not gain an in-root alias"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_file).unwrap().trim(),
+            "outside-original"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer and deniedPaths support"]
+    async fn workspace_write_shell_cannot_alias_a_readonly_subpath_into_a_writable_path() {
+        use haven_common::config::{FileResourcePolicy, ResourcePolicy, ToolConfig};
+        use haven_common::types::NetworkPolicy;
+        use std::collections::HashMap;
+
+        let temp = tempdir().expect("create isolated MXC readonly hardlink fixture");
+        let workspace_root = temp.path().join("workspace");
+        let readonly_root = workspace_root.join("vendor");
+        std::fs::create_dir_all(&readonly_root).expect("create read-only subtree");
+        let readonly_file = readonly_root.join("source.txt");
+        let writable_alias = workspace_root.join("alias.txt");
+        std::fs::write(&readonly_file, "readonly-original").expect("create protected file");
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (_, engine) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Deny,
+            );
+        engine
+            .set_tool_settings(HashMap::from([(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        files: FileResourcePolicy {
+                            read_only_roots: vec![readonly_root.to_string_lossy().into_owned()],
+                            ..FileResourcePolicy::default()
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            )]))
+            .await;
+        let execution_authorization =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+                engine, "shell",
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let script = format!(
+            "$ErrorActionPreference='Stop'; $status='blocked'; try {{ New-Item -ItemType HardLink -Path '{writable_alias}' -Target '{readonly_file}' -ErrorAction Stop | Out-Null; Set-Content -LiteralPath '{writable_alias}' -Value changed -ErrorAction Stop; $status='written' }} catch {{ }}; if ($status -eq 'blocked') {{ exit 0 }} else {{ exit 17 }}",
+            writable_alias = writable_alias.to_string_lossy().replace('\'', "''"),
+            readonly_file = readonly_file.to_string_lossy().replace('\'', "''"),
+        );
+        let result = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        }
+        .run_with_execution_context(
+            ShellParams {
+                command: script,
+                shell: Some("powershell".into()),
+                silent: Some(true),
+                cwd: Some(workspace_root.to_string_lossy().into_owned()),
+                step_id: None,
+                session_id: None,
+                resource_extensions: Vec::new(),
+            },
+            CancellationToken::new(),
+            Some(&context),
+        )
+        .await
+        .expect("MXC must launch the read-only hardlink attempt");
+
+        assert_eq!(
+            result.output["exit_code"].as_i64(),
+            Some(0),
+            "MXC must prevent a hardlink from bypassing a read-only subtree: {:?}; {:?}",
+            result.output,
+            result.error
+        );
+        assert!(!writable_alias.exists());
+        assert_eq!(
+            std::fs::read_to_string(&readonly_file).unwrap().trim(),
+            "readonly-original"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC captureDenials support"]
+    async fn workspace_write_shell_resource_extension_requires_confirmation_and_retries_once() {
+        use crate::{AuthorizationDecision, AuthorizationReasonCode, AuthorizationRequest};
+        use haven_common::types::NetworkPolicy;
+
+        let temp = tempdir().expect("create isolated MXC extension fixture");
+        let workspace_root = temp.path().join("workspace");
+        let outside_root = temp.path().join("outside");
+        std::fs::create_dir(&workspace_root).expect("create workspace root");
+        std::fs::create_dir(&outside_root).expect("create extension root");
+        let outside_file = outside_root.join("target.txt");
+        let marker = workspace_root.join("runs.txt");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; Add-Content -LiteralPath '{marker}' -Value 'run'; try {{ Set-Content -LiteralPath '{outside_file}' -Value 'confirmed' -ErrorAction Stop }} catch {{ exit 23 }}; exit 0",
+            marker = marker.to_string_lossy().replace('\'', "''"),
+            outside_file = outside_file.to_string_lossy().replace('\'', "''"),
+        );
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (execution_authorization, engine) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Open,
+            );
+        let tool = ShellTool {
+            execution_workspace: workspace.clone(),
+            ..ShellTool::default()
+        };
+        let initial_context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let first = tool
+            .run_with_execution_context(
+                ShellParams {
+                    command: script.clone(),
+                    shell: Some("powershell".into()),
+                    silent: Some(true),
+                    cwd: Some(workspace_root.to_string_lossy().into_owned()),
+                    step_id: None,
+                    session_id: None,
+                    resource_extensions: Vec::new(),
+                },
+                CancellationToken::new(),
+                Some(&initial_context),
+            )
+            .await
+            .expect("MXC must launch the unextended first attempt");
+        assert!(!first.success, "the first outside write must be denied");
+        assert_eq!(first.output["sandbox_access"]["capture_status"], "captured");
+        assert_eq!(first.output["sandbox_access"]["capture_complete"], true);
+        assert!(!outside_file.exists(), "the first write must remain denied");
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().lines().count(),
+            1,
+            "the initial denied command must have run exactly once"
+        );
+
+        let retry_input = json!({
+            "command": script,
+            "shell": "powershell",
+            "silent": true,
+            "cwd": workspace_root.to_string_lossy(),
+            "_resource_extensions": [{
+                "path": outside_root.to_string_lossy(),
+                "access": "write"
+            }]
+        });
+        let retry_request = AuthorizationRequest::new(
+            None,
+            "shell",
+            retry_input.clone(),
+            tool.operation_policy(&retry_input),
+        )
+        .with_resources(
+            tool.authorization_resources(&retry_input)
+                .expect("Shell must declare the exact retry scopes"),
+        );
+        let decision = engine
+            .authorize_for_execution(&retry_request)
+            .await
+            .decision;
+        let receipt = match decision {
+            AuthorizationDecision::RequiresConfirmation {
+                receipt,
+                reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
+                ..
+            } => receipt,
+            other => {
+                panic!("the retry scope must require a resource-extension confirmation: {other:?}")
+            }
+        };
+        assert!(receipt.resource_boundary_extension);
+
+        // Without a user approval there is no execution proof to run the retry.
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().lines().count(),
+            1,
+            "a pending or declined confirmation must not rerun the command"
+        );
+
+        let proof = engine
+            .confirm_for_execution(&retry_request, &receipt)
+            .await
+            .expect("the test's explicit approval must produce a proof");
+        let retry_context = engine
+            .execution_context_for_proof(&retry_request, &proof)
+            .await
+            .expect("the approved proof must bind to the temporary extension");
+        let retry_params: ShellParams = serde_json::from_value(retry_input)
+            .expect("approved retry input must match the Shell contract");
+        let retried = tool
+            .run_with_execution_context(
+                retry_params,
+                CancellationToken::new(),
+                Some(&retry_context),
+            )
+            .await
+            .expect("MXC must launch the confirmed retry");
+
+        assert!(retried.success, "the approved target should be writable");
+        assert_eq!(
+            std::fs::read_to_string(&outside_file).unwrap().trim(),
+            "confirmed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap().lines().count(),
+            2,
+            "approval must cause one full-command retry after the first partial side effect"
+        );
+        assert!(
+            retried.output["sandbox_notice"].as_str().is_some(),
+            "the final result must keep the actual isolation summary"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     #[ignore = "run on a serviced Windows host without BaseContainer to exercise AppContainer+DACL"]
     async fn workspace_write_shell_is_confined_by_appcontainer_dacl_compatibility() {
         use haven_common::config::MxcIsolationMode;

@@ -217,6 +217,46 @@ impl DirectoryCapability {
         self.entries_from(&self.directory, maximum)
     }
 
+    /// Refuse a writable tree that contains a file with multiple hard-link
+    /// names. MXC ProcessContainer grants access by directory root, so a hard
+    /// link inside an allowed root can otherwise mutate the same file through
+    /// a name outside that root. Reparse points are not followed here; MXC's
+    /// process boundary handles their targets independently.
+    #[cfg(windows)]
+    pub fn ensure_no_hardlinked_files(&self, maximum_entries: usize) -> io::Result<()> {
+        let mut pending = vec![self.directory.try_clone()?];
+        let mut inspected = 0usize;
+        while let Some(directory) = pending.pop() {
+            for entry in directory.entries()? {
+                let entry = entry?;
+                inspected = inspected.saturating_add(1);
+                if inspected > maximum_entries {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "writable directory tree exceeds the hard-link inspection limit",
+                    ));
+                }
+                let metadata = entry.metadata()?;
+                if is_cap_link_or_reparse_point(&metadata) {
+                    continue;
+                }
+                let name = entry.file_name();
+                if metadata.is_dir() {
+                    pending.push(directory.open_dir(&name)?);
+                } else if metadata.is_file() {
+                    let file = directory.open(&name)?.into_std();
+                    if windows_file_hard_link_count(&file)? > 1 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "writable directory tree contains a hard-linked file",
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn entries_from(
         &self,
         directory: &cap_std::fs::Dir,
@@ -1355,6 +1395,27 @@ pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
     }
 }
 
+#[cfg(windows)]
+fn windows_file_hard_link_count(file: &File) -> io::Result<u32> {
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut information = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    // SAFETY: `file` owns a valid handle for the duration of the call, and
+    // `information` points to writable storage for the API's output struct.
+    let succeeded =
+        unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the API returned success and initialized the structure.
+    let information = unsafe { information.assume_init() };
+    Ok(information.nNumberOfLinks)
+}
+
 /// Whether two already-open file handles identify the same filesystem object.
 ///
 /// Skills uses this after opening an untrusted path and resolving its current
@@ -1425,8 +1486,42 @@ mod filesystem_path_capability_tests {
         std::fs::create_dir(&metadata).unwrap();
 
         assert_eq!(
-            protected_metadata_paths(&[metadata.clone()]),
+            protected_metadata_paths(std::slice::from_ref(&metadata)),
             vec![metadata]
         );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod hardlink_inspection_tests {
+    use super::DirectoryCapability;
+
+    #[test]
+    fn writable_tree_inspection_accepts_single_link_files() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("ordinary.txt"), "ordinary").unwrap();
+        let capability = DirectoryCapability::open(root.path()).unwrap();
+
+        capability.ensure_no_hardlinked_files(10).unwrap();
+    }
+
+    #[test]
+    fn writable_tree_inspection_rejects_hardlinked_files_and_budget_overflow() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("writable");
+        let outside = temp.path().join("outside.txt");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&outside, "shared").unwrap();
+        std::fs::hard_link(&outside, root.join("alias.txt")).unwrap();
+        let capability = DirectoryCapability::open(&root).unwrap();
+
+        let hardlink_error = capability
+            .ensure_no_hardlinked_files(10)
+            .expect_err("a file with two names must not enter an MXC writable root");
+        assert_eq!(hardlink_error.kind(), std::io::ErrorKind::PermissionDenied);
+        let limit_error = capability
+            .ensure_no_hardlinked_files(0)
+            .expect_err("the scan must fail closed when its entry budget is exceeded");
+        assert_eq!(limit_error.kind(), std::io::ErrorKind::InvalidData);
     }
 }

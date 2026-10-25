@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳并实施；格式化与 workspace 严格 Clippy 已通过，仍需在 Windows MXC 主机上完成运行时验收。
+已采纳并实施；Windows MXC BaseContainer 真机验收通过。AppContainer+DACL ACL 恢复仍需在不支持 BaseContainer 的 MXC 主机上单独验收。
 
 ## 背景
 
@@ -34,6 +34,8 @@ WorkspaceWrite 下的 Shell 由 MXC ProcessContainer 隔离。范围外访问由
 
 ## 验证
 
-- 本变更跨 `haven_platform`、`haven_tools`、`haven_agent`、`haven_app_binary`，静态验证使用 workspace 格式化与 `cargo clippy --locked --workspace -- -D warnings`；Windows MXC 运行时验收尚未完成。
-- MXC 真机路径需覆盖：完整与截断捕获、捕获不可用降级、文件读取/写入目录授权、非文件资源保持阻止、用户拒绝不重跑、用户批准后仅重跑一次，以及首轮已有副作用的提示。
-- 本 ADR 不声称上述 Windows 运行时场景已完成验收。
+- Windows build 29683 的 MXC BaseContainer 主机运行 `workspace_write_shell_captures_denials_before_any_retry` 与 `workspace_write_shell_resource_extension_requires_confirmation_and_retries_once`：首轮外部写入被阻止且捕获完整，首轮副作用只发生一次；资源扩展必须取得 `ResourceBoundaryExtension` 确认，批准后完整命令只重跑一次，副作用计数为两次。
+- 同一主机运行 `workspace_write_shell_is_confined_to_tool_write_roots_by_mxc`、`workspace_write_shell_applies_tool_read_only_policy_by_mxc`、`workspace_write_shell_enforces_readonly_subpaths_and_denied_paths`、`workspace_write_shell_blocks_junction_aliases`、`workspace_write_shell_refuses_preexisting_hardlink_aliases`、`workspace_write_shell_cannot_create_an_outside_hardlink_alias` 与 `workspace_write_shell_cannot_alias_a_readonly_subpath_into_a_writable_path`：全部通过。预置 hardlink 曾在 MXC 下成功修改根外文件；Shell 现对有效写根执行有界 hardlink 检查并在 spawn 前拒绝该目录，详见 [ADR 1409](1409-refuse-mxc-shell-hardlink-escapes.md)。
+- `shell_with_domain_restrictions_is_blocked_before_network_confirmation` 通过：全局或 Shell 工具级域名限制下，opaque Shell 联网在授权阶段阻止，MXC 不会启动。
+- 当前主机使用 MXC BaseContainer；每次真实运行均报告“MXC 不会修改授权目录的 DACL”。因此本轮没有改变 ACL，也未声称 AppContainer+DACL ACL 恢复已验收。需在 BaseContainer 不可用、兼容隔离实际选择 AppContainer+DACL 的 Windows 主机上运行 `workspace_write_shell_is_confined_by_appcontainer_dacl_compatibility` 并检查 ACL 恢复。
+- 完整与截断捕获、捕获不可用降级和 MXC 非文件拒绝保持阻止仍需保留其既有 mock/负向测试；上述 BaseContainer 真机结果不替代 AppContainer+DACL 验收。

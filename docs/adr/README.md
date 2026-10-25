@@ -1309,3 +1309,4 @@
 - [1404：由授权 owner 将 Shell 文件策略编译到 MXC](1404-compile-shell-filesystem-policy-into-mxc.md)
 - [1405：将 MXC 兼容隔离改为显式选择](1405-explicit-mxc-compatibility-isolation.md)
 - [1408：配置 Shell 系统与工具链只读根](1408-configure-shell-runtime-read-roots.md)
+- [1409：拒绝 MXC Shell 写根中的 hardlink 越界](1409-refuse-mxc-shell-hardlink-escapes.md)
