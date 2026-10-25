@@ -13,6 +13,7 @@
 	} from '$lib/sessionStatus.ts';
 	import { submitTranscript } from '$lib/submit.ts';
 	import { createChatSessionController } from '$lib/chatSessionController.ts';
+	import { submitAndRefreshSessionList } from '$lib/chatSessionOperationResults.ts';
 	import { createChatEventController } from '$lib/chatEventController.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionStartup } from '$lib/chatSessionStartup.ts';
@@ -1086,7 +1087,6 @@
 		getSessionSnapshot: () => sessionReducer.snapshot().sessions,
 		notify: addNotification,
 		reportError,
-		setInputDraft: (content) => composerRef?.setDraft(content),
 		loadSessions,
 		clearStepBlockIds,
 		setFreshSessionIntent: (value) => newSessionIntentStore.set(value),
@@ -1098,16 +1098,6 @@
 		closeForkDialog: () => {
 			forkDialog = { open: false, messageId: '', content: '' };
 		},
-		closeRollbackDialog: () => {
-			rollbackDialog = {
-				open: false,
-				stepNumber: null,
-				role: null,
-				content: '',
-				messageId: '',
-			};
-		},
-		closeSessionMenu: () => (sessionMenuOpen = false),
 		setContinuePending: (pending) => (continuePending = pending),
 		setInterruptPending: (pending) => (interruptPending = pending),
 		setAutoFollow: (follow) => chatViewController.setAutoFollow(follow),
@@ -1118,16 +1108,78 @@
 		reconcile: (sessionId) => chatSessionController.reconcileSessionEvents(sessionId),
 	});
 
-	function confirmRollbackAction() {
+	async function submitChatMessage(
+		...args: Parameters<typeof chatSessionController.submitMessage>
+	): Promise<void> {
+		const result = await submitAndRefreshSessionList(
+			() => chatSessionController.submitMessage(...args),
+			loadSessions,
+		);
+		if (result.kind === 'failed') {
+			reportError(result.error, { context: '+page', message: '发送失败', log: false });
+		} else if (result.refresh.kind === 'failed') {
+			reportError(result.refresh.error, {
+				context: '+page',
+				message: '刷新会话列表失败',
+				log: false,
+			});
+		}
+	}
+
+	async function confirmRollbackAction() {
 		const stepNumber = rollbackDialog.stepNumber;
 		const role = rollbackDialog.role;
 		if (stepNumber == null || role == null) return;
-		return chatSessionController.confirmRollbackAction({
+		const result = await chatSessionController.confirmRollbackAction({
 			stepNumber,
 			role,
 			content: rollbackDialog.content,
 			messageId: rollbackDialog.messageId,
 		});
+		if (result.kind === 'ignored') return;
+		if (result.kind === 'rejected') {
+			addNotification('消息仍在保存，请稍后再试', 'info', 2000);
+			return;
+		}
+
+		rollbackDialog = {
+			open: false,
+			stepNumber: null,
+			role: null,
+			content: '',
+			messageId: '',
+		};
+		if (result.kind === 'failed') {
+			reportError(result.error, { context: '+page', message: '回退失败', log: false });
+		} else {
+			if (
+				typeof result.transcriptRefresh !== 'string' &&
+				result.transcriptRefresh.kind === 'failed'
+			) {
+				reportError(result.transcriptRefresh.error, {
+					context: '+page',
+					message: '同步消息失败',
+					log: false,
+				});
+			}
+			if (result.selectionCurrent) {
+				if (result.role === 'user') {
+					composerRef?.setDraft(result.content);
+					addNotification('已回退，请编辑后重新发送', 'info', 3000);
+				} else {
+					addNotification(`已回退到第 ${result.stepNumber} 步`, 'info', 3000);
+				}
+			}
+		}
+		try {
+			await loadSessions();
+		} catch (error) {
+			reportError(error, {
+				context: '+page',
+				message: '刷新会话列表失败',
+				log: false,
+			});
+		}
 	}
 
 	function confirmForkSession() {
@@ -1140,6 +1192,7 @@
 	}
 
 	async function switchToSession(sessionId: string) {
+		sessionMenuOpen = false;
 		const selectionVersion = chatSessionController.beginUserSessionSelection();
 		const alreadyLoaded = sessionReducer
 			.snapshot()
@@ -1179,8 +1232,23 @@
 				}
 			}
 		}
-		const switched = await chatSessionController.switchToSession(sessionId, selectionVersion);
-		if (!switched) return;
+		const switchResult = await chatSessionController.switchToSession(
+			sessionId,
+			selectionVersion,
+		);
+		if (switchResult.kind === 'superseded') return;
+		if (switchResult.kind === 'failed') {
+			reportError(switchResult.error, {
+				context: '+page',
+				message: '切换会话失败',
+				log: false,
+			});
+			return;
+		}
+		const selectedTitle =
+			sessionReducer.snapshot().sessions.find((session) => session.sessionId === sessionId)
+				?.title || '会话';
+		addNotification(`已切换到：${selectedTitle}`, 'info', 1500);
 		const historicalRunEndStatus: SessionRunEndStatus | undefined =
 			historical?.status === 'paused'
 				? 'paused'
@@ -1277,7 +1345,7 @@
 			askSelectionsReady = ready;
 		},
 		submitMessage: (text, images, files, deliveryMode) => {
-			void chatSessionController.submitMessage(text, images, files, undefined, deliveryMode);
+			void submitChatMessage(text, images, files, undefined, deliveryMode);
 		},
 		reducer: sessionReducer,
 	});

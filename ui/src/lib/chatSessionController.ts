@@ -15,6 +15,7 @@ import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import type { TranscriptSubmissionResultView } from './contracts/transcriptSubmissionResult.ts';
 import { isCanonicalEntityId } from './contracts/wireGuards.ts';
 import type { SessionAction, SessionReducer, SessionSummary } from './sessionReducer.ts';
+import type { ChatSessionSubmitResult } from './chatSessionOperationResults.ts';
 
 export interface RollbackRequest {
 	stepNumber: number;
@@ -22,6 +23,25 @@ export interface RollbackRequest {
 	content: string;
 	messageId: string;
 }
+
+export type RollbackResult =
+	| { kind: 'ignored'; reason: 'no-active-session' | 'already-in-flight' }
+	| { kind: 'rejected'; reason: 'message-not-persisted' }
+	| { kind: 'failed'; sessionId: string; error: unknown }
+	| {
+			kind: 'rolled-back';
+			sessionId: string;
+			stepNumber: number;
+			role: CanonicalRole;
+			content: string;
+			selectionCurrent: boolean;
+			transcriptRefresh: RollbackTranscriptRefresh;
+	  };
+
+type RollbackTranscriptRefresh = 'loaded' | 'superseded' | { kind: 'failed'; error: unknown };
+
+export type SessionSwitchResult =
+	{ kind: 'switched' } | { kind: 'superseded' } | { kind: 'failed'; error: unknown };
 
 export interface ChatSessionControllerDependencies {
 	commands: Pick<
@@ -50,7 +70,6 @@ export interface ChatSessionControllerDependencies {
 	getSessionSnapshot: () => SessionSummary[];
 	notify: (message: string, type: NotificationType, duration?: number) => void;
 	reportError: (error: unknown, options: ErrorReportOptions) => unknown;
-	setInputDraft: (content: string) => void;
 	loadSessions: () => Promise<void>;
 	clearStepBlockIds: (sessionId: string) => void;
 	setFreshSessionIntent: (value: boolean) => void;
@@ -58,8 +77,6 @@ export interface ChatSessionControllerDependencies {
 	setRollbackLoading: (loading: boolean) => void;
 	setForkLoading: (loading: boolean) => void;
 	closeForkDialog: () => void;
-	closeRollbackDialog: () => void;
-	closeSessionMenu: () => void;
 	setContinuePending: (pending: boolean) => void;
 	setInterruptPending: (pending: boolean) => void;
 	setAutoFollow: (follow: boolean) => void;
@@ -111,11 +128,15 @@ export class ChatSessionController {
 		if (!sessionId || this.rollbackInFlight || this.continueInFlight) return;
 		const snapshotVersion = this.dependencies.reducer.beginResumeSnapshot(sessionId);
 		try {
-			const watermarkBefore = await this.dependencies.commands.getSessionEventSequenceWatermark({
-				sessionId,
-			});
+			const watermarkBefore =
+				await this.dependencies.commands.getSessionEventSequenceWatermark({
+					sessionId,
+				});
 			if (
-				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(sessionId, snapshotVersion)
+				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(
+					sessionId,
+					snapshotVersion,
+				)
 			)
 				return;
 			const knownWatermark = this.dependencies.reducer.getEventSequenceWatermark(sessionId);
@@ -127,14 +148,21 @@ export class ChatSessionController {
 
 			const result = await this.dependencies.commands.getSessionForResume({ sessionId });
 			if (
-				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(sessionId, snapshotVersion)
+				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(
+					sessionId,
+					snapshotVersion,
+				)
 			)
 				return;
-			const watermarkAfter = await this.dependencies.commands.getSessionEventSequenceWatermark({
-				sessionId,
-			});
+			const watermarkAfter =
+				await this.dependencies.commands.getSessionEventSequenceWatermark({
+					sessionId,
+				});
 			if (
-				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(sessionId, snapshotVersion) ||
+				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(
+					sessionId,
+					snapshotVersion,
+				) ||
 				watermarkBefore !== watermarkAfter ||
 				result.eventSequenceWatermark !== watermarkAfter
 			)
@@ -157,13 +185,13 @@ export class ChatSessionController {
 		}
 	}
 
-	async confirmRollbackAction(request: RollbackRequest): Promise<void> {
+	async confirmRollbackAction(request: RollbackRequest): Promise<RollbackResult> {
 		const sessionId = this.dependencies.getActiveSessionId();
-		if (!sessionId || this.rollbackInFlight) return;
+		if (!sessionId) return { kind: 'ignored', reason: 'no-active-session' };
+		if (this.rollbackInFlight) return { kind: 'ignored', reason: 'already-in-flight' };
 		const userSelectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
 		if (request.role === 'user' && !isCanonicalEntityId(request.messageId, 'msg')) {
-			this.dependencies.notify('消息仍在保存，请稍后再试', 'info', 2000);
-			return;
+			return { kind: 'rejected', reason: 'message-not-persisted' };
 		}
 
 		this.rollbackInFlight = true;
@@ -178,28 +206,31 @@ export class ChatSessionController {
 			});
 			this.dependencies.dispatch({ type: 'session/replay-reset', sessionId });
 			this.dependencies.clearStepBlockIds(sessionId);
-			await this.resyncSessionMessages(sessionId);
-
-			if (
-				this.dependencies.reducer.isUserSelectionCurrent(userSelectionVersion) &&
-				this.dependencies.getActiveSessionId() === sessionId &&
-				request.role === 'user'
-			) {
-				this.dependencies.setInputDraft(request.content);
-				this.dependencies.notify('已回退，请编辑后重新发送', 'info', 3000);
-			} else if (
-				this.dependencies.reducer.isUserSelectionCurrent(userSelectionVersion) &&
-				this.dependencies.getActiveSessionId() === sessionId
-			) {
-				this.dependencies.notify(`已回退到第 ${request.stepNumber} 步`, 'info', 3000);
+			let transcriptRefresh: RollbackTranscriptRefresh = 'loaded';
+			try {
+				const loaded = await this.reloadSessionMessages(sessionId, {
+					preserveStreamingOnly: true,
+				});
+				transcriptRefresh = loaded ? 'loaded' : 'superseded';
+			} catch (error) {
+				transcriptRefresh = { kind: 'failed', error };
 			}
+			return {
+				kind: 'rolled-back',
+				sessionId,
+				stepNumber: request.stepNumber,
+				role: request.role,
+				content: request.content,
+				selectionCurrent:
+					this.dependencies.reducer.isUserSelectionCurrent(userSelectionVersion) &&
+					this.dependencies.getActiveSessionId() === sessionId,
+				transcriptRefresh,
+			};
 		} catch (error) {
-			this.report(error, '回退失败');
+			return { kind: 'failed', sessionId, error };
 		} finally {
 			this.rollbackInFlight = false;
 			this.dependencies.setRollbackLoading(false);
-			this.dependencies.closeRollbackDialog();
-			await this.dependencies.loadSessions();
 		}
 	}
 
@@ -225,7 +256,15 @@ export class ChatSessionController {
 				this.dependencies.reducer.isUserSelectionCurrent(selectionVersion) &&
 				this.dependencies.getActiveSessionId() === sourceSessionId
 			) {
-				await this.switchToSession(childSessionId, selectionVersion);
+				const switchResult = await this.switchToSession(childSessionId, selectionVersion);
+				if (switchResult.kind === 'failed') {
+					this.report(switchResult.error, '切换会话失败');
+				} else if (switchResult.kind === 'switched') {
+					const session = this.dependencies
+						.getSessionSnapshot()
+						.find((item) => item.sessionId === childSessionId);
+					this.dependencies.notify(`已切换到：${session?.title || '会话'}`, 'info', 1500);
+				}
 			} else {
 				this.dependencies.notify('已创建派生会话', 'info', 2000);
 			}
@@ -239,16 +278,18 @@ export class ChatSessionController {
 	}
 
 	/** Load and select a persisted session, then reclaim terminal prior-session memory. */
-	async switchToSession(sessionId: string, selectionVersion?: number): Promise<boolean> {
+	async switchToSession(
+		sessionId: string,
+		selectionVersion?: number,
+	): Promise<SessionSwitchResult> {
 		const currentSelectionVersion = selectionVersion ?? this.beginUserSessionSelection();
-		this.dependencies.closeSessionMenu();
 		const previousSessionId = this.dependencies.getActiveSessionId();
 		try {
 			const loaded = await this.reloadSessionMessages(sessionId, {
 				selectionVersion: currentSelectionVersion,
 			});
 			if (!loaded || !this.isUserSessionSelectionCurrent(currentSelectionVersion))
-				return false;
+				return { kind: 'superseded' };
 			this.dependencies.setFreshSessionIntent(false);
 			this.dependencies.clearPersistedFreshSessionIntent();
 			this.dependencies.dispatch({ type: 'session/selected', sessionId });
@@ -266,16 +307,11 @@ export class ChatSessionController {
 				}
 			}
 
-			const session = this.dependencies
-				.getSessionSnapshot()
-				.find((item) => item.sessionId === sessionId);
-			this.dependencies.notify(`已切换到：${session?.title || '会话'}`, 'info', 1500);
-			return true;
+			return { kind: 'switched' };
 		} catch (error) {
-			if (this.isUserSessionSelectionCurrent(currentSelectionVersion)) {
-				this.report(error, '切换会话失败');
-			}
-			return false;
+			return this.isUserSessionSelectionCurrent(currentSelectionVersion)
+				? { kind: 'failed', error }
+				: { kind: 'superseded' };
 		}
 	}
 
@@ -353,17 +389,28 @@ export class ChatSessionController {
 			this.dependencies.dispatch({ type: 'session/replay-reset', sessionId });
 			this.dependencies.setAutoFollow(true);
 			if (strategy.mode === 'continue') {
-				void this.submitMessage(strategy.text, []);
+				const submission = await this.submitMessage(strategy.text, []);
+				if (submission.kind === 'failed') this.report(submission.error, '发送失败');
 			} else {
 				const syncedMessages = this.dependencies.reducer.getMessages(sessionId);
 				if (shouldResubmitOriginalUser(syncedMessages, strategy.messageId)) {
 					const submissionToken = strategy.messageId
 						? `continue:${strategy.messageId}`
 						: undefined;
-					void this.submitMessage(strategy.text, [], undefined, submissionToken);
+					const submission = await this.submitMessage(
+						strategy.text,
+						[],
+						undefined,
+						submissionToken,
+					);
+					if (submission.kind === 'failed') this.report(submission.error, '发送失败');
 				}
 			}
-			await this.dependencies.loadSessions();
+			try {
+				await this.dependencies.loadSessions();
+			} catch (error) {
+				this.report(error, '刷新会话列表失败');
+			}
 		} catch (error) {
 			this.report(error, '继续失败');
 			// Keep the banner visible so the user can retry.
@@ -380,7 +427,7 @@ export class ChatSessionController {
 		files?: ChatFileAttachment[] | null,
 		submissionToken?: string,
 		deliveryMode?: InputDeliveryModeInput,
-	): Promise<void> {
+	): Promise<ChatSessionSubmitResult> {
 		const userSelectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
 		try {
 			const result = await this.dependencies.submitTranscript(text, {
@@ -401,9 +448,9 @@ export class ChatSessionController {
 					sessionId: createdSessionId,
 				});
 			}
-			void this.dependencies.loadSessions();
+			return { kind: 'submitted', sessionId: createdSessionId ?? null };
 		} catch (error) {
-			this.report(error, '发送失败');
+			return { kind: 'failed', error };
 		}
 	}
 
@@ -419,7 +466,10 @@ export class ChatSessionController {
 		try {
 			const result = await this.dependencies.commands.getSessionForResume({ sessionId });
 			if (
-				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(sessionId, snapshotVersion) ||
+				!this.dependencies.reducer.isResumeSnapshotVersionCurrent(
+					sessionId,
+					snapshotVersion,
+				) ||
 				(options.selectionVersion != null &&
 					!this.isUserSessionSelectionCurrent(options.selectionVersion))
 			) {
@@ -434,7 +484,9 @@ export class ChatSessionController {
 
 	private applyResumeSnapshot(
 		sessionId: string,
-		result: Awaited<ReturnType<ChatSessionControllerDependencies['commands']['getSessionForResume']>>,
+		result: Awaited<
+			ReturnType<ChatSessionControllerDependencies['commands']['getSessionForResume']>
+		>,
 		options: { preserveStreamingOnly?: boolean; excludeMessageIds?: string[] },
 	): void {
 		this.dependencies.dispatch({

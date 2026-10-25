@@ -75,6 +75,7 @@
 | 状态 | 当前项 |
 |---|---|
 | **Completed** | R12 继续生成的异步选择隔离（[ADR 1390](adr/1390-fence-continue-reload-by-user-selection.md)）：恢复快照与续写提交均校验发起时的会话和选择版本；重载成功/失败、切换会话、新建及切走再切回均有回归覆盖。R12 其余动作职责仍按源码证据复核，不视为整体完成。 |
+| **Completed** | R12 UI 会话操作结果切片（[ADR 1415](adr/1415-ui-chat-session-action-results.md)）：切换、rollback 和消息提交返回具名结果；路由处理 rollback 的通知、草稿、弹窗和刷新，提交成功与列表刷新失败分别表达。快速切换、rollback 重入/旧选择及提交后刷新失败均有回归覆盖。R12 其他会话动作仍按源码证据复核，不视为整体完成。 |
 | **Completed** | R05 durable UI 事件补齐与 R12 的恢复/rollback 快照竞态切片（ADR 1386）：聊天页可见期间每 5 秒读取当前会话的轻量 durable cursor；序号跳跃或后端 cursor 前进时，双侧 cursor 稳定后才应用恢复投影。快照水位拒绝旧事件，rollback/continue 会使在途旧快照失效。自动化门禁和持续聚焦丢事件的隔离 Windows 验收已通过；恢复与 rollback 并发 UI 场景仍属于 §5.1。R12 其余页面动作职责仍按审查报告作为候选。 |
 | **Completed** | R03 模型代次：router、媒体客户端与 MediaConfig 经 App 独占 publisher 原子发布；Agent、Memory、Tools 只读同一代次。每个新 provider/媒体逻辑操作捕获当前最新快照，在途操作保持其起始代次；ReAct 的 run、session 与后台任务不 pin 代次，后续请求重新读取最新快照。目录重建失败时旧目录保持原子且状态 reason 指明已发布版本。见 [ADR 1385](adr/1385-atomic-model-media-generation-publication.md) 与 [ADR 1396](adr/1396-use-latest-model-generation-per-react-request.md)。 |
 | **Verification** | R05 UI durable event 补齐与 rollback 快照 fence：稳定 cursor 和快照代次隔离已有实现；新增 cursor 变化期间拒绝不稳定 snapshot、下一轮补齐和重新聚焦立即检查的回归测试，UI 自动测试通过。2026-10-25 隔离 Windows 验收中，Haven 主窗口保持前台可见时由独立进程追加未广播的 durable event，UI 从 cursor 12 补齐至 13；恢复与 rollback 并发的真实 UI 交互仍是 §5.1 未完成项。见 [ADR 1397](adr/1397-reconcile-durable-ui-events-with-rollback-fences.md)。 |

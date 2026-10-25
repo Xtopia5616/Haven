@@ -3,6 +3,7 @@ import {
 	createChatSessionController,
 	type ChatSessionControllerDependencies,
 } from './chatSessionController.ts';
+import { submitAndRefreshSessionList } from './chatSessionOperationResults.ts';
 import type { InteractionRequest } from './contracts/app.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { TranscriptSubmissionResultView } from './contracts/transcriptSubmissionResult.ts';
@@ -59,15 +60,12 @@ function makeHarness(
 	const notifications: Array<{ message: string; type: string; duration?: number }> = [];
 	const reportedErrors: Array<{ error: unknown; message?: string }> = [];
 	const stepBlockClears: string[] = [];
-	const inputDrafts: string[] = [];
 	const continuePending: boolean[] = [];
 	const interruptPending: boolean[] = [];
 	const rollbackLoading: boolean[] = [];
 	const autoFollow: boolean[] = [];
 	let freshSessionIntent = false;
 	let persistedIntentClears = 0;
-	let rollbackDialogClosed = 0;
-	let sessionMenuClosed = 0;
 	let loadSessionsCalls = 0;
 
 	const runCommand = async (command: string, args?: unknown): Promise<unknown> => {
@@ -118,7 +116,6 @@ function makeHarness(
 		reportError: (error, reportOptions) => {
 			reportedErrors.push({ error, message: reportOptions.message });
 		},
-		setInputDraft: (content) => inputDrafts.push(content),
 		loadSessions: async () => {
 			loadSessionsCalls++;
 		},
@@ -130,8 +127,6 @@ function makeHarness(
 		setRollbackLoading: (loading) => rollbackLoading.push(loading),
 		setForkLoading: () => {},
 		closeForkDialog: () => {},
-		closeRollbackDialog: () => rollbackDialogClosed++,
-		closeSessionMenu: () => sessionMenuClosed++,
 		setContinuePending: (pending) => continuePending.push(pending),
 		setInterruptPending: (pending) => interruptPending.push(pending),
 		setAutoFollow: (follow) => autoFollow.push(follow),
@@ -146,7 +141,6 @@ function makeHarness(
 		notifications,
 		reportedErrors,
 		stepBlockClears,
-		inputDrafts,
 		continuePending,
 		interruptPending,
 		rollbackLoading,
@@ -156,12 +150,6 @@ function makeHarness(
 		},
 		get persistedIntentClears() {
 			return persistedIntentClears;
-		},
-		get rollbackDialogClosed() {
-			return rollbackDialogClosed;
-		},
-		get sessionMenuClosed() {
-			return sessionMenuClosed;
 		},
 		get loadSessionsCalls() {
 			return loadSessionsCalls;
@@ -200,7 +188,7 @@ function pendingInteraction(sessionId = SESSION_ID): InteractionRequest {
 describe('ChatSessionController rollback', () => {
 	it('pauses and restores the draft when rolling back a persisted user message', async () => {
 		const harness = makeHarness();
-		await harness.controller.confirmRollbackAction({
+		const result = await harness.controller.confirmRollbackAction({
 			stepNumber: 4,
 			role: 'user' as const,
 			content: '重新编辑这段',
@@ -216,27 +204,31 @@ describe('ChatSessionController rollback', () => {
 				targetMessageId: USER_MESSAGE_ID,
 			},
 		});
+		expect(result).toEqual({
+			kind: 'rolled-back',
+			sessionId: SESSION_ID,
+			stepNumber: 4,
+			role: 'user',
+			content: '重新编辑这段',
+			selectionCurrent: true,
+			transcriptRefresh: 'loaded',
+		});
 		expect(harness.actions.map((action) => action.type)).toContain('session/replay-reset');
 		expect(harness.stepBlockClears).toEqual([SESSION_ID]);
-		expect(harness.inputDrafts).toEqual(['重新编辑这段']);
-		expect(harness.notifications).toContainEqual({
-			message: '已回退，请编辑后重新发送',
-			type: 'info',
-			duration: 3000,
-		});
 		expect(harness.rollbackLoading).toEqual([true, false]);
-		expect(harness.rollbackDialogClosed).toBe(1);
-		expect(harness.loadSessionsCalls).toBe(1);
+		expect(harness.notifications).toEqual([]);
+		expect(harness.loadSessionsCalls).toBe(0);
 	});
 
-	it('keeps an action rollback running and reports its step number', async () => {
+	it('returns the committed action rollback identity for route feedback', async () => {
 		const harness = makeHarness();
-		await harness.controller.confirmRollbackAction({
+		const result = await harness.controller.confirmRollbackAction({
 			stepNumber: 7,
 			role: 'assistant' as const,
 			content: '',
 			messageId: 'step-00000000000000000000000000000007',
 		});
+		expect(result).toMatchObject({ kind: 'rolled-back', selectionCurrent: true });
 
 		expect(harness.commandCalls[0]?.args).toEqual({
 			sessionId: SESSION_ID,
@@ -244,21 +236,21 @@ describe('ChatSessionController rollback', () => {
 			pause: false,
 			targetMessageId: null,
 		});
-		expect(harness.inputDrafts).toEqual([]);
-		expect(harness.notifications[0]?.message).toBe('已回退到第 7 步');
+		expect(harness.notifications).toEqual([]);
 	});
 
 	it('does not send a timeline step identity as a rollback message target', async () => {
 		const harness = makeHarness();
-		await harness.controller.confirmRollbackAction({
+		const result = await harness.controller.confirmRollbackAction({
 			stepNumber: 8,
 			role: 'user' as const,
 			content: '正在保存',
 			messageId: 'step-00000000000000000000000000000008',
 		});
+		expect(result).toEqual({ kind: 'rejected', reason: 'message-not-persisted' });
 
 		expect(harness.commandCalls).toEqual([]);
-		expect(harness.notifications[0]?.message).toBe('消息仍在保存，请稍后再试');
+		expect(harness.notifications).toEqual([]);
 	});
 });
 
@@ -290,9 +282,8 @@ describe('ChatSessionController continue', () => {
 		expect(harness.actions.map((action) => action.type)).toContain('session/replay-reset');
 		expect(harness.autoFollow).toEqual([true]);
 		expect(harness.continuePending).toEqual([true, false]);
-		// The submitted follow-up and the continue path each refresh sessions,
-		// matching the prior page orchestration order.
-		expect(harness.loadSessionsCalls).toBe(2);
+		// Continue owns one session-list refresh after its follow-up has settled.
+		expect(harness.loadSessionsCalls).toBe(1);
 	});
 
 	it('resubmits the original user turn when it did not survive the resume reload', async () => {
@@ -344,8 +335,8 @@ describe('ChatSessionController continue', () => {
 			runCommand: (command) =>
 				command === 'continue_session'
 					? new Promise<void>((resolve) => {
-						resolveContinue = resolve;
-					})
+							resolveContinue = resolve;
+						})
 					: resumeResponseFixture(),
 		});
 		addMessages(harness.reducer, {
@@ -457,11 +448,16 @@ describe('ChatSessionController continue', () => {
 
 		await harness.controller.resyncSessionMessages(SESSION_ID);
 
-		expect(harness.reducer.snapshot().interactions['step-aac817798dc536ab69caa990732988f1']?.status).toBe('pending');
+		expect(
+			harness.reducer.snapshot().interactions['step-aac817798dc536ab69caa990732988f1']
+				?.status,
+		).toBe('pending');
 		const resumeAction = harness.actions.find(
 			(action) => action.type === 'session/messages/resume-loaded',
 		);
-		expect(resumeAction).toMatchObject({ preserveRequestIds: ['step-aac817798dc536ab69caa990732988f1'] });
+		expect(resumeAction).toMatchObject({
+			preserveRequestIds: ['step-aac817798dc536ab69caa990732988f1'],
+		});
 	});
 
 	it('ignores a duplicate continue request while the first command is in flight', async () => {
@@ -500,7 +496,8 @@ describe('ChatSessionController continue', () => {
 		};
 
 		const first = harness.controller.confirmRollbackAction(request);
-		await harness.controller.confirmRollbackAction(request);
+		const duplicate = await harness.controller.confirmRollbackAction(request);
+		expect(duplicate).toEqual({ kind: 'ignored', reason: 'already-in-flight' });
 
 		expect(
 			harness.commandCalls.filter((call) => call.command === 'rollback_session'),
@@ -521,8 +518,8 @@ describe('ChatSessionController continue', () => {
 			runCommand: (command) =>
 				command === 'rollback_session'
 					? new Promise<void>((resolve) => {
-						resolveRollback = resolve;
-					})
+							resolveRollback = resolve;
+						})
 					: resumeResponseFixture(),
 		});
 		const pendingRollback = harness.controller.confirmRollbackAction({
@@ -535,9 +532,9 @@ describe('ChatSessionController continue', () => {
 		harness.controller.beginUserSessionSelection();
 		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
 		resolveRollback();
-		await pendingRollback;
+		const result = await pendingRollback;
 
-		expect(harness.inputDrafts).toEqual([]);
+		expect(result).toMatchObject({ kind: 'rolled-back', selectionCurrent: false });
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
 	});
 
@@ -667,10 +664,11 @@ describe('ChatSessionController session guards', () => {
 			submit: () => ({ kind: 'session_created', sessionId: OTHER_SESSION_ID }),
 		});
 
-		await harness.controller.submitMessage('新会话第一条消息');
+		const result = await harness.controller.submitMessage('新会话第一条消息');
 
+		expect(result).toEqual({ kind: 'submitted', sessionId: OTHER_SESSION_ID });
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
-		expect(harness.loadSessionsCalls).toBe(1);
+		expect(harness.loadSessionsCalls).toBe(0);
 	});
 
 	it('does not let an older pending submit override a newer session selection', async () => {
@@ -686,9 +684,30 @@ describe('ChatSessionController session guards', () => {
 		harness.controller.beginUserSessionSelection();
 		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
 		resolveSubmit({ kind: 'session_created', sessionId: CREATED_SESSION_ID });
-		await pendingSubmit;
+		expect(await pendingSubmit).toEqual({ kind: 'submitted', sessionId: CREATED_SESSION_ID });
 
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
+	});
+
+	it('keeps a committed submission successful when the session-list refresh fails', async () => {
+		const refreshError = new Error('session list unavailable');
+		const harness = makeHarness({
+			submit: () => ({ kind: 'session_created', sessionId: CREATED_SESSION_ID }),
+		});
+
+		const result = await submitAndRefreshSessionList(
+			() => harness.controller.submitMessage('创建并发送'),
+			async () => {
+				throw refreshError;
+			},
+		);
+
+		expect(result).toEqual({
+			kind: 'submitted',
+			sessionId: CREATED_SESSION_ID,
+			refresh: { kind: 'failed', error: refreshError },
+		});
+		expect(harness.reducer.snapshot().activeSessionId).toBe(CREATED_SESSION_ID);
 	});
 
 	it('keeps the session selected when end fails and clears fresh-session intent', async () => {
@@ -728,13 +747,13 @@ describe('ChatSessionController session guards', () => {
 	it('clears the previous terminal session only after a successful switch', async () => {
 		const harness = makeHarness();
 
-		await harness.controller.switchToSession(OTHER_SESSION_ID);
+		const result = await harness.controller.switchToSession(OTHER_SESSION_ID);
 
-		expect(harness.sessionMenuClosed).toBe(1);
+		expect(result).toEqual({ kind: 'switched' });
 		expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
 		expect(harness.reducer.getMessages(SESSION_ID)).toEqual([]);
 		expect(harness.persistedIntentClears).toBe(1);
-		expect(harness.notifications[0]?.message).toBe('已切换到：目标会话');
+		expect(harness.notifications).toEqual([]);
 	});
 
 	it('ignores a stale resume result after a newer session selection starts', async () => {
@@ -749,13 +768,13 @@ describe('ChatSessionController session guards', () => {
 		const olderSwitch = harness.controller.switchToSession(OTHER_SESSION_ID);
 		const newerSwitch = harness.controller.switchToSession(SESSION_ID);
 		resolvers[0]?.(resumeResponseFixture());
-		expect(await olderSwitch).toBe(false);
+		expect(await olderSwitch).toEqual({ kind: 'superseded' });
 		expect(
 			harness.actions.filter((action) => action.type === 'session/messages/resume-loaded'),
 		).toEqual([]);
 
 		resolvers[1]?.(resumeResponseFixture());
-		expect(await newerSwitch).toBe(true);
+		expect(await newerSwitch).toEqual({ kind: 'switched' });
 		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
 		expect(
 			harness.actions

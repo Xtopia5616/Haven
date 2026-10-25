@@ -1314,3 +1314,4 @@
 - [1412：MCP 与 Skill 外部调用逐次确认](1412-require-per-call-approval-for-external-adapters.md)
 - [1413：权限确认展示实际调用参数并折叠疑似凭据](1413-show-invocation-details-in-permission-prompts.md)
 - [1414：网络开关与域名约束共用运行时策略快照](1414-keep-network-access-policy-as-one-runtime-snapshot.md)
+- [1415：UI 会话操作结果与展示副作用分层](1415-ui-chat-session-action-results.md)
