@@ -1087,10 +1087,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut security = SecurityConfig::default();
         security.execution_root = Some(directory.path().to_path_buf());
+        security.shell_runtime_read_roots = vec![directory.path().to_string_lossy().into_owned()];
 
         let encoded = toml::to_string(&security).unwrap();
         let decoded: SecurityConfig = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.execution_root, security.execution_root);
+        assert_eq!(
+            decoded.shell_runtime_read_roots,
+            security.shell_runtime_read_roots
+        );
     }
 
     #[test]

@@ -161,6 +161,7 @@ impl ExecutionPolicyPermit {
     pub(crate) fn workspace_shell_directories(
         &self,
         working_directory: &std::path::Path,
+        runtime_read_roots: &[std::path::PathBuf],
     ) -> Result<WorkspaceShellFilesystemPolicy, String> {
         if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
             return Err("MXC process roots require the Workspace Write sandbox".into());
@@ -272,11 +273,31 @@ impl ExecutionPolicyPermit {
             write_scope = intersect_directory_roots(&write_scope, constraint);
         }
 
+        // Runtime dependencies (Windows, command search entries, and user
+        // configured SDK/interpreter roots) are read grants, not a bypass of
+        // the resource policy. Compile them through every global/tool path
+        // constraint before they are included in the MXC request.
+        let mut runtime_roots = runtime_read_roots.to_vec();
+        runtime_roots.extend(self._config.shell_runtime_read_roots.iter().cloned());
+        let mut runtime_read = super::filesystem::open_directory_roots(
+            &runtime_roots,
+            "security.shell_runtime_read_roots",
+        )?;
+        for constraint in &path_constraints {
+            runtime_read = intersect_directory_roots(&runtime_read, constraint);
+        }
+        runtime_read.retain(|scope| {
+            !denied
+                .iter()
+                .any(|deny| deny.contains_path(scope.root()).unwrap_or(true))
+        });
+
         let tool_is_read_only = tool_settings.iter().any(|setting| {
             setting.resource_policy.files.write_mode
                 == haven_common::config::FileWriteMode::ReadOnly
         });
         let mut readonly = read_scope.clone();
+        readonly.extend(runtime_read.iter().cloned());
         let mut extension_writable = Vec::new();
         let mut extension_readonly = Vec::new();
         if self.resource_boundary_extension {
@@ -357,6 +378,9 @@ impl ExecutionPolicyPermit {
             !protected_readonly
                 .iter()
                 .any(|protected| protected.contains_path(writable.root()).unwrap_or(true))
+                && !runtime_read
+                    .iter()
+                    .any(|protected| directory_root_contains_path(protected, writable.root()))
         });
 
         // A read grant contained by a write grant adds no read access. Keep
@@ -377,7 +401,7 @@ impl ExecutionPolicyPermit {
         let metadata =
             super::filesystem::open_filesystem_paths(&metadata_roots, "protected VCS metadata")?;
 
-        let protected_readonly_paths = protected_readonly
+        let mut protected_readonly_paths = protected_readonly
             .iter()
             .chain(&metadata)
             .filter(|protected| {
@@ -391,6 +415,20 @@ impl ExecutionPolicyPermit {
             })
             .map(|protected| protected.path().to_path_buf())
             .collect::<Vec<_>>();
+        protected_readonly_paths.extend(
+            runtime_read
+                .iter()
+                .filter(|protected| {
+                    !denied
+                        .iter()
+                        .any(|deny| deny.contains_path(protected.root()).unwrap_or(true))
+                        && read_scope
+                            .iter()
+                            .chain(&write_scope)
+                            .any(|scope| directory_root_contains_path(scope, protected.root()))
+                })
+                .map(|protected| protected.root().to_path_buf()),
+        );
         let denied_paths = denied
             .iter()
             .filter(|deny| {

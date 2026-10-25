@@ -189,6 +189,7 @@ pub const MAX_MCP_TOOL_EXPOSURE_PATTERN_CHARS: usize = 256;
 pub const MAX_LSP_SERVERS: usize = 32;
 pub const MAX_LSP_SERVER_ARGS: usize = 64;
 pub const MAX_EVERYTHING_COMMAND_PATH_CHARS: usize = 32_767;
+pub const MAX_SHELL_RUNTIME_READ_ROOTS: usize = 64;
 
 /// Executable used by the optional Everything filename search backend.
 /// This executable configuration is local-only and never enters Settings IPC.
@@ -671,6 +672,12 @@ pub struct SecurityConfig {
     pub mxc_isolation_mode: MxcIsolationMode,
     /// Canonical typed filesystem and network resource boundaries.
     pub resource_policy: ResourcePolicy,
+    /// Additional read-only roots for WorkspaceWrite Shell runtime
+    /// dependencies such as SDKs and interpreter libraries. These are still
+    /// intersected with global and Shell tool path roots and filtered by all
+    /// denied paths before they reach MXC.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shell_runtime_read_roots: Vec<String>,
     /// Optional persisted default root captured when a session is first
     /// loaded, for its Files-relative paths, default Shell `cwd`, and implicit
     /// WorkspaceWrite boundary. `None` uses startup discovery for new sessions.
@@ -690,6 +697,7 @@ struct SecurityConfigInput {
     execution_mode: Option<String>,
     mxc_isolation_mode: Option<MxcIsolationMode>,
     resource_policy: Option<ResourcePolicy>,
+    shell_runtime_read_roots: Vec<String>,
     execution_root: Option<PathBuf>,
     sandbox_mode: Option<SandboxMode>,
     writable_roots: Option<Vec<String>>,
@@ -734,6 +742,7 @@ impl TryFrom<SecurityConfigInput> for SecurityConfig {
             execution_mode,
             mxc_isolation_mode: input.mxc_isolation_mode.unwrap_or_default(),
             resource_policy,
+            shell_runtime_read_roots: input.shell_runtime_read_roots,
             execution_root: input.execution_root,
             encrypt_sensitive: input.encrypt_sensitive.unwrap_or(true),
             permissions: input.permissions,
@@ -779,6 +788,7 @@ impl Default for SecurityConfig {
             execution_mode: crate::types::ExecutionMode::Collaborative,
             mxc_isolation_mode: MxcIsolationMode::Strict,
             resource_policy: ResourcePolicy::global_default(),
+            shell_runtime_read_roots: Vec::new(),
             execution_root: None,
             encrypt_sensitive: true,
             permissions: Vec::new(),

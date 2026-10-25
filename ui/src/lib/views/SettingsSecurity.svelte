@@ -257,6 +257,11 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 			? security.resource_policy.files.read_only_roots.filter(Boolean)
 			: [],
 	);
+	let shellRuntimeReadRoots = $derived(
+		Array.isArray(security?.shell_runtime_read_roots)
+			? security.shell_runtime_read_roots.filter(Boolean)
+			: [],
+	);
 	let deniedPaths = $derived(
 		Array.isArray(security?.resource_policy?.files?.denied_paths)
 			? security.resource_policy.files.denied_paths.filter(Boolean)
@@ -628,6 +633,25 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 				<p>只影响 Windows 上 WorkspaceWrite 模式的 Shell 进程；FullAccess 与其它进程入口不使用 MXC。</p>
 			</div>
 		</div>
+		<SettingsField
+			label="系统与工具链只读目录"
+			id="security-shell-runtime-read-roots"
+			description="Windows 运行时和命令 PATH 目录会自动纳入；每行可补充已存在的 SDK、解释器或库目录。Shell 只能读取这些目录。新增范围仍受全局和 Shell 工具级文件访问目录限制，拒绝路径始终优先。"
+			stacked
+		>
+			<textarea
+				id="security-shell-runtime-read-roots"
+				class="md-textarea md-textarea--code security-roots"
+				rows="3"
+				value={shellRuntimeReadRoots.join('\n')}
+				placeholder="例如：C:\\Program Files\\Python312\\Lib&#10;D:\\SDKs\\Windows Kits"
+				oninput={(event) => {
+					security.shell_runtime_read_roots = inputElementValue(event)
+						.split(/\r?\n/)
+						.map((value) => value.trim())
+						.filter(Boolean);
+				}}></textarea>
+		</SettingsField>
 		<div class="policy-grid" role="radiogroup" aria-label="MXC 隔离模式">
 			{#each MXC_ISOLATION_MODES as mode (mode.value)}
 				<label

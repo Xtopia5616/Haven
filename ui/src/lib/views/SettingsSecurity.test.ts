@@ -19,6 +19,7 @@ function createSecurity(): SecuritySettingsDraft {
 			network: { access: 'restricted', allowed_domains: [] },
 		},
 		execution_root: null,
+		shell_runtime_read_roots: [],
 		permissions: [{ key: 'files.delete', effect: 'deny' }],
 	};
 }
@@ -42,6 +43,13 @@ describe('SettingsSecurity', () => {
 		]);
 		expect(security.resource_policy.files.denied_paths).toEqual([
 			'C:\\Projects\\haven\\secrets',
+		]);
+		await fireEvent.input(screen.getByLabelText('系统与工具链只读目录'), {
+			target: { value: 'C:\\Python312\\Lib\nD:\\SDKs\\Windows Kits' },
+		});
+		expect(security.shell_runtime_read_roots).toEqual([
+			'C:\\Python312\\Lib',
+			'D:\\SDKs\\Windows Kits',
 		]);
 
 		await fireEvent.input(screen.getByLabelText('新会话默认目录'), {

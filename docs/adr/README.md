@@ -1308,3 +1308,4 @@
 - [1403：在聊天输入区拖放加入附件](1403-chat-composer-file-drop.md)
 - [1404：由授权 owner 将 Shell 文件策略编译到 MXC](1404-compile-shell-filesystem-policy-into-mxc.md)
 - [1405：将 MXC 兼容隔离改为显式选择](1405-explicit-mxc-compatibility-isolation.md)
+- [1408：配置 Shell 系统与工具链只读根](1408-configure-shell-runtime-read-roots.md)

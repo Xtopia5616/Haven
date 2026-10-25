@@ -62,6 +62,7 @@ pub(super) struct SafetyConfig {
     pub(super) global_file_roots: Vec<PathBuf>,
     pub(super) global_read_only_roots: Vec<PathBuf>,
     pub(super) global_denied_paths: Vec<PathBuf>,
+    pub(super) shell_runtime_read_roots: Vec<PathBuf>,
     global_network_domains: Vec<String>,
     pub(super) execution_workspace: ExecutionWorkspace,
     /// Stable working directory bindings restored from Agent session events.
@@ -171,6 +172,7 @@ impl AuthorizationEngine {
                 global_file_roots: Vec::new(),
                 global_read_only_roots: Vec::new(),
                 global_denied_paths: Vec::new(),
+                shell_runtime_read_roots: Vec::new(),
                 global_network_domains: Vec::new(),
                 execution_workspace,
                 session_workspaces: HashMap::new(),
@@ -549,6 +551,11 @@ impl AuthorizationEngine {
             .iter()
             .map(PathBuf::from)
             .collect::<Vec<_>>();
+        let shell_runtime_read_roots = security
+            .shell_runtime_read_roots
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
         let writable_roots_validation = open_directory_roots(
             &writable_roots,
             "security.resource_policy.files.write_roots",
@@ -568,6 +575,11 @@ impl AuthorizationEngine {
             &global_denied_paths,
             "security.resource_policy.files.denied_paths",
         );
+        let shell_runtime_read_roots_validation = open_directory_roots(
+            &shell_runtime_read_roots,
+            "security.shell_runtime_read_roots",
+        )
+        .map(|_| ());
         let global_network_domains = security.resource_policy.network.allowed_domains.clone();
         let sandbox_mode = security.resource_policy.sandbox_mode();
         let network_policy = security.resource_policy.network_policy();
@@ -577,6 +589,7 @@ impl AuthorizationEngine {
             || cfg.global_file_roots != global_file_roots
             || cfg.global_read_only_roots != global_read_only_roots
             || cfg.global_denied_paths != global_denied_paths
+            || cfg.shell_runtime_read_roots != shell_runtime_read_roots
             || cfg.network_policy != network_policy
             || cfg.global_network_domains != global_network_domains;
         let mut permanent = SessionGrants::default();
@@ -617,6 +630,7 @@ impl AuthorizationEngine {
             || cfg.global_file_roots != global_file_roots
             || cfg.global_read_only_roots != global_read_only_roots
             || cfg.global_denied_paths != global_denied_paths
+            || cfg.shell_runtime_read_roots != shell_runtime_read_roots
             || cfg.network_policy != network_policy
             || cfg.global_network_domains != global_network_domains
             || cfg.permanent != permanent;
@@ -628,6 +642,7 @@ impl AuthorizationEngine {
         cfg.global_file_roots = global_file_roots;
         cfg.global_read_only_roots = global_read_only_roots;
         cfg.global_denied_paths = global_denied_paths;
+        cfg.shell_runtime_read_roots = shell_runtime_read_roots;
         cfg.network_policy = network_policy;
         cfg.global_network_domains = global_network_domains;
         cfg.permanent = permanent;
@@ -654,6 +669,10 @@ impl AuthorizationEngine {
         }
         if let Err(error) = global_denied_paths_validation {
             tracing::warn!(error, "global denied file paths could not be applied");
+            return Err(error);
+        }
+        if let Err(error) = shell_runtime_read_roots_validation {
+            tracing::warn!(error, "Shell runtime read roots could not be applied");
             return Err(error);
         }
         if let Some(error) = workspace_error {
@@ -7679,7 +7698,7 @@ mod tests {
 
         let permit = authorization.acquire().await.expect("acquire live permit");
         let filesystem_policy = permit
-            .workspace_shell_directories(&scoped)
+            .workspace_shell_directories(&scoped, &[])
             .expect("compile the final Shell MXC policy");
         assert_eq!(
             filesystem_policy
@@ -7740,7 +7759,7 @@ mod tests {
 
         let permit = authorization.acquire().await.expect("acquire live permit");
         let filesystem_policy = permit
-            .workspace_shell_directories(&src)
+            .workspace_shell_directories(&src, &[])
             .expect("compile the Shell write-root restriction");
         assert_eq!(
             filesystem_policy
@@ -7796,7 +7815,7 @@ mod tests {
 
         let permit = authorization.acquire().await.expect("acquire live permit");
         let filesystem_policy = permit
-            .workspace_shell_directories(&src)
+            .workspace_shell_directories(&src, &[])
             .expect("compile the read-only Shell MXC policy");
         assert!(
             filesystem_policy.readwrite_roots.is_empty(),
@@ -7812,6 +7831,136 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![src.as_path()],
             "the tool path_roots still bound the read-only process scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_shell_runtime_read_roots_obey_global_and_tool_hard_limits() {
+        let temp = tempfile::tempdir().expect("create Shell runtime read-root fixture");
+        let allowed = temp.path().join("allowed");
+        let workspace = allowed.join("workspace");
+        let toolchain = allowed.join("sdk");
+        let workspace_vendor = workspace.join("vendor");
+        let global_denied = toolchain.join("global-private");
+        let tool_denied = toolchain.join("tool-private");
+        let outside_global = temp.path().join("outside-global");
+        std::fs::create_dir_all(&workspace).expect("create workspace directory");
+        std::fs::create_dir_all(&workspace_vendor).expect("create protected runtime directory");
+        std::fs::create_dir_all(&global_denied).expect("create global denied directory");
+        std::fs::create_dir_all(&tool_denied).expect("create tool denied directory");
+        std::fs::create_dir_all(&outside_global).expect("create outside directory");
+        let (_authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        let mut security = SecurityConfig::default();
+        security.execution_root = Some(workspace.clone());
+        security.shell_runtime_read_roots = vec![
+            toolchain.to_string_lossy().into_owned(),
+            outside_global.to_string_lossy().into_owned(),
+            workspace_vendor.to_string_lossy().into_owned(),
+        ];
+        security.resource_policy.files.path_roots = vec![allowed.to_string_lossy().into_owned()];
+        security.resource_policy.files.denied_paths =
+            vec![global_denied.to_string_lossy().into_owned()];
+        engine
+            .apply_security(&security)
+            .await
+            .expect("apply global runtime read and file boundaries");
+        {
+            let mut config = engine
+                .config
+                .try_write()
+                .expect("test authorization config must be idle");
+            config.tool_settings.insert(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        files: FileResourcePolicy {
+                            path_roots: vec![allowed.to_string_lossy().into_owned()],
+                            denied_paths: vec![tool_denied.to_string_lossy().into_owned()],
+                            ..FileResourcePolicy::default()
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            );
+        }
+
+        let authorization = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+            Arc::clone(&engine),
+            "shell",
+        );
+        let permit = authorization.acquire().await.expect("acquire live permit");
+        let filesystem_policy = permit
+            .workspace_shell_directories(&workspace, &[])
+            .expect("compile configured runtime roots through the resource policy");
+        assert_eq!(
+            filesystem_policy
+                .readonly_roots
+                .iter()
+                .map(|directory| directory.root())
+                .collect::<Vec<_>>(),
+            vec![toolchain.as_path()],
+            "configured SDK roots are readable only inside the global/tool path intersection"
+        );
+        assert_eq!(
+            filesystem_policy.denied_paths,
+            vec![global_denied, tool_denied]
+        );
+        assert!(
+            filesystem_policy
+                .protected_readonly_paths
+                .contains(&workspace_vendor),
+            "a configured runtime root inside the write workspace must remain read-only"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_shell_tool_path_roots_block_unrelated_runtime_read_roots() {
+        let temp = tempfile::tempdir().expect("create Shell runtime restriction fixture");
+        let workspace = temp.path().join("workspace");
+        let toolchain = temp.path().join("sdk");
+        std::fs::create_dir_all(&workspace).expect("create workspace directory");
+        std::fs::create_dir_all(&toolchain).expect("create SDK directory");
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        {
+            let mut config = engine
+                .config
+                .try_write()
+                .expect("test authorization config must be idle");
+            config.shell_runtime_read_roots = vec![toolchain.clone()];
+            config.tool_settings.insert(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        files: FileResourcePolicy {
+                            path_roots: vec![workspace.to_string_lossy().into_owned()],
+                            ..FileResourcePolicy::default()
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            );
+        }
+
+        let permit = authorization.acquire().await.expect("acquire live permit");
+        let filesystem_policy = permit
+            .workspace_shell_directories(&workspace, &[])
+            .expect("compile the narrowed tool path policy");
+        assert!(
+            filesystem_policy
+                .readonly_roots
+                .iter()
+                .all(|directory| directory.root() != toolchain),
+            "tool path_roots must prevent the configured SDK root from expanding access"
         );
     }
 
@@ -7838,7 +7987,7 @@ mod tests {
 
         let permit = authorization.acquire().await.expect("acquire live permit");
         let error = permit
-            .workspace_shell_directories(&outside)
+            .workspace_shell_directories(&outside, &[])
             .expect_err("MXC must not add cwd outside the owner-compiled roots");
         assert!(error.contains("outside the compiled MXC filesystem policy"));
     }
@@ -7864,7 +8013,7 @@ mod tests {
 
         let permit = authorization.acquire().await.expect("acquire live permit");
         let error = permit
-            .workspace_shell_directories(&denied)
+            .workspace_shell_directories(&denied, &[])
             .expect_err("the owner must fail closed when cwd is explicitly denied");
         assert!(error.contains("working directory is explicitly denied"));
     }

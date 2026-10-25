@@ -2,8 +2,8 @@
 
 use super::{
     AppConfig, FileWriteMode, MAX_SESSION_STEPS_PER_RUN, MAX_SESSION_STEPS_PER_SESSION,
-    MIN_SESSION_STEPS_PER_RUN, MIN_SESSION_STEPS_PER_SESSION, NetworkAccessBoundary,
-    SettingsSnapshot,
+    MAX_SHELL_RUNTIME_READ_ROOTS, MIN_SESSION_STEPS_PER_RUN, MIN_SESSION_STEPS_PER_SESSION,
+    NetworkAccessBoundary, SettingsSnapshot,
 };
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -44,6 +44,22 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
         .is_some_and(|root| !crate::path::is_absolute_local_path(root))
     {
         anyhow::bail!("security.execution_root must be an absolute local directory path");
+    }
+    if let Some((index, _)) = config
+        .security
+        .shell_runtime_read_roots
+        .iter()
+        .enumerate()
+        .find(|(_, root)| !crate::path::is_absolute_local_path(std::path::Path::new(root)))
+    {
+        anyhow::bail!(
+            "security.shell_runtime_read_roots[{index}] must be an absolute local directory path"
+        );
+    }
+    if config.security.shell_runtime_read_roots.len() > MAX_SHELL_RUNTIME_READ_ROOTS {
+        anyhow::bail!(
+            "security.shell_runtime_read_roots must not contain more than {MAX_SHELL_RUNTIME_READ_ROOTS} directories"
+        );
     }
     let resource_policy = &config.security.resource_policy;
     if matches!(resource_policy.files.write_mode, FileWriteMode::Inherit) {
@@ -1247,6 +1263,30 @@ mod tests {
         let error = validate_app_config(&config).unwrap_err();
         assert!(error.to_string().contains("security.execution_root"));
         assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
+    }
+
+    #[test]
+    fn configured_shell_runtime_read_roots_must_be_absolute_local_directories() {
+        let mut config = AppConfig::default();
+        config.security.shell_runtime_read_roots = vec!["relative/python/Lib".into()];
+
+        let error = validate_app_config(&config).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("security.shell_runtime_read_roots[0]")
+        );
+        assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
+
+        let absolute = std::env::temp_dir().to_string_lossy().into_owned();
+        config.security.shell_runtime_read_roots =
+            vec![absolute; crate::config::MAX_SHELL_RUNTIME_READ_ROOTS + 1];
+        let error = validate_app_config(&config).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("security.shell_runtime_read_roots")
+        );
     }
 
     #[test]

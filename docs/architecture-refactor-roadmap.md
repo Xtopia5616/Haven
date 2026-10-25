@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1–5 的实现及 Slice 3/4 验收已完成（ADR 1373–1383）；Slice 2 的执行预设、typed 资源合同、规范 `ResourcePolicy` 与精确边界扩展已完成（ADR 1374、1376–1381）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
+> 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1–5 的实现及 Slice 3/4 验收已完成（ADR 1373–1383）；Slice 2 的执行预设、typed 资源合同、规范 `ResourcePolicy` 与精确边界扩展已完成（ADR 1374、1376–1381）。Shell 系统与工具链读取根配置已完成（ADR 1408）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
 > 更新日期：2026-10-25
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -203,6 +203,8 @@ Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request 
 CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。周期新会话计划已按 ADR 1323 建立；ADR 1324 已将 Schedule 计划与 occurrence 移入独立 owner，Schedule 触发不再创建 ToolRun occurrence。
 
 **Files/Shell 文件路径保护（ADR 1404）：**两条入口共用 `denied > read-only > read-write` 优先级；路径别名按打开的文件系统对象身份归并，嵌套的只读/拒绝路径单独保留。写入根中的 `.git` 等版本控制元数据自动只读保护；MXC 不具备原生重叠策略能力时拒绝启动。
+
+**Shell 系统与工具链读取根（ADR 1408）：**Windows 运行时和实际 `PATH` 目录仍作为只读启动依赖；设置页允许持久补充最多 64 个 SDK/解释器库目录。授权 owner 将全部候选读取根与全局及 Shell 工具 `path_roots` 求交，并应用全局/工具 deny；MXC 拒绝记录只提供一次性确认，不能改写这些硬限制或自动保存新权限。
 
 - **工具暴露与执行模式：**MCP tool 按工具配置 `availability`、`catalog` 和 `invocation`；原生与 Code Mode adapter 可分别或同时启用。`direct` 将启用的 native adapter 放进 provider surface，`deferred` 要求先发现和显式加载，`hidden` 只从通用目录隐藏；只有 `availability=disabled` 或无对应 adapter 会阻止相应调用路径。Code Mode 使用无宿主 API 的 QuickJS 与有界子调用；每个子调用仍经 Tools 的实时授权、target、sandbox/network 和 durable journal 校验。旧 exposure 配置由 ConfigLoader 保守转换，见 ADR 1383；旧契约背景见 [ADR 1183](adr/1183-add-mcp-model-only-exposure.md) 与 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。
 - **MCP resources/prompts 与周期新会话：**资源、模板、选定 URI 的更新订阅和 prompt 由用户浏览、预览和选择；Resources/Prompts 的 `input_required` 只在 feature dialog 中使用 bounded form-mode MRTR，全部能力都不进入模型可调用工具面。后台工具调用由 ToolRun 管理；Schedule 单独拥有单次触发、周期新会话计划与 occurrence。计划按 UTC 固定间隔触发，不重叠执行，错过的 tick 跳过；新会话由统一 SessionCreation owner 建立。见 [ADR 1164](adr/1164-mcp-resources-and-user-selected-prompts.md)、[ADR 1323](adr/1323-recurring-session-schedules-on-toolruns.md) 与 [ADR 1324](adr/1324-session-creation-and-background-toolrun-boundaries.md)。

@@ -227,8 +227,9 @@ impl ShellTool {
                         .get_current_dir()
                         .map(PathBuf::from)
                         .unwrap_or(std::env::current_dir()?);
+                    let runtime_read_roots = shell_runtime_dependency_roots(&std_cmd);
                     let filesystem_policy = permit
-                        .workspace_shell_directories(&working_directory)
+                        .workspace_shell_directories(&working_directory, &runtime_read_roots)
                         .map_err(crate::security::execution_policy_denied)?;
                     let roots = filesystem_policy
                         .readwrite_roots
@@ -742,27 +743,7 @@ fn sandboxed_shell_request(
         environment.push((OsString::from("TMP"), temp_root.as_os_str().to_os_string()));
     }
 
-    let mut readonly_paths = additional_readonly_paths;
-    if let Some(system_root) = environment
-        .iter()
-        .find(|(key, _)| os_key_eq_ignore_ascii_case(key, "SYSTEMROOT"))
-        .map(|(_, value)| PathBuf::from(value))
-    {
-        readonly_paths.push(system_root.clone());
-        readonly_paths.push(system_root.join("System32"));
-        readonly_paths.push(system_root.join(r"System32\WindowsPowerShell\v1.0"));
-    }
-    for path in environment
-        .iter()
-        .find(|(key, _)| os_key_eq_ignore_ascii_case(key, "PATH"))
-        .map(|(_, value)| std::env::split_paths(value).collect::<Vec<_>>())
-        .unwrap_or_default()
-    {
-        if path.is_dir() {
-            readonly_paths.push(path);
-        }
-    }
-    readonly_paths.retain(|path| path.is_file() || path.is_dir());
+    let readonly_paths = additional_readonly_paths;
     let working_directory = std_cmd
         .get_current_dir()
         .map(PathBuf::from)
@@ -779,6 +760,38 @@ fn sandboxed_shell_request(
         allow_network,
         allow_desktop_handle_access,
     })
+}
+
+#[cfg(windows)]
+fn shell_runtime_dependency_roots(std_cmd: &std::process::Command) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(system_root) = shell_command_environment_value(std_cmd, "SYSTEMROOT") {
+        let system_root = PathBuf::from(system_root);
+        roots.push(system_root.clone());
+        roots.push(system_root.join("System32"));
+        roots.push(system_root.join(r"System32\WindowsPowerShell\v1.0"));
+    }
+    roots.extend(
+        shell_command_environment_value(std_cmd, "PATH")
+            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    );
+    roots.retain(|path| path.is_dir());
+    roots
+}
+
+#[cfg(windows)]
+fn shell_command_environment_value(
+    std_cmd: &std::process::Command,
+    name: &str,
+) -> Option<std::ffi::OsString> {
+    if let Some((_, value)) = std_cmd
+        .get_envs()
+        .find(|(key, _)| os_key_eq_ignore_ascii_case(key, name))
+    {
+        return value.map(std::ffi::OsStr::to_os_string);
+    }
+    std::env::var_os(name)
 }
 
 #[cfg(windows)]

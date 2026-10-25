@@ -270,8 +270,8 @@ export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
 export interface NotifyChannels { in_app: boolean; windows: boolean }
 export interface ResourcePolicyInput { files?: FileResourcePolicyInput; network?: NetworkResourcePolicyInput }
 export interface ResourcePolicy { files: FileResourcePolicy; network: NetworkResourcePolicy }
-export interface SecurityConfigInput { execution_mode?: ExecutionModeInput; mxc_isolation_mode?: MxcIsolationModeInput; resource_policy?: ResourcePolicyInput; execution_root?: string | null; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
-export interface SecurityConfig { execution_mode: ExecutionMode; mxc_isolation_mode: MxcIsolationMode; resource_policy: ResourcePolicy; execution_root?: string; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
+export interface SecurityConfigInput { execution_mode?: ExecutionModeInput; mxc_isolation_mode?: MxcIsolationModeInput; resource_policy?: ResourcePolicyInput; shell_runtime_read_roots?: string[]; execution_root?: string | null; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
+export interface SecurityConfig { execution_mode: ExecutionMode; mxc_isolation_mode: MxcIsolationMode; resource_policy: ResourcePolicy; shell_runtime_read_roots?: string[]; execution_root?: string; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
 export interface SessionConfigInput { max_concurrent?: number; prompt_history_limit?: number; history_retention_days?: number; max_steps_per_run?: number; max_steps_per_session?: number | null }
 export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps_per_run: number; max_steps_per_session?: number }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
@@ -5377,6 +5377,10 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 								}
 							}
 						},
+					},
+					'shell_runtime_read_roots': {
+						optional: true,
+						shape: { kind: 'array', items: { kind: 'string' } },
 					},
 					'execution_root': {
 						optional: true,
@@ -11245,6 +11249,10 @@ export const SETTINGS_RESPONSE_SHAPE = {
 								}
 							}
 						},
+					},
+					'shell_runtime_read_roots': {
+						optional: true,
+						shape: { kind: 'array', items: { kind: 'string' } },
 					},
 					'execution_root': {
 						optional: true,

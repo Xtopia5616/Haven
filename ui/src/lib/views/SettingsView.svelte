@@ -270,6 +270,7 @@
 			network: { access: 'restricted', allowed_domains: [] },
 		},
 		execution_root: null,
+		shell_runtime_read_roots: [],
 		permissions: [],
 	});
 	let sessionPermissions = $state<SessionPermissionGrant[]>([]);
@@ -518,6 +519,7 @@
 				mxc_isolation_mode: security.mxc_isolation_mode,
 				resource_policy: security.resource_policy,
 				execution_root: security.execution_root,
+				shell_runtime_read_roots: security.shell_runtime_read_roots,
 				permissions: security.permissions,
 			},
 			context_limits: contextLimits,
@@ -1124,6 +1126,7 @@
 					network: { access: 'restricted', allowed_domains: [] },
 				},
 				execution_root: settings.security?.execution_root ?? null,
+				shell_runtime_read_roots: settings.security?.shell_runtime_read_roots || [],
 				permissions: Array.isArray(settings.security?.permissions)
 					? settings.security.permissions
 					: [],
@@ -1468,6 +1471,7 @@
 					mxc_isolation_mode: security.mxc_isolation_mode,
 					resource_policy: security.resource_policy,
 					execution_root: security.execution_root,
+					shell_runtime_read_roots: security.shell_runtime_read_roots,
 					permissions: security.permissions,
 				},
 				context_limits: contextLimits,
