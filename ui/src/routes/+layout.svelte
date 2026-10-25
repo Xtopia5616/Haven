@@ -616,11 +616,11 @@
 			void activeSessionId;
 			void freshStartIntent;
 			syncRecordingTarget().catch((error) => {
-					reportError(error, {
-						context: '+layout',
-						message: '语音录音目标同步失败',
-						log: false,
-					});
+				reportError(error, {
+					context: '+layout',
+					message: '语音录音目标同步失败',
+					log: false,
+				});
 			});
 		}
 	});
@@ -1025,7 +1025,10 @@
 							5000,
 						);
 						if (data.retryFileId) {
-							showFailedTranscription(data.retryFileId, `${data.error}（原录音已保留）`);
+							showFailedTranscription(
+								data.retryFileId,
+								`${data.error}（原录音已保留）`,
+							);
 						}
 						recordingOverlayController.onTranscriptionFinished(data.recordingId);
 					},

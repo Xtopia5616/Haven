@@ -16,6 +16,16 @@ use tokio::sync::mpsc;
 use crate::filesystem::FilesystemPathCapability;
 use haven_common::config::MxcIsolationMode;
 
+/// Directional network rights for one isolated process. MXC's private-network
+/// capability is bidirectional, so it remains separate from public egress and
+/// host loopback access.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SandboxedProcessNetworkPolicy {
+    pub allow_public_egress: bool,
+    pub allow_private_network_client_server: bool,
+    pub allow_host_loopback: bool,
+}
+
 mod diagnostics;
 
 const PIPE_BUFFER_BYTES: usize = 16 * 1024;
@@ -39,7 +49,7 @@ pub struct SandboxedProcessRequest {
     /// Paths whose reads and writes must be denied.
     pub denied_paths: Vec<PathBuf>,
     pub environment: Vec<(OsString, OsString)>,
-    pub allow_network: bool,
+    pub network_policy: SandboxedProcessNetworkPolicy,
     /// PowerShell needs desktop handles to initialize inside BaseContainer.
     /// The process still keeps clipboard, input injection, system settings,
     /// and desktop control restrictions.
@@ -54,6 +64,31 @@ pub struct SandboxedProcessExit {
     pub capture_denials: Option<CapturedDenials>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capture_denials_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isolation: Option<SandboxIsolationReport>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AclRestorationStatus {
+    NotApplicable,
+    CompletedWithoutReportedWarning,
+    WarningReported,
+}
+
+/// Structured record of the isolation tier and its teardown result.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SandboxIsolationReport {
+    pub actual_tier: String,
+    pub network_profile: String,
+    pub public_egress_allowed: bool,
+    pub private_network_client_server_allowed: bool,
+    pub host_loopback_allowed: bool,
+    pub acl_augmentation_required: bool,
+    pub acl_restoration_status: AclRestorationStatus,
+    pub teardown_warning_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub teardown_warning_summary: Option<String>,
 }
 
 /// Denied resources observed by MXC while the process remained blocked.
@@ -76,13 +111,113 @@ pub struct CapturedDeniedResource {
     pub filetime: String,
 }
 
+#[derive(Debug, Clone)]
+struct SandboxLaunchReport {
+    notice: String,
+    actual_tier: String,
+    network_profile: String,
+    network_policy: SandboxedProcessNetworkPolicy,
+    acl_augmentation_required: bool,
+    startup_warnings: Vec<String>,
+}
+
+impl SandboxLaunchReport {
+    fn from_probe(
+        probe: &mxc_sdk::v1::ProbeOutput,
+        profile: NetworkProfile,
+        network_policy: SandboxedProcessNetworkPolicy,
+        notice: String,
+    ) -> Self {
+        Self {
+            notice,
+            actual_tier: probe.tier.unwrap_or("unknown").to_owned(),
+            network_profile: network_profile_id(profile).to_owned(),
+            network_policy,
+            acl_augmentation_required: probe.needs_dacl_augmentation == Some(true),
+            startup_warnings: Vec::new(),
+        }
+    }
+
+    fn completed_isolation(&self, final_warnings: &[String]) -> SandboxIsolationReport {
+        let teardown_warnings =
+            warnings_added_since_startup(&self.startup_warnings, final_warnings);
+        let acl_restoration_status = acl_restoration_status(
+            self.acl_augmentation_required,
+            !teardown_warnings.is_empty(),
+        );
+        for warning in &teardown_warnings {
+            tracing::warn!(
+                diagnostic = %haven_common::error::sanitize_error_text(warning),
+                "MXC reported a warning after shell teardown"
+            );
+        }
+        tracing::info!(
+            actual_tier = %self.actual_tier,
+            network_profile = %self.network_profile,
+            public_egress_allowed = self.network_policy.allow_public_egress,
+            private_network_client_server_allowed = self.network_policy.allow_private_network_client_server,
+            host_loopback_allowed = self.network_policy.allow_host_loopback,
+            acl_augmentation_required = self.acl_augmentation_required,
+            acl_restoration_status = ?acl_restoration_status,
+            teardown_warning_count = teardown_warnings.len(),
+            "MXC shell enforcement teardown completed"
+        );
+
+        SandboxIsolationReport {
+            actual_tier: self.actual_tier.clone(),
+            network_profile: self.network_profile.clone(),
+            public_egress_allowed: self.network_policy.allow_public_egress,
+            private_network_client_server_allowed: self
+                .network_policy
+                .allow_private_network_client_server,
+            host_loopback_allowed: self.network_policy.allow_host_loopback,
+            acl_augmentation_required: self.acl_augmentation_required,
+            acl_restoration_status,
+            teardown_warning_count: teardown_warnings.len(),
+            teardown_warning_summary: (!teardown_warnings.is_empty()).then(|| {
+                format!(
+                    "MXC 子进程结束后报告：{}",
+                    diagnostics::format_warnings(&teardown_warnings)
+                )
+            }),
+        }
+    }
+
+    fn log_wait_failure(&self, error: &io::Error) {
+        let acl_restoration_status = if self.acl_augmentation_required {
+            "unknown"
+        } else {
+            "not_applicable"
+        };
+        tracing::error!(
+            actual_tier = %self.actual_tier,
+            network_profile = %self.network_profile,
+            public_egress_allowed = self.network_policy.allow_public_egress,
+            private_network_client_server_allowed = self.network_policy.allow_private_network_client_server,
+            host_loopback_allowed = self.network_policy.allow_host_loopback,
+            acl_augmentation_required = self.acl_augmentation_required,
+            acl_restoration_status,
+            diagnostic = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "MXC shell teardown result is unavailable"
+        );
+    }
+}
+
+impl std::ops::Deref for SandboxLaunchReport {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.notice
+    }
+}
+
 /// A live MXC process with async pipes and cancellation-safe lifecycle calls.
 pub struct SandboxedProcess {
     process: Arc<Mutex<mxc_sdk::v1::MxcProcess>>,
     stdin: Option<tokio::io::DuplexStream>,
     stdout: Option<SandboxedPipeReader>,
     stderr: Option<SandboxedPipeReader>,
-    sandbox_notice: String,
+    launch_report: SandboxLaunchReport,
 }
 
 struct SandboxedPipeReader {
@@ -109,13 +244,14 @@ impl SandboxedProcess {
         })
         .await
         .map_err(|_| anyhow::anyhow!("MXC process launch task failed"))??;
-        let (process, mut sandbox_notice) = process;
+        let (process, mut launch_report) = process;
 
         let process_warnings = process.warnings().to_vec();
         for warning in &process_warnings {
             tracing::warn!(warning = %haven_common::error::sanitize_error_text(warning), "MXC sandbox reported a process warning");
         }
-        append_warning_notes(&mut sandbox_notice, &process_warnings);
+        append_warning_notes(&mut launch_report.notice, &process_warnings);
+        launch_report.startup_warnings.extend(process_warnings);
 
         let mut process = process;
         let stdin = process.take_stdin().map(make_async_writer);
@@ -126,14 +262,14 @@ impl SandboxedProcess {
             stdin,
             stdout,
             stderr,
-            sandbox_notice,
+            launch_report,
         })
     }
 
     /// User-visible summary of the actual MXC tier, network capability, and
     /// ACL behavior used for this process.
     pub fn sandbox_notice(&self) -> &str {
-        &self.sandbox_notice
+        &self.launch_report.notice
     }
 
     pub fn take_stdin(&mut self) -> Option<impl AsyncWrite + Unpin + Send + 'static> {
@@ -156,10 +292,12 @@ impl SandboxedProcess {
     }
 
     pub async fn wait(&self) -> io::Result<SandboxedProcessExit> {
+        let launch_report = self.launch_report.clone();
         loop {
             match self.try_wait().await {
                 Ok(Some(_)) => {
                     let process = Arc::clone(&self.process);
+                    let launch_report = launch_report.clone();
                     return tokio::task::spawn_blocking(move || {
                         let mut process = lock_process(&process);
                         // MXC finalizes structured output metadata as part of
@@ -167,10 +305,13 @@ impl SandboxedProcess {
                         // enforcement teardown completes. Keep polling with
                         // try_wait() first so cancellation can still acquire
                         // the process lock and terminate a running command.
-                        match process.wait()? {
+                        let (result, metadata, isolation) =
+                            wait_process_with_isolation(&mut process, &launch_report)?;
+                        match result {
                             mxc_sdk::v1::WaitResult::Exited(exit_code) => {
-                                let metadata = process.output_metadata().cloned();
-                                Ok(capture_exit_metadata(exit_code, metadata))
+                                let mut exit = capture_exit_metadata(exit_code, metadata);
+                                exit.isolation = Some(isolation);
+                                Ok(exit)
                             }
                             mxc_sdk::v1::WaitResult::TimedOut => Err(io::Error::new(
                                 io::ErrorKind::TimedOut,
@@ -187,18 +328,19 @@ impl SandboxedProcess {
                     // once so it can kill/reap the process tree and finalize
                     // capture cleanup before returning the timeout upstream.
                     let process = Arc::clone(&self.process);
+                    let launch_report = launch_report.clone();
                     let terminal = tokio::task::spawn_blocking(move || {
                         let mut process = lock_process(&process);
-                        let terminal = process.wait()?;
-                        let metadata = process.output_metadata().cloned();
-                        Ok::<_, io::Error>((terminal, metadata))
+                        wait_process_with_isolation(&mut process, &launch_report)
                     })
                     .await
                     .map_err(|_| io::Error::other("MXC timeout cleanup task failed"))??;
                     return match terminal.0 {
                         mxc_sdk::v1::WaitResult::TimedOut => Err(error),
                         mxc_sdk::v1::WaitResult::Exited(exit_code) => {
-                            Ok(capture_exit_metadata(exit_code, terminal.1))
+                            let mut exit = capture_exit_metadata(exit_code, terminal.1);
+                            exit.isolation = Some(terminal.2);
+                            Ok(exit)
                         }
                     };
                 }
@@ -320,8 +462,8 @@ fn build_container_request(
         ProcessContainerConfig, ProcessContainerUi, ProcessContainerUiIsolation,
     };
     use mxc_sdk::v1::{
-        ClipboardPolicy, ContainerRequest, Containment, FilesystemPolicy, NetworkAction,
-        NetworkEgressPolicy, NetworkIngressPolicy, NetworkPolicy, UiPolicy,
+        ClipboardPolicy, ContainerRequest, Containment, FilesystemPolicy, NetworkEgressPolicy,
+        NetworkIngressPolicy, NetworkPolicy, UiPolicy,
     };
 
     let working_directory = normalize_directory(&request.working_directory, "working directory")?;
@@ -387,19 +529,10 @@ fn build_container_request(
         .map(|argument| os_to_string(argument).map(|value| quote_windows_argument(&value)))
         .collect::<anyhow::Result<Vec<_>>>()?
         .join(" ");
-    let network_action = if request.allow_network {
-        NetworkAction::Allow
-    } else {
-        NetworkAction::Deny
-    };
-    let egress_action = match network_profile {
-        NetworkProfile::Offline => NetworkAction::Deny,
-        NetworkProfile::Requested | NetworkProfile::OutboundOnly => network_action,
-    };
-    let ingress_action = match network_profile {
-        NetworkProfile::Requested => network_action,
-        NetworkProfile::OutboundOnly | NetworkProfile::Offline => NetworkAction::Deny,
-    };
+    let network_policy = effective_network_policy(request.network_policy, network_profile);
+    let egress_action = network_action(network_policy.allow_public_egress);
+    let ingress_action = network_action(network_policy.allow_private_network_client_server);
+    let host_loopback_action = network_action(network_policy.allow_host_loopback);
     let ui = request.allow_desktop_handle_access.then_some(UiPolicy {
         disable: false,
         clipboard: ClipboardPolicy::None,
@@ -438,7 +571,7 @@ fn build_container_request(
             }),
             ingress: Some(NetworkIngressPolicy {
                 default: Some(ingress_action),
-                host_loopback: Some(ingress_action),
+                host_loopback: Some(host_loopback_action),
             }),
             runtime_config: None,
         }),
@@ -464,12 +597,35 @@ enum NetworkProfile {
     Offline,
 }
 
+fn effective_network_policy(
+    requested: SandboxedProcessNetworkPolicy,
+    profile: NetworkProfile,
+) -> SandboxedProcessNetworkPolicy {
+    match profile {
+        NetworkProfile::Requested => requested,
+        NetworkProfile::OutboundOnly => SandboxedProcessNetworkPolicy {
+            allow_public_egress: requested.allow_public_egress,
+            allow_private_network_client_server: false,
+            allow_host_loopback: false,
+        },
+        NetworkProfile::Offline => SandboxedProcessNetworkPolicy::default(),
+    }
+}
+
+fn network_action(allowed: bool) -> mxc_sdk::v1::NetworkAction {
+    if allowed {
+        mxc_sdk::v1::NetworkAction::Allow
+    } else {
+        mxc_sdk::v1::NetworkAction::Deny
+    }
+}
+
 fn launch_with_fallback<T>(
     request: SandboxedProcessRequest,
     isolation_mode: MxcIsolationMode,
     mut probe: impl FnMut(&mxc_sdk::v1::ContainerRequest) -> anyhow::Result<mxc_sdk::v1::ProbeOutput>,
     mut spawn: impl FnMut(mxc_sdk::v1::ContainerRequest) -> anyhow::Result<T>,
-) -> anyhow::Result<(T, String)> {
+) -> anyhow::Result<(T, SandboxLaunchReport)> {
     let requested = build_container_request(request.clone(), NetworkProfile::Requested)?;
     let mut failures = Vec::new();
     let (requires_native_filesystem_precedence, requires_native_denied_paths) =
@@ -486,8 +642,7 @@ fn launch_with_fallback<T>(
         Ok((process, probe_output, capture_notice)) => {
             let notice = sandbox_notice(
                 &probe_output,
-                NetworkProfile::Requested,
-                request.allow_network,
+                request.network_policy,
                 false,
                 &[],
                 &probe_output.warnings,
@@ -495,10 +650,18 @@ fn launch_with_fallback<T>(
             tracing::info!(
                 tier = probe_output.tier.unwrap_or("unknown"),
                 network = network_profile_name(NetworkProfile::Requested),
-                acl_augmentation = ?probe_output.needs_dacl_augmentation,
+                acl_augmentation_required = probe_output.needs_dacl_augmentation == Some(true),
                 "MXC started the shell with strict isolation"
             );
-            return Ok((process, combine_notices(notice, capture_notice)));
+            return Ok((
+                process,
+                SandboxLaunchReport::from_probe(
+                    &probe_output,
+                    NetworkProfile::Requested,
+                    request.network_policy,
+                    combine_notices(notice, capture_notice),
+                ),
+            ));
         }
         Err(failure) => failures.push(AttemptFailure {
             profile: NetworkProfile::Requested,
@@ -511,7 +674,7 @@ fn launch_with_fallback<T>(
         return launch_failures(&failures);
     }
 
-    for profile in compatibility_profiles(request.allow_network) {
+    for profile in compatibility_profiles(request.network_policy.allow_public_egress) {
         let candidate = match build_container_request(request.clone(), profile) {
             Ok(candidate) => candidate,
             Err(error) => {
@@ -530,8 +693,7 @@ fn launch_with_fallback<T>(
             Ok((process, probe_output, capture_notice)) => {
                 let notice = sandbox_notice(
                     &probe_output,
-                    profile,
-                    request.allow_network,
+                    effective_network_policy(request.network_policy, profile),
                     true,
                     &failures,
                     &probe_output.warnings,
@@ -539,10 +701,19 @@ fn launch_with_fallback<T>(
                 tracing::warn!(
                     tier = probe_output.tier.unwrap_or("unknown"),
                     network = network_profile_name(profile),
+                    acl_augmentation_required = probe_output.needs_dacl_augmentation == Some(true),
                     warnings = %format_warnings(&probe_output.warnings),
                     "MXC started the shell with compatibility isolation"
                 );
-                return Ok((process, combine_notices(notice, capture_notice)));
+                return Ok((
+                    process,
+                    SandboxLaunchReport::from_probe(
+                        &probe_output,
+                        profile,
+                        effective_network_policy(request.network_policy, profile),
+                        combine_notices(notice, capture_notice),
+                    ),
+                ));
             }
             Err(failure) => failures.push(AttemptFailure {
                 profile,
@@ -745,6 +916,7 @@ fn capture_exit_metadata(
             exit_code,
             capture_denials: None,
             capture_denials_error: Some("MXC 未返回结构化拒绝记录元数据".into()),
+            isolation: None,
         };
     };
     let Some(output) = metadata.capture_denials else {
@@ -757,6 +929,7 @@ fn capture_exit_metadata(
                     .map(|error| haven_common::error::sanitize_error_text(&error.message))
                     .unwrap_or_else(|| "MXC 未返回拒绝记录文件元数据".into()),
             ),
+            isolation: None,
         };
     };
 
@@ -806,6 +979,7 @@ fn capture_exit_metadata(
                         .collect(),
                 }),
                 capture_denials_error,
+                isolation: None,
             }
         }
         Err(error) => SandboxedProcessExit {
@@ -817,6 +991,7 @@ fn capture_exit_metadata(
                 denials: Vec::new(),
             }),
             capture_denials_error: Some(haven_common::error::sanitize_error_text(&error)),
+            isolation: None,
         },
     }
 }
@@ -889,18 +1064,59 @@ fn probe_rejection_reason(
     }
 }
 
-fn compatibility_profiles(allow_network: bool) -> Vec<NetworkProfile> {
-    if allow_network {
+fn compatibility_profiles(allow_public_egress: bool) -> Vec<NetworkProfile> {
+    if allow_public_egress {
         vec![NetworkProfile::OutboundOnly, NetworkProfile::Offline]
     } else {
         vec![NetworkProfile::Offline]
     }
 }
 
+fn network_profile_id(profile: NetworkProfile) -> &'static str {
+    match profile {
+        NetworkProfile::Requested => "requested",
+        NetworkProfile::OutboundOnly => "outbound_only",
+        NetworkProfile::Offline => "offline",
+    }
+}
+
+fn acl_restoration_status(
+    acl_augmentation_required: bool,
+    teardown_warning_reported: bool,
+) -> AclRestorationStatus {
+    if !acl_augmentation_required {
+        AclRestorationStatus::NotApplicable
+    } else if teardown_warning_reported {
+        AclRestorationStatus::WarningReported
+    } else {
+        // MxcProcess::wait completes enforcement teardown before returning;
+        // its warnings include cleanup failures reported after process exit.
+        AclRestorationStatus::CompletedWithoutReportedWarning
+    }
+}
+
+fn warnings_added_since_startup(startup: &[String], final_warnings: &[String]) -> Vec<String> {
+    let mut startup_counts = std::collections::HashMap::<&str, usize>::new();
+    for warning in startup {
+        *startup_counts.entry(warning).or_default() += 1;
+    }
+
+    let mut added = Vec::new();
+    for warning in final_warnings {
+        let remaining = startup_counts.entry(warning).or_default();
+        if *remaining > 0 {
+            *remaining -= 1;
+        } else {
+            added.push(warning.clone());
+        }
+    }
+    added
+}
+
 fn network_profile_name(profile: NetworkProfile) -> &'static str {
     match profile {
-        NetworkProfile::Requested => "原始网络策略",
-        NetworkProfile::OutboundOnly => "仅出站兼容策略",
+        NetworkProfile::Requested => "请求的定向网络策略",
+        NetworkProfile::OutboundOnly => "仅公网出站兼容策略",
         NetworkProfile::Offline => "完全断网兼容策略",
     }
 }
@@ -949,8 +1165,7 @@ fn spawn_container_request(
 
 fn sandbox_notice(
     probe: &mxc_sdk::v1::ProbeOutput,
-    profile: NetworkProfile,
-    originally_allowed_network: bool,
+    network_policy: SandboxedProcessNetworkPolicy,
     compatibility_used: bool,
     failures: &[AttemptFailure],
     warnings: &[String],
@@ -967,13 +1182,19 @@ fn sandbox_notice(
     } else {
         "MXC 不会修改授权目录的 DACL。"
     };
-    let network_note = match profile {
-        NetworkProfile::Requested if originally_allowed_network => {
-            "出站、入站和本机回环按原请求允许。"
-        }
-        NetworkProfile::Requested => "出站、入站和本机回环均禁止。",
-        NetworkProfile::OutboundOnly => "出站允许；入站和本机回环禁止。",
-        NetworkProfile::Offline => "出站、入站和本机回环均禁止。",
+    let network_note = match (
+        network_policy.allow_public_egress,
+        network_policy.allow_private_network_client_server,
+        network_policy.allow_host_loopback,
+    ) {
+        (false, false, false) => "公网出站、私网访问和宿主回环均禁止。",
+        (true, false, false) => "仅公网出站允许；私网访问和宿主回环禁止。",
+        (false, true, false) => "私网双向访问允许；公网出站和宿主回环禁止。",
+        (true, true, false) => "公网出站和私网双向访问允许；宿主回环禁止。",
+        (false, false, true) => "仅宿主回环允许；公网出站和私网访问禁止。",
+        (true, false, true) => "公网出站和宿主回环允许；私网访问禁止。",
+        (false, true, true) => "私网双向访问和宿主回环允许；公网出站禁止。",
+        (true, true, true) => "公网出站、私网双向访问和宿主回环均允许。",
     };
     let failure_note = if failures.is_empty() {
         String::new()
@@ -1186,6 +1407,27 @@ fn quote_windows_argument(argument: &str) -> String {
     quoted
 }
 
+fn wait_process_with_isolation(
+    process: &mut mxc_sdk::v1::MxcProcess,
+    launch_report: &SandboxLaunchReport,
+) -> io::Result<(
+    mxc_sdk::v1::WaitResult,
+    Option<mxc_sdk::v1::ExecutionMetadata>,
+    SandboxIsolationReport,
+)> {
+    let result = match process.wait() {
+        Ok(result) => result,
+        Err(error) => {
+            launch_report.log_wait_failure(&error);
+            return Err(error);
+        }
+    };
+    let metadata = process.output_metadata().cloned();
+    let final_warnings = process.warnings().to_vec();
+    let isolation = launch_report.completed_isolation(&final_warnings);
+    Ok((result, metadata, isolation))
+}
+
 fn lock_process(
     process: &Mutex<mxc_sdk::v1::MxcProcess>,
 ) -> std::sync::MutexGuard<'_, mxc_sdk::v1::MxcProcess> {
@@ -1197,13 +1439,15 @@ fn lock_process(
 #[cfg(test)]
 mod tests {
     use super::{
-        MxcIsolationMode, NetworkProfile, ProbeRequirement, SandboxedProcessRequest,
-        build_container_request, compatibility_profiles, filesystem_policy_requirements,
-        launch_with_fallback, probe_satisfies, quote_windows_argument,
+        AclRestorationStatus, MxcIsolationMode, NetworkProfile, ProbeRequirement,
+        SandboxLaunchReport, SandboxedProcessNetworkPolicy, SandboxedProcessRequest,
+        acl_restoration_status, build_container_request, compatibility_profiles,
+        filesystem_policy_requirements, launch_with_fallback, probe_satisfies,
+        quote_windows_argument, warnings_added_since_startup,
     };
     use std::ffi::OsString;
 
-    fn shell_request(root: &std::path::Path, allow_network: bool) -> SandboxedProcessRequest {
+    fn shell_request(root: &std::path::Path, allow_public_egress: bool) -> SandboxedProcessRequest {
         SandboxedProcessRequest {
             program: OsString::from("cmd"),
             arguments: Vec::new(),
@@ -1213,7 +1457,10 @@ mod tests {
             protected_readonly_paths: Vec::new(),
             denied_paths: Vec::new(),
             environment: Vec::new(),
-            allow_network,
+            network_policy: SandboxedProcessNetworkPolicy {
+                allow_public_egress,
+                ..Default::default()
+            },
             allow_desktop_handle_access: false,
         }
     }
@@ -1301,7 +1548,7 @@ mod tests {
                     OsString::from("PATH"),
                     OsString::from("C:\\Windows\\System32"),
                 )],
-                allow_network: false,
+                network_policy: SandboxedProcessNetworkPolicy::default(),
                 allow_desktop_handle_access: false,
             },
             NetworkProfile::Requested,
@@ -1330,6 +1577,16 @@ mod tests {
     }
 
     #[test]
+    fn public_egress_does_not_grant_private_network_or_host_loopback() {
+        let root = tempfile::tempdir().expect("create MXC directional network fixture");
+        let request =
+            build_container_request(shell_request(root.path(), true), NetworkProfile::Requested)
+                .expect("build public-egress-only request");
+
+        assert_eq!(network_allows(&request), (true, false, false));
+    }
+
+    #[test]
     fn container_request_preserves_authorized_filesystem_roots_and_accepts_read_only_policy() {
         let root = tempfile::tempdir().expect("create MXC read-only fixture");
         let request = build_container_request(
@@ -1342,7 +1599,7 @@ mod tests {
                 protected_readonly_paths: Vec::new(),
                 denied_paths: Vec::new(),
                 environment: Vec::new(),
-                allow_network: false,
+                network_policy: SandboxedProcessNetworkPolicy::default(),
                 allow_desktop_handle_access: false,
             },
             NetworkProfile::Requested,
@@ -1371,7 +1628,7 @@ mod tests {
                 protected_readonly_paths: Vec::new(),
                 denied_paths: Vec::new(),
                 environment: Vec::new(),
-                allow_network: false,
+                network_policy: SandboxedProcessNetworkPolicy::default(),
                 allow_desktop_handle_access: false,
             },
             NetworkProfile::Requested,
@@ -1400,7 +1657,7 @@ mod tests {
                 protected_readonly_paths: Vec::new(),
                 denied_paths: vec![denied],
                 environment: Vec::new(),
-                allow_network: false,
+                network_policy: SandboxedProcessNetworkPolicy::default(),
                 allow_desktop_handle_access: false,
             },
             NetworkProfile::Requested,
@@ -1428,7 +1685,7 @@ mod tests {
             protected_readonly_paths: Vec::new(),
             denied_paths: Vec::new(),
             environment: Vec::new(),
-            allow_network: false,
+            network_policy: SandboxedProcessNetworkPolicy::default(),
             allow_desktop_handle_access: false,
         };
         assert_eq!(
@@ -1465,7 +1722,7 @@ mod tests {
                 protected_readonly_paths: vec![protected.clone()],
                 denied_paths: Vec::new(),
                 environment: Vec::new(),
-                allow_network: false,
+                network_policy: SandboxedProcessNetworkPolicy::default(),
                 allow_desktop_handle_access: false,
             },
             NetworkProfile::Requested,
@@ -1491,7 +1748,7 @@ mod tests {
             protected_readonly_paths: Vec::new(),
             denied_paths: vec![denied.clone()],
             environment: Vec::new(),
-            allow_network: false,
+            network_policy: SandboxedProcessNetworkPolicy::default(),
             allow_desktop_handle_access: false,
         };
         assert_eq!(
@@ -1522,7 +1779,7 @@ mod tests {
                 protected_readonly_paths: Vec::new(),
                 denied_paths: vec![denied.clone()],
                 environment: Vec::new(),
-                allow_network: false,
+                network_policy: SandboxedProcessNetworkPolicy::default(),
                 allow_desktop_handle_access: false,
             },
             NetworkProfile::Requested,
@@ -1566,7 +1823,7 @@ mod tests {
                 protected_readonly_paths: Vec::new(),
                 denied_paths: Vec::new(),
                 environment: Vec::new(),
-                allow_network: false,
+                network_policy: SandboxedProcessNetworkPolicy::default(),
                 allow_desktop_handle_access: true,
             },
             NetworkProfile::Requested,
@@ -1607,7 +1864,10 @@ mod tests {
                 protected_readonly_paths: Vec::new(),
                 denied_paths: Vec::new(),
                 environment: Vec::new(),
-                allow_network: true,
+                network_policy: SandboxedProcessNetworkPolicy {
+                    allow_public_egress: true,
+                    ..Default::default()
+                },
                 allow_desktop_handle_access: false,
             },
             NetworkProfile::OutboundOnly,
@@ -1640,7 +1900,7 @@ mod tests {
                 protected_readonly_paths: Vec::new(),
                 denied_paths: Vec::new(),
                 environment: Vec::new(),
-                allow_network: false,
+                network_policy: SandboxedProcessNetworkPolicy::default(),
                 allow_desktop_handle_access: false,
             },
             NetworkProfile::OutboundOnly,
@@ -1705,11 +1965,11 @@ mod tests {
         .expect("compatibility retry should start the isolated process");
 
         assert_eq!(process, "started");
-        assert_eq!(probed_network, [(true, true, true), (true, false, false)]);
+        assert_eq!(probed_network, [(true, false, false), (true, false, false)]);
         assert_eq!(spawned_network, [(true, false, false)]);
         assert!(notice.contains("MXC 兼容策略已启用"));
         assert!(notice.contains("实际隔离层：MXC AppContainer（DACL）"));
-        assert!(notice.contains("出站允许；入站和本机回环禁止"));
+        assert!(notice.contains("仅公网出站允许；私网访问和宿主回环禁止"));
         assert!(notice.contains("临时调整授权目录的 DACL"));
         assert!(notice.contains("initial probe API unavailable"));
         assert!(notice.contains("host preparation is missing"));
@@ -1758,7 +2018,7 @@ mod tests {
         assert_eq!(
             probed_network,
             [
-                (true, true, true),
+                (true, false, false),
                 (true, false, false),
                 (false, false, false)
             ]
@@ -1766,12 +2026,12 @@ mod tests {
         assert_eq!(
             spawned_network,
             [
-                (true, true, true),
+                (true, false, false),
                 (true, false, false),
                 (false, false, false)
             ]
         );
-        assert!(notice.contains("网络能力：出站、入站和本机回环均禁止"));
+        assert!(notice.contains("网络能力：公网出站、私网访问和宿主回环均禁止"));
         assert!(notice.contains("public egress setup failed"));
         assert!(notice.contains("mxc.host_prep.system_drive_acl_missing"));
         assert!(notice.contains("wxc-host-prep.exe prepare-system-drive"));
@@ -1836,7 +2096,7 @@ mod tests {
 
         assert_eq!(probe_calls, 1);
         assert_eq!(spawn_calls, 1);
-        assert!(error.contains("原始网络策略："));
+        assert!(error.contains("请求的定向网络策略："));
     }
 
     #[test]
@@ -1902,8 +2162,85 @@ mod tests {
 
         assert_eq!(process, "started");
         assert!(notice.contains("实际隔离层：MXC BaseContainer"));
-        assert!(notice.contains("网络能力：出站、入站和本机回环均禁止"));
+        assert!(notice.contains("网络能力：公网出站、私网访问和宿主回环均禁止"));
         assert!(notice.contains("MXC 不会修改授权目录的 DACL"));
+        assert_eq!(notice.actual_tier, "base-container");
+        assert_eq!(notice.network_profile, "requested");
+        assert!(!notice.acl_augmentation_required);
+    }
+
+    #[test]
+    fn acl_restoration_status_uses_post_teardown_warnings() {
+        assert_eq!(
+            acl_restoration_status(false, false),
+            AclRestorationStatus::NotApplicable
+        );
+        assert_eq!(
+            acl_restoration_status(true, false),
+            AclRestorationStatus::CompletedWithoutReportedWarning
+        );
+        assert_eq!(
+            acl_restoration_status(true, true),
+            AclRestorationStatus::WarningReported
+        );
+    }
+
+    #[test]
+    fn acl_restoration_status_serializes_without_claiming_direct_acl_verification() {
+        assert_eq!(
+            serde_json::to_value(AclRestorationStatus::CompletedWithoutReportedWarning).unwrap(),
+            "completed_without_reported_warning"
+        );
+        assert_eq!(
+            serde_json::to_value(AclRestorationStatus::WarningReported).unwrap(),
+            "warning_reported"
+        );
+    }
+
+    #[test]
+    fn teardown_warnings_exclude_warnings_already_present_at_launch() {
+        assert_eq!(
+            warnings_added_since_startup(
+                &["host preparation warning".into()],
+                &[
+                    "host preparation warning".into(),
+                    "DACL cleanup warning".into(),
+                ]
+            ),
+            ["DACL cleanup warning"]
+        );
+    }
+
+    #[test]
+    fn dacl_restoration_report_keeps_tier_and_cleanup_warning_separate() {
+        let probe = probe_output("appcontainer-dacl", true, vec!["startup warning".into()]);
+        let mut report = SandboxLaunchReport::from_probe(
+            &probe,
+            NetworkProfile::Offline,
+            SandboxedProcessNetworkPolicy::default(),
+            "compatibility launch".into(),
+        );
+        report.startup_warnings.push("startup warning".into());
+        let isolation =
+            report.completed_isolation(&["startup warning".into(), "ACL restore warning".into()]);
+
+        assert_eq!(isolation.actual_tier, "appcontainer-dacl");
+        assert_eq!(isolation.network_profile, "offline");
+        assert!(!isolation.public_egress_allowed);
+        assert!(!isolation.private_network_client_server_allowed);
+        assert!(!isolation.host_loopback_allowed);
+        assert!(isolation.acl_augmentation_required);
+        assert_eq!(
+            isolation.acl_restoration_status,
+            AclRestorationStatus::WarningReported
+        );
+        assert_eq!(isolation.teardown_warning_count, 1);
+        assert!(
+            isolation
+                .teardown_warning_summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("ACL restore warning"))
+        );
     }
 
     #[test]

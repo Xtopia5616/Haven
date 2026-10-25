@@ -1,5 +1,6 @@
+use haven_platform::filesystem::{DirectoryCapability, DirectoryEntryKind};
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
@@ -13,8 +14,214 @@ const SHELL_OUTPUT_LOG_MAX_COUNT: usize = 128;
 const SHELL_OUTPUT_LOG_MAX_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
 const SHELL_OUTPUT_LOG_MAX_FILE_BYTES: usize = 1024 * 1024;
 const SHELL_OUTPUT_LOG_TRUNCATION_MARKER: &str = "[earlier shell output truncated]\n";
+const SHELL_SCRATCH_DIRECTORY: &str = "shell-scratch";
+const SHELL_CACHE_DIRECTORY: &str = "shell-cache";
+const SHELL_SCRATCH_MAX_BYTES: u64 = 256 * 1024 * 1024;
+const SHELL_NPM_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
+const SHELL_CARGO_HOME_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const SHELL_SCRATCH_MAX_CONCURRENT: usize = 8;
+const SHELL_SCRATCH_POOL_MAX_BYTES: u64 =
+    SHELL_SCRATCH_MAX_BYTES * SHELL_SCRATCH_MAX_CONCURRENT as u64;
+const SHELL_CAPACITY_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const SHELL_SHARED_CAPACITY_CHECK_INTERVAL: Duration = Duration::from_secs(15);
+const SHELL_CAPACITY_MAX_ENTRIES: usize = 100_000;
+const SHELL_CACHE_CAPACITY_MAX_ENTRIES: usize = 1_000_000;
 
 static SHELL_OUTPUT_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SHELL_CAPACITY_SCAN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SHELL_SCRATCH_SLOTS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(SHELL_SCRATCH_MAX_CONCURRENT);
+
+pub(crate) struct ShellRuntimeDirectories {
+    scratch: tempfile::TempDir,
+    scratch_root: PathBuf,
+    npm_cache: PathBuf,
+    cargo_home: PathBuf,
+}
+
+impl ShellRuntimeDirectories {
+    pub(crate) fn create() -> anyhow::Result<Self> {
+        let runtime_root = haven_common::config::default_runtime_temp_root();
+        let scratch_root = runtime_root.join(SHELL_SCRATCH_DIRECTORY);
+        let cache_root = runtime_root.join(SHELL_CACHE_DIRECTORY);
+        let npm_cache = cache_root.join("npm");
+        let cargo_home = cache_root.join("cargo");
+
+        std::fs::create_dir_all(&scratch_root)?;
+        std::fs::create_dir_all(&npm_cache)?;
+        std::fs::create_dir_all(&cargo_home)?;
+        DirectoryCapability::open(&scratch_root)?;
+        DirectoryCapability::open(&npm_cache)?;
+        DirectoryCapability::open(&cargo_home)?;
+
+        let scratch = tempfile::Builder::new()
+            .prefix("scratch-")
+            .tempdir_in(&scratch_root)?;
+        Ok(Self {
+            scratch,
+            scratch_root,
+            npm_cache,
+            cargo_home,
+        })
+    }
+
+    pub(crate) fn scratch_path(&self) -> &Path {
+        self.scratch.path()
+    }
+
+    pub(crate) fn cache_paths(&self) -> [&Path; 2] {
+        [&self.npm_cache, &self.cargo_home]
+    }
+
+    pub(crate) fn apply_to_command(&self, command: &mut std::process::Command) {
+        for key in ["TEMP", "TMP", "TMPDIR", "npm_config_cache", "CARGO_HOME"] {
+            let overridden_keys = command
+                .get_envs()
+                .filter(|(candidate, _)| {
+                    candidate
+                        .to_str()
+                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(key))
+                })
+                .map(|(candidate, _)| candidate.to_os_string())
+                .collect::<Vec<_>>();
+            for overridden_key in overridden_keys {
+                command.env_remove(overridden_key);
+            }
+        }
+        command
+            .env("TEMP", self.scratch.path())
+            .env("TMP", self.scratch.path())
+            .env("TMPDIR", self.scratch.path())
+            .env("npm_config_cache", &self.npm_cache)
+            .env("CARGO_HOME", &self.cargo_home);
+    }
+
+    pub(crate) async fn ensure_within_capacity(&self) -> anyhow::Result<()> {
+        if let Some(reason) = self.capacity_violation(true).await? {
+            anyhow::bail!(reason);
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn wait_for_capacity_violation(&self) -> String {
+        let mut last_shared_check = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(SHELL_CAPACITY_CHECK_INTERVAL).await;
+            let check_shared = last_shared_check.elapsed() >= SHELL_SHARED_CAPACITY_CHECK_INTERVAL;
+            if check_shared {
+                last_shared_check = tokio::time::Instant::now();
+            }
+            match self.capacity_violation(check_shared).await {
+                Ok(Some(reason)) => return reason,
+                Ok(None) => {}
+                Err(error) => return error.to_string(),
+            }
+        }
+    }
+
+    /// Reset an over-budget shared package cache only when no other Shell
+    /// invocation can be using it. If another call is active, restart cleanup
+    /// handles the cache after all child processes have stopped.
+    pub(crate) async fn reset_over_budget_caches_if_idle(&self) {
+        let Ok(_all_shell_slots) =
+            SHELL_SCRATCH_SLOTS.try_acquire_many(SHELL_SCRATCH_MAX_CONCURRENT as u32)
+        else {
+            return;
+        };
+        let npm_cache = self.npm_cache.clone();
+        let cargo_home = self.cargo_home.clone();
+        let reset_result = tokio::task::spawn_blocking(move || {
+            let _scan_lock = SHELL_CAPACITY_SCAN_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (name, path, limit) in [
+                ("npm", npm_cache, SHELL_NPM_CACHE_MAX_BYTES),
+                ("Cargo", cargo_home, SHELL_CARGO_HOME_MAX_BYTES),
+            ] {
+                let over_budget =
+                    directory_size_exceeds(&path, limit, SHELL_CACHE_CAPACITY_MAX_ENTRIES)
+                        .unwrap_or(true);
+                if over_budget {
+                    reset_owned_directory(&path).map_err(|error| {
+                        format!("failed to reset over-budget {name} cache: {error}")
+                    })?;
+                }
+            }
+            Ok::<_, String>(())
+        })
+        .await;
+        match reset_result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(
+                error = %haven_common::error::sanitize_error_text(&error),
+                "failed to reset an over-budget Shell package cache"
+            ),
+            Err(error) => tracing::warn!(
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "failed to inspect Shell package cache after capacity stop"
+            ),
+        }
+    }
+
+    async fn capacity_violation(&self, check_shared: bool) -> anyhow::Result<Option<String>> {
+        let scratch = self.scratch.path().to_path_buf();
+        let scratch_root = self.scratch_root.clone();
+        let npm_cache = self.npm_cache.clone();
+        let cargo_home = self.cargo_home.clone();
+        tokio::task::spawn_blocking(move || {
+            let _shared_scan = check_shared.then(|| {
+                SHELL_CAPACITY_SCAN_LOCK
+                    .get_or_init(|| Mutex::new(()))
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            });
+            let mut roots = vec![(
+                scratch,
+                SHELL_SCRATCH_MAX_BYTES,
+                SHELL_CAPACITY_MAX_ENTRIES,
+                "Shell scratch",
+            )];
+            if check_shared {
+                roots.extend([
+                    (
+                        scratch_root,
+                        SHELL_SCRATCH_POOL_MAX_BYTES,
+                        SHELL_CAPACITY_MAX_ENTRIES,
+                        "Shell scratch pool",
+                    ),
+                    (
+                        npm_cache,
+                        SHELL_NPM_CACHE_MAX_BYTES,
+                        SHELL_CACHE_CAPACITY_MAX_ENTRIES,
+                        "npm cache",
+                    ),
+                    (
+                        cargo_home,
+                        SHELL_CARGO_HOME_MAX_BYTES,
+                        SHELL_CACHE_CAPACITY_MAX_ENTRIES,
+                        "Cargo cache",
+                    ),
+                ]);
+            }
+            for (path, limit, max_entries, name) in roots {
+                if directory_size_exceeds(&path, limit, max_entries).map_err(anyhow::Error::msg)? {
+                    return Ok(Some(format!(
+                        "{name} exceeded its {} MiB capacity limit; the Shell process was stopped",
+                        limit / (1024 * 1024)
+                    )));
+                }
+            }
+            Ok::<_, anyhow::Error>(None)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to check Shell runtime capacity: {error}"))?
+    }
+}
+
+pub(crate) fn shell_scratch_slots() -> &'static tokio::sync::Semaphore {
+    &SHELL_SCRATCH_SLOTS
+}
 
 /// Build the platform command used to run `command` in the requested
 /// interpreter (cmd or powershell), with stdout/stderr piped. The process
@@ -257,6 +464,167 @@ pub(crate) fn cleanup_shell_output_logs_after_restart() {
             "failed to clean foreground Shell output logs"
         ),
     }
+}
+
+/// Remove scratch directories left behind by a process crash and reset a
+/// package cache if it exceeds its bounded runtime budget. This runs during
+/// ToolRun restoration, before new shell calls are admitted.
+#[cfg(not(test))]
+pub(crate) fn cleanup_shell_runtime_directories_after_restart() {
+    let runtime_root = haven_common::config::default_runtime_temp_root();
+    let scratch_root = runtime_root.join(SHELL_SCRATCH_DIRECTORY);
+    match cleanup_owned_scratch_directories(&scratch_root) {
+        Ok(0) => {}
+        Ok(removed) => tracing::debug!(removed, "removed stale Shell scratch directories"),
+        Err(error) => tracing::warn!(
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "failed to clean stale Shell scratch directories"
+        ),
+    }
+
+    let cache_root = runtime_root.join(SHELL_CACHE_DIRECTORY);
+    for (name, path, limit) in [
+        ("npm", cache_root.join("npm"), SHELL_NPM_CACHE_MAX_BYTES),
+        (
+            "Cargo",
+            cache_root.join("cargo"),
+            SHELL_CARGO_HOME_MAX_BYTES,
+        ),
+    ] {
+        let over_budget =
+            match directory_size_exceeds(&path, limit, SHELL_CACHE_CAPACITY_MAX_ENTRIES) {
+                Ok(over_budget) => over_budget,
+                Err(error) => {
+                    tracing::warn!(
+                        cache = name,
+                        error = %haven_common::error::sanitize_error_text(&error),
+                        "failed to inspect Shell package cache after restart"
+                    );
+                    true
+                }
+            };
+        if over_budget {
+            match reset_owned_directory(&path) {
+                Ok(()) => tracing::warn!(
+                    cache = name,
+                    limit_bytes = limit,
+                    "reset over-budget Shell package cache after restart"
+                ),
+                Err(error) => tracing::warn!(
+                    cache = name,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to reset over-budget Shell package cache"
+                ),
+            }
+        }
+    }
+}
+
+fn directory_size_exceeds(root: &Path, limit: u64, max_entries: usize) -> Result<bool, String> {
+    let root_metadata = match std::fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.to_string()),
+    };
+    if haven_platform::filesystem::is_link_or_reparse_point(&root_metadata)
+        || !root_metadata.is_dir()
+    {
+        return Err("Shell runtime directory is not a safe local directory".into());
+    }
+    DirectoryCapability::open(root)
+        .map_err(|_| "Shell runtime directory could not be safely opened".to_owned())?;
+
+    let mut pending = vec![root.to_path_buf()];
+    let mut total_bytes = 0u64;
+    let mut entry_count = 0usize;
+    while let Some(directory) = pending.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                return Err("Shell runtime directory could not be inspected safely".into());
+            }
+        };
+        for entry in entries {
+            let entry =
+                entry.map_err(|_| "Shell runtime directory could not be inspected safely")?;
+            entry_count = entry_count.saturating_add(1);
+            if entry_count > max_entries {
+                return Ok(true);
+            }
+            let metadata = match std::fs::symlink_metadata(entry.path()) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    return Err("Shell runtime directory could not be inspected safely".into());
+                }
+            };
+            let file_type = metadata.file_type();
+            if file_type.is_symlink()
+                || haven_platform::filesystem::is_link_or_reparse_point(&metadata)
+            {
+                continue;
+            }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                total_bytes = total_bytes.saturating_add(metadata.len());
+                if total_bytes > limit {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(not(test))]
+fn cleanup_owned_scratch_directories(root: &Path) -> std::io::Result<usize> {
+    let root = match DirectoryCapability::open(root) {
+        Ok(root) => root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut removed = 0;
+    for entry in root.entries(SHELL_CAPACITY_MAX_ENTRIES)? {
+        let name = entry.name;
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if entry.kind != DirectoryEntryKind::Directory || !name.starts_with("scratch-") {
+            continue;
+        }
+        root.remove_dir_all(Path::new(name))?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+fn reset_owned_directory(path: &Path) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("Shell cache directory has no parent"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("Shell cache directory has no name"))?;
+    let relative = Path::new(name);
+    let parent = DirectoryCapability::open(parent)?;
+    if let Some(entry) = parent
+        .entries(SHELL_CAPACITY_MAX_ENTRIES)?
+        .into_iter()
+        .find(|entry| entry.name.as_os_str() == name)
+    {
+        match entry.kind {
+            DirectoryEntryKind::Directory => parent.remove_dir_all(relative)?,
+            DirectoryEntryKind::File => parent.remove_file(relative)?,
+            DirectoryEntryKind::ReparsePoint | DirectoryEntryKind::Other => {
+                return Err(std::io::Error::other(
+                    "refusing to reset a Shell cache reparse point or special file",
+                ));
+            }
+        }
+    }
+    parent.create_dir_all(relative)
 }
 
 #[cfg(test)]

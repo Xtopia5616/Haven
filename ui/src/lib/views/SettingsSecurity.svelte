@@ -137,7 +137,7 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 		{
 			value: 'open',
 			label: '开放网络',
-			detail: 'Haven 不添加目的地限制；工具自身校验仍会执行，操作是否需要确认由执行方式决定。',
+			detail: 'Haven 不添加公网目标限制；工具自身校验仍会执行。隔离子进程的私网与本机访问单独控制，开放公网不会自动开启它们；操作是否需要确认由执行方式决定。',
 		},
 	] as const;
 

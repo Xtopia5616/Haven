@@ -541,9 +541,7 @@ impl SessionSupervisor {
             tool_name: "shell".into(),
             input: retry_input,
             receipt,
-            summary: Some(format!(
-                "MXC 首轮记录了 {denial_count} 个去重后的拒绝项。批准后会对整个命令进行一次重跑，并仅按下方列出的访问类型临时扩展目录权限；读取/执行类拒绝映射为只读目录权限。网络、UI、未知或其他类别不会因此获得权限，仍由原策略阻止。首轮运行可能已经产生部分副作用。"
-            )),
+            summary: Some(shell_denial_retry_summary(denial_count)),
             prior_result: Some(prior_sandbox_access),
         })
     }
@@ -806,6 +804,12 @@ impl SessionSupervisor {
     }
 }
 
+fn shell_denial_retry_summary(denial_count: u64) -> String {
+    format!(
+        "MXC 首轮记录了 {denial_count} 个去重后的拒绝项。实际获批范围是下方列出的整个目录及其全部子目录和文件，不限于首轮被拒绝的单个文件。读取/执行类拒绝映射为整个父目录只读，写入拒绝映射为整个父目录可写。批准后会对整个命令进行一次重跑；网络、UI、未知或其他类别不会因此获得权限，仍由原策略阻止。首轮运行可能已经产生部分副作用。"
+    )
+}
+
 fn shell_denial_resource_extensions(output: &Value) -> Option<Vec<Value>> {
     const MAX_EXTENSION_DIRECTORIES: usize = 64;
 
@@ -900,4 +904,20 @@ fn denied_file_parent_directory(resource: &str) -> Option<std::path::PathBuf> {
     let normalized = std::path::PathBuf::from(raw);
     (normalized.is_absolute() && !normalized.to_string_lossy().starts_with(r"\\"))
         .then_some(normalized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_denial_retry_summary;
+
+    #[test]
+    fn shell_denial_retry_summary_names_the_recursive_directory_scope() {
+        let summary = shell_denial_retry_summary(2);
+
+        assert!(summary.contains("整个目录及其全部子目录和文件"));
+        assert!(summary.contains("整个父目录只读"));
+        assert!(summary.contains("整个父目录可写"));
+        assert!(summary.contains("整个命令进行一次重跑"));
+        assert!(summary.contains("首轮运行可能已经产生部分副作用"));
+    }
 }

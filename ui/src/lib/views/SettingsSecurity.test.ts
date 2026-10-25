@@ -220,7 +220,7 @@ describe('SettingsSecurity', () => {
 		},
 		{
 			networkPolicy: 'open',
-			explanation: /Haven 不添加目的地限制/,
+			explanation: /Haven 不添加公网目标限制/,
 		},
 	] as const)(
 		'explains $networkPolicy as a Haven policy rather than an OS firewall rule',

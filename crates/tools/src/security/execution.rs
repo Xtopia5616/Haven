@@ -157,14 +157,40 @@ impl ExecutionPolicyPermit {
         self._config.mxc_isolation_mode
     }
 
-    /// Compile the final read and write roots for this Workspace Write Shell
-    /// invocation from the live global policy, Shell policy, and any
-    /// proof-bound resource extension. Roots deliberately name directories,
-    /// since MXC ProcessContainer enforces directory ACLs.
+    #[cfg(test)]
     pub(crate) fn workspace_shell_directories(
         &self,
         working_directory: &std::path::Path,
         runtime_read_roots: &[std::path::PathBuf],
+    ) -> Result<WorkspaceShellFilesystemPolicy, String> {
+        self.compile_workspace_shell_directories(working_directory, runtime_read_roots, None, &[])
+    }
+
+    pub(crate) fn workspace_shell_directories_with_runtime_writes(
+        &self,
+        working_directory: &std::path::Path,
+        runtime_read_roots: &[std::path::PathBuf],
+        scratch_directory: &std::path::Path,
+        cache_directories: &[std::path::PathBuf],
+    ) -> Result<WorkspaceShellFilesystemPolicy, String> {
+        self.compile_workspace_shell_directories(
+            working_directory,
+            runtime_read_roots,
+            Some(scratch_directory),
+            cache_directories,
+        )
+    }
+
+    /// Compile the final read and write roots for this Workspace Write Shell
+    /// invocation from the live global policy, Shell policy, and any
+    /// proof-bound resource extension. Roots deliberately name directories,
+    /// since MXC ProcessContainer enforces directory ACLs.
+    fn compile_workspace_shell_directories(
+        &self,
+        working_directory: &std::path::Path,
+        runtime_read_roots: &[std::path::PathBuf],
+        scratch_directory: Option<&std::path::Path>,
+        cache_directories: &[std::path::PathBuf],
     ) -> Result<WorkspaceShellFilesystemPolicy, String> {
         if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
             return Err("MXC process roots require the Workspace Write sandbox".into());
@@ -385,6 +411,62 @@ impl ExecutionPolicyPermit {
                     .iter()
                     .any(|protected| directory_root_contains_path(protected, writable.root()))
         });
+
+        // Shell-owned runtime files are independent grants. They are not
+        // selected from or widened to the first user writable root, and
+        // explicit deny/protected-read-only policy still takes precedence.
+        if let Some(scratch_directory) = scratch_directory {
+            let scratch = super::filesystem::open_directory_roots(
+                &[scratch_directory.to_path_buf()],
+                "Shell per-call scratch directory",
+            )?;
+            let scratch = scratch
+                .into_iter()
+                .next()
+                .ok_or_else(|| "Shell per-call scratch directory is unavailable".to_owned())?;
+            if denied
+                .iter()
+                .any(|deny| deny.contains_path(scratch.root()).unwrap_or(true))
+            {
+                return Err(
+                    "Shell scratch directory is explicitly denied by the compiled MXC policy"
+                        .into(),
+                );
+            }
+            if protected_readonly
+                .iter()
+                .any(|protected| protected.contains_path(scratch.root()).unwrap_or(true))
+                || runtime_read
+                    .iter()
+                    .any(|protected| directory_root_contains_path(protected, scratch.root()))
+            {
+                return Err(
+                    "Shell scratch directory is protected read-only by the compiled MXC policy"
+                        .into(),
+                );
+            }
+            write_scope.push(scratch);
+        }
+        if !tool_is_read_only && !cache_directories.is_empty() {
+            let cache_roots = super::filesystem::open_directory_roots(
+                cache_directories,
+                "Shell package cache directories",
+            )?;
+            for cache_root in cache_roots {
+                let explicitly_denied = denied
+                    .iter()
+                    .any(|deny| deny.contains_path(cache_root.root()).unwrap_or(true));
+                let protected_read_only = protected_readonly
+                    .iter()
+                    .any(|protected| protected.contains_path(cache_root.root()).unwrap_or(true))
+                    || runtime_read.iter().any(|protected| {
+                        directory_root_contains_path(protected, cache_root.root())
+                    });
+                if !explicitly_denied && !protected_read_only {
+                    write_scope.push(cache_root);
+                }
+            }
+        }
 
         // A read grant contained by a write grant adds no read access. Keep
         // only broader read-only roots; explicit protected subpaths are

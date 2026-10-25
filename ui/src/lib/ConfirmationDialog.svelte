@@ -78,6 +78,9 @@
 		resources.some((resource) => resource.kind === 'local_path'),
 	);
 	let hasPersistentResources = $derived(resources.length > 0);
+	let hasDirectoryBoundaryExtension = $derived(
+		resourceBoundaryExtension && hasLocalPathResource && toolName === 'shell',
+	);
 	let riskLabel = $derived(RISK_LABELS[normalizedRisk] || '中风险');
 	let timeoutPercent = $derived(
 		Math.min(100, Math.max(0, ((remaining * 1000) / countdownDurationMs) * 100)),
@@ -301,6 +304,14 @@
 				{/if}
 				<section class="resource-list" aria-label="授权资源">
 					<div class="section-label">本次操作声明的资源</div>
+					{#if hasDirectoryBoundaryExtension}
+						<div class="directory-extension-warning" role="alert">
+							<Icon name="alertTriangle" size={16} />
+							<strong
+								>本次授权覆盖下方列出的整个目录及其子目录和文件，不限于首轮被拒绝的单个文件。</strong
+							>
+						</div>
+					{/if}
 					{#if resources.length > 0}
 						<ul>
 							{#each resources as resource, index (`${resource.kind}:${index}`)}
@@ -341,10 +352,12 @@
 				<span>{resourceBoundaryExtension ? '只扩展本次操作' : '选择允许范围和期限'}</span>
 				<span class="action-hint">
 					{resourceBoundaryExtension
-						? '临时扩展只适用于上方列出的资源；不会保存授权或更改设置'
+						? hasDirectoryBoundaryExtension
+							? '目录权限覆盖列出的目录及其全部子项；仅本次生效，不保存授权或更改设置'
+							: '临时扩展只适用于上方列出的资源；不会保存授权或更改设置'
 						: allowSessionScope
-						? '本会话授权不会按时间自动到期；撤销、清除授权或删除会话后失效'
-						: '永久授权跨会话生效，关键操作仍可能继续要求确认'}
+							? '本会话授权不会按时间自动到期；撤销、清除授权或删除会话后失效'
+							: '永久授权跨会话生效，关键操作仍可能继续要求确认'}
 				</span>
 			</div>
 			{#if hasPersistentResources && hasLocalPathResource && !resourceBoundaryExtension}
@@ -677,6 +690,25 @@
 		margin: var(--md-sys-space-xs) 0 0;
 		padding: 0;
 		list-style: none;
+	}
+
+	.directory-extension-warning {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--md-sys-space-sm);
+		margin: var(--md-sys-space-sm) 0;
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-warning);
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-warning-container);
+		color: var(--md-sys-color-on-warning-container);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+
+	.directory-extension-warning :global(svg) {
+		flex: 0 0 auto;
+		margin-top: 1px;
 	}
 
 	.resource-list li,

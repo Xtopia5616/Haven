@@ -38,10 +38,12 @@ use crate::output::sanitize_shell_output;
 use crate::output::summarize_error;
 #[cfg(test)]
 use crate::process::read_stream_text_capped;
-#[cfg(not(test))]
-use crate::shell_runtime::cleanup_shell_output_logs_after_restart;
 #[cfg(test)]
 use crate::shell_runtime::{build_shell_command, collect_byte_cap};
+#[cfg(not(test))]
+use crate::shell_runtime::{
+    cleanup_shell_output_logs_after_restart, cleanup_shell_runtime_directories_after_restart,
+};
 use crate::shell_runtime::{
     remove_orphaned_tool_run_output_logs, remove_tool_run_output_log, write_output_log,
 };
@@ -499,6 +501,8 @@ impl ToolRunService {
     pub async fn restore_after_restart(&self) -> usize {
         #[cfg(not(test))]
         cleanup_shell_output_logs_after_restart();
+        #[cfg(not(test))]
+        cleanup_shell_runtime_directories_after_restart();
         let Some(store) = self.tool_run_store.read().await.clone() else {
             return 0;
         };

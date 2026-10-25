@@ -101,6 +101,24 @@ describe('ConfirmationDialog', () => {
 		});
 	});
 
+	it('warns that a Shell file denial grants the entire parent directory for this retry', () => {
+		render(ConfirmationDialog as any, {
+			...deadlineProps(),
+			requestId: 'conf-bd5d1f2e30fd45cb92561bb0ee89f12f',
+			toolName: 'shell',
+			summary: '首轮拒绝的文件将映射到父目录权限。',
+			resources: [{ kind: 'local_path', path: 'C:\\Projects\\demo', access: 'write' }],
+			resourceBoundaryExtension: true,
+			onConfirm: vi.fn(),
+		});
+
+		expect(screen.getByRole('alert').textContent).toContain(
+			'整个目录及其子目录和文件，不限于首轮被拒绝的单个文件',
+		);
+		expect(screen.getByText(/目录权限覆盖列出的目录及其全部子项/)).toBeTruthy();
+		expect(screen.getByRole('button', { name: '临时扩展并允许本次' })).toBeTruthy();
+	});
+
 	it('explains a broad persistent grant and deny precedence before final confirmation', async () => {
 		render(ConfirmationDialog as any, {
 			...deadlineProps(),

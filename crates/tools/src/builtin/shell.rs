@@ -62,7 +62,7 @@ pub struct ShellParams {
     #[serde(default)]
     pub silent: Option<bool>,
     /// Working directory to run the command in (default: detected workspace,
-    /// otherwise the shared Temp dir).
+    /// otherwise this invocation's scratch directory).
     #[serde(default)]
     pub cwd: Option<String>,
     /// Private: pre-minted `step-*` id for live `agent:tool_output` events.
@@ -182,10 +182,24 @@ impl ShellTool {
             anyhow::bail!("cancelled");
         }
 
+        let has_working_directory = shell_context.working_directory.is_some();
         let mut std_cmd = build_shell_command_silent(&shell_context.shell, &cmd);
         if let Some(working_directory) = shell_context.working_directory {
             std_cmd.current_dir(working_directory);
         }
+
+        let _scratch_slot = tokio::select! {
+            permit = crate::shell_runtime::shell_scratch_slots().acquire() => {
+                permit.map_err(|_| anyhow::anyhow!("Shell scratch capacity is unavailable"))?
+            }
+            _ = cancel.cancelled() => return Ok(ToolResult::cancelled("shell command cancelled")),
+        };
+        let runtime_directories = crate::shell_runtime::ShellRuntimeDirectories::create()?;
+        runtime_directories.apply_to_command(&mut std_cmd);
+        if !has_working_directory {
+            std_cmd.current_dir(runtime_directories.scratch_path());
+        }
+        runtime_directories.ensure_within_capacity().await?;
 
         let execution_authorization =
             execution_context.and_then(crate::ToolExecutionContext::clone_execution_authorization);
@@ -228,8 +242,18 @@ impl ShellTool {
                         .map(PathBuf::from)
                         .unwrap_or(std::env::current_dir()?);
                     let runtime_read_roots = shell_runtime_dependency_roots(&std_cmd);
+                    let runtime_cache_roots = runtime_directories
+                        .cache_paths()
+                        .into_iter()
+                        .map(PathBuf::from)
+                        .collect::<Vec<_>>();
                     let filesystem_policy = permit
-                        .workspace_shell_directories(&working_directory, &runtime_read_roots)
+                        .workspace_shell_directories_with_runtime_writes(
+                            &working_directory,
+                            &runtime_read_roots,
+                            runtime_directories.scratch_path(),
+                            &runtime_cache_roots,
+                        )
                         .map_err(crate::security::execution_policy_denied)?;
                     let roots = filesystem_policy
                         .readwrite_roots
@@ -345,23 +369,67 @@ impl ShellTool {
             }
         };
         tokio::pin!(policy_revoked);
+        let capacity_exceeded = runtime_directories.wait_for_capacity_violation();
+        tokio::pin!(capacity_exceeded);
         let (stdout, stderr, status) = tokio::select! {
-            result = command_result => result?,
+            result = command_result => match result {
+                Ok(result) => result,
+                Err(error) => {
+                    let error = haven_common::error::sanitize_error_text(&error.to_string());
+                    let mut result = ToolResult::failed(Value::Null, error);
+                    apply_sandbox_diagnostics(&mut result.output, &child, None);
+                    return Ok(result);
+                }
+            },
             _ = cancel.cancelled() => {
-                let _ = child.kill().await;
+                let teardown_status = child.kill_and_wait().await.ok();
                 if let Some(flag) = &running {
                     flag.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
-                return Ok(ToolResult::cancelled("shell command cancelled"));
+                let mut result = ToolResult::cancelled("shell command cancelled");
+                apply_sandbox_diagnostics(
+                    &mut result.output,
+                    &child,
+                    teardown_status.as_ref().and_then(|status| status.sandbox_exit.as_ref()),
+                );
+                return Ok(result);
             }
             _ = &mut policy_revoked => {
-                let _ = child.kill().await;
+                let teardown_status = child.kill_and_wait().await.ok();
                 if let Some(flag) = &running {
                     flag.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
-                return Ok(ToolResult::cancelled("execution policy changed; shell command cancelled"));
+                let mut result = ToolResult::cancelled("execution policy changed; shell command cancelled");
+                apply_sandbox_diagnostics(
+                    &mut result.output,
+                    &child,
+                    teardown_status.as_ref().and_then(|status| status.sandbox_exit.as_ref()),
+                );
+                return Ok(result);
+            }
+            reason = &mut capacity_exceeded => {
+                let teardown_status = child.kill_and_wait().await.ok();
+                if let Some(flag) = &running {
+                    flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                let mut result = ToolResult::failed(Value::Null, reason);
+                apply_sandbox_diagnostics(
+                    &mut result.output,
+                    &child,
+                    teardown_status.as_ref().and_then(|status| status.sandbox_exit.as_ref()),
+                );
+                drop(child);
+                drop(_scratch_slot);
+                runtime_directories.reset_over_budget_caches_if_idle().await;
+                return Ok(result);
             }
         };
+        if let Err(error) = runtime_directories.ensure_within_capacity().await {
+            drop(child);
+            drop(_scratch_slot);
+            runtime_directories.reset_over_budget_caches_if_idle().await;
+            return Ok(ToolResult::failed(Value::Null, error.to_string()));
+        }
 
         let denial_list_truncated = status
             .sandbox_exit
@@ -386,9 +454,7 @@ impl ShellTool {
         let text = haven_common::encoding::truncate_output(&combined, max_chars).text;
         let exit_code = status.code;
         let mut output = serde_json::json!({"output": text, "shell": shell_context.shell});
-        if let Some(notice) = child.sandbox_notice() {
-            output["sandbox_notice"] = serde_json::Value::String(notice.to_owned());
-        }
+        apply_sandbox_diagnostics(&mut output, &child, status.sandbox_exit.as_ref());
         if let Some(sandbox_exit) = status.sandbox_exit {
             let capture_status = match (
                 sandbox_exit.capture_denials.as_ref(),
@@ -555,7 +621,7 @@ impl Tool for ShellTool {
                 "command": { "type": "string", "minLength": 1, "description": "Shell command to execute" },
                 "shell": { "type": "string", "enum": shells, "description": format!("Which shell to run the command in (default: the shell configured in app settings — `{default_shell}`; pwsh requires PowerShell 7 installed). Match command syntax to this shell; PowerShell 5.1 uses `;` instead of `&&`/`||`." ) },
                 "silent": { "type": "boolean", "description": "Only use when the user explicitly requests a quiet tool card; never use it to conceal a side effect (the agent still receives the output)", "default": false },
-                "cwd": { "type": "string", "minLength": 1, "description": "Working directory to run the command in. Defaults to the detected workspace root when this process is inside a repository; otherwise the shared Temp sandbox." }
+                "cwd": { "type": "string", "minLength": 1, "description": "Working directory to run the command in. Defaults to the detected workspace root when this process is inside a repository; otherwise this call's temporary scratch directory." }
             },
             "required": ["command"]
         })
@@ -671,6 +737,55 @@ impl ShellProcess {
             ShellProcessKind::Sandboxed(child) => child.kill().await,
         }
     }
+
+    async fn kill_and_wait(&mut self) -> std::io::Result<ShellExitStatus> {
+        // A process may already have exited when cancellation wins the select.
+        // Waiting is still required so MXC can finish enforcement teardown and
+        // expose any ACL cleanup warning.
+        let kill_error = self.kill().await.err();
+        match self.wait().await {
+            Ok(status) => Ok(status),
+            Err(wait_error) => Err(kill_error.unwrap_or(wait_error)),
+        }
+    }
+}
+
+fn apply_sandbox_diagnostics(
+    output: &mut Value,
+    child: &ShellProcess,
+    sandbox_exit: Option<&haven_platform::sandboxed_process::SandboxedProcessExit>,
+) {
+    let Some(startup_notice) = child.sandbox_notice() else {
+        return;
+    };
+
+    let mut notice = startup_notice.to_owned();
+    if let Some(isolation) = sandbox_exit.and_then(|exit| exit.isolation.as_ref()) {
+        let restoration_note = match isolation.acl_restoration_status {
+            haven_platform::sandboxed_process::AclRestorationStatus::NotApplicable => {
+                "DACL 恢复状态：不适用，本次未使用 DACL 补强。".to_owned()
+            }
+            haven_platform::sandboxed_process::AclRestorationStatus::CompletedWithoutReportedWarning => {
+                "DACL 恢复状态：MXC 完成隔离清理，且未报告新增清理警告。".to_owned()
+            }
+            haven_platform::sandboxed_process::AclRestorationStatus::WarningReported => {
+                format!(
+                    "DACL 恢复状态：MXC 在进程结束后报告 {} 条新警告，请检查 ACL 状态。",
+                    isolation.teardown_warning_count
+                )
+            }
+        };
+        notice.push(' ');
+        notice.push_str(&restoration_note);
+        if let Some(warning_summary) = &isolation.teardown_warning_summary {
+            notice.push(' ');
+            notice.push_str(warning_summary);
+        }
+        output["sandbox_isolation"] = serde_json::to_value(isolation).unwrap_or(Value::Null);
+    } else {
+        notice.push_str(" MXC 隔离清理结果未能获取；DACL 恢复状态未知。");
+    }
+    output["sandbox_notice"] = Value::String(notice);
 }
 
 async fn spawn_shell_with_host_permissions(
@@ -725,24 +840,18 @@ fn sandboxed_shell_request(
     additional_readonly_paths: Vec<PathBuf>,
     protected_readonly_paths: Vec<PathBuf>,
     denied_paths: Vec<PathBuf>,
-    allow_network: bool,
+    allow_public_egress: bool,
     allow_desktop_handle_access: bool,
 ) -> anyhow::Result<haven_platform::sandboxed_process::SandboxedProcessRequest> {
-    use haven_platform::sandboxed_process::SandboxedProcessRequest;
-    use std::ffi::{OsStr, OsString};
+    use haven_platform::sandboxed_process::{
+        SandboxedProcessNetworkPolicy, SandboxedProcessRequest,
+    };
+    use std::ffi::OsStr;
 
-    let mut environment = std_cmd
+    let environment = std_cmd
         .get_envs()
         .filter_map(|(key, value)| value.map(|value| (key.to_os_string(), value.to_os_string())))
         .collect::<Vec<_>>();
-    if let Some(temp_root) = readwrite_paths.first() {
-        environment.retain(|(key, _)| {
-            !os_key_eq_ignore_ascii_case(key, "TEMP") && !os_key_eq_ignore_ascii_case(key, "TMP")
-        });
-        environment.push((OsString::from("TEMP"), temp_root.as_os_str().to_os_string()));
-        environment.push((OsString::from("TMP"), temp_root.as_os_str().to_os_string()));
-    }
-
     let readonly_paths = additional_readonly_paths;
     let working_directory = std_cmd
         .get_current_dir()
@@ -757,41 +866,39 @@ fn sandboxed_shell_request(
         protected_readonly_paths,
         denied_paths,
         environment,
-        allow_network,
+        network_policy: SandboxedProcessNetworkPolicy {
+            allow_public_egress,
+            ..Default::default()
+        },
         allow_desktop_handle_access,
     })
 }
 
 #[cfg(windows)]
 fn shell_runtime_dependency_roots(std_cmd: &std::process::Command) -> Vec<PathBuf> {
+    let environment = std_cmd
+        .get_envs()
+        .filter_map(|(key, value)| value.map(|value| (key.to_os_string(), value.to_os_string())))
+        .collect::<Vec<_>>();
     let mut roots = Vec::new();
-    if let Some(system_root) = shell_command_environment_value(std_cmd, "SYSTEMROOT") {
-        let system_root = PathBuf::from(system_root);
+    if let Some(system_root) = environment
+        .iter()
+        .find(|(key, _)| os_key_eq_ignore_ascii_case(key, "SYSTEMROOT"))
+        .map(|(_, value)| PathBuf::from(value))
+    {
         roots.push(system_root.clone());
         roots.push(system_root.join("System32"));
         roots.push(system_root.join(r"System32\WindowsPowerShell\v1.0"));
     }
     roots.extend(
-        shell_command_environment_value(std_cmd, "PATH")
-            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        environment
+            .iter()
+            .find(|(key, _)| os_key_eq_ignore_ascii_case(key, "PATH"))
+            .map(|(_, value)| std::env::split_paths(value).collect::<Vec<_>>())
             .unwrap_or_default(),
     );
     roots.retain(|path| path.is_dir());
     roots
-}
-
-#[cfg(windows)]
-fn shell_command_environment_value(
-    std_cmd: &std::process::Command,
-    name: &str,
-) -> Option<std::ffi::OsString> {
-    if let Some((_, value)) = std_cmd
-        .get_envs()
-        .find(|(key, _)| os_key_eq_ignore_ascii_case(key, name))
-    {
-        return value.map(std::ffi::OsStr::to_os_string);
-    }
-    std::env::var_os(name)
 }
 
 #[cfg(windows)]
@@ -942,6 +1049,32 @@ mod tests {
     fn encoded_powershell_command(script: &str) -> String {
         let utf16le: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
         base64::engine::general_purpose::STANDARD.encode(utf16le)
+    }
+
+    #[cfg(windows)]
+    fn directory_dacl_sddl(path: &std::path::Path) -> String {
+        let escaped_path = path.to_string_lossy().replace('\'', "''");
+        let encoded =
+            encoded_powershell_command(&format!("(Get-Acl -LiteralPath '{escaped_path}').Sddl"));
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                &encoded,
+            ])
+            .output()
+            .expect("PowerShell must read the fixture directory DACL");
+        assert!(
+            output.status.success(),
+            "Get-Acl failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("PowerShell must return ASCII-compatible SDDL")
+            .trim()
+            .to_owned()
     }
 
     #[test]
@@ -1768,6 +1901,7 @@ mod tests {
         let outside_root = temp.path().join("outside");
         std::fs::create_dir(&workspace_root).expect("create workspace root");
         std::fs::create_dir(&outside_root).expect("create outside root");
+        let original_workspace_dacl = directory_dacl_sddl(&workspace_root);
         let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
         let (execution_authorization, _) = crate::security::ExecutionPolicyAuthorization::
             for_test_with_workspace_write_root_and_mxc_mode(
@@ -1813,18 +1947,36 @@ mod tests {
             !outside_root.join("outside.txt").exists(),
             "AppContainer+DACL must deny writes outside the configured workspace root"
         );
+        assert_eq!(
+            directory_dacl_sddl(&workspace_root),
+            original_workspace_dacl,
+            "MXC must restore the workspace directory DACL after the child exits"
+        );
         let notice = result.output["sandbox_notice"]
             .as_str()
             .expect("compatibility tier must be reported to the caller");
         assert!(notice.contains("实际隔离层：MXC AppContainer（DACL）"));
         assert!(notice.contains("ACL"));
         assert!(notice.contains("出站、入站和本机回环均禁止"));
+        assert!(notice.contains("DACL 恢复状态：MXC 完成隔离清理"));
+        assert_eq!(
+            result.output["sandbox_isolation"]["actual_tier"],
+            "appcontainer-dacl"
+        );
+        assert_eq!(
+            result.output["sandbox_isolation"]["acl_augmentation_required"],
+            true
+        );
+        assert_eq!(
+            result.output["sandbox_isolation"]["acl_restoration_status"],
+            "completed_without_reported_warning"
+        );
     }
 
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer support"]
-    async fn workspace_write_shell_applies_mxc_network_policy_to_host_loopback() {
+    async fn workspace_write_shell_keeps_host_loopback_separate_from_public_egress() {
         use haven_common::types::NetworkPolicy;
         use std::{
             io::Write,
@@ -1837,7 +1989,7 @@ mod tests {
         for (network_policy, should_connect) in [
             (NetworkPolicy::Deny, false),
             (NetworkPolicy::Restricted, false),
-            (NetworkPolicy::Open, true),
+            (NetworkPolicy::Open, false),
         ] {
             let temp = tempdir().expect("create isolated MXC network fixture");
             let workspace_root = temp.path().join("workspace");
@@ -1913,6 +2065,20 @@ mod tests {
 
             assert_eq!(exit_code, Some(if should_connect { 0 } else { 17 }));
             assert_eq!(host_listener_accepted, should_connect);
+            if network_policy == NetworkPolicy::Open {
+                assert_eq!(
+                    result.output["sandbox_isolation"]["public_egress_allowed"],
+                    true
+                );
+                assert_eq!(
+                    result.output["sandbox_isolation"]["private_network_client_server_allowed"],
+                    false
+                );
+                assert_eq!(
+                    result.output["sandbox_isolation"]["host_loopback_allowed"],
+                    false
+                );
+            }
         }
     }
 

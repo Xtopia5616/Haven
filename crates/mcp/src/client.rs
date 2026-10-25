@@ -1068,7 +1068,7 @@ impl McpClient {
                 || !network_policy.policy.allowed_domains.is_empty())
         {
             let error = anyhow::anyhow!(
-                "MCP stdio server '{}' is blocked because its network use is opaque or its domain policy cannot be enforced",
+                "MCP stdio server '{}' is blocked by network policy because its network use is opaque or its domain policy cannot be enforced",
                 self.name
             );
             *self.status.lock().await = McpClientStatus::Offline {
