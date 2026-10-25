@@ -1320,3 +1320,4 @@
 - [1415：UI 会话操作结果与展示副作用分层](1415-ui-chat-session-action-results.md)
 - [1416：用统一网络决议和版本化快照连接 Tools 与 MCP](1416-version-network-resource-policy-for-mcp.md)
 - [1417：分离 MXC 公网出站与本地网络权限](1417-separate-mxc-public-egress-from-local-network.md)
+- [1418：在 WorkspaceWrite 下隔离 LSP server](1418-isolate-lsp-in-workspace-write.md)

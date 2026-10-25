@@ -26,11 +26,44 @@ const SHELL_CAPACITY_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 const SHELL_SHARED_CAPACITY_CHECK_INTERVAL: Duration = Duration::from_secs(15);
 const SHELL_CAPACITY_MAX_ENTRIES: usize = 100_000;
 const SHELL_CACHE_CAPACITY_MAX_ENTRIES: usize = 1_000_000;
+const LSP_SCRATCH_DIRECTORY: &str = "lsp-scratch";
+pub(crate) const LSP_SCRATCH_MAX_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const LSP_SCRATCH_MAX_ENTRIES: usize = 100_000;
 
 static SHELL_OUTPUT_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static SHELL_CAPACITY_SCAN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static SHELL_SCRATCH_SLOTS: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(SHELL_SCRATCH_MAX_CONCURRENT);
+
+pub(crate) struct ProcessScratchDirectory {
+    scratch: tempfile::TempDir,
+}
+
+impl ProcessScratchDirectory {
+    pub(crate) fn create_lsp() -> anyhow::Result<Self> {
+        let root = haven_common::config::default_runtime_temp_root().join(LSP_SCRATCH_DIRECTORY);
+        std::fs::create_dir_all(&root)?;
+        DirectoryCapability::open(&root)?;
+        let scratch = tempfile::Builder::new().prefix("lsp-").tempdir_in(&root)?;
+        Ok(Self { scratch })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        self.scratch.path()
+    }
+
+    pub(crate) async fn ensure_within_capacity(&self) -> anyhow::Result<()> {
+        let path = self.scratch.path().to_path_buf();
+        let over_budget = tokio::task::spawn_blocking(move || {
+            directory_size_exceeds(&path, LSP_SCRATCH_MAX_BYTES, LSP_SCRATCH_MAX_ENTRIES)
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("LSP scratch capacity worker failed"))?
+        .map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(!over_budget, "LSP scratch exceeded its capacity limit");
+        Ok(())
+    }
+}
 
 pub(crate) struct ShellRuntimeDirectories {
     scratch: tempfile::TempDir,
@@ -473,12 +506,22 @@ pub(crate) fn cleanup_shell_output_logs_after_restart() {
 pub(crate) fn cleanup_shell_runtime_directories_after_restart() {
     let runtime_root = haven_common::config::default_runtime_temp_root();
     let scratch_root = runtime_root.join(SHELL_SCRATCH_DIRECTORY);
-    match cleanup_owned_scratch_directories(&scratch_root) {
+    match cleanup_owned_scratch_directories(&scratch_root, "scratch-") {
         Ok(0) => {}
         Ok(removed) => tracing::debug!(removed, "removed stale Shell scratch directories"),
         Err(error) => tracing::warn!(
             error = %haven_common::error::sanitize_error_text(&error.to_string()),
             "failed to clean stale Shell scratch directories"
+        ),
+    }
+
+    let lsp_scratch_root = runtime_root.join(LSP_SCRATCH_DIRECTORY);
+    match cleanup_owned_scratch_directories(&lsp_scratch_root, "lsp-") {
+        Ok(0) => {}
+        Ok(removed) => tracing::debug!(removed, "removed stale LSP scratch directories"),
+        Err(error) => tracing::warn!(
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "failed to clean stale LSP scratch directories"
         ),
     }
 
@@ -520,7 +563,11 @@ pub(crate) fn cleanup_shell_runtime_directories_after_restart() {
     }
 }
 
-fn directory_size_exceeds(root: &Path, limit: u64, max_entries: usize) -> Result<bool, String> {
+pub(crate) fn directory_size_exceeds(
+    root: &Path,
+    limit: u64,
+    max_entries: usize,
+) -> Result<bool, String> {
     let root_metadata = match std::fs::symlink_metadata(root) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -529,10 +576,10 @@ fn directory_size_exceeds(root: &Path, limit: u64, max_entries: usize) -> Result
     if haven_platform::filesystem::is_link_or_reparse_point(&root_metadata)
         || !root_metadata.is_dir()
     {
-        return Err("Shell runtime directory is not a safe local directory".into());
+        return Err("runtime directory is not a safe local directory".into());
     }
     DirectoryCapability::open(root)
-        .map_err(|_| "Shell runtime directory could not be safely opened".to_owned())?;
+        .map_err(|_| "runtime directory could not be safely opened".to_owned())?;
 
     let mut pending = vec![root.to_path_buf()];
     let mut total_bytes = 0u64;
@@ -542,12 +589,11 @@ fn directory_size_exceeds(root: &Path, limit: u64, max_entries: usize) -> Result
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(_) => {
-                return Err("Shell runtime directory could not be inspected safely".into());
+                return Err("runtime directory could not be inspected safely".into());
             }
         };
         for entry in entries {
-            let entry =
-                entry.map_err(|_| "Shell runtime directory could not be inspected safely")?;
+            let entry = entry.map_err(|_| "runtime directory could not be inspected safely")?;
             entry_count = entry_count.saturating_add(1);
             if entry_count > max_entries {
                 return Ok(true);
@@ -556,7 +602,7 @@ fn directory_size_exceeds(root: &Path, limit: u64, max_entries: usize) -> Result
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(_) => {
-                    return Err("Shell runtime directory could not be inspected safely".into());
+                    return Err("runtime directory could not be inspected safely".into());
                 }
             };
             let file_type = metadata.file_type();
@@ -579,7 +625,7 @@ fn directory_size_exceeds(root: &Path, limit: u64, max_entries: usize) -> Result
 }
 
 #[cfg(not(test))]
-fn cleanup_owned_scratch_directories(root: &Path) -> std::io::Result<usize> {
+fn cleanup_owned_scratch_directories(root: &Path, prefix: &str) -> std::io::Result<usize> {
     let root = match DirectoryCapability::open(root) {
         Ok(root) => root,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -591,7 +637,7 @@ fn cleanup_owned_scratch_directories(root: &Path) -> std::io::Result<usize> {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if entry.kind != DirectoryEntryKind::Directory || !name.starts_with("scratch-") {
+        if entry.kind != DirectoryEntryKind::Directory || !name.starts_with(prefix) {
             continue;
         }
         root.remove_dir_all(Path::new(name))?;

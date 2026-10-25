@@ -286,6 +286,7 @@ pub(crate) fn operation_attributes(
         "http" | "web_search_api" | "files.summarize" | "media.describe" | "media.run_ocr"
         | "media.transcribe" | "media.generate" => NetworkAccess::Public,
         "shell" | "load_mcp" => NetworkAccess::Opaque,
+        name if name.starts_with("lsp.") => NetworkAccess::Opaque,
         name if name.starts_with("mcp__")
             || name.starts_with("mcp::")
             || name.starts_with("skill__")
@@ -305,7 +306,7 @@ pub(crate) fn operation_attributes(
         {
             ExecutionBoundary::HostProcess
         }
-        name if name.starts_with("lsp.") => ExecutionBoundary::HostProcess,
+        name if name.starts_with("lsp.") => ExecutionBoundary::SandboxedHost,
         _ => ExecutionBoundary::InProcess,
     };
     OperationAttributes {

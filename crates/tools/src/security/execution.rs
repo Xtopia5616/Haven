@@ -9,6 +9,8 @@ use haven_common::types::{NetworkPolicy, SandboxMode};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+mod process_policy;
+
 #[cfg(windows)]
 const MAX_MXC_WRITE_ROOT_INSPECTED_ENTRIES: usize = 1_000_000;
 
@@ -684,15 +686,27 @@ impl ExecutionPolicyAuthorization {
     }
 
     /// LSP servers are user-configured host executables and may read workspace
-    /// files or perform their own network requests. Do not treat Job Object
-    /// containment as a filesystem or network sandbox: only start them from a
-    /// proof-bound call in FullAccess mode, with network policy handled by
-    /// the operation's opaque-network authorization.
+    /// files or perform their own network requests. WorkspaceWrite may start
+    /// them only on Windows, where the LSP adapter supplies read-only project
+    /// roots, app-owned scratch, and an offline MXC network policy.
     pub(crate) async fn acquire_lsp_process_start_permit(
         &self,
     ) -> Result<ExecutionPolicyPermit, String> {
-        self.acquire_configured_process_start_permit("configured LSP servers")
-            .await
+        let permit = self.acquire().await?;
+        match permit.sandbox_mode() {
+            SandboxMode::FullAccess if permit.network_policy() == NetworkPolicy::Open => Ok(permit),
+            SandboxMode::FullAccess => Err(
+                "configured LSP servers require the Open network policy in Full Access mode".into(),
+            ),
+            SandboxMode::WorkspaceWrite if cfg!(windows) => Ok(permit),
+            SandboxMode::WorkspaceWrite => Err(
+                "configured LSP servers require Windows MXC isolation in Workspace Write mode"
+                    .into(),
+            ),
+            SandboxMode::ReadOnly => {
+                Err("configured LSP servers are blocked by the read-only sandbox".into())
+            }
+        }
     }
 
     pub(crate) async fn acquire_everything_process_start_permit(
@@ -971,6 +985,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lsp_process_roots_keep_project_readonly_and_scratch_writable() {
+        let root = tempfile::tempdir().expect("temporary root is available");
+        let workspace = root.path().join("workspace");
+        let scratch = root.path().join("runtime/lsp-call");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        let (authorization, _) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        let permit = authorization.acquire().await.unwrap();
+
+        let policy = permit
+            .workspace_lsp_directories(&workspace, &[], &scratch)
+            .expect("workspace-write LSP policy compiles");
+        assert_eq!(policy.readwrite_roots.len(), 1);
+        assert_eq!(policy.readwrite_roots[0].root(), scratch);
+        assert!(
+            policy
+                .readonly_roots
+                .iter()
+                .any(|root| root.root() == workspace)
+        );
+        assert!(
+            !policy
+                .readwrite_roots
+                .iter()
+                .any(|root| root.root() == workspace)
+        );
+    }
+
+    #[tokio::test]
     async fn lifecycle_hook_start_requires_full_access_open_network_and_live_policy() {
         let engine = Arc::new(AuthorizationEngine::new());
         assert!(
@@ -1025,19 +1071,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lsp_start_permit_requires_full_access_and_permitted_network_policy() {
+    async fn lsp_start_permit_uses_mxc_in_workspace_write_and_open_network_in_full_access() {
         let (authorization, _engine) =
             ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
                 SandboxMode::WorkspaceWrite,
             );
-        assert!(
-            authorization
-                .acquire_lsp_process_start_permit()
-                .await
-                .err()
-                .expect("workspace-write must be denied")
-                .contains("Full Access")
-        );
+        let workspace_write = authorization.acquire_lsp_process_start_permit().await;
+        if cfg!(windows) {
+            assert!(workspace_write.is_ok());
+        } else {
+            assert!(
+                workspace_write
+                    .err()
+                    .expect("workspace-write without Windows MXC is denied")
+                    .contains("Windows MXC")
+            );
+        }
 
         let (authorization, engine) =
             ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
@@ -1075,7 +1124,7 @@ mod tests {
                     .await
                     .err()
                     .expect("restricted network must be denied")
-                    .contains("network access")
+                    .contains("Open network policy")
             );
         }
     }

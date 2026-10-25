@@ -241,7 +241,8 @@ impl ShellTool {
                         .get_current_dir()
                         .map(PathBuf::from)
                         .unwrap_or(std::env::current_dir()?);
-                    let runtime_read_roots = shell_runtime_dependency_roots(&std_cmd);
+                    let runtime_read_roots =
+                        crate::process_sandbox::runtime_dependency_roots(&std_cmd);
                     let runtime_cache_roots = runtime_directories
                         .cache_paths()
                         .into_iter()
@@ -843,68 +844,18 @@ fn sandboxed_shell_request(
     allow_public_egress: bool,
     allow_desktop_handle_access: bool,
 ) -> anyhow::Result<haven_platform::sandboxed_process::SandboxedProcessRequest> {
-    use haven_platform::sandboxed_process::{
-        SandboxedProcessNetworkPolicy, SandboxedProcessRequest,
-    };
-    use std::ffi::OsStr;
-
-    let environment = std_cmd
-        .get_envs()
-        .filter_map(|(key, value)| value.map(|value| (key.to_os_string(), value.to_os_string())))
-        .collect::<Vec<_>>();
-    let readonly_paths = additional_readonly_paths;
-    let working_directory = std_cmd
-        .get_current_dir()
-        .map(PathBuf::from)
-        .unwrap_or(std::env::current_dir()?);
-    Ok(SandboxedProcessRequest {
-        program: std_cmd.get_program().to_os_string(),
-        arguments: std_cmd.get_args().map(OsStr::to_os_string).collect(),
-        working_directory,
+    crate::process_sandbox::request_from_command(
+        std_cmd,
         readwrite_paths,
-        readonly_paths,
+        additional_readonly_paths,
         protected_readonly_paths,
         denied_paths,
-        environment,
-        network_policy: SandboxedProcessNetworkPolicy {
+        haven_platform::sandboxed_process::SandboxedProcessNetworkPolicy {
             allow_public_egress,
             ..Default::default()
         },
         allow_desktop_handle_access,
-    })
-}
-
-#[cfg(windows)]
-fn shell_runtime_dependency_roots(std_cmd: &std::process::Command) -> Vec<PathBuf> {
-    let environment = std_cmd
-        .get_envs()
-        .filter_map(|(key, value)| value.map(|value| (key.to_os_string(), value.to_os_string())))
-        .collect::<Vec<_>>();
-    let mut roots = Vec::new();
-    if let Some(system_root) = environment
-        .iter()
-        .find(|(key, _)| os_key_eq_ignore_ascii_case(key, "SYSTEMROOT"))
-        .map(|(_, value)| PathBuf::from(value))
-    {
-        roots.push(system_root.clone());
-        roots.push(system_root.join("System32"));
-        roots.push(system_root.join(r"System32\WindowsPowerShell\v1.0"));
-    }
-    roots.extend(
-        environment
-            .iter()
-            .find(|(key, _)| os_key_eq_ignore_ascii_case(key, "PATH"))
-            .map(|(_, value)| std::env::split_paths(value).collect::<Vec<_>>())
-            .unwrap_or_default(),
-    );
-    roots.retain(|path| path.is_dir());
-    roots
-}
-
-#[cfg(windows)]
-fn os_key_eq_ignore_ascii_case(key: &std::ffi::OsStr, expected: &str) -> bool {
-    key.to_str()
-        .is_some_and(|key| key.eq_ignore_ascii_case(expected))
+    )
 }
 
 fn validate_shell_command(shell: &str, command: &str) -> anyhow::Result<()> {

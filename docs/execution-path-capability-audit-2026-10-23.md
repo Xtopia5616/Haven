@@ -32,7 +32,7 @@
 | MCP Streamable HTTP | `haven-mcp` HTTP transport | 不启动本机子进程；MCP tool call 绑定连接配置指纹、连接代次和参数摘要 | 远程 endpoint/对象调用路径，不是本机进程隔离 |
 | Skill 环境创建与依赖安装 | `haven-skills` `venv.rs`，激活含依赖的 Skill 时运行 Python `venv` / `pip` | 进程启动 permit；`ProcessContainment`；输出有界 | 本机权限；pip 网络和文件副作用没有 MXC 边界 |
 | Skill 脚本执行 | `haven-tools` `skill_runner.rs`，模型加载后调用 Skill | 执行策略 permit；清理部分环境变量；每次 attempt 有私有 scratch cwd；`ProcessContainment`、取消及输出预算 | scratch 组织相对输出，不是文件 sandbox；Python/脚本仍以当前用户权限访问文件和网络 |
-| LSP server | `haven-tools` `builtin/lsp.rs`，语言工具启动 server 时 | 执行 permit；过滤基础环境；`ProcessContainment`；进程与 server 会话管理 | 以当前用户权限运行；Job Object 不限制 LSP server 的文件/网络访问 |
+| LSP server | `haven-tools` `builtin/lsp.rs`，语言工具启动 server 时 | 执行 permit；过滤基础环境；FullAccess 用 `ProcessContainment`，WorkspaceWrite 的 Windows 入口用 MXC；进程与 server 会话管理 | FullAccess 仍按用户权限运行且要求 Open 网络；WorkspaceWrite 的 Windows MXC 将项目与运行时根设为只读、单次 LSP scratch 设为可写并关闭网络，scratch 上限 256 MiB/100,000 项。自动化覆盖策略编译与 contract，真实 server 的 MXC 端到端验收仍开放（ADR 1418） |
 | Lifecycle Hook | `haven-tools` `lifecycle_hooks.rs`，匹配已配置 lifecycle event 时 | Hook process-start authorization；`ProcessContainment`；取消、时间和输出上限 | 受管理的 host process；没有 MXC 资源隔离。Hook 配置是明确的本机扩展入口，不是 Shell 子命令 |
 | Everything CLI | `haven-tools` `builtin/everything_search.rs`，按文件搜索配置选择 CLI 时 | 当前搜索执行 permit；最小化环境；`ProcessContainment`；查询、数量和等待时限受限 | 工具契约可以限定搜索根，但底层 CLI 没有 MXC 文件/网络沙箱 |
 | shell 可用性 probe | `haven-app-binary` `commands/settings.rs`，Settings 探测 `where.exe` / `which` | 固定 executable name、标准 spawn lock、等待退出 | 探测系统 PATH；不是模型工具调用，不提供 OS 隔离 |

@@ -1,10 +1,13 @@
 use super::{
-    LspOperation, document_position, operation_specs, redact_lsp_file_uris, resolve_lsp_path,
-    select_lsp_server,
+    LspOperation, LspTool, document_position, operation_specs, redact_lsp_file_uris,
+    resolve_lsp_path, select_lsp_server,
 };
+use crate::Tool;
 use haven_common::config::LspServerConfig;
+use haven_common::types::{NetworkPolicy, SandboxMode};
 use serde_json::json;
 use std::path::Path;
+use std::sync::Arc;
 
 #[test]
 fn converts_one_based_utf16_positions_to_lsp_coordinates() {
@@ -12,6 +15,44 @@ fn converts_one_based_utf16_positions_to_lsp_coordinates() {
     assert_eq!(document_position(source, 2, 4).unwrap(), (1, 3));
     assert!(document_position(source, 2, 5).is_err());
     assert!(document_position(source, 0, 1).is_err());
+}
+
+#[tokio::test]
+async fn workspace_write_lsp_contract_is_sandboxed_and_offline() {
+    let authorization = Arc::new(crate::security::AuthorizationEngine::new());
+    authorization
+        .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Deny)
+        .await;
+    let tool = LspTool::new(Default::default(), authorization);
+    let contract = tool
+        .authorization_contract(&json!({"operation":"definition", "path":"src/main.rs"}))
+        .await
+        .expect("LSP authorization policy resolves");
+
+    assert_eq!(contract.policy.network_access, crate::NetworkAccess::None);
+    assert_eq!(
+        contract.policy.execution_boundary,
+        crate::ExecutionBoundary::SandboxedHost
+    );
+}
+
+#[tokio::test]
+async fn full_access_lsp_contract_keeps_host_and_opaque_network_boundary() {
+    let authorization = Arc::new(crate::security::AuthorizationEngine::new());
+    authorization
+        .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+        .await;
+    let tool = LspTool::new(Default::default(), authorization);
+    let contract = tool
+        .authorization_contract(&json!({"operation":"definition", "path":"src/main.rs"}))
+        .await
+        .expect("LSP authorization policy resolves");
+
+    assert_eq!(contract.policy.network_access, crate::NetworkAccess::Opaque);
+    assert_eq!(
+        contract.policy.execution_boundary,
+        crate::ExecutionBoundary::HostProcess
+    );
 }
 
 #[test]
@@ -116,13 +157,13 @@ fn lsp_results_use_workspace_relative_uris_and_redact_external_file_uris() {
 }
 
 #[test]
-fn lsp_specs_declare_host_execution_and_opaque_network_policy() {
+fn lsp_specs_declare_sandboxed_offline_policy() {
     for spec in operation_specs() {
         assert_eq!(spec.policy.risk_level, crate::RiskLevel::High);
-        assert_eq!(spec.policy.network_access, crate::NetworkAccess::Opaque);
+        assert_eq!(spec.policy.network_access, crate::NetworkAccess::None);
         assert_eq!(
             spec.policy.execution_boundary,
-            crate::ExecutionBoundary::HostProcess
+            crate::ExecutionBoundary::SandboxedHost
         );
         assert_eq!(
             spec.policy.idempotency,

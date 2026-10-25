@@ -15,8 +15,8 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
-use tokio::process::{Child, ChildStderr};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::process::Child;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -162,7 +162,7 @@ impl LspTool {
                 "LSP request cancelled before process start",
             ));
         }
-        let mut process = spawn_lsp_server(&server, &workspace_root, permit).await?;
+        let mut process = spawn_lsp_server(&server, &workspace_root, permit, &cancel).await?;
         let mut connection = LspConnection::new(
             process
                 .stdout
@@ -267,18 +267,39 @@ impl LspTool {
             let _ = connection.notify("exit", Value::Null).await;
         }
         drop(connection);
-        let _ = tokio::time::timeout(LSP_SHUTDOWN_WAIT, process.child.wait()).await;
+        let sandbox_exit = match tokio::time::timeout(LSP_SHUTDOWN_WAIT, process.child.wait()).await
+        {
+            Ok(Ok(exit)) => exit,
+            _ => {
+                let _ = process.child.kill().await;
+                tokio::time::timeout(LSP_SHUTDOWN_WAIT, process.child.wait())
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .flatten()
+            }
+        };
         process.stop_stderr_drain();
+        if let Some(monitor) = process.scratch_monitor.take() {
+            monitor.abort();
+        }
         drop(concurrent);
 
-        Ok(ToolResult::ok(json!({
+        let mut output = json!({
             "operation": operation.as_str(),
             "server": server.name,
             "language_id": server.language_id,
             "path": relative_document_path.map(|path| path.to_string_lossy().into_owned()),
             "source": source,
             "result": result
-        })))
+        });
+        if let Some(notice) = &process.sandbox_notice {
+            output["sandbox_notice"] = json!(notice);
+        }
+        if let Some(isolation) = sandbox_exit.and_then(|exit| exit.isolation) {
+            output["sandbox_isolation"] = serde_json::to_value(isolation)?;
+        }
+        Ok(ToolResult::ok(output))
     }
 
     async fn diagnostics<R, W>(
@@ -451,6 +472,28 @@ impl Tool for LspTool {
 
     fn timeout_outcome(&self) -> crate::ToolExecutionOutcome {
         crate::ToolExecutionOutcome::TimedOutUnknown
+    }
+
+    async fn authorization_contract(
+        &self,
+        input: &Value,
+    ) -> Result<crate::ToolAuthorizationContract, String> {
+        let mut policy = self.try_operation_policy(input)?;
+        match self.authorization.sandbox_mode().await {
+            haven_common::types::SandboxMode::WorkspaceWrite => {
+                policy.execution_boundary = crate::ExecutionBoundary::SandboxedHost;
+                policy.network_access = crate::NetworkAccess::None;
+            }
+            _ => {
+                policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
+                policy.network_access = crate::NetworkAccess::Opaque;
+            }
+        }
+        Ok(crate::ToolAuthorizationContract {
+            policy,
+            target_binding: None,
+            resources: self.authorization_resources(input)?,
+        })
     }
 
     async fn execute_with_authorization_context(
@@ -646,11 +689,42 @@ fn document_position(text: &str, line: u64, character: u64) -> anyhow::Result<(u
 }
 
 struct LspProcess {
-    child: Child,
-    stdin: Option<tokio::process::ChildStdin>,
-    stdout: Option<tokio::process::ChildStdout>,
-    _containment: haven_platform::process_containment::ProcessContainment,
+    child: LspProcessChild,
+    stdin: Option<Box<dyn AsyncWrite + Unpin + Send>>,
+    stdout: Option<Box<dyn AsyncRead + Unpin + Send>>,
     stderr_drain: Option<tokio::task::JoinHandle<()>>,
+    _scratch: Option<crate::shell_runtime::ProcessScratchDirectory>,
+    scratch_monitor: Option<tokio::task::JoinHandle<()>>,
+    sandbox_notice: Option<String>,
+}
+
+enum LspProcessChild {
+    Host {
+        child: Child,
+        _containment: haven_platform::process_containment::ProcessContainment,
+    },
+    Sandboxed(haven_platform::sandboxed_process::SandboxedProcess),
+}
+
+impl LspProcessChild {
+    async fn wait(
+        &mut self,
+    ) -> anyhow::Result<Option<haven_platform::sandboxed_process::SandboxedProcessExit>> {
+        match self {
+            Self::Host { child, .. } => {
+                child.wait().await?;
+                Ok(None)
+            }
+            Self::Sandboxed(child) => child.wait().await.map(Some).map_err(Into::into),
+        }
+    }
+
+    async fn kill(&mut self) -> anyhow::Result<()> {
+        match self {
+            Self::Host { child, .. } => child.kill().await.map_err(Into::into),
+            Self::Sandboxed(child) => child.kill().await.map_err(Into::into),
+        }
+    }
 }
 
 impl LspProcess {
@@ -661,65 +735,210 @@ impl LspProcess {
     }
 }
 
+impl Drop for LspProcess {
+    fn drop(&mut self) {
+        self.stop_stderr_drain();
+        if let Some(monitor) = self.scratch_monitor.take() {
+            monitor.abort();
+        }
+    }
+}
+
 async fn spawn_lsp_server(
     server: &LspServerConfig,
     workspace_root: &Path,
     permit: crate::security::ExecutionPolicyPermit,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<LspProcess> {
-    let containment = haven_platform::process_containment::ProcessContainment::new()?;
-    let mut command = tokio::process::Command::new(&server.command);
-    command
-        .args(&server.args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .current_dir(workspace_root)
-        .env_clear()
-        .envs(
-            haven_platform::process_environment::filter_runtime_baseline_environment(
-                std::env::vars_os(),
-            ),
-        );
-    #[cfg(windows)]
-    containment.prepare_command(command.as_std_mut(), crate::CREATE_NO_WINDOW);
-    #[cfg(not(windows))]
-    containment.prepare_command(command.as_std_mut(), 0);
-    let spawned = {
-        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-        command.kill_on_drop(true).spawn()
-    };
-    let mut child =
-        spawned.map_err(|_| anyhow::anyhow!("could not start the configured LSP server"))?;
-    let pid = child
-        .id()
-        .ok_or_else(|| anyhow::anyhow!("configured LSP server did not expose a process id"))?;
-    #[cfg(windows)]
-    let attach = child
-        .raw_handle()
-        .ok_or_else(|| std::io::Error::other("LSP server process handle is unavailable"))
-        .and_then(|handle| containment.attach_and_resume(pid, handle));
-    #[cfg(not(windows))]
-    let attach = containment.attach_and_resume(pid, ());
-    if attach.is_err() {
-        drop(permit);
-        let _ = child.kill().await;
-        anyhow::bail!("could not contain the configured LSP server process");
+    match permit.sandbox_mode() {
+        haven_common::types::SandboxMode::FullAccess => {
+            let containment = haven_platform::process_containment::ProcessContainment::new()?;
+            let mut command = tokio::process::Command::new(&server.command);
+            command
+                .args(&server.args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .current_dir(workspace_root)
+                .env_clear()
+                .envs(
+                    haven_platform::process_environment::filter_runtime_baseline_environment(
+                        std::env::vars_os(),
+                    ),
+                );
+            #[cfg(windows)]
+            containment.prepare_command(command.as_std_mut(), crate::CREATE_NO_WINDOW);
+            #[cfg(not(windows))]
+            containment.prepare_command(command.as_std_mut(), 0);
+            let spawned = {
+                let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+                command.kill_on_drop(true).spawn()
+            };
+            let mut child = spawned
+                .map_err(|_| anyhow::anyhow!("could not start the configured LSP server"))?;
+            let pid = child.id().ok_or_else(|| {
+                anyhow::anyhow!("configured LSP server did not expose a process id")
+            })?;
+            #[cfg(windows)]
+            let attach = child
+                .raw_handle()
+                .ok_or_else(|| std::io::Error::other("LSP server process handle is unavailable"))
+                .and_then(|handle| containment.attach_and_resume(pid, handle));
+            #[cfg(not(windows))]
+            let attach = containment.attach_and_resume(pid, ());
+            if attach.is_err() {
+                drop(permit);
+                let _ = child.kill().await;
+                anyhow::bail!("could not contain the configured LSP server process");
+            }
+            drop(permit);
+            let stderr_drain = child.stderr.take().map(drain_stderr);
+            let stdin = child
+                .stdin
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn AsyncWrite + Unpin + Send>);
+            let stdout = child
+                .stdout
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn AsyncRead + Unpin + Send>);
+            Ok(LspProcess {
+                child: LspProcessChild::Host {
+                    child,
+                    _containment: containment,
+                },
+                stdin,
+                stdout,
+                stderr_drain,
+                _scratch: None,
+                scratch_monitor: None,
+                sandbox_notice: None,
+            })
+        }
+        haven_common::types::SandboxMode::WorkspaceWrite => {
+            #[cfg(windows)]
+            {
+                use haven_platform::sandboxed_process::SandboxedProcessNetworkPolicy;
+
+                let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp()?;
+                scratch.ensure_within_capacity().await?;
+                let mut command = std::process::Command::new(&server.command);
+                command
+                    .args(&server.args)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .current_dir(workspace_root)
+                    .env_clear()
+                    .envs(
+                        haven_platform::process_environment::filter_runtime_baseline_environment(
+                            std::env::vars_os(),
+                        ),
+                    )
+                    .env("TEMP", scratch.path())
+                    .env("TMP", scratch.path())
+                    .env("TMPDIR", scratch.path());
+                let mut runtime_roots = crate::process_sandbox::runtime_dependency_roots(&command);
+                if let Some(parent) = Path::new(&server.command)
+                    .parent()
+                    .filter(|path| !path.as_os_str().is_empty())
+                    && parent.is_dir()
+                {
+                    runtime_roots.push(parent.to_path_buf());
+                }
+                let filesystem = permit
+                    .workspace_lsp_directories(workspace_root, &runtime_roots, scratch.path())
+                    .map_err(crate::security::execution_policy_denied)?;
+                let request = crate::process_sandbox::request_from_command(
+                    &command,
+                    filesystem
+                        .readwrite_roots
+                        .iter()
+                        .map(|root| root.root().to_path_buf())
+                        .collect(),
+                    filesystem
+                        .readonly_roots
+                        .iter()
+                        .map(|root| root.root().to_path_buf())
+                        .collect(),
+                    filesystem.protected_readonly_paths,
+                    filesystem.denied_paths,
+                    SandboxedProcessNetworkPolicy::default(),
+                    false,
+                )?;
+                let mut child = haven_platform::sandboxed_process::SandboxedProcess::spawn(
+                    request,
+                    permit.mxc_isolation_mode(),
+                )
+                .await?;
+                drop(permit);
+                if cancel.is_cancelled() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    anyhow::bail!("LSP request cancelled during isolated process start");
+                }
+                let notice = child.sandbox_notice().to_owned();
+                let stderr_drain = child.take_stderr().map(drain_stderr);
+                let stdin = child
+                    .take_stdin()
+                    .map(|pipe| Box::new(pipe) as Box<dyn AsyncWrite + Unpin + Send>);
+                let stdout = child
+                    .take_stdout()
+                    .map(|pipe| Box::new(pipe) as Box<dyn AsyncRead + Unpin + Send>);
+                let monitor_cancel = cancel.clone();
+                let monitor_path = scratch.path().to_path_buf();
+                let scratch_monitor = tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = monitor_cancel.cancelled() => return,
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        }
+                        let path = monitor_path.clone();
+                        let exceeded = tokio::task::spawn_blocking(move || {
+                            crate::shell_runtime::directory_size_exceeds(
+                                &path,
+                                crate::shell_runtime::LSP_SCRATCH_MAX_BYTES,
+                                crate::shell_runtime::LSP_SCRATCH_MAX_ENTRIES,
+                            )
+                        })
+                        .await;
+                        match exceeded {
+                            Ok(Ok(false)) => {}
+                            Ok(Ok(true)) | Ok(Err(_)) | Err(_) => {
+                                tracing::warn!(
+                                    "isolated LSP scratch exceeded its capacity or could not be inspected"
+                                );
+                                monitor_cancel.cancel();
+                                return;
+                            }
+                        }
+                    }
+                });
+                Ok(LspProcess {
+                    child: LspProcessChild::Sandboxed(child),
+                    stdin,
+                    stdout,
+                    stderr_drain,
+                    _scratch: Some(scratch),
+                    scratch_monitor: Some(scratch_monitor),
+                    sandbox_notice: Some(notice),
+                })
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (server, workspace_root, permit, cancel);
+                anyhow::bail!("Workspace Write LSP isolation requires Windows MXC")
+            }
+        }
+        haven_common::types::SandboxMode::ReadOnly => {
+            anyhow::bail!("configured LSP servers are blocked by the read-only sandbox")
+        }
     }
-    drop(permit);
-    let stderr = child.stderr.take();
-    let stderr_drain = stderr.map(drain_stderr);
-    let stdin = child.stdin.take();
-    let stdout = child.stdout.take();
-    Ok(LspProcess {
-        child,
-        stdin,
-        stdout,
-        _containment: containment,
-        stderr_drain,
-    })
 }
 
-fn drain_stderr(stderr: ChildStderr) -> tokio::task::JoinHandle<()> {
+fn drain_stderr<R>(stderr: R) -> tokio::task::JoinHandle<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
     tokio::spawn(async move {
         let mut stderr = stderr;
         let mut buffer = [0u8; 8192];

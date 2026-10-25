@@ -26,6 +26,7 @@ mod mcp_server_config;
 mod operation_view;
 mod output;
 mod process;
+mod process_sandbox;
 #[cfg(all(test, windows))]
 mod process_test_support;
 mod prompts;
