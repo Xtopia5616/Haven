@@ -55,7 +55,7 @@ impl LifecycleHookService {
     pub(crate) async fn run(
         &self,
         authorization: &Arc<AuthorizationEngine>,
-        mut payload: LifecycleHookPayload,
+        payload: LifecycleHookPayload,
         cancel: CancellationToken,
     ) -> LifecycleHookDecision {
         self.begin_event(payload.event);
@@ -137,28 +137,31 @@ impl LifecycleHookService {
         };
 
         let event_deadline = tokio::time::Instant::now() + MAX_HOOK_EVENT_DURATION;
+        if cancel.is_cancelled() {
+            return self.failure_decision(payload.event, "cancelled").await;
+        }
+        // Keep every command in the event on one identical, bounded payload.
+        let input = match bounded_payload(&payload) {
+            Ok(input) => input,
+            Err(_) => {
+                return self
+                    .failure_decision(payload.event, "payload_exceeds_limit")
+                    .await;
+            }
+        };
         let mut had_failure = false;
         let mut event_failure_code = None;
         for hook in hooks {
             if cancel.is_cancelled() {
                 return self.failure_decision(payload.event, "cancelled").await;
             }
-            payload.payload_truncated = false;
-            let input = match bounded_payload(&mut payload) {
-                Ok(input) => input,
-                Err(_) => {
-                    return self
-                        .failure_decision(payload.event, "payload_exceeds_limit")
-                        .await;
-                }
-            };
             self.command_started(payload.event);
             let result = tokio::time::timeout_at(
                 event_deadline,
                 run_hook_command(
                     &hook,
                     &workspace_root,
-                    input,
+                    input.clone(),
                     hook_authorization.clone(),
                     cancel.clone(),
                 ),
@@ -704,19 +707,20 @@ fn read_project_hooks(
     Ok(Some(parse_project_hooks(text)?))
 }
 
-fn bounded_payload(payload: &mut LifecycleHookPayload) -> anyhow::Result<Vec<u8>> {
-    let mut bytes = serde_json::to_vec(payload)?;
+fn bounded_payload(payload: &LifecycleHookPayload) -> anyhow::Result<Vec<u8>> {
+    let mut bounded = payload.clone();
+    let mut bytes = serde_json::to_vec(&bounded)?;
     if bytes.len() <= MAX_HOOK_PAYLOAD_BYTES {
         return Ok(bytes);
     }
-    payload.payload_truncated = true;
-    payload.tool_output = None;
-    bytes = serde_json::to_vec(payload)?;
+    bounded.payload_truncated = true;
+    bounded.tool_output = None;
+    bytes = serde_json::to_vec(&bounded)?;
     if bytes.len() <= MAX_HOOK_PAYLOAD_BYTES {
         return Ok(bytes);
     }
-    payload.tool_input = None;
-    bytes = serde_json::to_vec(payload)?;
+    bounded.tool_input = None;
+    bytes = serde_json::to_vec(&bounded)?;
     anyhow::ensure!(
         bytes.len() <= MAX_HOOK_PAYLOAD_BYTES,
         "lifecycle hook metadata exceeds the input limit"
@@ -785,12 +789,32 @@ mod tests {
         payload.tool_output =
             Some(serde_json::json!({"output": "y".repeat(MAX_HOOK_PAYLOAD_BYTES)}));
 
-        let bytes = bounded_payload(&mut payload).unwrap();
+        let bytes = bounded_payload(&payload).unwrap();
 
         assert!(bytes.len() <= MAX_HOOK_PAYLOAD_BYTES);
-        assert!(payload.payload_truncated);
-        assert!(payload.tool_output.is_none());
-        assert!(payload.tool_input.is_none());
+        let bounded: LifecycleHookPayload = serde_json::from_slice(&bytes).unwrap();
+        assert!(bounded.payload_truncated);
+        assert!(bounded.tool_output.is_none());
+        assert!(bounded.tool_input.is_none());
+        // Bound once per event, then fan out the same bytes to every matching
+        // command. Recomputing from a mutated payload used to clear the flag.
+        assert_eq!(bytes, bounded_payload(&payload).unwrap());
+    }
+
+    #[test]
+    fn payload_truncation_preserves_input_when_output_alone_exceeds_limit() {
+        let mut payload = LifecycleHookPayload::new(LifecycleHookEvent::PostToolUse);
+        payload.tool_input = Some(serde_json::json!({"input": "small"}));
+        payload.tool_output = Some(serde_json::json!({
+            "output": "y".repeat(MAX_HOOK_PAYLOAD_BYTES)
+        }));
+
+        let bytes = bounded_payload(&payload).unwrap();
+        let bounded: LifecycleHookPayload = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(bounded.payload_truncated);
+        assert!(bounded.tool_output.is_none());
+        assert_eq!(bounded.tool_input, payload.tool_input);
     }
 
     #[tokio::test]

@@ -103,7 +103,7 @@ Haven reads the project file through its pinned workspace directory handle and r
 - `pre_compact` runs after the context threshold is crossed and immediately before compaction starts. It includes the estimated token count before compaction. This is a notification; it cannot cancel compaction.
 - `post_compact` runs after the compacted transcript has been committed. It includes token estimates before and after compaction.
 
-`pre_tool_use` and `post_tool_use` payloads include tool input; `post_tool_use` also includes the result when it fits. Treat these values as potentially sensitive workspace data. Payloads and each stdout/stderr stream are capped at 64 KiB. If a notification payload is too large, Haven omits tool output and then input and sets `payload_truncated`; an oversized `pre_tool_use` payload fails closed. Raw stdout/stderr and Hook denial text are not inserted into the model transcript.
+`pre_tool_use` and `post_tool_use` payloads include tool input; `post_tool_use` also includes the result when it fits. Treat these values as potentially sensitive workspace data. Payloads and each stdout/stderr stream are capped at 64 KiB. All matching commands for one event receive the same bounded JSON. If a notification payload is too large, Haven omits tool output and then input and sets `payload_truncated`; an oversized `pre_tool_use` payload fails closed. Raw stdout/stderr and Hook denial text are not inserted into the model transcript.
 
 ## Failure behavior and diagnostics
 
