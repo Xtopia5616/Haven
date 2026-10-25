@@ -60,7 +60,12 @@ async fn resolve_http_destination_inner(
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("HTTP destination must include a host"))?;
     let host = normalize_http_host(host);
-    if http_host_is_local_or_special(&host) && !(allow_loopback && host == "localhost") {
+    let test_loopback = allow_loopback
+        && (host == "localhost"
+            || host
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback()));
+    if http_host_is_local_or_special(&host) && !test_loopback {
         anyhow::bail!("HTTP destination is a blocked local or metadata host");
     }
     if !http_domain_allowed(&host, allowed_domains) {

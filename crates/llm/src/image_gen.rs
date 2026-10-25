@@ -657,22 +657,26 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                let read = socket.read(&mut chunk).await.unwrap_or(0);
-                if read == 0 {
-                    return;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = socket.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
                 }
-                request.extend_from_slice(&chunk[..read]);
-            }
-            socket
-                .write_all(
-                    b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .unwrap();
+                socket
+                    .write_all(
+                        b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            })
+            .await
+            .expect("HTTP fixture did not receive the initial request");
         });
 
         let result = fetch_public_image_url_inner(
