@@ -20,6 +20,7 @@ describe('ConfirmationDialog', () => {
 				command: 'cargo test --workspace',
 				cwd: 'D:\\Workspace\\Haven',
 				payload: longArgument,
+				options: { transport: { retry_limit: 3 } },
 				api_key: 'example-value-123',
 			},
 			onConfirm: vi.fn(),
@@ -29,6 +30,10 @@ describe('ConfirmationDialog', () => {
 		expect(screen.getByText('"D:\\\\Workspace\\\\Haven"')).toBeTruthy();
 		expect(screen.getByText(JSON.stringify(longArgument))).toBeTruthy();
 		expect(screen.queryByText(/example-value-123/)).toBeNull();
+		expect(container.textContent).not.toContain('retry_limit');
+		const bodyChildren = container.querySelector('.dialog-body')?.children;
+		expect(bodyChildren?.[0].classList.contains('summary')).toBe(true);
+		expect(bodyChildren?.[1].classList.contains('operation-card')).toBe(true);
 		const sensitiveDetails =
 			container.querySelector<HTMLDetailsElement>('details.jv-sensitive');
 		expect(sensitiveDetails?.open).toBe(false);

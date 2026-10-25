@@ -238,9 +238,21 @@
 	bind:dialogElement={dialogEl}
 >
 	{#snippet header()}
-		<header class="dialog-header">
+		<header
+			class="dialog-header"
+			class:risk-header--low={normalizedRisk === 'safe' || normalizedRisk === 'low'}
+			class:risk-header--medium={normalizedRisk === 'medium'}
+			class:risk-header--high={normalizedRisk === 'high' || normalizedRisk === 'critical'}
+		>
 			<div class="header-main">
-				<div class="security-icon" aria-hidden="true">
+				<div
+					class="security-icon"
+					class:security-icon--low={normalizedRisk === 'safe' || normalizedRisk === 'low'}
+					class:security-icon--medium={normalizedRisk === 'medium'}
+					class:security-icon--high={normalizedRisk === 'high' ||
+						normalizedRisk === 'critical'}
+					aria-hidden="true"
+				>
 					<Icon name="alertTriangle" size={22} />
 				</div>
 				<div class="header-copy">
@@ -269,9 +281,16 @@
 	{/snippet}
 	{#snippet children()}
 		<div class="dialog-body">
+			<section class="summary" id="permission-dialog-summary">
+				<div class="section-label">将要发生什么</div>
+				<p>{summary || '此操作需要你的许可。'}</p>
+			</section>
+
 			<section class="operation-card" aria-label="待执行操作">
-				<div class="section-label">待执行操作</div>
-				<div class="operation-name">{toolName || '未命名操作'}</div>
+				<div class="operation-heading">
+					<div class="section-label">待执行操作</div>
+					<div class="operation-name">{toolName || '未命名操作'}</div>
+				</div>
 				{#if sessionTitle}
 					<div class="operation-context">
 						<Icon name="chat" size={15} />
@@ -283,27 +302,8 @@
 						<span>{sessionId}</span>
 					</div>
 				{/if}
-				{#if permissionKey}
-					<div class="permission-key">
-						<Icon name="key" size={14} />
-						<span>授权范围</span>
-						<code>{permissionKey}</code>
-					</div>
-				{/if}
-				{#if toolInput !== undefined}
-					<section class="tool-input" aria-label="本次调用参数">
-						<div class="section-label">本次调用参数</div>
-						<JsonView
-							value={toolInput}
-							defaultDepth={10}
-							copyable={false}
-							collapseSensitive
-							truncateStrings={false}
-						/>
-					</section>
-				{/if}
 				<section class="resource-list" aria-label="授权资源">
-					<div class="section-label">本次操作声明的资源</div>
+					<div class="section-label">本次操作影响范围</div>
 					{#if hasDirectoryBoundaryExtension}
 						<div class="directory-extension-warning" role="alert">
 							<Icon name="alertTriangle" size={16} />
@@ -322,11 +322,26 @@
 						<p>此操作没有声明可保存的资源范围，只能本次允许。</p>
 					{/if}
 				</section>
-			</section>
-
-			<section class="summary" id="permission-dialog-summary">
-				<div class="section-label">操作说明</div>
-				<p>{summary || '此操作需要你的许可。'}</p>
+				{#if permissionKey}
+					<div class="permission-key">
+						<Icon name="key" size={14} />
+						<span>匹配的权限项</span>
+						<code>{permissionKey}</code>
+					</div>
+				{/if}
+				{#if toolInput !== undefined}
+					<section class="tool-input" aria-label="本次调用参数">
+						<div class="section-label">本次调用参数</div>
+						<p class="tool-input-hint">请核对实际参数；疑似凭据会默认折叠。</p>
+						<JsonView
+							value={toolInput}
+							defaultDepth={2}
+							copyable={false}
+							collapseSensitive
+							truncateStrings={false}
+						/>
+					</section>
+				{/if}
 			</section>
 
 			<div
@@ -552,12 +567,32 @@
 		justify-content: space-between;
 		gap: var(--md-sys-space-lg);
 		padding: var(--md-sys-space-2xl) var(--md-sys-space-2xl) var(--md-sys-space-xl);
+		background: var(--md-sys-color-surface-container-low);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	}
+
+	.dialog-header.risk-header--low {
+		background: linear-gradient(
+			135deg,
+			color-mix(in srgb, var(--md-sys-color-success-container) 72%, transparent),
+			transparent 68%
+		);
+	}
+
+	.dialog-header.risk-header--medium {
+		background: linear-gradient(
+			135deg,
+			color-mix(in srgb, var(--md-sys-color-warning-container) 72%, transparent),
+			transparent 68%
+		);
+	}
+
+	.dialog-header.risk-header--high {
 		background: linear-gradient(
 			135deg,
 			color-mix(in srgb, var(--md-sys-color-error-container) 72%, transparent),
 			transparent 68%
 		);
-		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 	}
 
 	.header-main {
@@ -585,8 +620,23 @@
 		height: 44px;
 		flex: 0 0 auto;
 		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-warning-container);
+		color: var(--md-sys-color-on-warning-container);
+	}
+
+	.security-icon--low {
+		background: var(--md-sys-color-success-container);
+		color: var(--md-sys-color-on-success-container);
+	}
+
+	.security-icon--medium {
+		background: var(--md-sys-color-warning-container);
+		color: var(--md-sys-color-on-warning-container);
+	}
+
+	.security-icon--high {
 		background: var(--md-sys-color-error-container);
-		color: var(--md-sys-color-error);
+		color: var(--md-sys-color-on-error-container);
 	}
 
 	.header-copy {
@@ -668,6 +718,11 @@
 		background: var(--md-sys-color-surface-container-low);
 	}
 
+	.operation-heading {
+		display: grid;
+		gap: var(--md-sys-space-xs);
+	}
+
 	.resource-list {
 		margin-top: var(--md-sys-space-md);
 		padding-top: var(--md-sys-space-sm);
@@ -682,6 +737,13 @@
 
 	.tool-input > :global(.jv-view) {
 		margin-top: var(--md-sys-space-xs);
+	}
+
+	.tool-input-hint {
+		margin-top: var(--md-sys-space-xs);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 
 	.resource-list ul {
@@ -745,7 +807,7 @@
 	}
 
 	.operation-name {
-		margin-top: var(--md-sys-space-xs);
+		margin-top: 0;
 		color: var(--md-sys-color-on-surface);
 		font-family: var(--md-sys-typescale-mono);
 		font-size: var(--md-sys-typescale-body-medium-size);
