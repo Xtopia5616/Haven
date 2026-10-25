@@ -5,6 +5,7 @@
 	import MaterialButton from './MaterialButton.svelte';
 	import ToolResultList from './ToolResultList.svelte';
 	import { reportError } from './errorHandling.ts';
+	import { isSensitivePermissionInputValue } from './permissionInputSensitivity.ts';
 
 	interface Props {
 		value?: unknown;
@@ -13,6 +14,8 @@
 		depth?: number;
 		defaultDepth?: number;
 		copyable?: boolean;
+		collapseSensitive?: boolean;
+		truncateStrings?: boolean;
 	}
 
 	// Recursive, collapsible JSON tree viewer with syntax coloring and a
@@ -27,6 +30,8 @@
 		depth = 0,
 		defaultDepth = 2,
 		copyable = true,
+		collapseSensitive = false,
+		truncateStrings = true,
 	}: Props = $props();
 
 	let isArray = $derived(Array.isArray(value));
@@ -38,6 +43,8 @@
 			: [],
 	);
 	let count = $derived(isArray ? arrayValue.length : isContainer ? objectEntries.length : 0);
+	let sensitive = $derived(collapseSensitive && isSensitivePermissionInputValue(key, value));
+	let sensitiveExpanded = $state(false);
 
 	// Root always starts expanded; nested containers expand until
 	// `defaultDepth` so deep payloads don't explode on first paint. Captured
@@ -65,7 +72,7 @@
 			const full = JSON.stringify(v);
 			return {
 				cls: 'jv-str',
-				text: full.length > 160 ? `${full.slice(0, 157)}…"` : full,
+				text: truncateStrings && full.length > 160 ? `${full.slice(0, 157)}…"` : full,
 				full,
 			};
 		}
@@ -116,7 +123,39 @@
 		</div>
 	{/if}
 	<div class="jv-body" class:jv-root-body={depth === 0}>
-		{#if isContainer}
+		{#if sensitive}
+			<details class="jv-sensitive">
+				<summary
+					class="jv-row jv-sensitive-summary"
+					onclick={() => (sensitiveExpanded = !sensitiveExpanded)}
+				>
+					<span class="jv-caret jv-sensitive-caret" aria-hidden="true">
+						<Icon name="chevronDown" size={12} strokeWidth={2.5} />
+					</span>
+					{#if key}
+						<span class={indexed ? 'jv-index' : 'jv-key'}>{keyLabel(key)}</span><span
+							class="jv-punct">:&nbsp;</span
+						>
+					{/if}
+					<span class="jv-sensitive-label">检测到可能的密钥或凭据，已折叠；展开查看</span>
+				</summary>
+				{#if sensitiveExpanded}
+					<div class="jv-sensitive-value">
+						{#if isContainer}
+							<JsonView
+								{value}
+								defaultDepth={1}
+								copyable={false}
+								truncateStrings={false}
+							/>
+						{:else}
+							{@const info = valInfo(value)}
+							<code class="jv-sensitive-raw">{info.full ?? info.text}</code>
+						{/if}
+					</div>
+				{/if}
+			</details>
+		{:else if isContainer}
 			<button
 				class="jv-row jv-container"
 				class:jv-empty={count === 0}
@@ -155,6 +194,8 @@
 										indexed
 										depth={depth + 1}
 										{defaultDepth}
+										{collapseSensitive}
+										{truncateStrings}
 										copyable={false}
 									/>
 								{/each}
@@ -169,6 +210,8 @@
 										key={k}
 										depth={depth + 1}
 										{defaultDepth}
+										{collapseSensitive}
+										{truncateStrings}
 										copyable={false}
 									/>
 								{/each}
@@ -317,6 +360,35 @@
 	}
 	.jv-close {
 		color: var(--md-sys-color-on-surface-variant);
+	}
+	.jv-sensitive {
+		border-radius: var(--md-sys-shape-small);
+	}
+	.jv-sensitive[open] {
+		background: color-mix(in srgb, var(--md-sys-color-warning-container) 48%, transparent);
+	}
+	.jv-sensitive-summary {
+		cursor: pointer;
+		list-style: none;
+	}
+	.jv-sensitive-summary::-webkit-details-marker {
+		display: none;
+	}
+	.jv-sensitive:not([open]) .jv-sensitive-caret {
+		transform: rotate(-90deg);
+	}
+	.jv-sensitive-label {
+		color: var(--md-sys-color-warning);
+		font-family: var(--md-sys-typescale-body);
+		font-size: var(--md-sys-typescale-label-medium-size);
+	}
+	.jv-sensitive-value {
+		padding: var(--md-sys-space-xs) var(--md-sys-space-md) var(--md-sys-space-sm);
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.jv-sensitive-raw {
+		font-family: var(--md-sys-typescale-mono);
 	}
 	.jv-key {
 		color: var(--md-sys-color-tertiary);

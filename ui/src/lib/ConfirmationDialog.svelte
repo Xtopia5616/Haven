@@ -6,6 +6,7 @@
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import JsonView from './JsonView.svelte';
 	import { describePermissionRuleImpact } from './permissionRuleDescription.ts';
 	import { declaredResourceDescription } from './permissionResourceDescription.ts';
 	import type {
@@ -27,6 +28,7 @@
 		sessionTitle?: string;
 		riskLevel?: RiskLevel;
 		summary?: string;
+		toolInput?: unknown;
 		permissionKey?: string;
 		resources?: DeclaredResource[];
 		resourceBoundaryExtension?: boolean;
@@ -53,6 +55,7 @@
 		sessionTitle,
 		riskLevel,
 		summary,
+		toolInput,
 		permissionKey,
 		resources = [],
 		resourceBoundaryExtension = false,
@@ -283,6 +286,18 @@
 						<span>授权范围</span>
 						<code>{permissionKey}</code>
 					</div>
+				{/if}
+				{#if toolInput !== undefined}
+					<section class="tool-input" aria-label="本次调用参数">
+						<div class="section-label">本次调用参数</div>
+						<JsonView
+							value={toolInput}
+							defaultDepth={10}
+							copyable={false}
+							collapseSensitive
+							truncateStrings={false}
+						/>
+					</section>
 				{/if}
 				<section class="resource-list" aria-label="授权资源">
 					<div class="section-label">本次操作声明的资源</div>
@@ -644,6 +659,16 @@
 		margin-top: var(--md-sys-space-md);
 		padding-top: var(--md-sys-space-sm);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
+	}
+
+	.tool-input {
+		margin-top: var(--md-sys-space-md);
+		padding-top: var(--md-sys-space-sm);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+	}
+
+	.tool-input > :global(.jv-view) {
+		margin-top: var(--md-sys-space-xs);
 	}
 
 	.resource-list ul {

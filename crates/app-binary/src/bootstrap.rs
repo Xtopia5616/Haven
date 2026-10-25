@@ -54,6 +54,7 @@ pub(crate) fn project_interaction(
         risk_level: None,
         summary: None,
         permission_key: None,
+        tool_input: None,
         resources: Vec::new(),
         resource_boundary_extension: false,
         invocation_step_id: None,
@@ -77,9 +78,20 @@ pub(crate) fn project_interaction(
             nested_confirmation,
             ..
         } => {
-            event.tool_name = Some(tool_name.clone());
+            let display_name = nested_confirmation
+                .as_ref()
+                .map(|nested| &nested.tool_name)
+                .unwrap_or(tool_name);
+            let display_input = nested_confirmation
+                .as_ref()
+                .map(|nested| &nested.input)
+                .unwrap_or(tool_input);
+            event.tool_name = Some(display_name.clone());
+            if request.status == haven_agent::InteractionStatus::Pending {
+                event.tool_input = Some(display_input.clone());
+            }
             event.risk_level = Some(*risk_level);
-            let mut summary = haven_tools::permission_prompt_summary(tool_name, tool_input);
+            let mut summary = haven_tools::permission_prompt_summary(display_name, display_input);
             let confirmation_receipt = receipt
                 .as_ref()
                 .or_else(|| nested_confirmation.as_ref().map(|nested| &nested.receipt));
@@ -124,6 +136,9 @@ pub(crate) fn project_interaction(
                 .map(|nested| &nested.input)
                 .unwrap_or(tool_input);
             event.tool_name = Some(display_name.clone());
+            if request.status == haven_agent::InteractionStatus::Pending {
+                event.tool_input = Some(display_input.clone());
+            }
             let mut summary = haven_tools::permission_prompt_summary(display_name, display_input);
             let confirmation_receipt = nested_confirmation
                 .as_ref()
@@ -632,9 +647,9 @@ pub(crate) fn run() {
 
                 rt.block_on(shell.set_hold_mode(is_hold));
 
-                // Consume the supervisor's typed event stream. Confirmation
-                // details stay in the backend; the renderer receives only the
-                // existing safe summary/permission projection.
+                // Consume the supervisor's typed event stream. Pending
+                // confirmations include their invocation input for informed
+                // review; the UI folds credential-like values by default.
                 {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
@@ -1186,6 +1201,63 @@ mod tests {
                 "session_id": "ses-e47db875d9bb819c9b621fed98ffe82b",
             })
         );
+    }
+
+    #[test]
+    fn pending_confirmation_projection_includes_the_concrete_tool_input() {
+        let session_id = "ses-e47db875d9bb819c9b621fed98ffe82b";
+        let step_id = "step-8035d06884c9e501700b994a5f4d4f55";
+        let input = serde_json::json!({
+            "command": "cargo test --workspace",
+            "cwd": "D:/Workspace/Haven"
+        });
+        let request = haven_agent::InteractionRequest::confirm(
+            session_id,
+            1,
+            "shell".into(),
+            input.clone(),
+            "provider-call-1".into(),
+            step_id.into(),
+            0,
+            haven_common::types::RiskLevel::High,
+            None,
+        );
+        let event = project_interaction(
+            &request,
+            haven_agent::InteractionOwner::Session {
+                session_id: session_id.into(),
+            },
+        );
+
+        let wire = serde_json::to_value(event).unwrap();
+        assert_eq!(wire["tool_input"], input);
+        assert!(wire.get("receipt").is_none());
+    }
+
+    #[test]
+    fn resolved_confirmation_projection_omits_the_tool_input() {
+        let session_id = "ses-e47db875d9bb819c9b621fed98ffe82b";
+        let mut request = haven_agent::InteractionRequest::confirm(
+            session_id,
+            1,
+            "shell".into(),
+            serde_json::json!({"command": "cargo test --workspace"}),
+            "provider-call-1".into(),
+            "step-8035d06884c9e501700b994a5f4d4f55".into(),
+            0,
+            haven_common::types::RiskLevel::High,
+            None,
+        );
+        request.status = haven_agent::InteractionStatus::Resolved;
+        let event = project_interaction(
+            &request,
+            haven_agent::InteractionOwner::Session {
+                session_id: session_id.into(),
+            },
+        );
+
+        let wire = serde_json::to_value(event).unwrap();
+        assert!(wire.get("tool_input").is_none());
     }
 
     #[test]

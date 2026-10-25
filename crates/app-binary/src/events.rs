@@ -442,10 +442,10 @@ pub(crate) struct AgentObservationEvent {
     pub event_sequence: Option<u64>,
 }
 
-/// Renderer-safe projection of every human decision request. Internal
-/// `InteractionRequest` values may carry raw tool input and receipts; this
-/// DTO deliberately contains only the information needed to render a card
-/// and resolve it by request ID.
+/// Renderer projection of every human decision request. It includes the
+/// concrete invocation input so users can make an informed approval decision;
+/// the UI folds values that look like credentials by default. Authorization
+/// receipts and continuations remain backend-only.
 #[derive(Clone, Serialize)]
 pub(crate) struct InteractionRequestedEvent {
     pub request_id: String,
@@ -464,6 +464,8 @@ pub(crate) struct InteractionRequestedEvent {
     pub summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<haven_tools::DeclaredResource>,
     #[serde(default)]

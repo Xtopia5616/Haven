@@ -282,7 +282,7 @@ session_created / session_completed / session_paused / session_resumed / session
 禁止：
 
 - 命令 `Err` 不经 `log_err` 直接 `e.to_string()`（`queue_ui_confirmation` 的结构化控制流哨兵除外）；
-- 把 API key、内部路径等细节原样返回前端或写入普通日志；前后端边界都使用安全摘要。
+- 把 API key、内部路径等细节放进命令错误、通知或普通日志；这些边界使用安全摘要。pending 权限确认的 `tool_input` 是供用户审查的专用例外，UI 对疑似凭据默认折叠并允许展开，不能把启发式识别当成授权校验。
 - 用 `panic!` / `unwrap()` 处理预期内失败（`expect` 仅限初始化等不可恢复场景）。
 
 ### 3.2 前端

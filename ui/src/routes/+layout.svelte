@@ -1470,6 +1470,7 @@
 			sessionTitle={activeConfirmSessionTitle}
 			riskLevel={activeConfirmRequest?.riskLevel || 'medium'}
 			summary={activeConfirmRequest?.summary || '此操作需要你的许可。'}
+			toolInput={activeConfirmRequest?.toolInput}
 			permissionKey={activeConfirmRequest?.permissionKey ||
 				activeConfirmRequest?.toolName ||
 				''}

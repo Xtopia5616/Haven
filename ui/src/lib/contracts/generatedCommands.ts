@@ -138,7 +138,7 @@ export interface AgentWorkingDocumentEvent { session_id: string; markdown: strin
 export interface AppBootstrapEvent { status: BootstrapStatus }
 export interface HotkeyConflictEvent { binding: string; error: string }
 export interface HotkeyRebindEvent { old_binding: string; new_binding: string }
-export interface InteractionRequestedEvent { request_id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; resources?: DeclaredResource[]; resource_boundary_extension: boolean; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
+export interface InteractionRequestedEvent { request_id: string; session_id?: string; owner: InteractionOwner; kind: InteractionKind; status: InteractionStatus; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; tool_input?: unknown; resources?: DeclaredResource[]; resource_boundary_extension: boolean; invocation_step_id?: string; tool_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
 export interface McpResourceChangedEvent { name: string; uri: string | null }
 export interface McpStatusChangedEvent { name: string; status: McpClientStatus }
 export interface MuteChangedEvent { muted: boolean }
@@ -2379,6 +2379,10 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 						optional: true,
 						shape: { kind: 'string' },
 					},
+					'tool_input': {
+						optional: true,
+						shape: { kind: 'unknown' },
+					},
 					'resources': {
 						optional: true,
 						shape: { kind: 'array', items: { kind: 'union', anyOf: [
@@ -4210,6 +4214,10 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 					'permission_key': {
 						optional: true,
 						shape: { kind: 'string' },
+					},
+					'tool_input': {
+						optional: true,
+						shape: { kind: 'unknown' },
 					},
 					'resources': {
 						optional: true,
@@ -6225,6 +6233,10 @@ export const INTERACTION_REQUESTED_EVENT_PAYLOAD_SHAPE = {
 		'permission_key': {
 			optional: true,
 			shape: { kind: 'string' },
+		},
+		'tool_input': {
+			optional: true,
+			shape: { kind: 'unknown' },
 		},
 		'resources': {
 			optional: true,
@@ -10333,6 +10345,10 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 					'permission_key': {
 						optional: true,
 						shape: { kind: 'string' },
+					},
+					'tool_input': {
+						optional: true,
+						shape: { kind: 'unknown' },
 					},
 					'resources': {
 						optional: true,

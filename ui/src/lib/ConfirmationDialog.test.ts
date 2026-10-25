@@ -8,6 +8,36 @@ const deadlineProps = (durationMs = 60_000) => ({
 });
 
 describe('ConfirmationDialog', () => {
+	it('shows concrete invocation details and folds credential-like values by default', async () => {
+		const longArgument = `--input ${'x'.repeat(180)}`;
+		const { container } = render(ConfirmationDialog as any, {
+			...deadlineProps(),
+			requestId: 'conf-4c7a29d6b2c347b0a83e901ef7654321',
+			toolName: 'shell',
+			riskLevel: 'high',
+			summary: '将执行一条受保护的本机命令；请检查下方调用参数。',
+			toolInput: {
+				command: 'cargo test --workspace',
+				cwd: 'D:\\Workspace\\Haven',
+				payload: longArgument,
+				api_key: 'example-value-123',
+			},
+			onConfirm: vi.fn(),
+		});
+
+		expect(screen.getByText('"cargo test --workspace"')).toBeTruthy();
+		expect(screen.getByText('"D:\\\\Workspace\\\\Haven"')).toBeTruthy();
+		expect(screen.getByText(JSON.stringify(longArgument))).toBeTruthy();
+		expect(screen.queryByText(/example-value-123/)).toBeNull();
+		const sensitiveDetails =
+			container.querySelector<HTMLDetailsElement>('details.jv-sensitive');
+		expect(sensitiveDetails?.open).toBe(false);
+
+		await fireEvent.click(sensitiveDetails!.querySelector('summary')!);
+		expect(sensitiveDetails?.open).toBe(true);
+		expect(screen.getByText(/example-value-123/)).toBeTruthy();
+	});
+
 	it('keeps one-time approval primary and moves broader grants into more options', async () => {
 		const onConfirm = vi.fn();
 		const { container } = render(ConfirmationDialog as any, {

@@ -195,11 +195,9 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("haven.mcp.reload", "haven.mcp.reload", High),
 ];
 
-/// Build a concise, non-sensitive explanation for a permission prompt.
-///
-/// Raw tool arguments are intentionally kept inside the backend confirmation
-/// state. They can contain shell commands, URLs with credentials, file
-/// contents, or MCP/skill secrets and must never be sent to the renderer.
+/// Build a concise summary that avoids repeating the invocation arguments.
+/// The confirmation event carries those arguments separately for the UI's
+/// structured detail view, which folds values that look like credentials.
 pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
     if tool_name == "open_external" {
         let target = params
@@ -213,15 +211,15 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
                 .get(..8)
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
         {
-            return "将在系统浏览器中打开外部链接（链接详情已隐藏）".into();
+            return "将在系统浏览器中打开外部链接；请检查下方调用参数。".into();
         }
-        return "将在文件管理器中打开本地路径（路径详情已隐藏）".into();
+        return "将在文件管理器中打开本地路径；请检查下方调用参数。".into();
     }
     if tool_name == "open_skills_dir" {
-        return "将在文件管理器中打开配置的 Skills 目录（路径已隐藏）".into();
+        return "将在文件管理器中打开配置的 Skills 目录；请检查下方调用参数。".into();
     }
     if tool_name == "haven.mcp.reconnect" {
-        return "将重新连接一个当前配置的 MCP 服务器（服务器配置详情已隐藏）".into();
+        return "将重新连接一个当前配置的 MCP 服务器；请检查下方调用参数。".into();
     }
     if tool_name == "haven.mcp.refresh" {
         let mut connect = 0;
@@ -241,7 +239,7 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
             return "MCP 配置刷新：当前无需连接或断开服务器".into();
         }
         return format!(
-            "MCP 配置变更批次：连接 {connect} 台、重连 {reconnect} 台、断开 {disconnect} 台服务器（配置详情已隐藏）"
+            "MCP 配置变更批次：连接 {connect} 台、重连 {reconnect} 台、断开 {disconnect} 台服务器；请检查下方调用参数。"
         );
     }
     let operation = registered_operation_label(tool_name, params);
@@ -251,27 +249,27 @@ pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
         .and_then(|name| name.split('.').next())
         .unwrap_or(tool_name);
     match family {
-        "files" => format!("文件操作：{operation}（目标详情已隐藏）"),
-        "shell" => "将执行一条受保护的本机命令（命令内容不会显示在弹窗中）".into(),
-        "http" => "将向外部网络发起请求（请求内容已隐藏）".into(),
+        "files" => format!("文件操作：{operation}；请检查下方调用参数。"),
+        "shell" => "将执行一条受保护的本机命令；请检查下方调用参数。".into(),
+        "http" => "将向外部网络发起请求；请检查下方调用参数。".into(),
         "web_search_api" if params["fetch_top_results"].as_u64().unwrap_or_default() > 0 => {
             format!(
-                "将联网搜索，并读取最多 {} 个公开来源网页（查询内容与网页正文不会显示在弹窗中）",
+                "将联网搜索，并读取最多 {} 个公开来源网页；请检查下方调用参数。",
                 params["fetch_top_results"].as_u64().unwrap_or_default()
             )
         }
-        "web_search_api" => "将使用已配置的联网搜索服务（查询词已隐藏）".into(),
-        "media" => format!("媒体操作：{operation}（参数详情已隐藏）"),
-        "system" => format!("系统操作：{operation}（参数详情已隐藏）"),
-        "haven" => format!("Haven 操作：{operation}（参数详情已隐藏）"),
-        "mcp" | "skill" => format!("扩展能力将执行：{tool_name}（参数已隐藏）"),
+        "web_search_api" => "将使用已配置的联网搜索服务；请检查下方调用参数。".into(),
+        "media" => format!("媒体操作：{operation}；请检查下方调用参数。"),
+        "system" => format!("系统操作：{operation}；请检查下方调用参数。"),
+        "haven" => format!("Haven 操作：{operation}；请检查下方调用参数。"),
+        "mcp" | "skill" => format!("扩展能力将执行：{tool_name}；请检查下方调用参数。"),
         _ => format!("工具 {tool_name} 将执行受保护操作：{operation}"),
     }
 }
 
-/// Return an operation only when it is present in the backend security
-/// registry. Dynamic extension arguments must never become renderer text;
-/// unknown values collapse to a generic label.
+/// Return an operation label only when it is present in the backend security
+/// registry. Unknown values collapse to a generic summary label; the concrete
+/// arguments remain visible in the structured confirmation details.
 fn registered_operation_label(tool_name: &str, params: &Value) -> String {
     if tool_name == "files.search" && params["mode"].as_str() == Some("content") {
         return "search:content".into();
@@ -380,7 +378,7 @@ mod tests {
         );
         assert_eq!(
             summary,
-            "MCP 配置变更批次：连接 1 台、重连 1 台、断开 1 台服务器（配置详情已隐藏）"
+            "MCP 配置变更批次：连接 1 台、重连 1 台、断开 1 台服务器；请检查下方调用参数。"
         );
         assert!(!summary.contains("alpha"));
         assert!(!summary.contains("secret"));

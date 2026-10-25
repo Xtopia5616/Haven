@@ -67,8 +67,12 @@ describe('app-shell IPC contract', () => {
 				risk_level: 'high',
 				created_at: '2026-01-01T00:00:00Z',
 				expires_at: '2026-01-01T00:05:00Z',
-				summary: '将执行一条受保护的本机命令（命令内容不会显示在弹窗中）',
+				summary: '将执行一条受保护的本机命令；请检查下方调用参数。',
 				permission_key: 'tool.run_command',
+				tool_input: {
+					command: 'cargo test --workspace',
+					cwd: 'D:\\Workspace\\Haven',
+				},
 				future_field: 'not part of the renderer DTO',
 			},
 		});
@@ -86,8 +90,12 @@ describe('app-shell IPC contract', () => {
 			toolCallId: 'call-1',
 			toolName: 'run_command',
 			riskLevel: 'high',
-			summary: '将执行一条受保护的本机命令（命令内容不会显示在弹窗中）',
+			summary: '将执行一条受保护的本机命令；请检查下方调用参数。',
 			permissionKey: 'tool.run_command',
+			toolInput: {
+				command: 'cargo test --workspace',
+				cwd: 'D:\\Workspace\\Haven',
+			},
 			createdAt: '2026-01-01T00:00:00Z',
 			expiresAt: '2026-01-01T00:05:00Z',
 		});
@@ -116,6 +124,52 @@ describe('app-shell IPC contract', () => {
 			kind: 'ask',
 			owner: { kind: 'session', sessionId: 'ses-485b594d54374c140c71b794d06112bd' },
 		});
+	});
+
+	it('does not accept invocation details on an Ask interaction', () => {
+		const event = mapAppEvent({
+			event: 'interaction:requested',
+			id: 241,
+			payload: {
+				request_id: 'step-20edda8dd4d8ca425075d9951bd5e83c',
+				session_id: 'ses-485b594d54374c140c71b794d06112bd',
+				owner: { kind: 'session', session_id: 'ses-485b594d54374c140c71b794d06112bd' },
+				kind: 'ask',
+				status: 'pending',
+				resource_boundary_extension: false,
+				options: ['继续'],
+				tool_input: { unexpected: true },
+				created_at: '2026-01-01T00:00:00Z',
+			},
+		});
+
+		expect(event).toBeNull();
+	});
+
+	it('does not accept invocation details after a confirmation is resolved', () => {
+		const event = mapAppEvent({
+			event: 'interaction:requested',
+			id: 242,
+			payload: {
+				request_id: 'conf-20edda8dd4d8ca425075d9951bd5e83c',
+				session_id: 'ses-485b594d54374c140c71b794d06112bd',
+				owner: { kind: 'session', session_id: 'ses-485b594d54374c140c71b794d06112bd' },
+				kind: 'confirm',
+				status: 'resolved',
+				resource_boundary_extension: false,
+				options: [],
+				invocation_step_id: 'step-20edda8dd4d8ca425075d9951bd5e83c',
+				tool_index: 0,
+				tool_name: 'shell',
+				risk_level: 'high',
+				summary: 'Run protected command',
+				tool_input: { command: 'cargo test' },
+				created_at: '2026-01-01T00:00:00Z',
+				expires_at: '2026-01-01T00:05:00Z',
+			},
+		});
+
+		expect(event).toBeNull();
 	});
 
 	it('rejects the retired generic interaction id field', () => {

@@ -106,10 +106,10 @@ fn confirmation_expires_at(receipt: &haven_tools::ConfirmationReceipt) -> Option
 
 /// Typed data carried by an interaction request.
 ///
-/// This is deliberately separate from the renderer event projection. The
-/// confirm variants contain the original tool input and authorization receipt
-/// because resume must re-check and execute the exact invocation, but those
-/// fields never cross the Tauri boundary.
+/// The confirm variants retain the original tool input and authorization
+/// receipt because resume must re-check and execute the exact invocation.
+/// Pending confirmations project the input for user review; receipts and
+/// continuations remain backend-only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum InteractionDetails {

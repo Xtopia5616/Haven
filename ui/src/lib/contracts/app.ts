@@ -69,6 +69,7 @@ interface InteractionRequestBase {
 	riskLevel?: RiskLevel;
 	summary?: string;
 	permissionKey?: string;
+	toolInput?: unknown;
 	resources?: DeclaredResource[];
 	resourceBoundaryExtension?: boolean;
 	invocationStepId?: string;
@@ -255,6 +256,7 @@ export function mapInteractionRequest(value: unknown): InteractionRequest | null
 	}
 	const owner = mapInteractionOwner(value.owner, sessionId);
 	if (!owner || !isValidInteractionKindOwnerPair(kind, owner)) return null;
+	if (value.tool_input !== undefined && (kind === 'ask' || status !== 'pending')) return null;
 	if (kind === 'confirm') {
 		if (
 			!isNonEmptyString(value.tool_name) ||
@@ -284,6 +286,7 @@ export function mapInteractionRequest(value: unknown): InteractionRequest | null
 		...(wire.risk_level ? { riskLevel: wire.risk_level } : {}),
 		...(wire.summary ? { summary: wire.summary } : {}),
 		...(wire.permission_key ? { permissionKey: wire.permission_key } : {}),
+		...(wire.tool_input !== undefined ? { toolInput: wire.tool_input } : {}),
 		...(wire.resources?.length ? { resources: wire.resources } : {}),
 		resourceBoundaryExtension: wire.resource_boundary_extension === true,
 		...(wire.invocation_step_id ? { invocationStepId: wire.invocation_step_id } : {}),

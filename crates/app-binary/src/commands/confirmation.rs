@@ -105,6 +105,7 @@ pub(crate) async fn queue_ui_confirmation(
     let tool_name = authorization_request.tool_name.clone();
     let display_input =
         redact_mcp_admin_confirmation_input(&tool_name, authorization_request.input.clone());
+    let invocation_input = authorization_request.input.clone();
     let summary = haven_tools::permission_prompt_summary(&tool_name, &display_input);
     let permission_key = authorization_request.policy.capability.to_string();
     let risk_level = receipt.effective_risk;
@@ -132,10 +133,10 @@ pub(crate) async fn queue_ui_confirmation(
             },
         )
         .await;
-    if let Err(error) = app.emit(
-        INTERACTION_REQUESTED_EVENT,
-        crate::bootstrap::project_interaction(&request, haven_agent::InteractionOwner::AppCommand),
-    ) {
+    let mut projected =
+        crate::bootstrap::project_interaction(&request, haven_agent::InteractionOwner::AppCommand);
+    projected.tool_input = Some(invocation_input);
+    if let Err(error) = app.emit(INTERACTION_REQUESTED_EVENT, projected) {
         state
             .app_confirmations
             .discard(&request_id.to_string())
@@ -202,9 +203,9 @@ pub(crate) async fn queue_ui_confirmation(
 }
 
 /// MCP environment values stay in the typed pending action so the approved
-/// operation can execute, but confirmation summaries and interaction payloads
-/// expose only variable names. Keep this at the renderer boundary so the
-/// authorization receipt still binds the original input internally.
+/// operation can execute. The interaction summary remains redacted; the
+/// confirmation detail projection separately carries the original input so
+/// the UI can fold credential-like values while preserving informed review.
 pub(super) fn redact_mcp_admin_confirmation_input(
     tool_name: &str,
     mut input: serde_json::Value,
