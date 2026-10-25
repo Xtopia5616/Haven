@@ -1306,3 +1306,4 @@
 - [1400：上传租约在输入接受后再绑定会话](1400-keep-upload-leases-pending-until-ingress-acceptance.md)
 - [1401：Shell 使用 MXC 结构化拒绝记录发起一次性资源确认](1401-shell-mxc-structured-denial-confirmation.md)
 - [1403：在聊天输入区拖放加入附件](1403-chat-composer-file-drop.md)
+- [1404：由授权 owner 将 Shell 文件策略编译到 MXC](1404-compile-shell-filesystem-policy-into-mxc.md)

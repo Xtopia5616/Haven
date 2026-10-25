@@ -30,6 +30,12 @@ pub struct FileResourcePolicy {
     /// Optional tool-local roots that restrict every declared local path,
     /// including read sources and write targets.
     pub path_roots: Vec<String>,
+    /// Files or directories that remain readable but cannot be mutated, even
+    /// when they sit inside a broader write root.
+    pub read_only_roots: Vec<String>,
+    /// Existing files or directories that are inaccessible to file operations.
+    /// Denials always take precedence over read-only and write scopes.
+    pub denied_paths: Vec<String>,
 }
 
 impl Default for FileResourcePolicy {
@@ -38,6 +44,8 @@ impl Default for FileResourcePolicy {
             write_mode: FileWriteMode::Inherit,
             write_roots: Vec::new(),
             path_roots: Vec::new(),
+            read_only_roots: Vec::new(),
+            denied_paths: Vec::new(),
         }
     }
 }
@@ -90,6 +98,8 @@ impl ResourcePolicy {
                 write_mode: FileWriteMode::Workspace,
                 write_roots: Vec::new(),
                 path_roots: Vec::new(),
+                read_only_roots: Vec::new(),
+                denied_paths: Vec::new(),
             },
             network: NetworkResourcePolicy {
                 access: NetworkAccessBoundary::Restricted,
@@ -1491,7 +1501,9 @@ mod credential_debug_tests {
 
 #[cfg(test)]
 mod mcp_server_name_tests {
-    use super::{McpServerConfig, is_valid_mcp_server_name, validate_mcp_server_names};
+    use super::{
+        FileResourcePolicy, McpServerConfig, is_valid_mcp_server_name, validate_mcp_server_names,
+    };
 
     #[test]
     fn validates_name_shape_and_byte_length() {
@@ -1520,6 +1532,15 @@ mod mcp_server_name_tests {
 
         let duplicate = [servers[0].clone(), servers[0].clone()];
         assert!(validate_mcp_server_names(&duplicate).is_err());
+    }
+
+    #[test]
+    fn new_file_protection_lists_default_for_existing_configs() {
+        let policy: FileResourcePolicy =
+            serde_json::from_str(r#"{"write_mode":"workspace"}"#).unwrap();
+
+        assert!(policy.read_only_roots.is_empty());
+        assert!(policy.denied_paths.is_empty());
     }
 }
 

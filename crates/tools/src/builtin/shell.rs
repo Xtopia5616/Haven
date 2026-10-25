@@ -223,14 +223,20 @@ impl ShellTool {
                             "Shell execution has no live policy authorization".into(),
                         )
                     })?;
-                    let (write_root_capabilities, readonly_root_capabilities) = permit
-                        .workspace_shell_directories()
+                    let working_directory = std_cmd
+                        .get_current_dir()
+                        .map(PathBuf::from)
+                        .unwrap_or(std::env::current_dir()?);
+                    let filesystem_policy = permit
+                        .workspace_shell_directories(&working_directory)
                         .map_err(crate::security::execution_policy_denied)?;
-                    let roots = write_root_capabilities
+                    let roots = filesystem_policy
+                        .readwrite_roots
                         .iter()
                         .map(|directory| directory.root().to_path_buf())
                         .collect();
-                    let readonly_extensions = readonly_root_capabilities
+                    let readonly_extensions = filesystem_policy
+                        .readonly_roots
                         .iter()
                         .map(|directory| directory.root().to_path_buf())
                         .collect();
@@ -238,6 +244,8 @@ impl ShellTool {
                         &std_cmd,
                         roots,
                         readonly_extensions,
+                        filesystem_policy.protected_readonly_paths,
+                        filesystem_policy.denied_paths,
                         !matches!(
                             permit.network_policy(),
                             haven_common::types::NetworkPolicy::Deny
@@ -712,6 +720,8 @@ fn sandboxed_shell_request(
     std_cmd: &std::process::Command,
     readwrite_paths: Vec<PathBuf>,
     additional_readonly_paths: Vec<PathBuf>,
+    protected_readonly_paths: Vec<PathBuf>,
+    denied_paths: Vec<PathBuf>,
     allow_network: bool,
     allow_desktop_handle_access: bool,
 ) -> anyhow::Result<haven_platform::sandboxed_process::SandboxedProcessRequest> {
@@ -722,14 +732,13 @@ fn sandboxed_shell_request(
         .get_envs()
         .filter_map(|(key, value)| value.map(|value| (key.to_os_string(), value.to_os_string())))
         .collect::<Vec<_>>();
-    let temp_root = readwrite_paths
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("Workspace Write has no MXC writable root"))?;
-    environment.retain(|(key, _)| {
-        !os_key_eq_ignore_ascii_case(key, "TEMP") && !os_key_eq_ignore_ascii_case(key, "TMP")
-    });
-    environment.push((OsString::from("TEMP"), temp_root.as_os_str().to_os_string()));
-    environment.push((OsString::from("TMP"), temp_root.as_os_str().to_os_string()));
+    if let Some(temp_root) = readwrite_paths.first() {
+        environment.retain(|(key, _)| {
+            !os_key_eq_ignore_ascii_case(key, "TEMP") && !os_key_eq_ignore_ascii_case(key, "TMP")
+        });
+        environment.push((OsString::from("TEMP"), temp_root.as_os_str().to_os_string()));
+        environment.push((OsString::from("TMP"), temp_root.as_os_str().to_os_string()));
+    }
 
     let mut readonly_paths = additional_readonly_paths;
     if let Some(system_root) = environment
@@ -751,8 +760,7 @@ fn sandboxed_shell_request(
             readonly_paths.push(path);
         }
     }
-    readonly_paths.retain(|path| path.is_dir());
-
+    readonly_paths.retain(|path| path.is_file() || path.is_dir());
     let working_directory = std_cmd
         .get_current_dir()
         .map(PathBuf::from)
@@ -763,6 +771,8 @@ fn sandboxed_shell_request(
         working_directory,
         readwrite_paths,
         readonly_paths,
+        protected_readonly_paths,
+        denied_paths,
         environment,
         allow_network,
         allow_desktop_handle_access,
@@ -943,19 +953,43 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     #[ignore = "requires a serviced Windows 11 host with MXC BaseContainer support"]
-    async fn workspace_write_shell_is_confined_to_configured_roots_by_mxc() {
+    async fn workspace_write_shell_is_confined_to_tool_write_roots_by_mxc() {
+        use haven_common::config::{FileResourcePolicy, FileWriteMode, ResourcePolicy, ToolConfig};
         use haven_common::types::NetworkPolicy;
+        use std::collections::HashMap;
 
         let temp = tempdir().expect("create isolated MXC fixture");
         let workspace_root = temp.path().join("workspace");
-        let outside_root = temp.path().join("outside");
         std::fs::create_dir(&workspace_root).expect("create workspace root");
-        std::fs::create_dir(&outside_root).expect("create outside root");
+        let source_root = workspace_root.join("src");
+        let outside_root = workspace_root.join("other");
+        std::fs::create_dir(&source_root).expect("create configured Shell write root");
+        std::fs::create_dir(&outside_root).expect("create other workspace directory");
         let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
-        let (execution_authorization, _) =
+        let (_, engine) =
             crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
                 &workspace_root,
                 NetworkPolicy::Deny,
+            );
+        engine
+            .set_tool_settings(HashMap::from([(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        files: FileResourcePolicy {
+                            write_mode: FileWriteMode::Roots,
+                            write_roots: vec![source_root.to_string_lossy().into_owned()],
+                            ..FileResourcePolicy::default()
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            )]))
+            .await;
+        let execution_authorization =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+                engine, "shell",
             );
         let context = crate::ToolExecutionContext {
             execution_workspace: Some(workspace.clone()),
@@ -969,11 +1003,10 @@ mod tests {
         let result = tool
             .run_with_execution_context(
                 ShellParams {
-                    command: "echo inside>inside.txt & echo outside>..\\outside\\outside.txt"
-                        .into(),
+                    command: "echo inside>inside.txt & echo outside>..\\other\\outside.txt".into(),
                     shell: Some("cmd".into()),
                     silent: Some(true),
-                    cwd: None,
+                    cwd: Some(source_root.to_string_lossy().into_owned()),
                     step_id: None,
                     session_id: None,
                     resource_extensions: Vec::new(),
@@ -986,15 +1019,189 @@ mod tests {
 
         assert!(result.output["exit_code"].as_i64().unwrap_or(1) != 0);
         assert_eq!(
-            std::fs::read_to_string(workspace_root.join("inside.txt"))
+            std::fs::read_to_string(source_root.join("inside.txt"))
                 .unwrap()
                 .trim(),
             "inside"
         );
         assert!(
             !outside_root.join("outside.txt").exists(),
-            "MXC must deny a write outside the configured workspace root"
+            "MXC must deny a write outside the Shell tool's configured write_roots"
         );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with MXC support"]
+    async fn workspace_write_shell_applies_tool_read_only_policy_by_mxc() {
+        use haven_common::config::{FileResourcePolicy, FileWriteMode, ResourcePolicy, ToolConfig};
+        use haven_common::types::NetworkPolicy;
+        use std::collections::HashMap;
+
+        let temp = tempdir().expect("create isolated MXC read-only fixture");
+        let workspace_root = temp.path().join("workspace");
+        std::fs::create_dir(&workspace_root).expect("create workspace root");
+        let readable = workspace_root.join("readable.txt");
+        let denied_write = workspace_root.join("created.txt");
+        std::fs::write(&readable, "readable").expect("create read-only input");
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (_, engine) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Deny,
+            );
+        engine
+            .set_tool_settings(HashMap::from([(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        files: FileResourcePolicy {
+                            write_mode: FileWriteMode::ReadOnly,
+                            ..FileResourcePolicy::default()
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            )]))
+            .await;
+        let execution_authorization =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+                engine, "shell",
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let tool = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        };
+        let result = tool
+            .run_with_execution_context(
+                ShellParams {
+                    command: "type readable.txt & echo denied>created.txt".into(),
+                    shell: Some("cmd".into()),
+                    silent: Some(true),
+                    cwd: Some(workspace_root.to_string_lossy().into_owned()),
+                    step_id: None,
+                    session_id: None,
+                    resource_extensions: Vec::new(),
+                },
+                CancellationToken::new(),
+                Some(&context),
+            )
+            .await
+            .expect("MXC must launch the authorized read-only Workspace Write shell");
+
+        assert!(
+            !result.success,
+            "the write command must fail under tool read-only policy"
+        );
+        assert!(
+            result.output["output"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("readable"),
+            "read-only policy must still allow reads from the workspace"
+        );
+        assert!(
+            !denied_write.exists(),
+            "the tool read-only policy must deny writes"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires a serviced Windows 11 host with native MXC deniedPaths support"]
+    async fn workspace_write_shell_enforces_readonly_subpaths_and_denied_paths() {
+        use haven_common::config::{FileResourcePolicy, ResourcePolicy, ToolConfig};
+        use haven_common::types::NetworkPolicy;
+        use std::collections::HashMap;
+
+        let temp = tempdir().expect("create isolated MXC fixture");
+        let workspace_root = temp.path().join("workspace");
+        let vendor = workspace_root.join("vendor");
+        let git = workspace_root.join(".git");
+        let denied = workspace_root.join("private");
+        std::fs::create_dir_all(&vendor).expect("create protected subtree");
+        std::fs::create_dir(&git).expect("create VCS metadata");
+        std::fs::create_dir(&denied).expect("create denied subtree");
+        std::fs::write(vendor.join("readme.txt"), "vendor").unwrap();
+        std::fs::write(git.join("tracked.txt"), "tracked").unwrap();
+        std::fs::write(denied.join("secret.txt"), "secret").unwrap();
+        let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
+        let (_, engine) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace_root,
+                NetworkPolicy::Deny,
+            );
+        engine
+            .set_tool_settings(HashMap::from([(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        files: FileResourcePolicy {
+                            read_only_roots: vec![vendor.to_string_lossy().into_owned()],
+                            denied_paths: vec![denied.to_string_lossy().into_owned()],
+                            ..FileResourcePolicy::default()
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            )]))
+            .await;
+        let execution_authorization =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+                engine, "shell",
+            );
+        let context = crate::ToolExecutionContext {
+            execution_workspace: Some(workspace.clone()),
+            execution_authorization: Some(execution_authorization),
+            ..Default::default()
+        };
+        let tool = ShellTool {
+            execution_workspace: workspace,
+            ..ShellTool::default()
+        };
+        let root = workspace_root.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "$ErrorActionPreference='Stop'; $root='{root}'; $vendor=Join-Path $root 'vendor'; $git=Join-Path $root '.git'; $private=Join-Path $root 'private'; Set-Content -LiteralPath (Join-Path $root 'allowed.txt') -Value allowed; if ((Get-Content -Raw -LiteralPath (Join-Path $vendor 'readme.txt')).Trim() -ne 'vendor') {{ exit 41 }}; if ((Get-Content -Raw -LiteralPath (Join-Path $git 'tracked.txt')).Trim() -ne 'tracked') {{ exit 42 }}; try {{ Set-Content -LiteralPath (Join-Path $vendor 'package.txt') -Value blocked; exit 43 }} catch {{}}; try {{ Set-Content -LiteralPath (Join-Path $git 'config') -Value blocked; exit 44 }} catch {{}}; try {{ Get-Content -LiteralPath (Join-Path $private 'secret.txt') | Out-Null; exit 45 }} catch {{}}; exit 0"
+        );
+        let result = tool
+            .run_with_execution_context(
+                ShellParams {
+                    command: script.into(),
+                    shell: Some("powershell".into()),
+                    silent: Some(true),
+                    cwd: Some(workspace_root.to_string_lossy().into_owned()),
+                    step_id: None,
+                    session_id: None,
+                    resource_extensions: Vec::new(),
+                },
+                CancellationToken::new(),
+                Some(&context),
+            )
+            .await
+            .expect("MXC must launch the protected Workspace Write shell");
+
+        assert_eq!(
+            result.output["exit_code"].as_i64(),
+            Some(0),
+            "MXC PowerShell policy failed: {:?}; error: {:?}",
+            result.output,
+            result.error
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace_root.join("allowed.txt"))
+                .unwrap()
+                .trim(),
+            "allowed"
+        );
+        assert!(!vendor.join("package.txt").exists());
+        assert!(!git.join("config").exists());
     }
 
     #[cfg(windows)]

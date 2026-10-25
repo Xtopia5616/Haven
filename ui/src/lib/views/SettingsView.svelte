@@ -259,7 +259,13 @@
 	let security = $state<SecuritySettingsDraft>({
 		execution_mode: 'collaborative',
 		resource_policy: {
-			files: { write_mode: 'workspace', write_roots: [], path_roots: [] },
+			files: {
+				write_mode: 'workspace',
+				write_roots: [],
+				path_roots: [],
+				read_only_roots: [],
+				denied_paths: [],
+			},
 			network: { access: 'restricted', allowed_domains: [] },
 		},
 		execution_root: null,
@@ -1105,7 +1111,13 @@
 			security = {
 				execution_mode: settings.security?.execution_mode || 'collaborative',
 				resource_policy: settings.security?.resource_policy || {
-					files: { write_mode: 'workspace', write_roots: [], path_roots: [] },
+					files: {
+						write_mode: 'workspace',
+						write_roots: [],
+						path_roots: [],
+						read_only_roots: [],
+						denied_paths: [],
+					},
 					network: { access: 'restricted', allowed_domains: [] },
 				},
 				execution_root: settings.security?.execution_root ?? null,

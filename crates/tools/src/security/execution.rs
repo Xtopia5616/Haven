@@ -132,6 +132,14 @@ pub(crate) struct ExecutionPolicyPermit {
     authorized_resources: Vec<crate::security::DeclaredResource>,
 }
 
+#[derive(Debug)]
+pub(crate) struct WorkspaceShellFilesystemPolicy {
+    pub(crate) readwrite_roots: Vec<haven_platform::filesystem::DirectoryCapability>,
+    pub(crate) readonly_roots: Vec<haven_platform::filesystem::DirectoryCapability>,
+    pub(crate) protected_readonly_paths: Vec<std::path::PathBuf>,
+    pub(crate) denied_paths: Vec<std::path::PathBuf>,
+}
+
 impl ExecutionPolicyPermit {
     pub(crate) fn sandbox_mode(&self) -> SandboxMode {
         self._config.sandbox_mode
@@ -141,80 +149,349 @@ impl ExecutionPolicyPermit {
         self._config.network_policy
     }
 
-    /// Resolve the read and write directory roots granted to this Workspace
-    /// Write Shell invocation. Additional roots come only from resources
-    /// carried by the verified authorization proof and deliberately name
-    /// directories, since MXC ProcessContainer enforces directory ACL roots.
+    /// Compile the final read and write roots for this Workspace Write Shell
+    /// invocation from the live global policy, Shell policy, and any
+    /// proof-bound resource extension. Roots deliberately name directories,
+    /// since MXC ProcessContainer enforces directory ACLs.
     pub(crate) fn workspace_shell_directories(
         &self,
-    ) -> Result<
-        (
-            Vec<haven_platform::filesystem::DirectoryCapability>,
-            Vec<haven_platform::filesystem::DirectoryCapability>,
-        ),
-        String,
-    > {
+        working_directory: &std::path::Path,
+    ) -> Result<WorkspaceShellFilesystemPolicy, String> {
         if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
             return Err("MXC process roots require the Workspace Write sandbox".into());
         }
-        let mut writable = self
+        let workspace_writable = self
             ._config
             .workspace_write_directories(self.session_id.as_deref())?;
-        let mut readonly = Vec::new();
-        if !self.resource_boundary_extension {
-            return Ok((writable, readonly));
+
+        let mut path_constraints = Vec::new();
+        if !self._config.global_file_roots.is_empty() {
+            path_constraints.push(super::filesystem::open_directory_roots(
+                &self._config.global_file_roots,
+                "security.resource_policy.files.path_roots",
+            )?);
         }
-        if self.authorized_resources.is_empty() {
-            return Err("Shell resource extension has no bound local paths".into());
+        let tool_settings = self
+            ._config
+            .tool_settings
+            .get("shell")
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut protected_readonly_paths = self._config.global_read_only_roots.clone();
+        let mut denied_paths = self._config.global_denied_paths.clone();
+        for setting in &tool_settings {
+            if !setting.resource_policy.files.path_roots.is_empty() {
+                let roots = setting
+                    .resource_policy
+                    .files
+                    .path_roots
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect::<Vec<_>>();
+                path_constraints.push(super::filesystem::open_directory_roots(
+                    &roots,
+                    "tool resource_policy.files.path_roots",
+                )?);
+            }
+            protected_readonly_paths.extend(
+                setting
+                    .resource_policy
+                    .files
+                    .read_only_roots
+                    .iter()
+                    .map(std::path::PathBuf::from),
+            );
+            denied_paths.extend(
+                setting
+                    .resource_policy
+                    .files
+                    .denied_paths
+                    .iter()
+                    .map(std::path::PathBuf::from),
+            );
         }
-        for resource in &self.authorized_resources {
-            let crate::security::DeclaredResource::LocalPath { path, access } = resource else {
-                return Err(
-                    "Shell resource extension contains an unsupported resource type".into(),
-                );
-            };
-            let path = if path.is_absolute() {
-                path.clone()
-            } else {
-                self._config
-                    .execution_workspace_for(self.session_id.as_deref())
-                    .resolve_relative(path)
-                    .ok_or_else(|| {
-                        "relative Shell resource extension has no execution workspace".to_owned()
-                    })?
-            };
-            let directory =
-                haven_platform::filesystem::DirectoryCapability::open(&path).map_err(|error| {
-                    format!(
-                        "Shell resource extension directory is unavailable or unsafe: {}",
-                        haven_common::error::sanitize_error_text(&error.to_string())
-                    )
-                })?;
-            match access {
-                haven_common::types::LocalPathAccess::Read => {
-                    if !writable
-                        .iter()
-                        .any(|existing| existing.root() == directory.root())
-                        && !readonly
-                            .iter()
-                            .any(|existing| existing.root() == directory.root())
-                    {
-                        readonly.push(directory);
-                    }
+        let protected_readonly = super::filesystem::open_filesystem_paths(
+            &protected_readonly_paths,
+            "resource_policy.files.read_only_roots",
+        )?;
+        let denied = super::filesystem::open_filesystem_paths(
+            &denied_paths,
+            "resource_policy.files.denied_paths",
+        )?;
+
+        let tool_write_constraint: Option<
+            Result<Vec<haven_platform::filesystem::DirectoryCapability>, String>,
+        > = tool_settings.iter().find_map(|setting| {
+            match setting.resource_policy.files.write_mode {
+                haven_common::config::FileWriteMode::ReadOnly => Some(Ok(Vec::new())),
+                haven_common::config::FileWriteMode::Workspace => {
+                    let workspace = self
+                        ._config
+                        .execution_workspace_for(self.session_id.as_deref());
+                    let Some(root) = workspace.root() else {
+                        return Some(Err(
+                            "tool workspace resource policy has no execution root".to_owned()
+                        ));
+                    };
+                    Some(super::filesystem::open_directory_roots(
+                        &[root.to_path_buf()],
+                        "tool resource_policy.files.workspace",
+                    ))
                 }
-                haven_common::types::LocalPathAccess::Write => {
-                    if !writable
+                haven_common::config::FileWriteMode::Roots => {
+                    let roots = setting
+                        .resource_policy
+                        .files
+                        .write_roots
                         .iter()
-                        .any(|existing| existing.root() == directory.root())
-                    {
-                        readonly.retain(|existing| existing.root() != directory.root());
-                        writable.push(directory);
+                        .map(std::path::PathBuf::from)
+                        .collect::<Vec<_>>();
+                    Some(super::filesystem::open_directory_roots(
+                        &roots,
+                        "tool resource_policy.files.write_roots",
+                    ))
+                }
+                haven_common::config::FileWriteMode::Inherit
+                | haven_common::config::FileWriteMode::Unrestricted => None,
+            }
+        });
+
+        let mut read_scope = workspace_writable.clone();
+        let mut write_scope = workspace_writable;
+        let tool_write_constraint = tool_write_constraint.transpose()?;
+        if let Some(tool_write_constraint) = &tool_write_constraint {
+            write_scope = intersect_directory_roots(&write_scope, tool_write_constraint);
+        }
+        for constraint in &path_constraints {
+            read_scope = intersect_directory_roots(&read_scope, constraint);
+            write_scope = intersect_directory_roots(&write_scope, constraint);
+        }
+
+        let tool_is_read_only = tool_settings.iter().any(|setting| {
+            setting.resource_policy.files.write_mode
+                == haven_common::config::FileWriteMode::ReadOnly
+        });
+        let mut readonly = read_scope.clone();
+        let mut extension_writable = Vec::new();
+        let mut extension_readonly = Vec::new();
+        if self.resource_boundary_extension {
+            if self.authorized_resources.is_empty() {
+                return Err("Shell resource extension has no bound local paths".into());
+            }
+            for resource in &self.authorized_resources {
+                let crate::security::DeclaredResource::LocalPath { path, access } = resource else {
+                    return Err(
+                        "Shell resource extension contains an unsupported resource type".into(),
+                    );
+                };
+                let path = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    self._config
+                        .execution_workspace_for(self.session_id.as_deref())
+                        .resolve_relative(path)
+                        .ok_or_else(|| {
+                            "relative Shell resource extension has no execution workspace"
+                                .to_owned()
+                        })?
+                };
+                let directory = haven_platform::filesystem::DirectoryCapability::open(&path)
+                    .map_err(|error| {
+                        format!(
+                            "Shell resource extension directory is unavailable or unsafe: {}",
+                            haven_common::error::sanitize_error_text(&error.to_string())
+                        )
+                    })?;
+                match access {
+                    haven_common::types::LocalPathAccess::Read => {
+                        extension_readonly.push(directory)
+                    }
+                    haven_common::types::LocalPathAccess::Write if !tool_is_read_only => {
+                        extension_writable.push(directory)
+                    }
+                    haven_common::types::LocalPathAccess::Write => {
+                        return Err("tool resource policy is read-only".into());
                     }
                 }
             }
+            for constraint in &path_constraints {
+                extension_writable = intersect_directory_roots(&extension_writable, constraint);
+                extension_readonly = intersect_directory_roots(&extension_readonly, constraint);
+            }
+            if let Some(tool_write_constraint) = &tool_write_constraint {
+                extension_writable =
+                    intersect_directory_roots(&extension_writable, tool_write_constraint);
+            }
+            write_scope.extend(extension_writable);
+            readonly.extend(extension_readonly);
         }
-        Ok((writable, readonly))
+
+        // Denied ancestors remove their entire contained grant; denied
+        // descendants remain explicit so MXC can apply native deny precedence.
+        read_scope.retain(|scope| {
+            !denied
+                .iter()
+                .any(|deny| deny.contains_path(scope.root()).unwrap_or(true))
+        });
+        write_scope.retain(|scope| {
+            !denied
+                .iter()
+                .any(|deny| deny.contains_path(scope.root()).unwrap_or(true))
+        });
+        readonly.retain(|scope| {
+            !denied
+                .iter()
+                .any(|deny| deny.contains_path(scope.root()).unwrap_or(true))
+        });
+
+        // A protected read-only ancestor turns the entire contained write
+        // root into read-only. Removing that write grant here keeps the owner
+        // policy authoritative even when `path_roots` narrowed the read scope
+        // below the configured protected root.
+        write_scope.retain(|writable| {
+            !protected_readonly
+                .iter()
+                .any(|protected| protected.contains_path(writable.root()).unwrap_or(true))
+        });
+
+        // A read grant contained by a write grant adds no read access. Keep
+        // only broader read-only roots; explicit protected subpaths are
+        // carried separately so they remain read-only below a write root.
+        readonly.retain(|readable| {
+            !write_scope
+                .iter()
+                .any(|writable| directory_root_contains(writable, readable))
+        });
+
+        let metadata_roots = haven_platform::filesystem::protected_metadata_paths(
+            &write_scope
+                .iter()
+                .map(|directory| directory.root().to_path_buf())
+                .collect::<Vec<_>>(),
+        );
+        let metadata =
+            super::filesystem::open_filesystem_paths(&metadata_roots, "protected VCS metadata")?;
+
+        let protected_readonly_paths = protected_readonly
+            .iter()
+            .chain(&metadata)
+            .filter(|protected| {
+                !denied
+                    .iter()
+                    .any(|deny| deny.contains_path(protected.path()).unwrap_or(true))
+                    && read_scope
+                        .iter()
+                        .chain(&write_scope)
+                        .any(|scope| directory_root_contains_path(scope, protected.path()))
+            })
+            .map(|protected| protected.path().to_path_buf())
+            .collect::<Vec<_>>();
+        let denied_paths = denied
+            .iter()
+            .filter(|deny| {
+                readonly.iter().chain(&write_scope).any(|scope| {
+                    directory_root_contains_path(scope, deny.path())
+                        || deny.contains_path(scope.root()).unwrap_or(true)
+                })
+            })
+            .map(|deny| deny.path().to_path_buf())
+            .collect::<Vec<_>>();
+
+        let working_directory = haven_platform::filesystem::DirectoryCapability::open(
+            working_directory,
+        )
+        .map_err(|error| {
+            format!(
+                "Shell working directory is unavailable or unsafe: {}",
+                haven_common::error::sanitize_error_text(&error.to_string())
+            )
+        })?;
+        if !roots_contain_directory(&write_scope, &working_directory)
+            && !roots_contain_directory(&readonly, &working_directory)
+        {
+            return Err(
+                "Shell working directory is outside the compiled MXC filesystem policy".into(),
+            );
+        }
+        if denied
+            .iter()
+            .any(|deny| deny.contains_path(working_directory.root()).unwrap_or(true))
+        {
+            return Err(
+                "Shell working directory is explicitly denied by the compiled MXC policy".into(),
+            );
+        }
+
+        Ok(WorkspaceShellFilesystemPolicy {
+            readwrite_roots: normalize_directory_roots(write_scope),
+            readonly_roots: normalize_directory_roots(readonly),
+            protected_readonly_paths,
+            denied_paths,
+        })
     }
+}
+
+fn intersect_directory_roots(
+    left: &[haven_platform::filesystem::DirectoryCapability],
+    right: &[haven_platform::filesystem::DirectoryCapability],
+) -> Vec<haven_platform::filesystem::DirectoryCapability> {
+    let mut intersection = Vec::new();
+    for left_root in left {
+        for right_root in right {
+            if directory_root_contains(right_root, left_root) {
+                intersection.push(left_root.clone());
+            } else if directory_root_contains(left_root, right_root) {
+                intersection.push(right_root.clone());
+            }
+        }
+    }
+    normalize_directory_roots(intersection)
+}
+
+fn normalize_directory_roots(
+    roots: Vec<haven_platform::filesystem::DirectoryCapability>,
+) -> Vec<haven_platform::filesystem::DirectoryCapability> {
+    let mut normalized = Vec::new();
+    for candidate in roots {
+        if normalized.iter().any(
+            |existing: &haven_platform::filesystem::DirectoryCapability| {
+                directory_root_contains(existing, &candidate)
+            },
+        ) {
+            continue;
+        }
+        normalized.retain(
+            |existing: &haven_platform::filesystem::DirectoryCapability| {
+                !directory_root_contains(&candidate, existing)
+            },
+        );
+        normalized.push(candidate);
+    }
+    normalized
+}
+
+fn roots_contain_directory(
+    roots: &[haven_platform::filesystem::DirectoryCapability],
+    directory: &haven_platform::filesystem::DirectoryCapability,
+) -> bool {
+    roots
+        .iter()
+        .any(|root| directory_root_contains(root, directory))
+}
+
+fn directory_root_contains(
+    root: &haven_platform::filesystem::DirectoryCapability,
+    candidate: &haven_platform::filesystem::DirectoryCapability,
+) -> bool {
+    directory_root_contains_path(root, candidate.root())
+}
+
+fn directory_root_contains_path(
+    root: &haven_platform::filesystem::DirectoryCapability,
+    candidate: &std::path::Path,
+) -> bool {
+    haven_platform::filesystem::FilesystemPathCapability::open(root.root())
+        .is_ok_and(|scope| scope.contains_path(candidate).unwrap_or(true))
 }
 
 pub(crate) fn execution_policy_denied(reason: String) -> anyhow::Error {
@@ -429,18 +706,26 @@ impl ExecutionPolicyAuthorization {
             authorization.register_tool_settings_cancellation(tool_name);
         let session_trust_cancellation =
             authorization.register_session_trust_cancellation(session_id);
-        let session_execution_mode_revision = authorization
-            .config
-            .try_read()
-            .expect("test authorization config must be idle")
-            .execution_mode_revision_for(session_id);
+        let (policy_revision, session_execution_mode_revision, execution_workspace_generation) = {
+            let config = authorization
+                .config
+                .try_read()
+                .expect("test authorization config must be idle");
+            (
+                config.policy_revision,
+                config.execution_mode_revision_for(session_id),
+                config.execution_workspace_for(session_id).generation(),
+            )
+        };
         Self {
             authorization,
-            policy_revision: 0,
+            policy_revision,
             session_execution_mode_revision,
-            execution_workspace_generation: 1,
+            execution_workspace_generation,
             execution_boundary: crate::ExecutionBoundary::HostProcess,
             session_id: session_id.map(ToOwned::to_owned),
+            resource_boundary_extension: false,
+            authorized_resources: Vec::new(),
             expires_at: execution_proof_expiry(),
             process_revocation_signal,
             tool_settings_cancellation,

@@ -8,7 +8,13 @@ function createSecurity(): SecuritySettingsDraft {
 	return {
 		execution_mode: 'collaborative',
 		resource_policy: {
-			files: { write_mode: 'workspace', write_roots: [], path_roots: [] },
+			files: {
+				write_mode: 'workspace',
+				write_roots: [],
+				path_roots: [],
+				read_only_roots: [],
+				denied_paths: [],
+			},
 			network: { access: 'restricted', allowed_domains: [] },
 		},
 		execution_root: null,
@@ -24,6 +30,18 @@ describe('SettingsSecurity', () => {
 		const onPickExecutionRoot = vi.fn(async () => 'C:\\Projects\\selected');
 		render(SettingsSecurity, { security, onPickExecutionRoot });
 		await openResourceBoundaries();
+		await fireEvent.input(screen.getByLabelText('只读保护路径'), {
+			target: { value: 'C:\\Projects\\haven\\vendor' },
+		});
+		await fireEvent.input(screen.getByLabelText('拒绝访问路径'), {
+			target: { value: 'C:\\Projects\\haven\\secrets' },
+		});
+		expect(security.resource_policy.files.read_only_roots).toEqual([
+			'C:\\Projects\\haven\\vendor',
+		]);
+		expect(security.resource_policy.files.denied_paths).toEqual([
+			'C:\\Projects\\haven\\secrets',
+		]);
 
 		await fireEvent.input(screen.getByLabelText('新会话默认目录'), {
 			target: { value: 'C:\\Projects\\demo' },

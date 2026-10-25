@@ -28,7 +28,13 @@ function fixture(): TauriCommandResponse<'get_lifecycle_hooks_settings'> {
 		},
 		trusted_hook_workspaces: [],
 		resource_policy: {
-			files: { write_mode: 'unrestricted', write_roots: [], path_roots: [] },
+			files: {
+				write_mode: 'unrestricted',
+				write_roots: [],
+				path_roots: [],
+				read_only_roots: [],
+				denied_paths: [],
+			},
 			network: { access: 'open', allowed_domains: [] },
 		},
 		config_version: 1,

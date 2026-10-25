@@ -590,7 +590,13 @@ describe('SettingsView diagnostics export', () => {
 		settings.memory.fact_inference_enabled = false;
 		settings.security.execution_mode = 'collaborative';
 		settings.security.resource_policy = {
-			files: { write_mode: 'workspace', write_roots: [], path_roots: [] },
+			files: {
+				write_mode: 'workspace',
+				write_roots: [],
+				path_roots: [],
+				read_only_roots: [],
+				denied_paths: [],
+			},
 			network: { access: 'restricted', allowed_domains: [] },
 		};
 		settings.security.execution_root = 'C:\\Haven\\Projects\\demo';

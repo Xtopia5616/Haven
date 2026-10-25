@@ -10,8 +10,8 @@ use super::execution::{
     McpStdioProcessStartAuthorization,
 };
 use super::filesystem::{
-    FileReadPolicy, FileWritePolicy, is_unc_or_device_path, open_directory_roots, path_is_allowed,
-    path_is_within, resolve_path_without_reparse,
+    FileReadPolicy, FileWritePolicy, is_unc_or_device_path, open_directory_roots,
+    open_filesystem_paths, path_is_allowed, path_is_within, resolve_path_without_reparse,
 };
 #[cfg(test)]
 use super::prompt::{LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase};
@@ -58,7 +58,9 @@ pub(super) struct SafetyConfig {
     session_execution_mode_revisions: HashMap<String, u64>,
     pub(super) sandbox_mode: SandboxMode,
     writable_roots: Vec<PathBuf>,
-    global_file_roots: Vec<PathBuf>,
+    pub(super) global_file_roots: Vec<PathBuf>,
+    pub(super) global_read_only_roots: Vec<PathBuf>,
+    pub(super) global_denied_paths: Vec<PathBuf>,
     global_network_domains: Vec<String>,
     pub(super) execution_workspace: ExecutionWorkspace,
     /// Stable working directory bindings restored from Agent session events.
@@ -76,7 +78,7 @@ pub(super) struct SafetyConfig {
     /// Session-scoped grants keyed by session id.
     session_grants: HashMap<String, SessionGrants>,
     /// Compiled tool settings for capability/resource enforcement.
-    tool_settings: HashMap<String, ToolConfig>,
+    pub(super) tool_settings: HashMap<String, ToolConfig>,
 }
 
 impl SafetyConfig {
@@ -165,6 +167,8 @@ impl AuthorizationEngine {
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 writable_roots: Vec::new(),
                 global_file_roots: Vec::new(),
+                global_read_only_roots: Vec::new(),
+                global_denied_paths: Vec::new(),
                 global_network_domains: Vec::new(),
                 execution_workspace,
                 session_workspaces: HashMap::new(),
@@ -347,6 +351,16 @@ impl AuthorizationEngine {
                     .iter()
                     .map(|root| root.to_string_lossy().into_owned())
                     .collect(),
+                read_only_roots: config
+                    .global_read_only_roots
+                    .iter()
+                    .map(|root| root.to_string_lossy().into_owned())
+                    .collect(),
+                denied_paths: config
+                    .global_denied_paths
+                    .iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect(),
             },
             network: NetworkResourcePolicy {
                 access: match config.network_policy {
@@ -519,6 +533,20 @@ impl AuthorizationEngine {
             .iter()
             .map(PathBuf::from)
             .collect::<Vec<_>>();
+        let global_read_only_roots = security
+            .resource_policy
+            .files
+            .read_only_roots
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let global_denied_paths = security
+            .resource_policy
+            .files
+            .denied_paths
+            .iter()
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
         let writable_roots_validation = open_directory_roots(
             &writable_roots,
             "security.resource_policy.files.write_roots",
@@ -529,12 +557,23 @@ impl AuthorizationEngine {
             "security.resource_policy.files.path_roots",
         )
         .map(|_| ());
+        let global_read_only_roots_validation = open_filesystem_paths(
+            &global_read_only_roots,
+            "security.resource_policy.files.read_only_roots",
+        )
+        .map(|_| ());
+        let global_denied_paths_validation = validate_denied_paths(
+            &global_denied_paths,
+            "security.resource_policy.files.denied_paths",
+        );
         let global_network_domains = security.resource_policy.network.allowed_domains.clone();
         let sandbox_mode = security.resource_policy.sandbox_mode();
         let network_policy = security.resource_policy.network_policy();
         let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
             || cfg.writable_roots != writable_roots
             || cfg.global_file_roots != global_file_roots
+            || cfg.global_read_only_roots != global_read_only_roots
+            || cfg.global_denied_paths != global_denied_paths
             || cfg.network_policy != network_policy
             || cfg.global_network_domains != global_network_domains;
         let mut permanent = SessionGrants::default();
@@ -572,6 +611,8 @@ impl AuthorizationEngine {
             || cfg.sandbox_mode != sandbox_mode
             || cfg.writable_roots != writable_roots
             || cfg.global_file_roots != global_file_roots
+            || cfg.global_read_only_roots != global_read_only_roots
+            || cfg.global_denied_paths != global_denied_paths
             || cfg.network_policy != network_policy
             || cfg.global_network_domains != global_network_domains
             || cfg.permanent != permanent;
@@ -580,6 +621,8 @@ impl AuthorizationEngine {
         cfg.sandbox_mode = sandbox_mode;
         cfg.writable_roots = writable_roots;
         cfg.global_file_roots = global_file_roots;
+        cfg.global_read_only_roots = global_read_only_roots;
+        cfg.global_denied_paths = global_denied_paths;
         cfg.network_policy = network_policy;
         cfg.global_network_domains = global_network_domains;
         cfg.permanent = permanent;
@@ -598,6 +641,14 @@ impl AuthorizationEngine {
         }
         if let Err(error) = global_file_roots_validation {
             tracing::warn!(error, "global file resource roots could not be applied");
+            return Err(error);
+        }
+        if let Err(error) = global_read_only_roots_validation {
+            tracing::warn!(error, "global read-only file roots could not be applied");
+            return Err(error);
+        }
+        if let Err(error) = global_denied_paths_validation {
+            tracing::warn!(error, "global denied file paths could not be applied");
             return Err(error);
         }
         if let Some(error) = workspace_error {
@@ -721,6 +772,9 @@ impl AuthorizationEngine {
             && matches!(request.policy.effect, OperationEffect::WorkspaceWrite)
         {
             let mut root_constraints = Vec::new();
+            let mut protection_roots = Vec::new();
+            let mut readonly_paths = cfg.global_read_only_roots.clone();
+            let mut denied_paths = cfg.global_denied_paths.clone();
             let resource_boundary_extension = matches!(
                 &proof.authorization,
                 ExecutionAuthorizationKind::Confirmed(receipt)
@@ -741,20 +795,27 @@ impl AuthorizationEngine {
                         .directory()
                         .into_iter()
                         .collect::<Vec<_>>();
+                    protection_roots
+                        .extend(roots.iter().map(|directory| directory.root().to_path_buf()));
                     root_constraints.push(roots);
                     false
                 }
                 SandboxMode::WorkspaceWrite => {
+                    protection_roots.extend(cfg.writable_roots.iter().cloned());
                     root_constraints.push(open_directory_roots(
                         &cfg.writable_roots,
                         "security.writable_roots",
                     )?);
                     false
                 }
-                SandboxMode::FullAccess => true,
+                SandboxMode::FullAccess => {
+                    protection_roots.extend(execution_workspace.root().map(Path::to_path_buf));
+                    true
+                }
             };
 
             if !cfg.global_file_roots.is_empty() {
+                protection_roots.extend(cfg.global_file_roots.iter().cloned());
                 root_constraints.push(open_directory_roots(
                     &cfg.global_file_roots,
                     "security.resource_policy.files.path_roots",
@@ -775,6 +836,7 @@ impl AuthorizationEngine {
                                 "tool workspace resource policy has no execution root".to_owned()
                             })?
                             .to_path_buf();
+                        protection_roots.push(root.clone());
                         root_constraints.push(open_directory_roots(
                             &[root],
                             "tool resource_policy.files.workspace",
@@ -788,6 +850,7 @@ impl AuthorizationEngine {
                             .iter()
                             .map(PathBuf::from)
                             .collect::<Vec<_>>();
+                        protection_roots.extend(roots.iter().cloned());
                         root_constraints.push(open_directory_roots(
                             &roots,
                             "tool resource_policy.files.write_roots",
@@ -803,17 +866,50 @@ impl AuthorizationEngine {
                         .iter()
                         .map(PathBuf::from)
                         .collect::<Vec<_>>();
+                    protection_roots.extend(roots.iter().cloned());
                     root_constraints.push(open_directory_roots(
                         &roots,
                         "tool resource_policy.files.path_roots",
                     )?);
                 }
+                readonly_paths.extend(
+                    setting
+                        .resource_policy
+                        .files
+                        .read_only_roots
+                        .iter()
+                        .map(PathBuf::from),
+                );
+                denied_paths.extend(
+                    setting
+                        .resource_policy
+                        .files
+                        .denied_paths
+                        .iter()
+                        .map(PathBuf::from),
+                );
             }
+
+            protection_roots.extend(
+                extension_roots
+                    .iter()
+                    .map(|directory| directory.root().to_path_buf()),
+            );
+            readonly_paths.extend(haven_platform::filesystem::protected_metadata_paths(
+                &protection_roots,
+            ));
+            let readonly_paths =
+                open_filesystem_paths(&readonly_paths, "resource_policy.files.read_only_roots")?;
+            let denied_paths =
+                open_filesystem_paths(&denied_paths, "resource_policy.files.denied_paths")?;
 
             Some(FileWritePolicy {
                 root_constraints,
                 extension_roots,
                 extension_targets,
+                readonly_paths,
+                denied_paths,
+                deny_all: false,
                 ambient,
             })
         } else {
@@ -2003,7 +2099,29 @@ fn file_read_policy_for_config(cfg: &SafetyConfig, tool_name: &str) -> FileReadP
                     .collect()
             }),
     );
-    FileReadPolicy { allowed_roots }
+    let mut denied_paths = cfg.global_denied_paths.clone();
+    denied_paths.extend(
+        tool_setting_names(tool_name)
+            .filter_map(|name| cfg.tool_settings.get(name))
+            .flat_map(|setting| setting.resource_policy.files.denied_paths.iter())
+            .map(PathBuf::from),
+    );
+    match open_filesystem_paths(&denied_paths, "resource_policy.files.denied_paths") {
+        Ok(denied_paths) => FileReadPolicy {
+            allowed_roots,
+            denied_paths,
+            deny_all: false,
+        },
+        Err(_) => FileReadPolicy {
+            allowed_roots,
+            denied_paths: Vec::new(),
+            deny_all: true,
+        },
+    }
+}
+
+fn validate_denied_paths(paths: &[PathBuf], setting: &str) -> Result<(), String> {
+    open_filesystem_paths(paths, setting).map(|_| ())
 }
 
 fn proof_resource_boundary_extension(proof: &AuthorizationExecutionProof) -> bool {
@@ -2388,6 +2506,52 @@ fn path_sandbox_block(
         }
         return None;
     }
+    for (path, access) in &paths {
+        let path = resolve_relative_sandbox_path((*path).clone(), execution_workspace);
+        let mut denied_paths = cfg.global_denied_paths.clone();
+        for setting in tool_setting_names(tool_name).filter_map(|name| cfg.tool_settings.get(name))
+        {
+            denied_paths.extend(
+                setting
+                    .resource_policy
+                    .files
+                    .denied_paths
+                    .iter()
+                    .map(PathBuf::from),
+            );
+        }
+        if filesystem_policy_path_matches(&denied_paths, &path)
+            || (**access == super::LocalPathAccess::Write && is_protected_metadata_path(&path))
+        {
+            return Some(PolicyBoundaryFailure {
+                reason: format!("operation '{tool_name}' is blocked by a denied or protected path"),
+                reason_code: AuthorizationReasonCode::SandboxBoundary,
+                resource_extension_allowed: false,
+            });
+        }
+        if **access == super::LocalPathAccess::Write {
+            let mut readonly_paths = cfg.global_read_only_roots.clone();
+            for setting in
+                tool_setting_names(tool_name).filter_map(|name| cfg.tool_settings.get(name))
+            {
+                readonly_paths.extend(
+                    setting
+                        .resource_policy
+                        .files
+                        .read_only_roots
+                        .iter()
+                        .map(PathBuf::from),
+                );
+            }
+            if filesystem_policy_path_matches(&readonly_paths, &path) {
+                return Some(PolicyBoundaryFailure {
+                    reason: format!("operation '{tool_name}' targets a read-only protected path"),
+                    reason_code: AuthorizationReasonCode::SandboxBoundary,
+                    resource_extension_allowed: false,
+                });
+            }
+        }
+    }
     for (path, _) in &paths {
         if !cfg.global_file_roots.is_empty() {
             let path = resolve_relative_sandbox_path((*path).clone(), execution_workspace);
@@ -2573,6 +2737,25 @@ fn resolve_relative_sandbox_path(
         return path;
     }
     execution_workspace.resolve_relative(&path).unwrap_or(path)
+}
+
+fn filesystem_policy_path_matches(paths: &[PathBuf], candidate: &Path) -> bool {
+    paths.iter().any(|path| {
+        haven_platform::filesystem::FilesystemPathCapability::open(path)
+            .map(|scope| scope.contains_path(candidate).unwrap_or(true))
+            .unwrap_or(true)
+    })
+}
+
+fn is_protected_metadata_path(path: &Path) -> bool {
+    const METADATA_NAMES: [&str; 5] = [".git", ".hg", ".svn", ".bzr", ".jj"];
+    path.components().any(|component| {
+        component.as_os_str().to_str().is_some_and(|component| {
+            METADATA_NAMES
+                .iter()
+                .any(|name| component.eq_ignore_ascii_case(name))
+        })
+    })
 }
 
 fn resource_extension_write_roots(
@@ -7387,5 +7570,297 @@ mod tests {
             )
             .await;
         assert!(matches!(result, ConfirmationResult::AutoApproved));
+    }
+
+    #[tokio::test]
+    async fn path_sandbox_enforces_readonly_denied_and_vcs_metadata_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let readonly = root.path().join("vendor");
+        let denied = root.path().join("private");
+        let git = root.path().join(".git");
+        std::fs::create_dir(&readonly).unwrap();
+        std::fs::create_dir(&denied).unwrap();
+        std::fs::create_dir(&git).unwrap();
+        let mut settings = HashMap::new();
+        settings.insert(
+            "files".into(),
+            ToolConfig {
+                resource_policy: ResourcePolicy {
+                    files: FileResourcePolicy {
+                        write_mode: FileWriteMode::Roots,
+                        write_roots: vec![root.path().to_string_lossy().into_owned()],
+                        path_roots: vec![root.path().to_string_lossy().into_owned()],
+                        read_only_roots: vec![readonly.to_string_lossy().into_owned()],
+                        denied_paths: vec![denied.to_string_lossy().into_owned()],
+                    },
+                    ..ResourcePolicy::default()
+                },
+                ..ToolConfig::default()
+            },
+        );
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
+        gw.set_tool_settings(settings).await;
+
+        for (operation, path) in [
+            ("write", readonly.join("manifest.txt")),
+            ("read", denied.join("secret.txt")),
+            ("write", git.join("config")),
+        ] {
+            let input = json!({"operation": operation, "path": path});
+            let result = if operation == "write" {
+                let mut policy = fixture_policy("files", &input, RiskLevel::Medium);
+                policy.effect = OperationEffect::WorkspaceWrite;
+                gw.engine
+                    .authorize(&fixture_request(None, "files", &input, &policy))
+                    .await
+            } else {
+                gw.check(None, "files", &input, RiskLevel::Medium).await
+            };
+            assert!(
+                matches!(result, ConfirmationResult::Blocked { .. }),
+                "{operation} to protected policy path should block: {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_shell_mxc_roots_intersect_global_and_tool_file_limits() {
+        let temp = tempfile::tempdir().expect("create shell file-policy fixture");
+        let workspace = temp.path().join("workspace");
+        let src = workspace.join("src");
+        let scoped = src.join("code");
+        let protected = scoped.join("secrets");
+        let git_metadata = scoped.join(".git");
+        let global_protected = scoped.join("global-secrets");
+        let denied = scoped.join("blocked.txt");
+        let global_denied = scoped.join("global-blocked.txt");
+        std::fs::create_dir_all(&scoped).expect("create narrowed workspace source directory");
+        std::fs::create_dir(&protected).expect("create protected read-only directory");
+        std::fs::create_dir(&git_metadata).expect("create protected VCS metadata");
+        std::fs::create_dir(&global_protected).expect("create global read-only directory");
+        std::fs::write(&denied, "denied").expect("create denied file");
+        std::fs::write(&global_denied, "globally denied").expect("create global denied file");
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        {
+            let mut config = engine
+                .config
+                .try_write()
+                .expect("test authorization config must be idle");
+            config.writable_roots = vec![src.clone()];
+            config.global_file_roots = vec![src.clone()];
+            config.global_read_only_roots = vec![global_protected.clone()];
+            config.global_denied_paths = vec![global_denied.clone()];
+            config.tool_settings.insert(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        files: FileResourcePolicy {
+                            write_mode: FileWriteMode::Roots,
+                            write_roots: vec![scoped.to_string_lossy().into_owned()],
+                            path_roots: vec![scoped.to_string_lossy().into_owned()],
+                            read_only_roots: vec![protected.to_string_lossy().into_owned()],
+                            denied_paths: vec![denied.to_string_lossy().into_owned()],
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            );
+        }
+
+        let permit = authorization.acquire().await.expect("acquire live permit");
+        let filesystem_policy = permit
+            .workspace_shell_directories(&scoped)
+            .expect("compile the final Shell MXC policy");
+        assert_eq!(
+            filesystem_policy
+                .readwrite_roots
+                .iter()
+                .map(|directory| directory.root())
+                .collect::<Vec<_>>(),
+            vec![scoped.as_path()],
+            "global workspace, tool write_roots, and global/tool path_roots must intersect"
+        );
+        assert_eq!(
+            filesystem_policy
+                .readonly_roots
+                .iter()
+                .map(|directory| directory.root())
+                .collect::<Vec<_>>(),
+            Vec::<&std::path::Path>::new(),
+            "a read scope fully covered by a write grant is redundant"
+        );
+        assert_eq!(
+            filesystem_policy.protected_readonly_paths,
+            vec![global_protected, protected, git_metadata]
+        );
+        assert_eq!(filesystem_policy.denied_paths, vec![global_denied, denied]);
+    }
+
+    #[tokio::test]
+    async fn workspace_shell_tool_write_roots_narrow_writes_without_narrowing_reads() {
+        let temp = tempfile::tempdir().expect("create shell write-root fixture");
+        let workspace = temp.path().join("workspace");
+        let src = workspace.join("src");
+        std::fs::create_dir_all(&src).expect("create workspace source directory");
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        {
+            let mut config = engine
+                .config
+                .try_write()
+                .expect("test authorization config must be idle");
+            config.tool_settings.insert(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        files: FileResourcePolicy {
+                            write_mode: FileWriteMode::Roots,
+                            write_roots: vec![src.to_string_lossy().into_owned()],
+                            ..FileResourcePolicy::default()
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            );
+        }
+
+        let permit = authorization.acquire().await.expect("acquire live permit");
+        let filesystem_policy = permit
+            .workspace_shell_directories(&src)
+            .expect("compile the Shell write-root restriction");
+        assert_eq!(
+            filesystem_policy
+                .readwrite_roots
+                .iter()
+                .map(|directory| directory.root())
+                .collect::<Vec<_>>(),
+            vec![src.as_path()],
+            "tool write_roots must intersect the global workspace write grant"
+        );
+        assert_eq!(
+            filesystem_policy
+                .readonly_roots
+                .iter()
+                .map(|directory| directory.root())
+                .collect::<Vec<_>>(),
+            vec![workspace.as_path()],
+            "write_roots alone must not accidentally narrow the read scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_shell_tool_read_only_policy_compiles_without_write_roots() {
+        let temp = tempfile::tempdir().expect("create shell read-only fixture");
+        let workspace = temp.path().join("workspace");
+        let src = workspace.join("src");
+        std::fs::create_dir_all(&src).expect("create workspace source directory");
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        {
+            let mut config = engine
+                .config
+                .try_write()
+                .expect("test authorization config must be idle");
+            config.tool_settings.insert(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        files: FileResourcePolicy {
+                            write_mode: FileWriteMode::ReadOnly,
+                            path_roots: vec![src.to_string_lossy().into_owned()],
+                            ..FileResourcePolicy::default()
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            );
+        }
+
+        let permit = authorization.acquire().await.expect("acquire live permit");
+        let filesystem_policy = permit
+            .workspace_shell_directories(&src)
+            .expect("compile the read-only Shell MXC policy");
+        assert!(
+            filesystem_policy.readwrite_roots.is_empty(),
+            "read-only tool policy must deny writes"
+        );
+        assert!(filesystem_policy.protected_readonly_paths.is_empty());
+        assert!(filesystem_policy.denied_paths.is_empty());
+        assert_eq!(
+            filesystem_policy
+                .readonly_roots
+                .iter()
+                .map(|directory| directory.root())
+                .collect::<Vec<_>>(),
+            vec![src.as_path()],
+            "the tool path_roots still bound the read-only process scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_shell_mxc_policy_rejects_a_working_directory_outside_path_roots() {
+        let temp = tempfile::tempdir().expect("create shell path-boundary fixture");
+        let workspace = temp.path().join("workspace");
+        let allowed = workspace.join("src");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&allowed).expect("create allowed source directory");
+        std::fs::create_dir_all(&outside).expect("create outside directory");
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        {
+            let mut config = engine
+                .config
+                .try_write()
+                .expect("test authorization config must be idle");
+            config.global_file_roots = vec![allowed];
+        }
+
+        let permit = authorization.acquire().await.expect("acquire live permit");
+        let error = permit
+            .workspace_shell_directories(&outside)
+            .expect_err("MXC must not add cwd outside the owner-compiled roots");
+        assert!(error.contains("outside the compiled MXC filesystem policy"));
+    }
+
+    #[tokio::test]
+    async fn workspace_shell_mxc_policy_rejects_a_denied_working_directory() {
+        let temp = tempfile::tempdir().expect("create shell denied-cwd fixture");
+        let workspace = temp.path().join("workspace");
+        let denied = workspace.join("private");
+        std::fs::create_dir_all(&denied).expect("create denied directory");
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        {
+            let mut config = engine
+                .config
+                .try_write()
+                .expect("test authorization config must be idle");
+            config.global_denied_paths = vec![denied.clone()];
+        }
+
+        let permit = authorization.acquire().await.expect("acquire live permit");
+        let error = permit
+            .workspace_shell_directories(&denied)
+            .expect_err("the owner must fail closed when cwd is explicitly denied");
+        assert!(error.contains("working directory is explicitly denied"));
     }
 }

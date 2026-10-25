@@ -1,4 +1,4 @@
-use haven_platform::filesystem::DirectoryCapability;
+use haven_platform::filesystem::{DirectoryCapability, FilesystemPathCapability};
 use haven_platform::filesystem::{
     is_link_or_reparse_point, open_for_metadata, open_read_only, same_file_identity,
 };
@@ -23,6 +23,8 @@ pub fn is_safe_local_path(path: &Path) -> bool {
 #[derive(Clone, Default)]
 pub(crate) struct FileReadPolicy {
     pub(super) allowed_roots: Vec<Vec<PathBuf>>,
+    pub(super) denied_paths: Vec<FilesystemPathCapability>,
+    pub(super) deny_all: bool,
 }
 
 /// Per-attempt filesystem authority derived from the same policy revision as
@@ -38,6 +40,11 @@ pub(crate) struct FileWritePolicy {
     /// required for safe handle-relative writes, while this list prevents it
     /// from authorizing sibling paths in the same parent directory.
     pub(super) extension_targets: Vec<PathBuf>,
+    /// Writable policy roots that remain readable but cannot be mutated.
+    pub(super) readonly_paths: Vec<FilesystemPathCapability>,
+    /// Explicit hard-deny paths. These override all root grants.
+    pub(super) denied_paths: Vec<FilesystemPathCapability>,
+    pub(super) deny_all: bool,
     pub(super) ambient: bool,
 }
 
@@ -48,6 +55,9 @@ impl FileWritePolicy {
             root_constraints: Vec::new(),
             extension_roots: Vec::new(),
             extension_targets: Vec::new(),
+            readonly_paths: Vec::new(),
+            denied_paths: Vec::new(),
+            deny_all: false,
             ambient: true,
         }
     }
@@ -58,6 +68,9 @@ impl FileWritePolicy {
             root_constraints: vec![open_directory_roots(roots, "test roots").unwrap()],
             extension_roots: Vec::new(),
             extension_targets: Vec::new(),
+            readonly_paths: Vec::new(),
+            denied_paths: Vec::new(),
+            deny_all: false,
             ambient: false,
         }
     }
@@ -75,6 +88,22 @@ impl FileWritePolicy {
                 "file mutation path changed or contains a reparse point",
             )
         })?;
+
+        if self.deny_all
+            || self
+                .denied_paths
+                .iter()
+                .any(|denied| denied.contains_path(&resolved).unwrap_or(true))
+            || self
+                .readonly_paths
+                .iter()
+                .any(|readonly| readonly.contains_path(&resolved).unwrap_or(true))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file mutation is blocked by a protected path policy",
+            ));
+        }
 
         if !self.extension_targets.is_empty()
             && !self
@@ -163,6 +192,7 @@ impl FileReadPolicy {
     pub(crate) fn for_test_roots(roots: &[PathBuf]) -> Self {
         Self {
             allowed_roots: vec![roots.to_vec()],
+            ..Self::default()
         }
     }
 
@@ -204,6 +234,15 @@ impl FileReadPolicy {
                 "file changed during path validation",
             ));
         }
+        if self.deny_all
+            || self.denied_paths.iter().any(|denied| {
+                denied
+                    .contains_opened_path(&resolved, opened)
+                    .unwrap_or(true)
+            })
+        {
+            return Err(denied());
+        }
         for roots in &self.allowed_roots {
             if !resolved_path_is_allowed(&resolved, roots) {
                 return Err(denied());
@@ -241,6 +280,25 @@ pub(crate) fn open_directory_roots(
             })
         })
         .collect()
+}
+
+pub(crate) fn open_filesystem_paths(
+    paths: &[PathBuf],
+    setting: &str,
+) -> Result<Vec<FilesystemPathCapability>, String> {
+    let mut opened = Vec::with_capacity(paths.len());
+    for (index, path) in paths.iter().enumerate() {
+        let capability = FilesystemPathCapability::open(path).map_err(|_| {
+            format!("{setting}[{index}] must be an available safe local file or directory")
+        })?;
+        if !opened
+            .iter()
+            .any(|existing: &FilesystemPathCapability| existing.same_object(&capability))
+        {
+            opened.push(capability);
+        }
+    }
+    Ok(opened)
 }
 
 fn resolved_path_is_allowed(canon: &Path, allowed: &[PathBuf]) -> bool {
@@ -369,6 +427,7 @@ mod tests {
         let opened = open_read_only(&path).unwrap();
         let policy = FileReadPolicy {
             allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+            ..FileReadPolicy::default()
         };
 
         std::fs::rename(&path, &moved).unwrap();
@@ -389,6 +448,7 @@ mod tests {
         std::fs::write(&path, b"secret").unwrap();
         let policy = FileReadPolicy {
             allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+            ..FileReadPolicy::default()
         };
 
         assert_eq!(
@@ -407,12 +467,112 @@ mod tests {
             extension_roots: open_directory_roots(&[root.path().to_path_buf()], "test root")
                 .unwrap(),
             extension_targets: vec![resolve_path_without_reparse(&target).unwrap()],
-            ambient: false,
+            ..FileWritePolicy::default()
         };
 
         assert!(policy.resolve(&target).is_ok());
         assert_eq!(
             policy.resolve(&sibling).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn readonly_subtree_blocks_file_mutations_inside_a_writable_root() {
+        let root = tempfile::tempdir().unwrap();
+        let protected = root.path().join(".git");
+        std::fs::create_dir(&protected).unwrap();
+        let policy = FileWritePolicy {
+            root_constraints: vec![
+                open_directory_roots(&[root.path().to_path_buf()], "test writable root").unwrap(),
+            ],
+            readonly_paths: open_filesystem_paths(
+                std::slice::from_ref(&protected),
+                "test read-only root",
+            )
+            .unwrap(),
+            ..FileWritePolicy::default()
+        };
+
+        assert!(policy.resolve(&root.path().join("notes.md")).is_ok());
+        assert_eq!(
+            policy
+                .resolve(&protected.join("config"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn readonly_file_blocks_its_mutation_without_blocking_sibling_files() {
+        let root = tempfile::tempdir().unwrap();
+        let protected = root.path().join("settings.json");
+        std::fs::write(&protected, b"protected").unwrap();
+        let policy = FileWritePolicy {
+            root_constraints: vec![
+                open_directory_roots(&[root.path().to_path_buf()], "test writable root").unwrap(),
+            ],
+            readonly_paths: open_filesystem_paths(
+                std::slice::from_ref(&protected),
+                "test read-only file",
+            )
+            .unwrap(),
+            ..FileWritePolicy::default()
+        };
+
+        assert!(policy.resolve(&root.path().join("notes.md")).is_ok());
+        assert_eq!(
+            policy.resolve(&protected).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn explicit_deny_overrides_temporary_write_extensions() {
+        let root = tempfile::tempdir().unwrap();
+        let denied = root.path().join("secrets");
+        std::fs::create_dir(&denied).unwrap();
+        let target = denied.join("token.txt");
+        let policy = FileWritePolicy {
+            extension_roots: open_directory_roots(
+                &[root.path().to_path_buf()],
+                "test extension root",
+            )
+            .unwrap(),
+            extension_targets: vec![resolve_path_without_reparse(&target).unwrap()],
+            denied_paths: open_filesystem_paths(std::slice::from_ref(&denied), "test denied path")
+                .unwrap(),
+            ..FileWritePolicy::default()
+        };
+
+        assert_eq!(
+            policy.resolve(&target).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn explicit_deny_blocks_file_reads_inside_a_configured_read_root() {
+        use std::io::Write;
+
+        let root = tempfile::tempdir().unwrap();
+        let denied = root.path().join("private");
+        std::fs::create_dir(&denied).unwrap();
+        let path = denied.join("note.txt");
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(b"private")
+            .unwrap();
+        let policy = FileReadPolicy {
+            allowed_roots: vec![vec![root.path().to_path_buf()]],
+            denied_paths: open_filesystem_paths(std::slice::from_ref(&denied), "test denied path")
+                .unwrap(),
+            deny_all: false,
+        };
+
+        assert_eq!(
+            policy.open_read(&path).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
         );
     }
@@ -427,6 +587,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let policy = FileReadPolicy {
             allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+            ..FileReadPolicy::default()
         };
 
         assert!(policy.open_read(&link).is_err());
@@ -441,6 +602,7 @@ mod tests {
         std::fs::write(&path, b"same handle").unwrap();
         let policy = FileReadPolicy {
             allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+            ..FileReadPolicy::default()
         };
 
         let mut opened = policy.open_read(&path).unwrap();
@@ -460,6 +622,7 @@ mod tests {
         std::fs::write(&path, b"authorized contents").unwrap();
         let policy = FileReadPolicy {
             allowed_roots: vec![vec![allowed.path().to_path_buf()]],
+            ..FileReadPolicy::default()
         };
 
         let mut opened = policy.open_read(&path).unwrap();

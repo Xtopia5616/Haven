@@ -1124,6 +1124,189 @@ pub struct FileIdentity {
     index: u128,
 }
 
+/// A held identity for one existing file or directory used by path policy.
+/// Paths are metadata for matching; the file handle pins the selected object.
+#[derive(Clone, Debug)]
+pub struct FilesystemPathCapability {
+    path: PathBuf,
+    identity: FileIdentity,
+    is_directory: bool,
+    _file: Arc<File>,
+}
+
+impl FilesystemPathCapability {
+    /// Open an existing local file or directory without following a reparse
+    /// point. This capability is suitable for policy identity and ancestry
+    /// checks, not for reading or mutating the target.
+    pub fn open(path: &Path) -> io::Result<Self> {
+        if !path.is_absolute() {
+            return Err(permission_denied(
+                "policy path must be a local absolute path",
+            ));
+        }
+        let path = normalize_absolute_path(path)
+            .filter(|path| !is_unc_or_device_path(path))
+            .ok_or_else(|| permission_denied("policy path must be a local absolute path"))?;
+        reject_reparse_components(&path)?;
+        let opened = open_for_metadata(&path)?;
+        let metadata = opened.metadata()?;
+        if is_link_or_reparse_point(&metadata) || (!metadata.is_file() && !metadata.is_dir()) {
+            return Err(permission_denied(
+                "policy path must be a regular file or directory",
+            ));
+        }
+        let canonical = normalize_windows_extended_path(std::fs::canonicalize(&path)?)
+            .ok_or_else(|| permission_denied("policy path is not local"))?;
+        let resolved = open_for_metadata(&canonical)?;
+        if !same_file_identity(&opened, &resolved)? {
+            return Err(permission_denied("policy path changed while opening"));
+        }
+        Ok(Self {
+            path: canonical,
+            identity: file_identity(&opened)?,
+            is_directory: metadata.is_dir(),
+            _file: Arc::new(opened),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn is_directory(&self) -> bool {
+        self.is_directory
+    }
+
+    pub fn same_object(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+
+    /// Match an existing object or a not-yet-created descendant. Existing
+    /// ancestors are also compared by filesystem identity, so alternate path
+    /// spellings that reach the same directory cannot evade the policy.
+    pub fn contains_path(&self, candidate: &Path) -> io::Result<bool> {
+        if !candidate.is_absolute() {
+            return Ok(false);
+        }
+        let candidate = normalize_absolute_path(candidate)
+            .ok_or_else(|| permission_denied("policy candidate path is invalid"))?;
+        // Windows canonicalization and handle-based APIs commonly return
+        // local paths with the `\\?\` prefix. Normalize that prefix before
+        // rejecting UNC/device namespaces so local extended paths still match.
+        if is_unc_or_device_path(&candidate) {
+            return Ok(false);
+        }
+        if path_components_contain(&self.path, &candidate)
+            && (self.is_directory || path_components_equal(&self.path, &candidate))
+        {
+            return Ok(true);
+        }
+
+        let mut current = candidate.as_path();
+        loop {
+            match open_for_metadata(current) {
+                Ok(opened) if file_identity(&opened)? == self.identity => return Ok(true),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            let Some(parent) = current.parent() else {
+                break;
+            };
+            if parent == current {
+                break;
+            }
+            current = parent;
+        }
+        Ok(false)
+    }
+
+    pub fn contains_opened_path(&self, candidate: &Path, opened: &File) -> io::Result<bool> {
+        if file_identity(opened)? == self.identity {
+            return Ok(true);
+        }
+        self.contains_path(candidate)
+    }
+}
+
+/// VCS control metadata at the root of a writable directory remains
+/// read-only. Direct-child lookup is bounded and does not traverse a project.
+pub fn protected_metadata_paths(writable_roots: &[PathBuf]) -> Vec<PathBuf> {
+    const METADATA_NAMES: [&str; 5] = [".git", ".hg", ".svn", ".bzr", ".jj"];
+    let mut paths = Vec::new();
+    for root in writable_roots {
+        if METADATA_NAMES.iter().any(|name| {
+            root.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case(name))
+        }) {
+            paths.push(root.clone());
+        }
+        for name in METADATA_NAMES {
+            let path = root.join(name);
+            if std::fs::symlink_metadata(&path).is_ok() {
+                paths.push(path);
+            }
+        }
+    }
+    paths
+}
+
+fn normalize_absolute_path(path: &Path) -> Option<PathBuf> {
+    let path = normalize_windows_extended_path(path.to_path_buf())?;
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+        }
+    }
+    normalized.is_absolute().then_some(normalized)
+}
+
+fn path_components_contain(root: &Path, candidate: &Path) -> bool {
+    let root = root.components().collect::<Vec<_>>();
+    let candidate = candidate.components().collect::<Vec<_>>();
+    candidate.len() >= root.len()
+        && root.iter().zip(candidate.iter()).all(|(left, right)| {
+            #[cfg(windows)]
+            {
+                left.as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+            }
+            #[cfg(not(windows))]
+            {
+                left == right
+            }
+        })
+}
+
+fn path_components_equal(left: &Path, right: &Path) -> bool {
+    let left = left.components().collect::<Vec<_>>();
+    let right = right.components().collect::<Vec<_>>();
+    left.len() == right.len()
+        && left.iter().zip(right.iter()).all(|(left, right)| {
+            #[cfg(windows)]
+            {
+                left.as_os_str()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+            }
+            #[cfg(not(windows))]
+            {
+                left == right
+            }
+        })
+}
+
 /// Read a stable object identity from an already-open file handle.
 /// Platforms without a supported identity API fail closed.
 pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
@@ -1180,4 +1363,70 @@ pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
 /// support fail closed.
 pub fn same_file_identity(left: &File, right: &File) -> io::Result<bool> {
     Ok(file_identity(left)? == file_identity(right)?)
+}
+
+#[cfg(test)]
+mod filesystem_path_capability_tests {
+    use super::{FilesystemPathCapability, protected_metadata_paths};
+
+    #[test]
+    fn filesystem_path_capability_merges_same_object_and_matches_descendants() {
+        let root = tempfile::tempdir().unwrap();
+        let protected = root.path().join(".git");
+        std::fs::create_dir(&protected).unwrap();
+        let alias = protected.join(".");
+        let left = FilesystemPathCapability::open(&protected).unwrap();
+        let right = FilesystemPathCapability::open(&alias).unwrap();
+
+        assert!(left.same_object(&right));
+        assert!(left.contains_path(&protected.join("config")).unwrap());
+        assert!(!left.contains_path(&root.path().join(".github")).unwrap());
+
+        #[cfg(windows)]
+        {
+            let extended = std::path::PathBuf::from(format!("\\\\?\\{}", protected.display()));
+            let extended_capability = FilesystemPathCapability::open(&extended).unwrap();
+            assert!(left.same_object(&extended_capability));
+            assert!(left.contains_path(&extended.join("config")).unwrap());
+        }
+    }
+
+    #[test]
+    fn filesystem_path_capability_matches_files_without_granting_siblings() {
+        let root = tempfile::tempdir().unwrap();
+        let protected = root.path().join("secrets.txt");
+        std::fs::write(&protected, b"secret").unwrap();
+        let capability = FilesystemPathCapability::open(&protected).unwrap();
+
+        assert!(capability.contains_path(&protected).unwrap());
+        assert!(
+            !capability
+                .contains_path(&root.path().join("secrets.txt.backup"))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn protected_metadata_paths_preserve_vcs_metadata_under_write_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let git = root.path().join(".git");
+        std::fs::create_dir(&git).unwrap();
+
+        assert_eq!(
+            protected_metadata_paths(&[root.path().to_path_buf()]),
+            vec![git]
+        );
+    }
+
+    #[test]
+    fn protected_metadata_root_is_retained_as_its_own_protection() {
+        let root = tempfile::tempdir().unwrap();
+        let metadata = root.path().join(".hg");
+        std::fs::create_dir(&metadata).unwrap();
+
+        assert_eq!(
+            protected_metadata_paths(&[metadata.clone()]),
+            vec![metadata]
+        );
+    }
 }

@@ -231,8 +231,8 @@ export interface TtsConfigInput { provider_name?: string; model?: string; voice?
 export interface TtsConfig { provider_name: string; model: string; voice: string; timeout_secs: number }
 export interface ContextLimitsConfigInput { compaction_ratio?: number; compaction_reserve_tokens?: number; default_context_window?: number; response_token_floor?: number; max_observation_chars?: number; max_transcript_chars?: number; max_attachment_images?: number; max_attachment_files?: number; max_attachment_image_bytes?: number; max_attachment_file_bytes?: number; max_upload_total_bytes?: number; max_attachment_image_dim_px?: number; attachment_image_jpeg_quality?: number; file_max_full_file_bytes?: number; file_max_patch_bytes?: number; file_line_span?: number; file_line_max_bytes?: number; file_summary_input_chars?: number; file_max_list_entries?: number; file_byte_read_max_bytes?: number; file_write_max_bytes?: number; file_vision_max_bytes?: number; search_snippet_chars?: number; search_max_results?: number; search_max_file_size_bytes?: number; search_window_bytes?: number; notification_summary_chars?: number; tool_run_result_context_chars?: number; partial_checkpoint_min_chars?: number; partial_checkpoint_interval_secs?: number; fact_infer_interval_steps?: number; fact_extraction_min_interval_secs?: number; max_known_facts?: number; sanitize_field_max_chars?: number; file_summary_timeout_secs?: number; turn_deadline_secs?: number; incomplete_tool_args_retries?: number; stream_stall_warn_delay_ms?: number; reasoning_echo_max_chars?: number; foreground_tool_output_tail_max_chars?: number; foreground_tool_output_emit_interval_ms?: number; tool_run_terminal_ttl_secs?: number; mcp_max_binary_base64_bytes?: number; mcp_max_sse_buffer_bytes?: number; skills_max_md_bytes?: number; skills_max_parse_lines?: number; skills_max_line_bytes?: number; self_tool_max_instructions_bytes?: number; self_tool_max_script_bytes?: number; network_max_retries?: number; network_backoff_base_secs?: number; network_max_body_bytes?: number; clipboard_history_entries?: number; clipboard_history_max_entries?: number; clipboard_entry_max_chars?: number; max_running_background_tool_runs?: number; event_chunk_batch_max_bytes?: number; input_ring_buffer_secs?: number; embedding_chunk_size?: number; max_tools_per_request?: number }
 export interface ContextLimitsConfig { compaction_ratio: number; compaction_reserve_tokens: number; default_context_window: number; response_token_floor: number; max_observation_chars: number; max_transcript_chars: number; max_attachment_images: number; max_attachment_files: number; max_attachment_image_bytes: number; max_attachment_file_bytes: number; max_upload_total_bytes: number; max_attachment_image_dim_px: number; attachment_image_jpeg_quality: number; file_max_full_file_bytes: number; file_max_patch_bytes: number; file_line_span: number; file_line_max_bytes: number; file_summary_input_chars: number; file_max_list_entries: number; file_byte_read_max_bytes: number; file_write_max_bytes: number; file_vision_max_bytes: number; search_snippet_chars: number; search_max_results: number; search_max_file_size_bytes: number; search_window_bytes: number; notification_summary_chars: number; tool_run_result_context_chars: number; partial_checkpoint_min_chars: number; partial_checkpoint_interval_secs: number; fact_infer_interval_steps: number; fact_extraction_min_interval_secs: number; max_known_facts: number; sanitize_field_max_chars: number; file_summary_timeout_secs: number; turn_deadline_secs: number; incomplete_tool_args_retries: number; stream_stall_warn_delay_ms: number; reasoning_echo_max_chars: number; foreground_tool_output_tail_max_chars: number; foreground_tool_output_emit_interval_ms: number; tool_run_terminal_ttl_secs: number; mcp_max_binary_base64_bytes: number; mcp_max_sse_buffer_bytes: number; skills_max_md_bytes: number; skills_max_parse_lines: number; skills_max_line_bytes: number; self_tool_max_instructions_bytes: number; self_tool_max_script_bytes: number; network_max_retries: number; network_backoff_base_secs: number; network_max_body_bytes: number; clipboard_history_entries: number; clipboard_history_max_entries: number; clipboard_entry_max_chars: number; max_running_background_tool_runs: number; event_chunk_batch_max_bytes: number; input_ring_buffer_secs: number; embedding_chunk_size: number; max_tools_per_request: number }
-export interface FileResourcePolicyInput { write_mode?: FileWriteModeInput; write_roots?: string[]; path_roots?: string[] }
-export interface FileResourcePolicy { write_mode: FileWriteMode; write_roots: string[]; path_roots: string[] }
+export interface FileResourcePolicyInput { write_mode?: FileWriteModeInput; write_roots?: string[]; path_roots?: string[]; read_only_roots?: string[]; denied_paths?: string[] }
+export interface FileResourcePolicy { write_mode: FileWriteMode; write_roots: string[]; path_roots: string[]; read_only_roots: string[]; denied_paths: string[] }
 export const FILE_WRITE_MODE_INPUT_VALUES = ['inherit', 'read_only', 'workspace', 'roots', 'unrestricted'] as const;
 export type FileWriteModeInput = (typeof FILE_WRITE_MODE_INPUT_VALUES)[number];
 export const FILE_WRITE_MODE_VALUES = ['inherit', 'read_only', 'workspace', 'roots', 'unrestricted'] as const;
@@ -2767,6 +2767,14 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 									shape: { kind: 'array', items: { kind: 'string' } },
 								},
 								'path_roots': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'read_only_roots': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'denied_paths': {
 									optional: false,
 									shape: { kind: 'array', items: { kind: 'string' } },
 								}
@@ -5331,6 +5339,14 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 											'path_roots': {
 												optional: false,
 												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'read_only_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'denied_paths': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
 											}
 										}
 									},
@@ -6022,6 +6038,14 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 												shape: { kind: 'array', items: { kind: 'string' } },
 											},
 											'path_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'read_only_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'denied_paths': {
 												optional: false,
 												shape: { kind: 'array', items: { kind: 'string' } },
 											}
@@ -11179,6 +11203,14 @@ export const SETTINGS_RESPONSE_SHAPE = {
 											'path_roots': {
 												optional: false,
 												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'read_only_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'denied_paths': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
 											}
 										}
 									},
@@ -11870,6 +11902,14 @@ export const SETTINGS_RESPONSE_SHAPE = {
 												shape: { kind: 'array', items: { kind: 'string' } },
 											},
 											'path_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'read_only_roots': {
+												optional: false,
+												shape: { kind: 'array', items: { kind: 'string' } },
+											},
+											'denied_paths': {
 												optional: false,
 												shape: { kind: 'array', items: { kind: 'string' } },
 											}

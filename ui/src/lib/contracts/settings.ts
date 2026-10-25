@@ -36,6 +36,8 @@ export type SecuritySettingsDraft = Omit<
 			write_mode: GeneratedFileWriteModeInput;
 			write_roots: string[];
 			path_roots: string[];
+			read_only_roots: string[];
+			denied_paths: string[];
 		};
 		network: {
 			access: GeneratedNetworkAccessBoundaryInput;

@@ -13,6 +13,8 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 
+use crate::filesystem::FilesystemPathCapability;
+
 mod diagnostics;
 
 const PIPE_BUFFER_BYTES: usize = 16 * 1024;
@@ -30,6 +32,11 @@ pub struct SandboxedProcessRequest {
     pub working_directory: PathBuf,
     pub readwrite_paths: Vec<PathBuf>,
     pub readonly_paths: Vec<PathBuf>,
+    /// Explicit read-only protections. These paths override overlapping write
+    /// roots and require a backend with native path policy enforcement.
+    pub protected_readonly_paths: Vec<PathBuf>,
+    /// Paths whose reads and writes must be denied.
+    pub denied_paths: Vec<PathBuf>,
     pub environment: Vec<(OsString, OsString)>,
     pub allow_network: bool,
     /// PowerShell needs desktop handles to initialize inside BaseContainer.
@@ -312,25 +319,56 @@ fn build_container_request(
 
     let working_directory = normalize_directory(&request.working_directory, "working directory")?;
     let readwrite_paths = normalize_directories(&request.readwrite_paths, "writable root")?;
+    let readonly_paths = normalize_policy_paths(&request.readonly_paths, "read-only root")?;
+    let protected_readonly_paths = normalize_policy_paths(
+        &request.protected_readonly_paths,
+        "protected read-only path",
+    )?;
+    let denied_paths = normalize_policy_paths(&request.denied_paths, "denied path")?;
+
+    // The authorization owner compiles path precedence before constructing
+    // this request. The MXC adapter validates the final policy and serializes
+    // it without widening or narrowing the owner's grants.
     anyhow::ensure!(
-        !readwrite_paths.is_empty(),
-        "MXC requires at least one authorized writable root"
+        !readwrite_paths.iter().any(|writable| {
+            denied_paths
+                .iter()
+                .any(|denied| denied.contains_path(writable).unwrap_or(true))
+                || protected_readonly_paths
+                    .iter()
+                    .any(|readonly| readonly.contains_path(writable).unwrap_or(true))
+        }),
+        "MXC request contains a writable root covered by a protected or denied path"
     );
-    let mut readonly_paths = normalize_directories(&request.readonly_paths, "read-only root")?;
-    readonly_paths.retain(|readonly| {
-        !readwrite_paths
+    let mut readonly_paths = deduplicate_policy_paths(readonly_paths);
+    readonly_paths.extend(protected_readonly_paths.iter().cloned());
+    readonly_paths = deduplicate_policy_paths(readonly_paths);
+    anyhow::ensure!(
+        !readonly_paths.iter().any(|readonly| {
+            denied_paths
+                .iter()
+                .any(|denied| denied.contains_path(readonly.path()).unwrap_or(true))
+        }),
+        "MXC request contains a read-only root covered by a denied path"
+    );
+    anyhow::ensure!(
+        readwrite_paths
             .iter()
-            .any(|writable| path_contains(writable, readonly) || path_contains(readonly, writable))
-    });
-    if !readwrite_paths
+            .map(PathBuf::as_path)
+            .chain(readonly_paths.iter().map(|path| path.path()))
+            .any(|root| path_contains(root, &working_directory)),
+        "MXC working directory is outside the authorized filesystem roots"
+    );
+    anyhow::ensure!(
+        !denied_paths
+            .iter()
+            .any(|denied| denied.contains_path(&working_directory).unwrap_or(true)),
+        "MXC working directory is explicitly denied"
+    );
+    let readonly_paths = readonly_paths
         .iter()
-        .any(|root| path_contains(root, &working_directory))
-        && !readonly_paths
-            .iter()
-            .any(|root| path_contains(root, &working_directory))
-    {
-        readonly_paths.push(working_directory.clone());
-    }
+        .map(|path| path.path().to_path_buf())
+        .collect::<Vec<_>>();
 
     let environment = request
         .environment
@@ -380,6 +418,10 @@ fn build_container_request(
                 .iter()
                 .map(|path| path_to_string(path))
                 .collect(),
+            denied_paths: denied_paths
+                .iter()
+                .map(|path| path.path().to_string_lossy().into_owned())
+                .collect(),
             ..Default::default()
         }),
         network: Some(NetworkPolicy {
@@ -422,11 +464,21 @@ fn launch_with_fallback<T>(
 ) -> anyhow::Result<(T, Option<String>)> {
     let requested = build_container_request(request.clone(), NetworkProfile::Requested)?;
     let mut failures = Vec::new();
-    let requested_requirement = if request.allow_network {
+    let (requires_native_filesystem_precedence, requires_native_denied_paths) =
+        filesystem_policy_requirements(&request)?;
+    let filesystem_requirement = if requires_native_denied_paths {
+        ProbeRequirement::BaseContainerWithDeniedPaths
+    } else if requires_native_filesystem_precedence {
         ProbeRequirement::BaseContainer
     } else {
         ProbeRequirement::CompatibleTier
     };
+    let requested_requirement =
+        if request.allow_network && filesystem_requirement == ProbeRequirement::CompatibleTier {
+            ProbeRequirement::BaseContainer
+        } else {
+            filesystem_requirement
+        };
     match launch_attempt(requested, requested_requirement, &mut probe, &mut spawn) {
         Ok((process, probe_output, capture_notice)) => {
             if probe_is_base_container(&probe_output) {
@@ -469,12 +521,7 @@ fn launch_with_fallback<T>(
                 continue;
             }
         };
-        match launch_attempt(
-            candidate,
-            ProbeRequirement::CompatibleTier,
-            &mut probe,
-            &mut spawn,
-        ) {
+        match launch_attempt(candidate, filesystem_requirement, &mut probe, &mut spawn) {
             Ok((process, probe_output, capture_notice)) => {
                 let notice = compatibility_notice(
                     &probe_output,
@@ -532,6 +579,7 @@ fn combine_notices(isolation_notice: String, capture_notice: Option<String>) -> 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProbeRequirement {
     BaseContainer,
+    BaseContainerWithDeniedPaths,
     CompatibleTier,
 }
 
@@ -561,6 +609,10 @@ fn launch_attempt<T>(
     diagnostics::log_probe_warnings(&probe_output.warnings);
     let compatible = match requirement {
         ProbeRequirement::BaseContainer => probe_is_base_container(&probe_output),
+        ProbeRequirement::BaseContainerWithDeniedPaths => {
+            probe_is_base_container(&probe_output)
+                && probe_output.probes.base_container_supports_deny_paths
+        }
         ProbeRequirement::CompatibleTier => probe_is_compatible_fallback(&probe_output),
     };
     if !compatible {
@@ -639,6 +691,9 @@ fn launch_attempt<T>(
 fn probe_satisfies(probe: &mxc_sdk::v1::ProbeOutput, requirement: ProbeRequirement) -> bool {
     match requirement {
         ProbeRequirement::BaseContainer => probe_is_base_container(probe),
+        ProbeRequirement::BaseContainerWithDeniedPaths => {
+            probe_is_base_container(probe) && probe.probes.base_container_supports_deny_paths
+        }
         ProbeRequirement::CompatibleTier => probe_is_compatible_fallback(probe),
     }
 }
@@ -792,6 +847,17 @@ fn probe_rejection_reason(
             probe.tier.unwrap_or("unknown"),
             probe.needs_dacl_augmentation
         ),
+        ProbeRequirement::BaseContainerWithDeniedPaths
+            if probe_is_base_container(probe)
+                && !probe.probes.base_container_supports_deny_paths =>
+        {
+            "BaseContainer 主机不支持 MXC 原生 deniedPaths，拒绝启动以保留显式拒绝策略 [mxc.denied_paths_unsupported]".to_owned()
+        }
+        ProbeRequirement::BaseContainerWithDeniedPaths => format!(
+            "探测未找到支持 deniedPaths 的 BaseContainer [mxc.base_container_denied_paths_unavailable]（tier={}，DACL补强={:?}）",
+            probe.tier.unwrap_or("unknown"),
+            probe.needs_dacl_augmentation
+        ),
         ProbeRequirement::CompatibleTier => format!(
             "探测未找到可接受的兼容隔离层 [mxc.compatible_tier_unavailable]（tier={}，DACL补强={:?}）",
             probe.tier.unwrap_or("unknown"),
@@ -932,11 +998,93 @@ fn normalize_directories(paths: &[PathBuf], label: &str) -> anyhow::Result<Vec<P
     let mut normalized: Vec<PathBuf> = Vec::with_capacity(paths.len());
     for path in paths {
         let path = normalize_directory(path, label)?;
-        if !normalized.iter().any(|existing| same_path(existing, &path)) {
+        let identity = FilesystemPathCapability::open(&path)
+            .map_err(|_| anyhow::anyhow!("MXC {label} identity is unavailable"))?;
+        if !normalized.iter().any(|existing| {
+            FilesystemPathCapability::open(existing)
+                .is_ok_and(|existing| existing.same_object(&identity))
+        }) {
             normalized.push(path);
         }
     }
     Ok(normalized)
+}
+
+fn normalize_policy_paths(
+    paths: &[PathBuf],
+    label: &str,
+) -> anyhow::Result<Vec<FilesystemPathCapability>> {
+    paths
+        .iter()
+        .map(|path| {
+            FilesystemPathCapability::open(path)
+                .map_err(|_| anyhow::anyhow!("MXC {label} is unavailable or unsafe"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+        .map(deduplicate_policy_paths)
+}
+
+fn deduplicate_policy_paths(paths: Vec<FilesystemPathCapability>) -> Vec<FilesystemPathCapability> {
+    let mut normalized = Vec::with_capacity(paths.len());
+    for candidate in paths {
+        if !normalized
+            .iter()
+            .any(|existing: &FilesystemPathCapability| existing.same_object(&candidate))
+        {
+            normalized.push(candidate);
+        }
+    }
+    normalized
+}
+
+fn filesystem_policy_requirements(
+    request: &SandboxedProcessRequest,
+) -> anyhow::Result<(bool, bool)> {
+    let writable = normalize_directories(&request.readwrite_paths, "writable root")?;
+    let readonly = normalize_policy_paths(&request.readonly_paths, "read-only root")?;
+    let protected = normalize_policy_paths(
+        &request.protected_readonly_paths,
+        "protected read-only path",
+    )?;
+    let writable = normalize_policy_paths(&writable, "writable root")?;
+
+    // Any read/write overlap needs MXC's native, most-specific path handling:
+    // a writable child under a broader read scope, and protected read-only
+    // children under a writable root. Ancestor protections are removed from
+    // the write grant by the authorization owner before this request is built.
+    let mut requires_native_precedence = false;
+    for write_root in &writable {
+        for readonly in readonly.iter().chain(&protected) {
+            if write_root.contains_path(readonly.path()).unwrap_or(true)
+                || readonly.contains_path(write_root.path()).unwrap_or(true)
+            {
+                requires_native_precedence = true;
+            }
+        }
+    }
+
+    // MXC only exposes native deniedPaths on some BaseContainer hosts. A deny
+    // that intersects an effective read grant or a descendant of a write
+    // grant must not fall back to a tier that cannot enforce it. Ancestor
+    // denies remove the whole grant in the authorization owner.
+    let denied = normalize_policy_paths(&request.denied_paths, "denied path")?;
+    let readonly_overlaps_deny = readonly.iter().chain(&protected).any(|root| {
+        denied.iter().any(|deny| {
+            deny.contains_path(root.path()).unwrap_or(true)
+                || root.contains_path(deny.path()).unwrap_or(true)
+        })
+    });
+    let writable_descendant_deny = writable.iter().any(|root| {
+        denied.iter().any(|deny| {
+            !deny.contains_path(root.path()).unwrap_or(true)
+                && root.contains_path(deny.path()).unwrap_or(true)
+        })
+    });
+
+    Ok((
+        requires_native_precedence,
+        readonly_overlaps_deny || writable_descendant_deny,
+    ))
 }
 
 fn normalize_directory(path: &Path, label: &str) -> anyhow::Result<PathBuf> {
@@ -957,23 +1105,15 @@ fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
-    left.to_string_lossy()
-        .eq_ignore_ascii_case(&right.to_string_lossy())
-}
-
 fn path_contains(root: &Path, candidate: &Path) -> bool {
-    let root = root
-        .to_string_lossy()
-        .trim_end_matches(['\\', '/'])
-        .to_ascii_lowercase();
-    let candidate = candidate
-        .to_string_lossy()
-        .trim_end_matches(['\\', '/'])
-        .to_ascii_lowercase();
-    candidate == root
-        || candidate.starts_with(&format!("{root}\\"))
-        || candidate.starts_with(&format!("{root}/"))
+    let root = root.components().collect::<Vec<_>>();
+    let candidate = candidate.components().collect::<Vec<_>>();
+    candidate.len() >= root.len()
+        && root.iter().zip(candidate.iter()).all(|(left, right)| {
+            left.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+        })
 }
 
 fn os_to_string(value: &OsStr) -> anyhow::Result<String> {
@@ -1022,8 +1162,9 @@ fn lock_process(
 #[cfg(test)]
 mod tests {
     use super::{
-        NetworkProfile, SandboxedProcessRequest, build_container_request, compatibility_profiles,
-        launch_with_fallback, quote_windows_argument,
+        NetworkProfile, ProbeRequirement, SandboxedProcessRequest, build_container_request,
+        compatibility_profiles, filesystem_policy_requirements, launch_with_fallback,
+        probe_satisfies, quote_windows_argument,
     };
     use std::ffi::OsString;
 
@@ -1034,6 +1175,8 @@ mod tests {
             working_directory: root.to_path_buf(),
             readwrite_paths: vec![root.to_path_buf()],
             readonly_paths: Vec::new(),
+            protected_readonly_paths: Vec::new(),
+            denied_paths: Vec::new(),
             environment: Vec::new(),
             allow_network,
             allow_desktop_handle_access: false,
@@ -1057,7 +1200,7 @@ mod tests {
                 guarded_capture_available: false,
                 bfscfg_present: false,
                 bfs_compiled_in: false,
-                base_container_supports_deny_paths: false,
+                base_container_supports_deny_paths: true,
                 base_container_supports_enumerate_paths: false,
                 base_container_supports_ingress_host_loopback_allow: false,
                 base_container_supports_identityless_loopback_proxy: false,
@@ -1117,6 +1260,8 @@ mod tests {
                 working_directory: root.path().to_path_buf(),
                 readwrite_paths: vec![root.path().to_path_buf()],
                 readonly_paths: Vec::new(),
+                protected_readonly_paths: Vec::new(),
+                denied_paths: Vec::new(),
                 environment: vec![(
                     OsString::from("PATH"),
                     OsString::from("C:\\Windows\\System32"),
@@ -1150,6 +1295,227 @@ mod tests {
     }
 
     #[test]
+    fn container_request_preserves_authorized_filesystem_roots_and_accepts_read_only_policy() {
+        let root = tempfile::tempdir().expect("create MXC read-only fixture");
+        let request = build_container_request(
+            SandboxedProcessRequest {
+                program: OsString::from("cmd"),
+                arguments: Vec::new(),
+                working_directory: root.path().to_path_buf(),
+                readwrite_paths: Vec::new(),
+                readonly_paths: vec![root.path().to_path_buf()],
+                protected_readonly_paths: Vec::new(),
+                denied_paths: Vec::new(),
+                environment: Vec::new(),
+                allow_network: false,
+                allow_desktop_handle_access: false,
+            },
+            NetworkProfile::Requested,
+        )
+        .expect("MXC can start a process with a read-only filesystem policy");
+
+        let filesystem = request.filesystem.expect("filesystem policy is explicit");
+        assert!(filesystem.readwrite_paths.is_empty());
+        assert_eq!(
+            filesystem.readonly_paths,
+            vec![root.path().to_string_lossy().into_owned()]
+        );
+    }
+
+    #[test]
+    fn container_request_does_not_add_unrequested_working_directory_access() {
+        let allowed = tempfile::tempdir().expect("create authorized MXC root");
+        let outside = tempfile::tempdir().expect("create outside MXC root");
+        let result = build_container_request(
+            SandboxedProcessRequest {
+                program: OsString::from("cmd"),
+                arguments: Vec::new(),
+                working_directory: outside.path().to_path_buf(),
+                readwrite_paths: vec![allowed.path().to_path_buf()],
+                readonly_paths: Vec::new(),
+                protected_readonly_paths: Vec::new(),
+                denied_paths: Vec::new(),
+                environment: Vec::new(),
+                allow_network: false,
+                allow_desktop_handle_access: false,
+            },
+            NetworkProfile::Requested,
+        );
+
+        assert!(
+            result
+                .expect_err("working directory outside explicit roots must fail closed")
+                .to_string()
+                .contains("outside the authorized filesystem roots")
+        );
+    }
+
+    #[test]
+    fn container_request_rejects_a_working_directory_inside_a_denied_path() {
+        let root = tempfile::tempdir().expect("create MXC deny fixture");
+        let denied = root.path().join("private");
+        std::fs::create_dir(&denied).expect("create denied directory");
+        let error = build_container_request(
+            SandboxedProcessRequest {
+                program: OsString::from("cmd"),
+                arguments: Vec::new(),
+                working_directory: denied.clone(),
+                readwrite_paths: vec![root.path().to_path_buf()],
+                readonly_paths: Vec::new(),
+                protected_readonly_paths: Vec::new(),
+                denied_paths: vec![denied],
+                environment: Vec::new(),
+                allow_network: false,
+                allow_desktop_handle_access: false,
+            },
+            NetworkProfile::Requested,
+        )
+        .expect_err("MXC must not start with a working directory under a hard deny");
+
+        assert!(
+            error
+                .to_string()
+                .contains("working directory is explicitly denied")
+        );
+    }
+
+    #[test]
+    fn container_request_keeps_overlapping_read_and_write_grants_from_owner() {
+        let root = tempfile::tempdir().expect("create MXC filesystem fixture");
+        let writable = root.path().join("src");
+        std::fs::create_dir(&writable).expect("create nested writable root");
+        let request = SandboxedProcessRequest {
+            program: OsString::from("cmd"),
+            arguments: Vec::new(),
+            working_directory: writable.clone(),
+            readwrite_paths: vec![writable.clone()],
+            readonly_paths: vec![root.path().to_path_buf()],
+            protected_readonly_paths: Vec::new(),
+            denied_paths: Vec::new(),
+            environment: Vec::new(),
+            allow_network: false,
+            allow_desktop_handle_access: false,
+        };
+        assert_eq!(
+            filesystem_policy_requirements(&request).unwrap(),
+            (true, false),
+            "a writable child under a broader read grant needs native precedence"
+        );
+        let request = build_container_request(request, NetworkProfile::Requested)
+            .expect("preserve the authorization owner's filesystem grants");
+
+        let filesystem = request.filesystem.expect("filesystem policy is explicit");
+        assert_eq!(
+            filesystem.readwrite_paths,
+            vec![writable.to_string_lossy().into_owned()]
+        );
+        assert_eq!(
+            filesystem.readonly_paths,
+            vec![root.path().to_string_lossy().into_owned()]
+        );
+    }
+
+    #[test]
+    fn container_request_preserves_a_readonly_subdirectory_inside_a_write_root() {
+        let root = tempfile::tempdir().expect("create MXC filesystem fixture");
+        let protected = root.path().join(".git");
+        std::fs::create_dir(&protected).expect("create protected subtree");
+        let request = build_container_request(
+            SandboxedProcessRequest {
+                program: OsString::from("cmd"),
+                arguments: Vec::new(),
+                working_directory: root.path().to_path_buf(),
+                readwrite_paths: vec![root.path().to_path_buf()],
+                readonly_paths: Vec::new(),
+                protected_readonly_paths: vec![protected.clone()],
+                denied_paths: Vec::new(),
+                environment: Vec::new(),
+                allow_network: false,
+                allow_desktop_handle_access: false,
+            },
+            NetworkProfile::Requested,
+        )
+        .expect("build overlapping MXC path policy");
+
+        let filesystem = request.filesystem.expect("filesystem policy is explicit");
+        assert_eq!(filesystem.readwrite_paths, [root.path().to_string_lossy()]);
+        assert_eq!(filesystem.readonly_paths, [protected.to_string_lossy()]);
+    }
+
+    #[test]
+    fn explicit_denied_subpath_is_retained_and_requires_native_enforcement() {
+        let root = tempfile::tempdir().expect("create MXC filesystem fixture");
+        let denied = root.path().join("private");
+        std::fs::create_dir(&denied).expect("create denied subtree");
+        let request = SandboxedProcessRequest {
+            program: OsString::from("cmd"),
+            arguments: Vec::new(),
+            working_directory: root.path().to_path_buf(),
+            readwrite_paths: vec![root.path().to_path_buf()],
+            readonly_paths: Vec::new(),
+            protected_readonly_paths: Vec::new(),
+            denied_paths: vec![denied.clone()],
+            environment: Vec::new(),
+            allow_network: false,
+            allow_desktop_handle_access: false,
+        };
+        assert_eq!(
+            filesystem_policy_requirements(&request).unwrap(),
+            (false, true)
+        );
+
+        let request = build_container_request(request, NetworkProfile::Requested)
+            .expect("build MXC explicit deny policy");
+        let filesystem = request.filesystem.expect("filesystem policy is explicit");
+        assert_eq!(filesystem.readwrite_paths, [root.path().to_string_lossy()]);
+        assert_eq!(filesystem.denied_paths, [denied.to_string_lossy()]);
+    }
+
+    #[test]
+    fn container_request_rejects_a_readonly_grant_under_a_denied_ancestor() {
+        let root = tempfile::tempdir().expect("create MXC filesystem fixture");
+        let denied = root.path().join("private");
+        let readonly = denied.join("nested");
+        std::fs::create_dir_all(&readonly).expect("create nested protected path");
+        let error = build_container_request(
+            SandboxedProcessRequest {
+                program: OsString::from("cmd"),
+                arguments: Vec::new(),
+                working_directory: root.path().to_path_buf(),
+                readwrite_paths: vec![root.path().to_path_buf()],
+                readonly_paths: vec![readonly],
+                protected_readonly_paths: Vec::new(),
+                denied_paths: vec![denied.clone()],
+                environment: Vec::new(),
+                allow_network: false,
+                allow_desktop_handle_access: false,
+            },
+            NetworkProfile::Requested,
+        )
+        .expect_err("the authorization owner must remove read grants under denied ancestors");
+        assert!(
+            error
+                .to_string()
+                .contains("read-only root covered by a denied path")
+        );
+    }
+
+    #[test]
+    fn denied_path_policy_requires_host_capability_probe_to_succeed() {
+        let mut probe = probe_output("base-container", false, Vec::new());
+        assert!(probe_satisfies(
+            &probe,
+            ProbeRequirement::BaseContainerWithDeniedPaths
+        ));
+
+        probe.probes.base_container_supports_deny_paths = false;
+        assert!(!probe_satisfies(
+            &probe,
+            ProbeRequirement::BaseContainerWithDeniedPaths
+        ));
+    }
+
+    #[test]
     fn powershell_desktop_compatibility_keeps_other_ui_restrictions() {
         use mxc_sdk::v1::configs::{ProcessContainerSystemSettings, ProcessContainerUiIsolation};
         use mxc_sdk::v1::{ClipboardPolicy, Containment};
@@ -1162,6 +1528,8 @@ mod tests {
                 working_directory: root.path().to_path_buf(),
                 readwrite_paths: vec![root.path().to_path_buf()],
                 readonly_paths: Vec::new(),
+                protected_readonly_paths: Vec::new(),
+                denied_paths: Vec::new(),
                 environment: Vec::new(),
                 allow_network: false,
                 allow_desktop_handle_access: true,
@@ -1201,6 +1569,8 @@ mod tests {
                 working_directory: root.path().to_path_buf(),
                 readwrite_paths: vec![root.path().to_path_buf()],
                 readonly_paths: Vec::new(),
+                protected_readonly_paths: Vec::new(),
+                denied_paths: Vec::new(),
                 environment: Vec::new(),
                 allow_network: true,
                 allow_desktop_handle_access: false,
@@ -1232,6 +1602,8 @@ mod tests {
                 working_directory: root.path().to_path_buf(),
                 readwrite_paths: vec![root.path().to_path_buf()],
                 readonly_paths: Vec::new(),
+                protected_readonly_paths: Vec::new(),
+                denied_paths: Vec::new(),
                 environment: Vec::new(),
                 allow_network: false,
                 allow_desktop_handle_access: false,

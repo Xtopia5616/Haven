@@ -232,6 +232,16 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 			? security.resource_policy.files.path_roots.filter(Boolean)
 			: [],
 	);
+	let readOnlyRoots = $derived(
+		Array.isArray(security?.resource_policy?.files?.read_only_roots)
+			? security.resource_policy.files.read_only_roots.filter(Boolean)
+			: [],
+	);
+	let deniedPaths = $derived(
+		Array.isArray(security?.resource_policy?.files?.denied_paths)
+			? security.resource_policy.files.denied_paths.filter(Boolean)
+			: [],
+	);
 	let networkAllowedDomains = $derived(
 		Array.isArray(security?.resource_policy?.network?.allowed_domains)
 			? security.resource_policy.network.allowed_domains.filter(Boolean)
@@ -503,6 +513,44 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 					placeholder="留空表示不增加通用文件路径限制"
 					oninput={(event) => {
 						security.resource_policy.files.path_roots = inputElementValue(event)
+							.split(/\r?\n/)
+							.map((value) => value.trim())
+							.filter(Boolean);
+					}}></textarea>
+			</SettingsField>
+			<SettingsField
+				label="只读保护路径"
+				id="security-read-only-roots"
+				description="每行一个已存在的本地绝对文件或目录。路径内允许读取，但写入会被拒绝，即使它位于更大的写入目录中。"
+				stacked
+			>
+				<textarea
+					id="security-read-only-roots"
+					class="md-textarea md-textarea--code security-roots"
+					rows="3"
+					value={readOnlyRoots.join('\n')}
+					placeholder="例如：C:\\Projects\\haven\\vendor"
+					oninput={(event) => {
+						security.resource_policy.files.read_only_roots = inputElementValue(event)
+							.split(/\r?\n/)
+							.map((value) => value.trim())
+							.filter(Boolean);
+					}}></textarea>
+			</SettingsField>
+			<SettingsField
+				label="拒绝访问路径"
+				id="security-denied-paths"
+				description="每行一个已存在的本地绝对文件或目录。文件本身或目录及其子项的读取和写入都会被拒绝；拒绝规则优先于所有读写授权。"
+				stacked
+			>
+				<textarea
+					id="security-denied-paths"
+					class="md-textarea md-textarea--code security-roots"
+					rows="3"
+					value={deniedPaths.join('\n')}
+					placeholder="例如：C:\\Projects\\haven\\secrets"
+					oninput={(event) => {
+						security.resource_policy.files.denied_paths = inputElementValue(event)
 							.split(/\r?\n/)
 							.map((value) => value.trim())
 							.filter(Boolean);

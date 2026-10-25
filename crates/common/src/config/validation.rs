@@ -84,6 +84,20 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
             "security.resource_policy.files.path_roots[{index}] must be an absolute local directory path"
         );
     }
+    for (field, paths) in [
+        ("read_only_roots", &resource_policy.files.read_only_roots),
+        ("denied_paths", &resource_policy.files.denied_paths),
+    ] {
+        if let Some((index, _)) = paths
+            .iter()
+            .enumerate()
+            .find(|(_, path)| !crate::path::is_absolute_local_path(std::path::Path::new(path)))
+        {
+            anyhow::bail!(
+                "security.resource_policy.files.{field}[{index}] must be an absolute local path"
+            );
+        }
+    }
     validate_session_step_budgets(
         config.session.max_steps_per_run,
         config.session.max_steps_per_session,
@@ -111,6 +125,23 @@ pub(super) fn validate_app_config(config: &AppConfig) -> Result<()> {
             if !crate::path::is_absolute_local_path(std::path::Path::new(root)) {
                 anyhow::bail!(
                     "tool_settings.{name}.resource_policy.files.path_roots[{index}] must be an absolute local directory path"
+                );
+            }
+        }
+        for (field, paths) in [
+            (
+                "read_only_roots",
+                &tool.resource_policy.files.read_only_roots,
+            ),
+            ("denied_paths", &tool.resource_policy.files.denied_paths),
+        ] {
+            if let Some((index, _)) = paths
+                .iter()
+                .enumerate()
+                .find(|(_, path)| !crate::path::is_absolute_local_path(std::path::Path::new(path)))
+            {
+                anyhow::bail!(
+                    "tool_settings.{name}.resource_policy.files.{field}[{index}] must be an absolute local path"
                 );
             }
         }
@@ -1231,6 +1262,36 @@ mod tests {
                 .contains("security.resource_policy.files.write_roots[0]")
         );
         assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
+    }
+
+    #[test]
+    fn configured_read_only_and_denied_paths_must_be_absolute_local_paths() {
+        for (field, set_path) in [
+            (
+                "read_only_roots",
+                (|config: &mut AppConfig| {
+                    config.security.resource_policy.files.read_only_roots =
+                        vec!["relative/protected".into()];
+                }) as fn(&mut AppConfig),
+            ),
+            (
+                "denied_paths",
+                (|config: &mut AppConfig| {
+                    config.security.resource_policy.files.denied_paths =
+                        vec!["relative/denied".into()];
+                }) as fn(&mut AppConfig),
+            ),
+        ] {
+            let mut config = AppConfig::default();
+            set_path(&mut config);
+
+            let error = validate_app_config(&config).unwrap_err();
+            assert!(
+                error.to_string().contains(field),
+                "unexpected validation error for {field}: {error}"
+            );
+            assert!(validate_settings_contract(&SettingsSnapshot::from(&config)).is_err());
+        }
     }
 
     #[cfg(windows)]
