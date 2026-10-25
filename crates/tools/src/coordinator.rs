@@ -111,9 +111,14 @@ impl ToolRuntimeCoordinator {
         self.builtins
             .everything_config_source
             .bind_config_service(admin_context.config_service.clone())?;
+        let network_policy = self
+            .core
+            .authorization
+            .network_resource_policy_snapshot()
+            .await;
         self.builtins
             .mcp_manager
-            .set_network_policy(security.resource_policy.network.network_policy())
+            .set_network_resource_policy(network_policy.clone())
             .await;
         self.builtins
             .mcp_manager
@@ -153,9 +158,9 @@ impl ToolRuntimeCoordinator {
                 security,
             })
             .await;
-        let applied = self.runtime.platform().await;
         tracing::debug!(
-            network_policy = ?applied.security.resource_policy.network.network_policy(),
+            network_policy = ?network_policy.network_policy(),
+            network_policy_revision = network_policy.revision,
             "startup platform snapshot published"
         );
         self.rebuild_catalog_scoped(CatalogRebuildScope::All)
@@ -165,9 +170,14 @@ impl ToolRuntimeCoordinator {
 
     pub(crate) async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String> {
         let authorization_result = self.core.authorization.apply_security(security).await;
+        let network_policy = self
+            .core
+            .authorization
+            .network_resource_policy_snapshot()
+            .await;
         self.builtins
             .mcp_manager
-            .set_network_policy(security.resource_policy.network.network_policy())
+            .set_network_resource_policy(network_policy.clone())
             .await;
         self.builtins
             .mcp_manager
@@ -188,9 +198,9 @@ impl ToolRuntimeCoordinator {
                 next
             })
             .await;
-        let applied = self.runtime.platform().await;
         tracing::debug!(
-            network_policy = ?applied.security.resource_policy.network.network_policy(),
+            network_policy = ?network_policy.network_policy(),
+            network_policy_revision = network_policy.revision,
             "applied security configuration to the platform snapshot"
         );
         authorization_result

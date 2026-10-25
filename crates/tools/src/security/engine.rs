@@ -1,7 +1,7 @@
 use super::contract::{
     AuthorizationCheck, AuthorizationDecision, AuthorizationExecutionBinding,
     AuthorizationExecutionProof, AuthorizationPort, AuthorizationReasonCode, AuthorizationRequest,
-    ConfirmationReceipt, ExecutionAuthorizationKind,
+    ConfirmationReceipt, ExecutionAuthorizationKind, NetworkPolicyDecision,
 };
 #[cfg(test)]
 use super::execution::execution_policy_denied;
@@ -25,7 +25,8 @@ use crate::{
 };
 use haven_common::config::{
     FileResourcePolicy, FileWriteMode, MxcIsolationMode, NetworkAccessBoundary,
-    NetworkResourcePolicy, ResourcePolicy, SecurityConfig, StoredPermission, ToolConfig,
+    NetworkResourcePolicy, NetworkResourcePolicySnapshot, ResourcePolicy, SecurityConfig,
+    StoredPermission, ToolConfig,
 };
 use haven_common::types::{
     ApprovalPolicy, CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect,
@@ -64,6 +65,8 @@ pub(super) struct SafetyConfig {
     pub(super) global_denied_paths: Vec<PathBuf>,
     pub(super) shell_runtime_read_roots: Vec<PathBuf>,
     pub(super) network: NetworkResourcePolicy,
+    /// Revision for the authoritative global network resource policy only.
+    network_policy_revision: u64,
     pub(super) execution_workspace: ExecutionWorkspace,
     /// Stable working directory bindings restored from Agent session events.
     session_workspaces: HashMap<String, ExecutionWorkspace>,
@@ -176,6 +179,7 @@ impl AuthorizationEngine {
                     access: NetworkAccessBoundary::Restricted,
                     allowed_domains: Vec::new(),
                 },
+                network_policy_revision: 0,
                 execution_workspace,
                 session_workspaces: HashMap::new(),
                 policy_revision: 0,
@@ -576,6 +580,7 @@ impl AuthorizationEngine {
         .map(|_| ());
         let network = security.resource_policy.network.clone();
         let sandbox_mode = security.resource_policy.sandbox_mode();
+        let network_policy_changed = cfg.network != network;
         let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
             || cfg.mxc_isolation_mode != security.mxc_isolation_mode
             || cfg.writable_roots != writable_roots
@@ -636,6 +641,9 @@ impl AuthorizationEngine {
         cfg.shell_runtime_read_roots = shell_runtime_read_roots;
         cfg.network = network;
         cfg.permanent = permanent;
+        if network_policy_changed {
+            cfg.network_policy_revision = cfg.network_policy_revision.saturating_add(1);
+        }
         if policy_changed {
             cfg.session_grants.clear();
         }
@@ -693,17 +701,30 @@ impl AuthorizationEngine {
         network_policy: NetworkPolicy,
     ) {
         let mut cfg = self.config.write().await;
+        let mut network = cfg.network.clone();
+        network.access = network_policy.into();
+        let network_policy_changed = cfg.network != network;
         let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
             || cfg.writable_roots != writable_roots
-            || cfg.network.network_policy() != network_policy;
+            || network_policy_changed;
         cfg.sandbox_mode = sandbox_mode;
         cfg.writable_roots = writable_roots;
-        cfg.network.access = network_policy.into();
+        cfg.network = network;
+        if network_policy_changed {
+            cfg.network_policy_revision = cfg.network_policy_revision.saturating_add(1);
+        }
         cfg.session_grants.clear();
         if process_boundaries_changed {
             self.bump_process_boundary_revision(&mut cfg);
         }
         self.bump_global_policy_revision(&mut cfg);
+    }
+
+    /// Capture the current global network policy together with its owner
+    /// revision for consumers such as MCP connection management.
+    pub async fn network_resource_policy_snapshot(&self) -> NetworkResourcePolicySnapshot {
+        let cfg = self.config.read().await;
+        NetworkResourcePolicySnapshot::new(cfg.network_policy_revision, cfg.network.clone())
     }
 
     /// Refresh the live tool_settings mirror used by path/op/risk overrides.
@@ -1031,6 +1052,9 @@ impl AuthorizationEngine {
         let cfg = self.config.read().await;
         let risk = effective_risk_from(&cfg, tool_name, policy.risk_level);
         let workspace = cfg.execution_workspace_for(session_id);
+        let network_resolution =
+            resolve_network_policy(&cfg, tool_name, &request.resources, policy);
+        let mut network_policy_decision = network_resolution.decision;
 
         let resource_boundary_extension = match check_policy_boundaries(
             &cfg,
@@ -1041,12 +1065,23 @@ impl AuthorizationEngine {
             policy,
         ) {
             Ok(()) => false,
-            Err(failure) if failure.resource_extension_allowed => true,
+            Err(failure) if failure.resource_extension_allowed => {
+                if network_resolution.resource_boundary_extension {
+                    network_policy_decision = NetworkPolicyDecision::RequiresConfirmation;
+                }
+                true
+            }
             Err(failure) => {
+                let decision = if failure.reason_code == AuthorizationReasonCode::NetworkPolicy {
+                    network_policy_decision
+                } else {
+                    NetworkPolicyDecision::Allowed
+                };
                 return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                     reason: failure.reason,
                     reason_code: failure.reason_code,
-                });
+                })
+                .with_network_policy_decision(decision);
             }
         };
 
@@ -1060,7 +1095,8 @@ impl AuthorizationEngine {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: "analyze mode only permits read-only operations".into(),
                 reason_code: AuthorizationReasonCode::AnalyzeMode,
-            });
+            })
+            .with_network_policy_decision(network_policy_decision);
         }
 
         // Deny always wins over Allow (permanent deny → session deny →
@@ -1076,7 +1112,8 @@ impl AuthorizationEngine {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: format!("permanently denied: {key}"),
                 reason_code: AuthorizationReasonCode::PermanentDeny,
-            });
+            })
+            .with_network_policy_decision(network_policy_decision);
         }
         if let Some(sid) = session_id
             && let Some(grants) = cfg.session_grants.get(sid)
@@ -1085,7 +1122,8 @@ impl AuthorizationEngine {
             return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
                 reason: format!("denied for this session: {key}"),
                 reason_code: AuthorizationReasonCode::SessionDeny,
-            });
+            })
+            .with_network_policy_decision(network_policy_decision);
         }
         // Critical operations are a hard confirmation floor. An allow grant
         // can streamline ordinary work, but it must never turn an
@@ -1105,7 +1143,8 @@ impl AuthorizationEngine {
                     cfg.policy_revision,
                     cfg.execution_mode_revision_for(session_id),
                     workspace.generation(),
-                );
+                )
+                .with_network_policy_decision(network_policy_decision);
             }
             if let Some(sid) = session_id
                 && let Some(grants) = cfg.session_grants.get(sid)
@@ -1116,7 +1155,8 @@ impl AuthorizationEngine {
                     cfg.policy_revision,
                     cfg.execution_mode_revision_for(session_id),
                     workspace.generation(),
-                );
+                )
+                .with_network_policy_decision(network_policy_decision);
             }
         }
 
@@ -1139,13 +1179,21 @@ impl AuthorizationEngine {
                 }
             };
 
+        if needs_prompt
+            && policy.network_access != NetworkAccess::None
+            && network_policy_decision == NetworkPolicyDecision::Allowed
+        {
+            network_policy_decision = NetworkPolicyDecision::RequiresConfirmation;
+        }
+
         if !needs_prompt {
             return AuthorizationCheck::auto_approved(
                 request,
                 cfg.policy_revision,
                 cfg.execution_mode_revision_for(session_id),
                 workspace.generation(),
-            );
+            )
+            .with_network_policy_decision(network_policy_decision);
         }
 
         if execution_mode.approval_policy() == ApprovalPolicy::DenyIfRequired {
@@ -1153,7 +1201,8 @@ impl AuthorizationEngine {
                 reason: "approval is required, but unattended mode cannot request confirmation"
                     .into(),
                 reason_code: AuthorizationReasonCode::ApprovalPolicy,
-            });
+            })
+            .with_network_policy_decision(network_policy_decision);
         }
 
         let reason_code = if resource_boundary_extension {
@@ -1186,6 +1235,7 @@ impl AuthorizationEngine {
             receipt,
             reason_code,
         })
+        .with_network_policy_decision(network_policy_decision)
     }
 
     /// Compatibility-free decision helper for callers that do not execute the
@@ -1941,55 +1991,73 @@ fn canonical_authorization_hash_for_workspace(
     }))
 }
 
-fn network_policy_block(
-    network_policy: NetworkPolicy,
-    tool_name: &str,
-    operation: &OperationPolicy,
-) -> Option<String> {
-    let access = operation.network_access;
-    match (network_policy, access) {
-        (NetworkPolicy::Deny, NetworkAccess::None) => None,
-        (NetworkPolicy::Deny, _) => {
-            Some(format!("network access is disabled for tool '{tool_name}'"))
+struct NetworkPolicyResolution {
+    decision: NetworkPolicyDecision,
+    reason: Option<String>,
+    resource_boundary_extension: bool,
+}
+
+impl NetworkPolicyResolution {
+    fn allowed() -> Self {
+        Self {
+            decision: NetworkPolicyDecision::Allowed,
+            reason: None,
+            resource_boundary_extension: false,
         }
-        // Restricted is the technical network boundary: Haven must be able to
-        // inspect and validate the destination before an opaque adapter runs.
-        (NetworkPolicy::Restricted, NetworkAccess::Opaque) => Some(format!(
-            "restricted network policy cannot authorize opaque network access from '{tool_name}'"
-        )),
-        _ => None,
+    }
+
+    fn blocked(decision: NetworkPolicyDecision, reason: String) -> Self {
+        Self {
+            decision,
+            reason: Some(reason),
+            resource_boundary_extension: false,
+        }
     }
 }
 
-fn network_resource_block(
+fn resolve_network_policy(
     cfg: &SafetyConfig,
     tool_name: &str,
     resources: &[super::DeclaredResource],
     operation: &OperationPolicy,
-) -> Option<String> {
+) -> NetworkPolicyResolution {
     if operation.network_access == NetworkAccess::None {
-        return None;
+        return NetworkPolicyResolution::allowed();
     }
 
     let settings = tool_setting_names(tool_name)
         .filter_map(|name| cfg.tool_settings.get(name))
         .collect::<Vec<_>>();
+    let global_network_policy = cfg.network.network_policy();
+    if global_network_policy == NetworkPolicy::Deny {
+        return NetworkPolicyResolution::blocked(
+            NetworkPolicyDecision::DeniedNetworking,
+            format!("network access is disabled for tool '{tool_name}'"),
+        );
+    }
     if settings
         .iter()
         .any(|setting| setting.resource_policy.network.access == NetworkAccessBoundary::Deny)
     {
-        return Some(format!(
-            "tool resource policy denies network access for '{tool_name}'"
-        ));
+        return NetworkPolicyResolution::blocked(
+            NetworkPolicyDecision::DeniedNetworking,
+            format!("tool resource policy denies network access for '{tool_name}'"),
+        );
     }
+    // A restricted boundary is enforceable only when Haven can inspect the
+    // concrete destination before the executor performs the request.
     if operation.network_access == NetworkAccess::Opaque
-        && settings.iter().any(|setting| {
-            setting.resource_policy.network.access == NetworkAccessBoundary::Restricted
-        })
+        && (global_network_policy == NetworkPolicy::Restricted
+            || settings.iter().any(|setting| {
+                setting.resource_policy.network.access == NetworkAccessBoundary::Restricted
+            }))
     {
-        return Some(format!(
-            "tool resource policy cannot authorize opaque network access from '{tool_name}'"
-        ));
+        return NetworkPolicyResolution::blocked(
+            NetworkPolicyDecision::OpaqueTarget,
+            format!(
+                "restricted network policy cannot authorize opaque network access from '{tool_name}'"
+            ),
+        );
     }
 
     let mut domain_policies = Vec::new();
@@ -2002,14 +2070,15 @@ fn network_resource_block(
             .map(|setting| setting.resource_policy.network.allowed_domains.as_slice())
             .filter(|domains| !domains.is_empty()),
     );
-    if domain_policies.is_empty() {
-        return None;
-    }
-    if tool_name == "shell" && operation.network_access == NetworkAccess::Opaque {
-        return Some(
-            "Shell cannot run with configured network domain restrictions because its current process boundary cannot enforce per-domain network rules"
-                .into(),
-        );
+    if !domain_policies.is_empty() && operation.network_access == NetworkAccess::Opaque {
+        let reason = if tool_name == "shell" {
+            "Shell cannot run with configured network domain restrictions because its current process boundary cannot enforce per-domain network rules".into()
+        } else {
+            format!(
+                "network domain restrictions cannot authorize opaque network access from '{tool_name}'"
+            )
+        };
+        return NetworkPolicyResolution::blocked(NetworkPolicyDecision::OpaqueTarget, reason);
     }
 
     let destinations = resources
@@ -2025,25 +2094,43 @@ fn network_resource_block(
             | super::DeclaredResource::ManagedAsset { .. } => None,
         })
         .collect::<Vec<_>>();
-    if destinations.is_empty()
-        && tool_name == "http"
-        && operation.network_access == NetworkAccess::Public
-    {
-        return Some(format!(
-            "'{tool_name}' did not declare a network destination required by the domain policy"
-        ));
+    if destinations.is_empty() && !domain_policies.is_empty() {
+        return NetworkPolicyResolution::blocked(
+            NetworkPolicyDecision::OpaqueTarget,
+            format!(
+                "'{tool_name}' did not declare a network destination required by the domain policy"
+            ),
+        );
     }
     for host in destinations {
+        if haven_common::network::http_host_is_local_or_special(host) {
+            return NetworkPolicyResolution::blocked(
+                NetworkPolicyDecision::LocalAddress,
+                format!("network destination '{host}' is a blocked local or special-use address"),
+            );
+        }
         if domain_policies
             .iter()
             .any(|domains| !haven_common::network::http_domain_allowed(host, domains))
         {
-            return Some(format!(
-                "network destination '{host}' is outside the configured resource policy for '{tool_name}'"
-            ));
+            if network_domain_extension_allowed(cfg, tool_name, resources, operation) {
+                return NetworkPolicyResolution {
+                    decision: NetworkPolicyDecision::RequiresConfirmation,
+                    reason: Some(format!(
+                        "network destination '{host}' is outside the configured resource policy for '{tool_name}'"
+                    )),
+                    resource_boundary_extension: true,
+                };
+            }
+            return NetworkPolicyResolution::blocked(
+                NetworkPolicyDecision::DomainMismatch,
+                format!(
+                    "network destination '{host}' is outside the configured resource policy for '{tool_name}'"
+                ),
+            );
         }
     }
-    None
+    NetworkPolicyResolution::allowed()
 }
 
 fn network_domain_extension_allowed(
@@ -2429,16 +2516,9 @@ fn check_policy_boundaries(
             resource_extension_allowed: false,
         });
     }
-    if let Some(reason) = network_policy_block(cfg.network.network_policy(), tool_name, policy) {
-        return Err(PolicyBoundaryFailure {
-            reason,
-            reason_code: AuthorizationReasonCode::NetworkPolicy,
-            resource_extension_allowed: false,
-        });
-    }
-    if let Some(reason) = network_resource_block(cfg, tool_name, resources, policy) {
-        let resource_extension_allowed =
-            network_domain_extension_allowed(cfg, tool_name, resources, policy);
+    let network = resolve_network_policy(cfg, tool_name, resources, policy);
+    if let Some(reason) = network.reason {
+        let resource_extension_allowed = network.resource_boundary_extension;
         return Err(PolicyBoundaryFailure {
             reason,
             reason_code: if resource_extension_allowed {

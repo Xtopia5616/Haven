@@ -60,7 +60,7 @@ async fn resolve_http_destination_inner(
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("HTTP destination must include a host"))?;
     let host = normalize_http_host(host);
-    if is_blocked_metadata_host(&host) && !(allow_loopback && host == "localhost") {
+    if http_host_is_local_or_special(&host) && !(allow_loopback && host == "localhost") {
         anyhow::bail!("HTTP destination is a blocked local or metadata host");
     }
     if !http_domain_allowed(&host, allowed_domains) {
@@ -99,6 +99,17 @@ async fn resolve_http_destination_inner(
 
 pub fn normalize_http_host(host: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
+}
+
+/// Whether a literal or well-known metadata host is local or special-use.
+/// DNS names that resolve to private addresses are checked after resolution
+/// by [`resolve_http_destination`].
+pub fn http_host_is_local_or_special(host: &str) -> bool {
+    let host = normalize_http_host(host);
+    is_blocked_metadata_host(&host)
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| is_blocked_ip(address, false))
 }
 
 pub fn http_domain_allowed(host: &str, allowed_domains: &[String]) -> bool {

@@ -13,7 +13,11 @@ use crate::transport::{
 };
 use crate::{McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher};
 use futures_util::future::BoxFuture;
-use haven_common::{mcp::McpServerTransport, types::NetworkPolicy};
+use haven_common::{
+    config::{NetworkAccessBoundary, NetworkResourcePolicy, NetworkResourcePolicySnapshot},
+    mcp::McpServerTransport,
+    types::NetworkPolicy,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -373,10 +377,10 @@ pub struct McpClient {
     pub(crate) max_binary_base64_bytes: usize,
     /// Single buffered (incomplete) SSE line/event cap for the HTTP transport.
     pub(crate) max_sse_buffer: usize,
-    /// Runtime network boundary. Direct clients fail closed at construction;
-    /// the manager overwrites it from SecurityConfig before a configured
-    /// connection is started.
-    pub(crate) network_policy: Arc<RwLock<NetworkPolicy>>,
+    /// Runtime network snapshot. Direct clients fail closed at construction;
+    /// the manager assigns the authorization owner's snapshot before a
+    /// configured connection is started.
+    pub(crate) network_policy: Arc<RwLock<NetworkResourcePolicySnapshot>>,
     /// Immutable policy snapshot used by every stdio spawn and reconnect for
     /// this manager-owned client generation.
     stdio_process_authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
@@ -748,7 +752,13 @@ impl McpClient {
             tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
             max_binary_base64_bytes,
             max_sse_buffer,
-            network_policy: Arc::new(RwLock::new(NetworkPolicy::Restricted)),
+            network_policy: Arc::new(RwLock::new(NetworkResourcePolicySnapshot::new(
+                0,
+                NetworkResourcePolicy {
+                    access: NetworkAccessBoundary::Restricted,
+                    allowed_domains: Vec::new(),
+                },
+            ))),
             stdio_process_authorization,
             stdio_launch_spec: McpStdioLaunchSpec::new(
                 config.name.clone(),
@@ -777,13 +787,21 @@ impl McpClient {
         self.enabled.load(Ordering::SeqCst)
     }
 
-    pub async fn set_network_policy(&self, policy: NetworkPolicy) {
+    pub(crate) async fn set_network_policy_snapshot(&self, policy: NetworkResourcePolicySnapshot) {
         *self.network_policy.write().await = policy;
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub async fn set_network_policy(&self, policy: NetworkPolicy) {
+        let mut snapshot = self.network_policy.read().await.clone();
+        snapshot.revision = snapshot.revision.saturating_add(1);
+        snapshot.policy.access = policy.into();
+        self.set_network_policy_snapshot(snapshot).await;
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn network_policy(&self) -> NetworkPolicy {
-        *self.network_policy.read().await
+        self.network_policy.read().await.network_policy()
     }
 
     /// Whether the live client was spawned from the given persisted config.
@@ -1007,8 +1025,8 @@ impl McpClient {
         // and reqwest only strips the fixed auth-header list on cross-host
         // redirects. Following a redirect would leak those to an unverified
         // host, so refuse to follow any.
-        let policy = *self.network_policy.read().await;
-        let built_client = crate::network::build_http_client(&self.url, policy).await?;
+        let policy = self.network_policy.read().await.clone();
+        let built_client = crate::network::build_http_client(&self.url, &policy).await?;
         let shared = Arc::new(HttpShared {
             http: built_client.client,
             url: built_client.endpoint.to_string(),
@@ -1044,12 +1062,13 @@ impl McpClient {
                 }
             })
         });
-        let network_policy = *self.network_policy.read().await;
+        let network_policy = self.network_policy.read().await.clone();
         if matches!(self.transport, McpServerTransport::Stdio)
-            && !matches!(network_policy, NetworkPolicy::Open)
+            && (!matches!(network_policy.network_policy(), NetworkPolicy::Open)
+                || !network_policy.policy.allowed_domains.is_empty())
         {
             let error = anyhow::anyhow!(
-                "MCP stdio server '{}' is blocked because its network use is opaque; set network policy to Open explicitly",
+                "MCP stdio server '{}' is blocked because its network use is opaque or its domain policy cannot be enforced",
                 self.name
             );
             *self.status.lock().await = McpClientStatus::Offline {

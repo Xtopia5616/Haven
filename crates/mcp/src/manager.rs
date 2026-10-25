@@ -8,6 +8,9 @@ use crate::{
     McpResourceTemplateList,
 };
 use futures_util::FutureExt;
+use haven_common::config::{
+    NetworkAccessBoundary, NetworkResourcePolicy, NetworkResourcePolicySnapshot,
+};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
@@ -176,7 +179,7 @@ pub struct McpManager {
     resource_change_tx: tokio::sync::broadcast::Sender<McpResourceChangeEvent>,
     discovery_config: Arc<tokio::sync::RwLock<haven_common::config::McpDiscoveryConfig>>,
     limits: Arc<tokio::sync::RwLock<haven_common::config::ContextLimitsConfig>>,
-    network_policy: Arc<tokio::sync::RwLock<haven_common::types::NetworkPolicy>>,
+    network_policy: Arc<tokio::sync::RwLock<NetworkResourcePolicySnapshot>>,
     /// Authorization snapshot assigned to newly created client generations.
     /// Existing stdio clients retain the snapshot they were created with.
     stdio_process_authorization:
@@ -218,13 +221,18 @@ impl Clone for McpManager {
 
 impl McpManager {
     pub fn new() -> Self {
-        Self::new_with_network_policy(haven_common::types::NetworkPolicy::Restricted)
+        Self::new_with_network_policy_snapshot(NetworkResourcePolicySnapshot::new(
+            0,
+            NetworkResourcePolicy {
+                access: NetworkAccessBoundary::Restricted,
+                allowed_domains: Vec::new(),
+            },
+        ))
     }
 
-    /// Construct a manager with an explicit transport policy. The regular
-    /// constructor is fail-closed; internal setup and tests may provide a
-    /// different network boundary.
-    fn new_with_network_policy(network_policy: haven_common::types::NetworkPolicy) -> Self {
+    /// Construct a manager with an explicit owner snapshot. The regular
+    /// constructor starts fail-closed until Tools publishes its current policy.
+    fn new_with_network_policy_snapshot(network_policy: NetworkResourcePolicySnapshot) -> Self {
         let (status_tx, _) = tokio::sync::broadcast::channel(256);
         let (resource_change_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
@@ -253,6 +261,17 @@ impl McpManager {
             stdio_policy_watcher: Arc::new(Mutex::new(None)),
             catalog_version: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    #[cfg(test)]
+    fn new_with_network_policy(network_policy: haven_common::types::NetworkPolicy) -> Self {
+        Self::new_with_network_policy_snapshot(NetworkResourcePolicySnapshot::new(
+            0,
+            NetworkResourcePolicy {
+                access: network_policy.into(),
+                allowed_domains: Vec::new(),
+            },
+        ))
     }
 
     /// Monotonic in-process version for MCP catalog consumers.
@@ -335,9 +354,21 @@ impl McpManager {
         if self.shutting_down.load(Ordering::SeqCst) {
             anyhow::bail!("MCP manager is shutting down");
         }
-        let network_policy = *self.network_policy.read().await;
-        if matches!(network_policy, haven_common::types::NetworkPolicy::Deny) {
+        let network_policy = self.network_policy.read().await.clone();
+        if matches!(
+            network_policy.network_policy(),
+            haven_common::types::NetworkPolicy::Deny
+        ) {
             anyhow::bail!("MCP connection blocked by network policy");
+        }
+        if matches!(
+            config.transport,
+            haven_common::mcp::McpServerTransport::Stdio
+        ) && !network_policy.policy.allowed_domains.is_empty()
+        {
+            anyhow::bail!(
+                "MCP stdio connection blocked because its network use is opaque under domain restrictions"
+            );
         }
 
         let stdio_process_authorization = self.stdio_process_authorization.read().await.clone();
@@ -348,7 +379,7 @@ impl McpManager {
             stdio_process_authorization,
             crate::client::local_stdio_process_launcher(),
         ));
-        client.set_network_policy(network_policy).await;
+        client.set_network_policy_snapshot(network_policy).await;
 
         let name = client.name().to_string();
         {
@@ -530,7 +561,7 @@ impl McpManager {
         if self.shutting_down.load(Ordering::SeqCst)
             || reservation.cancel.is_cancelled()
             || matches!(
-                *self.network_policy.read().await,
+                self.network_policy.read().await.network_policy(),
                 haven_common::types::NetworkPolicy::Deny
             )
         {
@@ -705,14 +736,28 @@ impl McpManager {
         *self.limits.write().await = limits.clone();
     }
 
-    /// Apply the process-wide MCP connection boundary. Any policy other than
-    /// Open tears down existing clients so health monitors cannot reconnect
-    /// behind a boundary whose destination validation is no longer known.
-    /// Re-enabling network access does not auto-connect servers; the next
-    /// discovery/refresh explicitly owns that side effect.
-    pub async fn set_network_policy(&self, policy: haven_common::types::NetworkPolicy) {
+    /// Apply the authorization owner's versioned network policy. A policy
+    /// change removes existing client generations so health monitors cannot
+    /// reconnect under an earlier domain scope. Re-enabling access does not
+    /// auto-connect servers; the next discovery/refresh owns that side effect.
+    pub async fn set_network_resource_policy(&self, policy: NetworkResourcePolicySnapshot) {
         let _lifecycle = self.connection_lifecycle.lock().await;
-        *self.network_policy.write().await = policy;
+        let current = self.network_policy.read().await.clone();
+        if policy.revision < current.revision {
+            return;
+        }
+        if policy.revision == current.revision && policy.policy != current.policy {
+            tracing::error!(
+                revision = policy.revision,
+                "MCP manager received conflicting network policies for one revision"
+            );
+            return;
+        }
+        if policy == current {
+            return;
+        }
+        let policy_changed = policy.policy != current.policy;
+        *self.network_policy.write().await = policy.clone();
         let clients: Vec<_> = self
             .clients
             .lock()
@@ -720,7 +765,7 @@ impl McpManager {
             .iter()
             .map(|(name, client)| (name.clone(), client.clone()))
             .collect();
-        if !matches!(policy, haven_common::types::NetworkPolicy::Open) {
+        if policy_changed {
             for attempt in self
                 .active_connections
                 .lock()
@@ -731,17 +776,26 @@ impl McpManager {
             }
         }
         for (_, client) in &clients {
-            client.set_network_policy(policy).await;
+            client.set_network_policy_snapshot(policy.clone()).await;
         }
         drop(_lifecycle);
-        if !matches!(policy, haven_common::types::NetworkPolicy::Open) {
-            // Existing HTTP clients may have been created with a different
-            // DNS resolution/pinning decision. Tear them down too; callers
-            // must explicitly rediscover after a boundary change.
+        if policy_changed {
+            // Existing clients may have been created under a different access
+            // mode or domain scope. Callers must explicitly rediscover after
+            // a policy change so HTTP targets are revalidated.
             for (name, client) in clients {
                 self.remove_client_generation(&name, Some(&client)).await;
             }
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn set_network_policy(&self, policy: haven_common::types::NetworkPolicy) {
+        let current = self.network_policy.read().await.clone();
+        let mut snapshot = current.clone();
+        snapshot.revision = snapshot.revision.saturating_add(1);
+        snapshot.policy.access = policy.into();
+        self.set_network_resource_policy(snapshot).await;
     }
 
     /// Set the authorization snapshot used for future stdio client
@@ -795,7 +849,7 @@ impl McpManager {
     }
 
     pub(crate) async fn network_policy(&self) -> haven_common::types::NetworkPolicy {
-        *self.network_policy.read().await
+        self.network_policy.read().await.network_policy()
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<McpStatusChangeEvent> {
@@ -1220,7 +1274,7 @@ impl McpManager {
             anyhow::bail!("MCP manager is shutting down");
         }
         if matches!(
-            *self.network_policy.read().await,
+            self.network_policy.read().await.network_policy(),
             haven_common::types::NetworkPolicy::Deny
         ) {
             anyhow::bail!("MCP reconnect blocked by network policy");
@@ -1278,7 +1332,7 @@ impl McpManager {
         let _lifecycle = self.connection_lifecycle.lock().await;
         if self.shutting_down.load(Ordering::SeqCst)
             || matches!(
-                *self.network_policy.read().await,
+                self.network_policy.read().await.network_policy(),
                 haven_common::types::NetworkPolicy::Deny
             )
         {

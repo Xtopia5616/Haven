@@ -6,7 +6,8 @@ mod prompt;
 pub use contract::{
     AuthorizationCheck, AuthorizationDecision, AuthorizationExecutionProof, AuthorizationPort,
     AuthorizationReasonCode, AuthorizationRequest, ClipboardAccess, ConfirmationReceipt,
-    DeclaredResource, DesktopAccess, LocalPathAccess, RegistryAccess, WindowAccess,
+    DeclaredResource, DesktopAccess, LocalPathAccess, NetworkPolicyDecision, RegistryAccess,
+    WindowAccess,
 };
 pub use engine::AuthorizationEngine;
 pub(crate) use execution::{

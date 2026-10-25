@@ -79,6 +79,21 @@ pub enum AuthorizationDecision {
     },
 }
 
+/// Typed explanation of the network part of an authorization result.
+///
+/// This is separate from the operation decision so callers can explain why a
+/// network target was blocked or whether network access itself needs a user
+/// confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkPolicyDecision {
+    DeniedNetworking,
+    OpaqueTarget,
+    DomainMismatch,
+    LocalAddress,
+    RequiresConfirmation,
+    Allowed,
+}
+
 /// The complete typed input to [`super::AuthorizationEngine`]. The engine owns the
 /// decision; callers only provide the concrete operation contract and its
 /// canonical input once.
@@ -173,6 +188,7 @@ pub struct AuthorizationExecutionProof {
 #[derive(Debug)]
 pub struct AuthorizationCheck {
     pub decision: AuthorizationDecision,
+    pub network_policy_decision: NetworkPolicyDecision,
     pub execution_proof: Option<AuthorizationExecutionProof>,
 }
 
@@ -180,6 +196,7 @@ impl AuthorizationCheck {
     pub(super) fn without_proof(decision: AuthorizationDecision) -> Self {
         Self {
             decision,
+            network_policy_decision: NetworkPolicyDecision::Allowed,
             execution_proof: None,
         }
     }
@@ -192,6 +209,7 @@ impl AuthorizationCheck {
     ) -> Self {
         Self {
             decision: AuthorizationDecision::AutoApproved,
+            network_policy_decision: NetworkPolicyDecision::Allowed,
             execution_proof: Some(AuthorizationExecutionProof {
                 binding: AuthorizationExecutionBinding {
                     session_id: request.session_id.clone(),
@@ -208,6 +226,14 @@ impl AuthorizationCheck {
                 authorization: ExecutionAuthorizationKind::AutoApproved,
             }),
         }
+    }
+
+    pub(super) fn with_network_policy_decision(
+        mut self,
+        network_policy_decision: NetworkPolicyDecision,
+    ) -> Self {
+        self.network_policy_decision = network_policy_decision;
+        self
     }
 }
 

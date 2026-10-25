@@ -84,6 +84,27 @@ impl NetworkResourcePolicy {
     }
 }
 
+/// Process-local snapshot of the authoritative network resource policy.
+///
+/// `revision` advances only when the global network access mode or domain
+/// scope changes. Consumers may reject stale snapshots without maintaining a
+/// second policy revision of their own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkResourcePolicySnapshot {
+    pub revision: u64,
+    pub policy: NetworkResourcePolicy,
+}
+
+impl NetworkResourcePolicySnapshot {
+    pub fn new(revision: u64, policy: NetworkResourcePolicy) -> Self {
+        Self { revision, policy }
+    }
+
+    pub fn network_policy(&self) -> NetworkPolicy {
+        self.policy.network_policy()
+    }
+}
+
 impl From<NetworkPolicy> for NetworkAccessBoundary {
     fn from(policy: NetworkPolicy) -> Self {
         match policy {

@@ -1315,3 +1315,4 @@
 - [1413：权限确认展示实际调用参数并折叠疑似凭据](1413-show-invocation-details-in-permission-prompts.md)
 - [1414：网络开关与域名约束共用运行时策略快照](1414-keep-network-access-policy-as-one-runtime-snapshot.md)
 - [1415：UI 会话操作结果与展示副作用分层](1415-ui-chat-session-action-results.md)
+- [1416：用统一网络决议和版本化快照连接 Tools 与 MCP](1416-version-network-resource-policy-for-mcp.md)
