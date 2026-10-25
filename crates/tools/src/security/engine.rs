@@ -24,8 +24,8 @@ use crate::{
     DataSensitivity, StructuredToolError, ToolConcurrency, ToolErrorClass, ToolRetryability,
 };
 use haven_common::config::{
-    FileResourcePolicy, FileWriteMode, NetworkAccessBoundary, NetworkResourcePolicy,
-    ResourcePolicy, SecurityConfig, StoredPermission, ToolConfig,
+    FileResourcePolicy, FileWriteMode, MxcIsolationMode, NetworkAccessBoundary,
+    NetworkResourcePolicy, ResourcePolicy, SecurityConfig, StoredPermission, ToolConfig,
 };
 use haven_common::types::{
     ApprovalPolicy, CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect,
@@ -57,6 +57,7 @@ pub(super) struct SafetyConfig {
     session_execution_modes: HashMap<String, ExecutionMode>,
     session_execution_mode_revisions: HashMap<String, u64>,
     pub(super) sandbox_mode: SandboxMode,
+    pub(super) mxc_isolation_mode: MxcIsolationMode,
     writable_roots: Vec<PathBuf>,
     pub(super) global_file_roots: Vec<PathBuf>,
     pub(super) global_read_only_roots: Vec<PathBuf>,
@@ -165,6 +166,7 @@ impl AuthorizationEngine {
                 session_execution_modes: HashMap::new(),
                 session_execution_mode_revisions: HashMap::new(),
                 sandbox_mode: SandboxMode::WorkspaceWrite,
+                mxc_isolation_mode: MxcIsolationMode::Strict,
                 writable_roots: Vec::new(),
                 global_file_roots: Vec::new(),
                 global_read_only_roots: Vec::new(),
@@ -570,6 +572,7 @@ impl AuthorizationEngine {
         let sandbox_mode = security.resource_policy.sandbox_mode();
         let network_policy = security.resource_policy.network_policy();
         let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
+            || cfg.mxc_isolation_mode != security.mxc_isolation_mode
             || cfg.writable_roots != writable_roots
             || cfg.global_file_roots != global_file_roots
             || cfg.global_read_only_roots != global_read_only_roots
@@ -609,6 +612,7 @@ impl AuthorizationEngine {
         }
         let policy_changed = cfg.execution_mode != security.execution_mode
             || cfg.sandbox_mode != sandbox_mode
+            || cfg.mxc_isolation_mode != security.mxc_isolation_mode
             || cfg.writable_roots != writable_roots
             || cfg.global_file_roots != global_file_roots
             || cfg.global_read_only_roots != global_read_only_roots
@@ -619,6 +623,7 @@ impl AuthorizationEngine {
         cfg.execution_workspace = workspace;
         cfg.execution_mode = security.execution_mode;
         cfg.sandbox_mode = sandbox_mode;
+        cfg.mxc_isolation_mode = security.mxc_isolation_mode;
         cfg.writable_roots = writable_roots;
         cfg.global_file_roots = global_file_roots;
         cfg.global_read_only_roots = global_read_only_roots;

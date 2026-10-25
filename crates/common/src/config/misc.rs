@@ -665,6 +665,10 @@ pub struct SecurityConfig {
     /// keep their durable session_context execution mode.
     #[serde(default)]
     pub execution_mode: crate::types::ExecutionMode,
+    /// MXC isolation policy for WorkspaceWrite Shell processes. Strict mode
+    /// requires BaseContainer; compatibility mode may select an AppContainer
+    /// tier and reduce network access when the requested policy cannot start.
+    pub mxc_isolation_mode: MxcIsolationMode,
     /// Canonical typed filesystem and network resource boundaries.
     pub resource_policy: ResourcePolicy,
     /// Optional persisted default root captured when a session is first
@@ -684,6 +688,7 @@ pub struct SecurityConfig {
 struct SecurityConfigInput {
     #[serde(alias = "permission_mode")]
     execution_mode: Option<String>,
+    mxc_isolation_mode: Option<MxcIsolationMode>,
     resource_policy: Option<ResourcePolicy>,
     execution_root: Option<PathBuf>,
     sandbox_mode: Option<SandboxMode>,
@@ -727,12 +732,25 @@ impl TryFrom<SecurityConfigInput> for SecurityConfig {
         };
         Ok(Self {
             execution_mode,
+            mxc_isolation_mode: input.mxc_isolation_mode.unwrap_or_default(),
             resource_policy,
             execution_root: input.execution_root,
             encrypt_sensitive: input.encrypt_sensitive.unwrap_or(true),
             permissions: input.permissions,
         })
     }
+}
+
+/// How WorkspaceWrite Shell handles MXC BaseContainer probe or startup
+/// failures.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MxcIsolationMode {
+    /// Require MXC BaseContainer without ACL augmentation and fail closed.
+    #[default]
+    Strict,
+    /// Allow MXC compatibility tiers and progressively narrower networking.
+    Compatibility,
 }
 
 fn deserialize_execution_mode_value(value: &str) -> Option<crate::types::ExecutionMode> {
@@ -759,6 +777,7 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             execution_mode: crate::types::ExecutionMode::Collaborative,
+            mxc_isolation_mode: MxcIsolationMode::Strict,
             resource_policy: ResourcePolicy::global_default(),
             execution_root: None,
             encrypt_sensitive: true,

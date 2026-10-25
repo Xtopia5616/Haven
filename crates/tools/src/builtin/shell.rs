@@ -256,23 +256,25 @@ impl ShellTool {
                             "powershell" | "pwsh"
                         ),
                     )?;
-                    let process =
-                        haven_platform::sandboxed_process::SandboxedProcess::spawn(request)
-                            .await
-                            .map_err(|error| {
-                                // The platform boundary already sanitizes and bounds each MXC
-                                // diagnostic before composing the ordered retry report. Keep
-                                // the full report for the model; sanitize the log copy again.
-                                let reason = error.to_string();
-                                tracing::warn!(
-                                    error = %haven_common::error::sanitize_error_text(&reason),
-                                    "MXC rejected the Workspace Write shell process"
-                                );
-                                crate::security::execution_policy_denied(format!(
-                                    "MXC 无法在 WorkspaceWrite 隔离中启动 Shell：{reason}"
-                                ))
-                            })?;
-                    let sandbox_notice = process.degradation_notice().map(str::to_owned);
+                    let process = haven_platform::sandboxed_process::SandboxedProcess::spawn(
+                        request,
+                        permit.mxc_isolation_mode(),
+                    )
+                    .await
+                    .map_err(|error| {
+                        // The platform boundary already sanitizes and bounds each MXC
+                        // diagnostic before composing the ordered retry report. Keep
+                        // the full report for the model; sanitize the log copy again.
+                        let reason = error.to_string();
+                        tracing::warn!(
+                            error = %haven_common::error::sanitize_error_text(&reason),
+                            "MXC rejected the Workspace Write shell process"
+                        );
+                        crate::security::execution_policy_denied(format!(
+                            "MXC 无法在 WorkspaceWrite 隔离中启动 Shell：{reason}"
+                        ))
+                    })?;
+                    let sandbox_notice = Some(process.sandbox_notice().to_owned());
                     ShellProcess {
                         kind: ShellProcessKind::Sandboxed(process),
                         sandbox_notice,
@@ -1208,6 +1210,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "run on a serviced Windows host without BaseContainer to exercise AppContainer+DACL"]
     async fn workspace_write_shell_is_confined_by_appcontainer_dacl_compatibility() {
+        use haven_common::config::MxcIsolationMode;
         use haven_common::types::NetworkPolicy;
 
         let temp = tempdir().expect("create isolated MXC DACL fixture");
@@ -1216,10 +1219,11 @@ mod tests {
         std::fs::create_dir(&workspace_root).expect("create workspace root");
         std::fs::create_dir(&outside_root).expect("create outside root");
         let workspace = ExecutionWorkspace::from_root(&workspace_root).unwrap();
-        let (execution_authorization, _) =
-            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+        let (execution_authorization, _) = crate::security::ExecutionPolicyAuthorization::
+            for_test_with_workspace_write_root_and_mxc_mode(
                 &workspace_root,
                 NetworkPolicy::Deny,
+                MxcIsolationMode::Compatibility,
             );
         let context = crate::ToolExecutionContext {
             execution_workspace: Some(workspace.clone()),
@@ -1262,8 +1266,9 @@ mod tests {
         let notice = result.output["sandbox_notice"]
             .as_str()
             .expect("compatibility tier must be reported to the caller");
-        assert!(notice.contains("appcontainer-dacl"));
+        assert!(notice.contains("实际隔离层：MXC AppContainer（DACL）"));
         assert!(notice.contains("ACL"));
+        assert!(notice.contains("出站、入站和本机回环均禁止"));
     }
 
     #[cfg(windows)]

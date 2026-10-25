@@ -21,6 +21,10 @@ const IPC_CUSTOM_DESERIALIZE_REQUEST_FIELDS: &[(&str, &str)] = &[
     ),
     (
         "haven_common::config::misc::SecurityConfig",
+        "mxc_isolation_mode",
+    ),
+    (
+        "haven_common::config::misc::SecurityConfig",
         "network_policy",
     ),
 ];

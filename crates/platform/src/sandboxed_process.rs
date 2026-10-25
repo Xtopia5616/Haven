@@ -14,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 
 use crate::filesystem::FilesystemPathCapability;
+use haven_common::config::MxcIsolationMode;
 
 mod diagnostics;
 
@@ -81,7 +82,7 @@ pub struct SandboxedProcess {
     stdin: Option<tokio::io::DuplexStream>,
     stdout: Option<SandboxedPipeReader>,
     stderr: Option<SandboxedPipeReader>,
-    degradation_notice: Option<String>,
+    sandbox_notice: String,
 }
 
 struct SandboxedPipeReader {
@@ -91,25 +92,30 @@ struct SandboxedPipeReader {
 }
 
 impl SandboxedProcess {
-    /// Start the request in MXC's strongest compatible process-container tier.
-    /// If the requested profile cannot be probed or started, compatibility
-    /// retries progressively narrow network access. Every started process is
-    /// still confined by an MXC tier; a host process is never used as fallback.
-    pub async fn spawn(request: SandboxedProcessRequest) -> anyhow::Result<Self> {
+    /// Start the request in MXC BaseContainer by default. Compatibility tiers
+    /// and network-restricted retries are available only when explicitly
+    /// enabled by the live security configuration.
+    pub async fn spawn(
+        request: SandboxedProcessRequest,
+        isolation_mode: MxcIsolationMode,
+    ) -> anyhow::Result<Self> {
         let process = tokio::task::spawn_blocking(move || {
-            launch_with_fallback(request, probe_container_request, spawn_container_request)
+            launch_with_fallback(
+                request,
+                isolation_mode,
+                probe_container_request,
+                spawn_container_request,
+            )
         })
         .await
         .map_err(|_| anyhow::anyhow!("MXC process launch task failed"))??;
-        let (process, mut degradation_notice) = process;
+        let (process, mut sandbox_notice) = process;
 
         let process_warnings = process.warnings().to_vec();
         for warning in &process_warnings {
             tracing::warn!(warning = %haven_common::error::sanitize_error_text(warning), "MXC sandbox reported a process warning");
         }
-        if let Some(notice) = &mut degradation_notice {
-            append_warning_notes(notice, &process_warnings);
-        }
+        append_warning_notes(&mut sandbox_notice, &process_warnings);
 
         let mut process = process;
         let stdin = process.take_stdin().map(make_async_writer);
@@ -120,13 +126,14 @@ impl SandboxedProcess {
             stdin,
             stdout,
             stderr,
-            degradation_notice,
+            sandbox_notice,
         })
     }
 
-    /// User-visible explanation when MXC had to use a lower isolation tier.
-    pub fn degradation_notice(&self) -> Option<&str> {
-        self.degradation_notice.as_deref()
+    /// User-visible summary of the actual MXC tier, network capability, and
+    /// ACL behavior used for this process.
+    pub fn sandbox_notice(&self) -> &str {
+        &self.sandbox_notice
     }
 
     pub fn take_stdin(&mut self) -> Option<impl AsyncWrite + Unpin + Send + 'static> {
@@ -449,19 +456,20 @@ fn build_container_request(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NetworkProfile {
     Requested,
-    /// Keep only public outbound networking; deny private-network ingress and
-    /// host loopback in the compatibility request.
+    /// Keep outbound networking; deny ingress and host loopback in the
+    /// compatibility request.
     OutboundOnly,
-    /// Disable all network access after the public-outbound compatibility
-    /// profile could not be probed or started.
+    /// Disable all network access after the outbound compatibility profile
+    /// could not be probed or started.
     Offline,
 }
 
 fn launch_with_fallback<T>(
     request: SandboxedProcessRequest,
+    isolation_mode: MxcIsolationMode,
     mut probe: impl FnMut(&mxc_sdk::v1::ContainerRequest) -> anyhow::Result<mxc_sdk::v1::ProbeOutput>,
     mut spawn: impl FnMut(mxc_sdk::v1::ContainerRequest) -> anyhow::Result<T>,
-) -> anyhow::Result<(T, Option<String>)> {
+) -> anyhow::Result<(T, String)> {
     let requested = build_container_request(request.clone(), NetworkProfile::Requested)?;
     let mut failures = Vec::new();
     let (requires_native_filesystem_precedence, requires_native_denied_paths) =
@@ -473,37 +481,34 @@ fn launch_with_fallback<T>(
     } else {
         ProbeRequirement::CompatibleTier
     };
-    let requested_requirement =
-        if request.allow_network && filesystem_requirement == ProbeRequirement::CompatibleTier {
-            ProbeRequirement::BaseContainer
-        } else {
-            filesystem_requirement
-        };
+    let requested_requirement = filesystem_requirement_for_strict_launch(filesystem_requirement);
     match launch_attempt(requested, requested_requirement, &mut probe, &mut spawn) {
         Ok((process, probe_output, capture_notice)) => {
-            if probe_is_base_container(&probe_output) {
-                return Ok((process, capture_notice));
-            }
-            let notice = compatibility_notice(
+            let notice = sandbox_notice(
                 &probe_output,
-                NetworkProfile::Offline,
+                NetworkProfile::Requested,
                 request.allow_network,
+                false,
                 &[],
                 &probe_output.warnings,
             );
-            tracing::warn!(
+            tracing::info!(
                 tier = probe_output.tier.unwrap_or("unknown"),
-                network = "denied",
-                warnings = %format_warnings(&probe_output.warnings),
-                "MXC started the shell with compatibility isolation"
+                network = network_profile_name(NetworkProfile::Requested),
+                acl_augmentation = ?probe_output.needs_dacl_augmentation,
+                "MXC started the shell with strict isolation"
             );
-            return Ok((process, Some(combine_notices(notice, capture_notice))));
+            return Ok((process, combine_notices(notice, capture_notice)));
         }
         Err(failure) => failures.push(AttemptFailure {
             profile: NetworkProfile::Requested,
             reason: failure.reason,
             warnings: failure.warnings,
         }),
+    }
+
+    if isolation_mode == MxcIsolationMode::Strict {
+        return launch_failures(&failures);
     }
 
     for profile in compatibility_profiles(request.allow_network) {
@@ -523,10 +528,11 @@ fn launch_with_fallback<T>(
         };
         match launch_attempt(candidate, filesystem_requirement, &mut probe, &mut spawn) {
             Ok((process, probe_output, capture_notice)) => {
-                let notice = compatibility_notice(
+                let notice = sandbox_notice(
                     &probe_output,
                     profile,
                     request.allow_network,
+                    true,
                     &failures,
                     &probe_output.warnings,
                 );
@@ -536,7 +542,7 @@ fn launch_with_fallback<T>(
                     warnings = %format_warnings(&probe_output.warnings),
                     "MXC started the shell with compatibility isolation"
                 );
-                return Ok((process, Some(combine_notices(notice, capture_notice))));
+                return Ok((process, combine_notices(notice, capture_notice)));
             }
             Err(failure) => failures.push(AttemptFailure {
                 profile,
@@ -546,6 +552,23 @@ fn launch_with_fallback<T>(
         }
     }
 
+    launch_failures(&failures)
+}
+
+fn filesystem_requirement_for_strict_launch(
+    filesystem_requirement: ProbeRequirement,
+) -> ProbeRequirement {
+    match filesystem_requirement {
+        ProbeRequirement::BaseContainerWithDeniedPaths => {
+            ProbeRequirement::BaseContainerWithDeniedPaths
+        }
+        ProbeRequirement::BaseContainer | ProbeRequirement::CompatibleTier => {
+            ProbeRequirement::BaseContainer
+        }
+    }
+}
+
+fn launch_failures<T>(failures: &[AttemptFailure]) -> anyhow::Result<T> {
     let warning_note = format_warning_note(
         &failures
             .iter()
@@ -877,7 +900,7 @@ fn compatibility_profiles(allow_network: bool) -> Vec<NetworkProfile> {
 fn network_profile_name(profile: NetworkProfile) -> &'static str {
     match profile {
         NetworkProfile::Requested => "原始网络策略",
-        NetworkProfile::OutboundOnly => "仅公网出站兼容策略",
+        NetworkProfile::OutboundOnly => "仅出站兼容策略",
         NetworkProfile::Offline => "完全断网兼容策略",
     }
 }
@@ -924,28 +947,33 @@ fn spawn_container_request(
     mxc_sdk::v1::spawn(request, Default::default()).map_err(anyhow::Error::new)
 }
 
-fn compatibility_notice(
+fn sandbox_notice(
     probe: &mxc_sdk::v1::ProbeOutput,
     profile: NetworkProfile,
     originally_allowed_network: bool,
+    compatibility_used: bool,
     failures: &[AttemptFailure],
     warnings: &[String],
 ) -> String {
     let tier = probe.tier.unwrap_or("unknown");
-    let dacl_note = if probe.needs_dacl_augmentation == Some(true) {
-        "兼容层会临时调整授权目录的 ACL，并在子进程结束时恢复。"
+    let layer = match tier {
+        "base-container" => "BaseContainer",
+        "appcontainer-bfs" => "AppContainer（BFS）",
+        "appcontainer-dacl" => "AppContainer（DACL）",
+        _ => tier,
+    };
+    let acl_note = if probe.needs_dacl_augmentation == Some(true) {
+        "MXC 会临时调整授权目录的 DACL，并在子进程结束时恢复。"
     } else {
-        ""
+        "MXC 不会修改授权目录的 DACL。"
     };
     let network_note = match profile {
-        NetworkProfile::Requested => "网络访问保持原授权策略。",
-        NetworkProfile::OutboundOnly => {
-            "网络权限已降级为仅允许公网出站；私有网络入站和本机回环已禁用。"
+        NetworkProfile::Requested if originally_allowed_network => {
+            "出站、入站和本机回环按原请求允许。"
         }
-        NetworkProfile::Offline if originally_allowed_network => {
-            "公网出站兼容策略也无法启动；网络权限已进一步降级为完全禁用。"
-        }
-        NetworkProfile::Offline => "网络访问按原授权策略保持完全禁用。",
+        NetworkProfile::Requested => "出站、入站和本机回环均禁止。",
+        NetworkProfile::OutboundOnly => "出站允许；入站和本机回环禁止。",
+        NetworkProfile::Offline => "出站、入站和本机回环均禁止。",
     };
     let failure_note = if failures.is_empty() {
         String::new()
@@ -971,7 +999,14 @@ fn compatibility_notice(
         .chain(warnings.iter().cloned())
         .collect::<Vec<_>>();
     let warning_note = format_warning_note(&all_warnings);
-    format!("MXC 兼容隔离已启用（{tier}）。{failure_note}{dacl_note}{network_note}{warning_note}")
+    let mode_note = if compatibility_used {
+        "MXC 兼容策略已启用。"
+    } else {
+        "MXC 严格隔离。"
+    };
+    format!(
+        "实际隔离层：MXC {layer}。{mode_note}网络能力：{network_note} ACL 行为：{acl_note}{failure_note}{warning_note}"
+    )
 }
 
 fn format_warnings(warnings: &[String]) -> String {
@@ -1162,9 +1197,9 @@ fn lock_process(
 #[cfg(test)]
 mod tests {
     use super::{
-        NetworkProfile, ProbeRequirement, SandboxedProcessRequest, build_container_request,
-        compatibility_profiles, filesystem_policy_requirements, launch_with_fallback,
-        probe_satisfies, quote_windows_argument,
+        MxcIsolationMode, NetworkProfile, ProbeRequirement, SandboxedProcessRequest,
+        build_container_request, compatibility_profiles, filesystem_policy_requirements,
+        launch_with_fallback, probe_satisfies, quote_windows_argument,
     };
     use std::ffi::OsString;
 
@@ -1642,13 +1677,14 @@ mod tests {
     }
 
     #[test]
-    fn probe_api_error_still_retries_with_public_outbound_compatibility() {
+    fn probe_api_error_retries_with_outbound_compatibility() {
         let root = tempfile::tempdir().expect("create MXC retry fixture");
         let mut probe_calls = 0;
         let mut probed_network = Vec::new();
         let mut spawned_network = Vec::new();
         let (process, notice) = launch_with_fallback(
             shell_request(root.path(), true),
+            MxcIsolationMode::Compatibility,
             |request| {
                 probe_calls += 1;
                 probed_network.push(network_allows(request));
@@ -1671,14 +1707,16 @@ mod tests {
         assert_eq!(process, "started");
         assert_eq!(probed_network, [(true, true, true), (true, false, false)]);
         assert_eq!(spawned_network, [(true, false, false)]);
-        let notice = notice.expect("compatibility startup is user-visible");
-        assert!(notice.contains("仅允许公网出站"));
+        assert!(notice.contains("MXC 兼容策略已启用"));
+        assert!(notice.contains("实际隔离层：MXC AppContainer（DACL）"));
+        assert!(notice.contains("出站允许；入站和本机回环禁止"));
+        assert!(notice.contains("临时调整授权目录的 DACL"));
         assert!(notice.contains("initial probe API unavailable"));
         assert!(notice.contains("host preparation is missing"));
     }
 
     #[test]
-    fn failed_public_outbound_start_retries_with_network_disabled() {
+    fn failed_outbound_start_retries_with_network_disabled() {
         let root = tempfile::tempdir().expect("create offline fallback fixture");
         let mut probe_calls = 0;
         let mut spawn_calls = 0;
@@ -1686,6 +1724,7 @@ mod tests {
         let mut spawned_network = Vec::new();
         let (process, notice) = launch_with_fallback(
             shell_request(root.path(), true),
+            MxcIsolationMode::Compatibility,
             |request| {
                 probe_calls += 1;
                 probed_network.push(network_allows(request));
@@ -1732,8 +1771,7 @@ mod tests {
                 (false, false, false)
             ]
         );
-        let notice = notice.expect("offline downgrade is user-visible");
-        assert!(notice.contains("完全禁用"));
+        assert!(notice.contains("网络能力：出站、入站和本机回环均禁止"));
         assert!(notice.contains("public egress setup failed"));
         assert!(notice.contains("mxc.host_prep.system_drive_acl_missing"));
         assert!(notice.contains("wxc-host-prep.exe prepare-system-drive"));
@@ -1747,6 +1785,7 @@ mod tests {
         let mut probe_calls = 0;
         let error = launch_with_fallback(
             shell_request(root.path(), true),
+            MxcIsolationMode::Compatibility,
             |_| {
                 probe_calls += 1;
                 Ok(match probe_calls {
@@ -1773,6 +1812,98 @@ mod tests {
         assert!(error.contains("wxc-host-prep.exe prepare-system-drive"));
         assert!(error.contains("mxc.host_prep.null_device_acl_missing"));
         assert!(error.contains("wxc-host-prep.exe prepare-null-device"));
+    }
+
+    #[test]
+    fn strict_mode_does_not_retry_after_spawn_failure() {
+        let root = tempfile::tempdir().expect("create strict isolation fixture");
+        let mut probe_calls = 0;
+        let mut spawn_calls = 0;
+        let error = launch_with_fallback(
+            shell_request(root.path(), true),
+            MxcIsolationMode::Strict,
+            |_| {
+                probe_calls += 1;
+                Ok(probe_output("base-container", false, Vec::new()))
+            },
+            |_| -> anyhow::Result<()> {
+                spawn_calls += 1;
+                anyhow::bail!("requested profile spawn failed")
+            },
+        )
+        .expect_err("strict mode must reject failed BaseContainer startup")
+        .to_string();
+
+        assert_eq!(probe_calls, 1);
+        assert_eq!(spawn_calls, 1);
+        assert!(error.contains("原始网络策略："));
+    }
+
+    #[test]
+    fn strict_mode_does_not_retry_after_probe_api_failure() {
+        let root = tempfile::tempdir().expect("create strict probe fixture");
+        let mut probe_calls = 0;
+        let mut spawn_calls = 0;
+        let error = launch_with_fallback(
+            shell_request(root.path(), true),
+            MxcIsolationMode::Strict,
+            |_| {
+                probe_calls += 1;
+                anyhow::bail!("initial probe API unavailable")
+            },
+            |_| -> anyhow::Result<()> {
+                spawn_calls += 1;
+                Ok(())
+            },
+        )
+        .expect_err("strict mode must reject a failed probe")
+        .to_string();
+
+        assert_eq!(probe_calls, 1);
+        assert_eq!(spawn_calls, 0);
+        assert!(error.contains("initial probe API unavailable"));
+    }
+
+    #[test]
+    fn strict_mode_rejects_appcontainer_without_spawning() {
+        let root = tempfile::tempdir().expect("create strict tier fixture");
+        let mut probe_calls = 0;
+        let mut spawn_calls = 0;
+        let error = launch_with_fallback(
+            shell_request(root.path(), false),
+            MxcIsolationMode::Strict,
+            |_| {
+                probe_calls += 1;
+                Ok(probe_output("appcontainer-dacl", true, Vec::new()))
+            },
+            |_| -> anyhow::Result<()> {
+                spawn_calls += 1;
+                Ok(())
+            },
+        )
+        .expect_err("strict mode must require BaseContainer")
+        .to_string();
+
+        assert_eq!(probe_calls, 1);
+        assert_eq!(spawn_calls, 0);
+        assert!(error.contains("BaseContainer"));
+    }
+
+    #[test]
+    fn successful_strict_launch_reports_actual_layer_network_and_acl_behavior() {
+        let root = tempfile::tempdir().expect("create strict summary fixture");
+        let (process, notice) = launch_with_fallback(
+            shell_request(root.path(), false),
+            MxcIsolationMode::Strict,
+            |_| Ok(probe_output("base-container", false, Vec::new())),
+            |_| Ok("started"),
+        )
+        .expect("BaseContainer should start in strict mode");
+
+        assert_eq!(process, "started");
+        assert!(notice.contains("实际隔离层：MXC BaseContainer"));
+        assert!(notice.contains("网络能力：出站、入站和本机回环均禁止"));
+        assert!(notice.contains("MXC 不会修改授权目录的 DACL"));
     }
 
     #[test]

@@ -1064,6 +1064,22 @@ mod tests {
             NetworkAccessBoundary::Restricted
         );
         assert_eq!(SecurityConfig::default().execution_root, None);
+        assert_eq!(
+            SecurityConfig::default().mxc_isolation_mode,
+            MxcIsolationMode::Strict
+        );
+        assert_eq!(legacy.mxc_isolation_mode, MxcIsolationMode::Strict);
+    }
+
+    #[test]
+    fn security_mxc_isolation_mode_accepts_compatibility_and_round_trips() {
+        let parsed: SecurityConfig =
+            toml::from_str(r#"mxc_isolation_mode = "compatibility""#).unwrap();
+        assert_eq!(parsed.mxc_isolation_mode, MxcIsolationMode::Compatibility);
+
+        let encoded = toml::to_string(&parsed).unwrap();
+        let decoded: SecurityConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.mxc_isolation_mode, MxcIsolationMode::Compatibility);
     }
 
     #[test]

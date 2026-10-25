@@ -258,6 +258,7 @@
 	});
 	let security = $state<SecuritySettingsDraft>({
 		execution_mode: 'collaborative',
+		mxc_isolation_mode: 'strict',
 		resource_policy: {
 			files: {
 				write_mode: 'workspace',
@@ -514,6 +515,7 @@
 			},
 			security: {
 				execution_mode: security.execution_mode,
+				mxc_isolation_mode: security.mxc_isolation_mode,
 				resource_policy: security.resource_policy,
 				execution_root: security.execution_root,
 				permissions: security.permissions,
@@ -1110,6 +1112,7 @@
 			memory = { ...memory, ...(settings.memory || {}) };
 			security = {
 				execution_mode: settings.security?.execution_mode || 'collaborative',
+				mxc_isolation_mode: settings.security?.mxc_isolation_mode || 'strict',
 				resource_policy: settings.security?.resource_policy || {
 					files: {
 						write_mode: 'workspace',
@@ -1462,6 +1465,7 @@
 				},
 				security: {
 					execution_mode: security.execution_mode,
+					mxc_isolation_mode: security.mxc_isolation_mode,
 					resource_policy: security.resource_policy,
 					execution_root: security.execution_root,
 					permissions: security.permissions,

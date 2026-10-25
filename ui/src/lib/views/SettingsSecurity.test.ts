@@ -7,6 +7,7 @@ import type { SessionPermissionGrant } from '$lib/contracts/settings.ts';
 function createSecurity(): SecuritySettingsDraft {
 	return {
 		execution_mode: 'collaborative',
+		mxc_isolation_mode: 'strict',
 		resource_policy: {
 			files: {
 				write_mode: 'workspace',
@@ -183,6 +184,15 @@ describe('SettingsSecurity', () => {
 
 		await fireEvent.click(screen.getByRole('radio', { name: /无人值守 需要确认时停止/ }));
 		expect(security.execution_mode).toBe('unattended');
+	});
+
+	it('lets users explicitly enable MXC compatibility isolation', async () => {
+		const security = createSecurity();
+		render(SettingsSecurity, { security });
+
+		await fireEvent.click(screen.getByRole('radio', { name: /兼容隔离/ }));
+		expect(security.mxc_isolation_mode).toBe('compatibility');
+		expect(screen.getByText(/DACL 层会临时调整授权目录 ACL/)).toBeTruthy();
 	});
 
 	it('lets users choose the open network boundary from the resource policy', async () => {

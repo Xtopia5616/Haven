@@ -254,6 +254,10 @@ export interface McpServerConfigInput { name?: string; transport?: McpServerTran
 export interface McpServerConfig { name: string; transport: McpServerTransport; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean; exposure: McpExposureConfig }
 export interface MemoryConfigInput { fact_inference_enabled?: boolean }
 export interface MemoryConfig { fact_inference_enabled: boolean }
+export const MXC_ISOLATION_MODE_INPUT_VALUES = ['strict', 'compatibility'] as const;
+export type MxcIsolationModeInput = (typeof MXC_ISOLATION_MODE_INPUT_VALUES)[number];
+export const MXC_ISOLATION_MODE_VALUES = ['strict', 'compatibility'] as const;
+export type MxcIsolationMode = (typeof MXC_ISOLATION_MODE_VALUES)[number];
 export const NETWORK_ACCESS_BOUNDARY_INPUT_VALUES = ['inherit', 'deny', 'restricted', 'open'] as const;
 export type NetworkAccessBoundaryInput = (typeof NETWORK_ACCESS_BOUNDARY_INPUT_VALUES)[number];
 export const NETWORK_ACCESS_BOUNDARY_VALUES = ['inherit', 'deny', 'restricted', 'open'] as const;
@@ -266,8 +270,8 @@ export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
 export interface NotifyChannels { in_app: boolean; windows: boolean }
 export interface ResourcePolicyInput { files?: FileResourcePolicyInput; network?: NetworkResourcePolicyInput }
 export interface ResourcePolicy { files: FileResourcePolicy; network: NetworkResourcePolicy }
-export interface SecurityConfigInput { execution_mode?: ExecutionModeInput; resource_policy?: ResourcePolicyInput; execution_root?: string | null; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
-export interface SecurityConfig { execution_mode: ExecutionMode; resource_policy: ResourcePolicy; execution_root?: string; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
+export interface SecurityConfigInput { execution_mode?: ExecutionModeInput; mxc_isolation_mode?: MxcIsolationModeInput; resource_policy?: ResourcePolicyInput; execution_root?: string | null; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
+export interface SecurityConfig { execution_mode: ExecutionMode; mxc_isolation_mode: MxcIsolationMode; resource_policy: ResourcePolicy; execution_root?: string; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
 export interface SessionConfigInput { max_concurrent?: number; prompt_history_limit?: number; history_retention_days?: number; max_steps_per_run?: number; max_steps_per_session?: number | null }
 export interface SessionConfig { max_concurrent: number; prompt_history_limit: number; history_retention_days: number; max_steps_per_run: number; max_steps_per_session?: number }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
@@ -5317,6 +5321,10 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 					'execution_mode': {
 						optional: false,
 						shape: { kind: 'enum', values: EXECUTION_MODE_VALUES },
+					},
+					'mxc_isolation_mode': {
+						optional: false,
+						shape: { kind: 'enum', values: MXC_ISOLATION_MODE_VALUES },
 					},
 					'resource_policy': {
 						optional: false,
@@ -11181,6 +11189,10 @@ export const SETTINGS_RESPONSE_SHAPE = {
 					'execution_mode': {
 						optional: false,
 						shape: { kind: 'enum', values: EXECUTION_MODE_VALUES },
+					},
+					'mxc_isolation_mode': {
+						optional: false,
+						shape: { kind: 'enum', values: MXC_ISOLATION_MODE_VALUES },
 					},
 					'resource_policy': {
 						optional: false,

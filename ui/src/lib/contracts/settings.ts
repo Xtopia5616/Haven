@@ -2,6 +2,7 @@
 
 import type {
 	FileWriteModeInput as GeneratedFileWriteModeInput,
+	MxcIsolationModeInput,
 	NetworkAccessBoundaryInput as GeneratedNetworkAccessBoundaryInput,
 	PermissionResourceScope,
 	SecurityConfigInput,
@@ -29,8 +30,9 @@ import { hasOwnWireField, isCanonicalEntityId } from './wireGuards.ts';
 
 export type SecuritySettingsDraft = Omit<
 	SecurityConfigInput,
-	'resource_policy' | 'permissions'
+	'resource_policy' | 'permissions' | 'mxc_isolation_mode'
 > & {
+	mxc_isolation_mode: MxcIsolationModeInput;
 	resource_policy: {
 		files: {
 			write_mode: GeneratedFileWriteModeInput;

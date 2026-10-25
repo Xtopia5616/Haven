@@ -4,6 +4,7 @@ use super::engine::{AuthorizationEngine, SafetyConfig, confirmation_now};
 use crate::{
     StructuredToolError, ToolErrorClass, ToolErrorMetadata, ToolExecutionOutcome, ToolRetryability,
 };
+use haven_common::config::MxcIsolationMode;
 use haven_common::types::{NetworkPolicy, SandboxMode};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -147,6 +148,10 @@ impl ExecutionPolicyPermit {
 
     pub(crate) fn network_policy(&self) -> NetworkPolicy {
         self._config.network_policy
+    }
+
+    pub(crate) fn mxc_isolation_mode(&self) -> MxcIsolationMode {
+        self._config.mxc_isolation_mode
     }
 
     /// Compile the final read and write roots for this Workspace Write Shell
@@ -673,6 +678,19 @@ impl ExecutionPolicyAuthorization {
         root: &std::path::Path,
         network_policy: NetworkPolicy,
     ) -> (Self, Arc<AuthorizationEngine>) {
+        Self::for_test_with_workspace_write_root_and_mxc_mode(
+            root,
+            network_policy,
+            MxcIsolationMode::Strict,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_workspace_write_root_and_mxc_mode(
+        root: &std::path::Path,
+        network_policy: NetworkPolicy,
+        mxc_isolation_mode: MxcIsolationMode,
+    ) -> (Self, Arc<AuthorizationEngine>) {
         let authorization = Arc::new(AuthorizationEngine::new());
         {
             let mut config = authorization
@@ -682,6 +700,7 @@ impl ExecutionPolicyAuthorization {
             config
                 .configure_test_workspace_write(root, network_policy)
                 .expect("test workspace root must be available");
+            config.mxc_isolation_mode = mxc_isolation_mode;
         }
         let proof = Self::for_test_with_engine_and_tool(Arc::clone(&authorization), "shell");
         (proof, authorization)
@@ -789,9 +808,30 @@ impl haven_skills::ProcessStartAuthorization for ExecutionPolicyAuthorization {
 mod tests {
     use super::ExecutionPolicyAuthorization;
     use crate::security::AuthorizationEngine;
+    use haven_common::config::MxcIsolationMode;
     use haven_common::types::{NetworkPolicy, SandboxMode};
     use std::path::PathBuf;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn execution_policy_permit_carries_mxc_isolation_choice() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .config
+            .try_write()
+            .expect("test authorization config must be idle")
+            .mxc_isolation_mode = MxcIsolationMode::Compatibility;
+        let authorization = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
+            Arc::clone(&engine),
+            "shell",
+        );
+
+        let permit = authorization
+            .acquire()
+            .await
+            .expect("live execution policy is available");
+        assert_eq!(permit.mxc_isolation_mode(), MxcIsolationMode::Compatibility);
+    }
 
     #[tokio::test]
     async fn lifecycle_hook_start_requires_full_access_open_network_and_live_policy() {

@@ -12,6 +12,7 @@
 	import { permissionResourceScopeDescription } from '$lib/permissionResourceDescription.ts';
 	import type {
 		FileWriteModeInput,
+		MxcIsolationModeInput,
 		NetworkAccessBoundaryInput,
 	} from '$lib/contracts/generatedCommands.ts';
 import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contracts/settings.ts';
@@ -79,6 +80,25 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 			detail: '只执行无需追加确认且已获准的操作；遇到需要确认的操作会停止。',
 		},
 	] as const;
+
+	const MXC_ISOLATION_MODES: Array<{
+		value: MxcIsolationModeInput;
+		label: string;
+		detail: string;
+	}> = [
+		{
+			value: 'strict',
+			label: '严格 MXC',
+			detail:
+				'只使用不需 DACL 补强的 MXC BaseContainer。探测或启动失败时拒绝执行，不自动切换隔离层或收窄网络。',
+		},
+		{
+			value: 'compatibility',
+			label: '兼容隔离',
+			detail:
+				'BaseContainer 无法启动时允许 MXC AppContainer 兼容层，并可能将网络收窄为仅出站或完全断网。DACL 层会临时调整授权目录 ACL，并在子进程结束时恢复。',
+		},
+	];
 
 	const FILE_WRITE_MODES = [
 		{
@@ -598,6 +618,37 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 					</p>
 				{/if}
 			</div>
+		</div>
+	</div>
+
+	<div class="settings-subsection">
+		<div class="subsection-heading">
+			<div>
+				<h3>WorkspaceWrite Shell 的 MXC 隔离</h3>
+				<p>只影响 Windows 上 WorkspaceWrite 模式的 Shell 进程；FullAccess 与其它进程入口不使用 MXC。</p>
+			</div>
+		</div>
+		<div class="policy-grid" role="radiogroup" aria-label="MXC 隔离模式">
+			{#each MXC_ISOLATION_MODES as mode (mode.value)}
+				<label
+					class="policy-option"
+					class:selected={security.mxc_isolation_mode === mode.value}
+				>
+					<input
+						type="radio"
+						name="mxc-isolation-mode"
+						value={mode.value}
+						checked={security.mxc_isolation_mode === mode.value}
+						onchange={() => {
+							security.mxc_isolation_mode = mode.value;
+						}}
+					/>
+					<span class="policy-option__body">
+						<strong>{mode.label}</strong>
+						<span>{mode.detail}</span>
+					</span>
+				</label>
+			{/each}
 		</div>
 	</div>
 
