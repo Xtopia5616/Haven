@@ -185,11 +185,10 @@ impl OperationPolicy {
         Self {
             risk_level,
             capability,
-            confirmation: if risk_level >= RiskLevel::Critical {
-                ConfirmationRequirement::Required
-            } else {
-                ConfirmationRequirement::SecurityPolicy
-            },
+            // External adapters can mutate remote state beyond Haven's local
+            // resource boundaries. Require fresh consent for every invocation;
+            // a saved allow grant must not silently authorize later side effects.
+            confirmation: ConfirmationRequirement::Required,
             idempotency: OperationIdempotency::Unknown,
             scope: ToolOperationScope::Session,
             concurrency: ToolConcurrency::Exclusive,

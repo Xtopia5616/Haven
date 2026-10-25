@@ -1310,3 +1310,4 @@
 - [1405：将 MXC 兼容隔离改为显式选择](1405-explicit-mxc-compatibility-isolation.md)
 - [1408：配置 Shell 系统与工具链只读根](1408-configure-shell-runtime-read-roots.md)
 - [1409：拒绝 MXC Shell 写根中的 hardlink 越界](1409-refuse-mxc-shell-hardlink-escapes.md)
+- [1412：MCP 与 Skill 外部调用逐次确认](1412-require-per-call-approval-for-external-adapters.md)

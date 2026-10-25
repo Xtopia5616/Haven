@@ -631,7 +631,7 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 2. 会话 `ExecutionMode::Analyze` → 非只读操作 **Blocked**，早于任何 allow
 3. 永久拒绝 → **Blocked**
 4. 会话拒绝 → **Blocked**
-5. 操作契约的 `Required` / `Critical` → 强制确认底线，不可由 allow 绕过
+5. 操作契约的 `Required` / `Critical` → 每次调用都要求新确认，不可由 allow 绕过；MCP 与 Skill 外部能力默认使用 `Required`
 6. 永久允许 / 会话允许 → **AutoApproved**（仅对不触发强制确认的操作）
 7. 其余按 `ExecutionMode` 处理：`Collaborative` 可请求确认，`Unattended` 对需要确认的操作返回 **Blocked**
 
@@ -644,6 +644,7 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 的文件路径边界只作用于声明为 `OperationEffect::WorkspaceWrite` 的本地文件写操作；其它
 `ExternalEffect` 不会仅因只读模式或目标位于可写根之外而被拒绝，而是继续按执行边界、网络策略、
 操作风险、权限规则和执行方式处理；无法保证只读效果的工具仍可按各自执行边界被拒绝。
+MCP/Skill 外部调用具有无法由本地授权器观察的远端或脚本副作用，因此每次都走新确认；永久或会话 Allow 不能跳过该确认。`disabled_operations`、永久/会话 Deny、显式拒绝路径及不可满足的网络/进程边界仍在确认前硬拒绝。操作合同的 `ConfirmationRequirement::Required` 是逐次询问语义；当前配置没有按 Shell 命令文本匹配 `prompt` / `forbidden` 的独立规则。
 WorkspaceWrite 仍会单独拒绝无法约束文件访问的宿主子进程；Shell 的全局与工具级文件根交集由授权 owner 编译，MXC 不补加 cwd（ADR 1404）；Shell 默认要求 MXC BaseContainer 且不做 DACL 补强，探测或启动失败即停止。只有 `mxc_isolation_mode=compatibility` 时才会尝试 MXC AppContainer 兼容 tier，并按需收窄网络；DACL 层会临时调整授权根 ACL 并在进程结束后恢复。每次 Shell 结果显示本次实际隔离层、网络能力和 ACL 行为；任何失败都不回退宿主权限（ADR 1405）。受管隔离执行由各自边界控制。`deny` / 不可验证
 目的地的 `restricted` 仍直接拒绝对应网络能力；是否需要确认由会话执行方式、操作合同和授权规则决定，
 `open` 不添加全局网络限制。Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过

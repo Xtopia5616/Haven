@@ -1172,7 +1172,7 @@ impl AuthorizationEngine {
 
         let reason_code = if resource_boundary_extension {
             AuthorizationReasonCode::ResourceBoundaryExtension
-        } else if hard_confirmation {
+        } else if risk >= RiskLevel::Critical {
             AuthorizationReasonCode::CriticalOperation
         } else if policy.requires_disclosure_confirmation() {
             AuthorizationReasonCode::SensitiveData
@@ -3369,18 +3369,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persistent_mcp_grants_bind_target_and_exact_remote_request() {
+    async fn mcp_remote_invocations_require_fresh_confirmation_even_with_exact_persistent_allow() {
         let engine = AuthorizationEngine::new();
         engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         let capability = capability_scope!("mcp__calendar__calendar_status");
-        let request = resource_test_request(
+        let mut request = resource_test_request(
             &capability,
             vec![DeclaredResource::McpRemoteInvocation {
                 target_fingerprint: "a".repeat(64),
                 request_fingerprint: "b".repeat(64),
             }],
+        );
+        request.policy = OperationPolicy::external(capability.clone(), RiskLevel::High);
+        assert_eq!(
+            request.policy.confirmation,
+            ConfirmationRequirement::Required
         );
         let scope = engine
             .resource_scope_for_request(&request, PermissionResourceTarget::Exact)
@@ -3395,27 +3400,13 @@ mod tests {
                 scope,
             )
             .await;
-        assert!(matches!(
-            engine.authorize(&request).await,
-            AuthorizationDecision::AutoApproved
-        ));
-
-        for (target_fingerprint, request_fingerprint) in [
-            ("c".repeat(64), "b".repeat(64)),
-            ("a".repeat(64), "d".repeat(64)),
-        ] {
-            let changed = resource_test_request(
-                &capability,
-                vec![DeclaredResource::McpRemoteInvocation {
-                    target_fingerprint,
-                    request_fingerprint,
-                }],
-            );
-            assert!(matches!(
-                engine.authorize(&changed).await,
+        assert!(
+            matches!(
+                engine.authorize(&request).await,
                 AuthorizationDecision::RequiresConfirmation { .. }
-            ));
-        }
+            ),
+            "a saved MCP allow must not bypass the per-call confirmation floor"
+        );
 
         for (invalid, target) in [
             (
@@ -4787,6 +4778,57 @@ mod tests {
                 .is_err(),
             "a confirmation receipt cannot be redirected to a replacement target"
         );
+    }
+
+    #[tokio::test]
+    async fn required_confirmation_prompts_despite_allow_and_explicit_deny_still_blocks() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let input = json!({"command": "Remove-Item -LiteralPath report.txt"});
+        let mut request = fixture_request(
+            None,
+            "shell",
+            &input,
+            &fixture_policy("shell", &input, RiskLevel::Medium),
+        );
+        request.policy.confirmation = ConfirmationRequirement::Required;
+        let capability = request.capability().clone();
+
+        engine
+            .grant(
+                None,
+                capability.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                Vec::new(),
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&request).await,
+            AuthorizationDecision::RequiresConfirmation {
+                reason_code: AuthorizationReasonCode::ApprovalPolicy,
+                ..
+            }
+        ));
+
+        engine
+            .grant(
+                None,
+                capability,
+                PermissionEffect::Deny,
+                PermissionScope::Always,
+                Vec::new(),
+            )
+            .await;
+        assert!(matches!(
+            engine.authorize(&request).await,
+            AuthorizationDecision::Blocked {
+                reason_code: AuthorizationReasonCode::PermanentDeny,
+                ..
+            }
+        ));
     }
 
     // Keep threshold fixtures terse while production tests use the new policy
