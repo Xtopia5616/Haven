@@ -80,7 +80,7 @@ impl LifecycleHookProcessStartAuthorization {
         if config.sandbox_mode != SandboxMode::FullAccess {
             return Err("lifecycle hook commands require the Full Access sandbox".into());
         }
-        if config.network_policy != NetworkPolicy::Open {
+        if config.network.network_policy() != NetworkPolicy::Open {
             return Err("lifecycle hook commands require Open network policy".into());
         }
         Ok(ExecutionPolicyPermit {
@@ -150,7 +150,7 @@ impl ExecutionPolicyPermit {
     }
 
     pub(crate) fn network_policy(&self) -> NetworkPolicy {
-        self._config.network_policy
+        self._config.network.network_policy()
     }
 
     pub(crate) fn mxc_isolation_mode(&self) -> MxcIsolationMode {
@@ -660,7 +660,7 @@ impl ExecutionPolicyAuthorization {
             return Err(format!("{process_name} requires the Full Access sandbox"));
         }
         if matches!(
-            config.network_policy,
+            config.network.network_policy(),
             NetworkPolicy::Deny | NetworkPolicy::Restricted
         ) {
             return Err(format!(
@@ -827,7 +827,7 @@ impl McpStdioProcessStartAuthorization {
                 "MCP stdio child processes are blocked by the workspace-write sandbox".into(),
             );
         }
-        if config.network_policy != NetworkPolicy::Open {
+        if config.network.network_policy() != NetworkPolicy::Open {
             return Err("MCP stdio requires the network policy to be Open".into());
         }
         Ok(ExecutionPolicyPermit {
@@ -966,7 +966,8 @@ mod tests {
                 .config
                 .try_write()
                 .expect("test authorization config must be idle")
-                .network_policy = network_policy;
+                .network
+                .access = network_policy.into();
             assert!(
                 authorization
                     .acquire_lsp_process_start_permit()
@@ -984,7 +985,8 @@ mod tests {
                 .config
                 .try_write()
                 .expect("test authorization config must be idle")
-                .network_policy = network_policy;
+                .network
+                .access = network_policy.into();
             assert!(
                 authorization
                     .acquire_lsp_process_start_permit()

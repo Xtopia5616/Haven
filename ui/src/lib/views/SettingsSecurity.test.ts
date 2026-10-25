@@ -241,7 +241,19 @@ describe('SettingsSecurity', () => {
 
 		expect(security.resource_policy?.network.access).toBe('restricted');
 		expect(screen.getByText(/是否询问由执行方式决定/)).toBeTruthy();
+		expect(screen.getByText(/回环地址、私有网段和元数据地址会被拒绝/)).toBeTruthy();
 		expect(screen.getByText('受限网络')).toBeTruthy();
+	});
+
+	it('explains that the domain list narrows destinations but does not enable networking', async () => {
+		const security = createSecurity();
+		render(SettingsSecurity, { security });
+		await openResourceBoundaries();
+
+		expect(
+			screen.getByText(/名单只增加目标限制，不会开启网络/),
+		).toBeTruthy();
+		expect(screen.getByText(/受限网络会阻止回环地址、私有网段和特殊用途地址/)).toBeTruthy();
 	});
 
 	it('explains the user-level file access and independent network policy', async () => {

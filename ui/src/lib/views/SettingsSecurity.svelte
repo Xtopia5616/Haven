@@ -132,7 +132,7 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 		{
 			value: 'restricted',
 			label: '受限网络',
-			detail: '只允许 Haven 能验证目的地的公共网络请求；无法按目的地检查的 MCP、技能和命令子进程会被拒绝。是否询问由执行方式决定。',
+			detail: '只允许 Haven 能验证目的地的公共网络请求；回环地址、私有网段和元数据地址会被拒绝。无法按目的地检查的 MCP、技能和命令子进程会被拒绝。是否询问由执行方式决定。',
 		},
 		{
 			value: 'open',
@@ -584,7 +584,7 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 			<SettingsField
 				label="网络域名范围"
 				id="security-network-domains"
-				description="可选；每行一个主机名或 *.example.com 通配范围。全局和工具级名单同时配置时必须同时匹配；该范围也会检查 HTTP 重定向。"
+				description="可选；每行一个主机名或 *.example.com 通配范围。名单只增加目标限制，不会开启网络；全局和工具级名单同时配置时必须同时匹配。受限网络会阻止回环地址、私有网段和特殊用途地址；该范围也会检查 HTTP 重定向。"
 				stacked
 			>
 				<textarea

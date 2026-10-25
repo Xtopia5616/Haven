@@ -69,6 +69,31 @@ impl Default for NetworkResourcePolicy {
     }
 }
 
+impl NetworkResourcePolicy {
+    /// Convert the access boundary to the technical policy used by network
+    /// transports. Domain restrictions remain part of this policy object and
+    /// are evaluated independently by destinations that support them.
+    pub fn network_policy(&self) -> NetworkPolicy {
+        match self.access {
+            NetworkAccessBoundary::Deny => NetworkPolicy::Deny,
+            NetworkAccessBoundary::Open => NetworkPolicy::Open,
+            NetworkAccessBoundary::Restricted | NetworkAccessBoundary::Inherit => {
+                NetworkPolicy::Restricted
+            }
+        }
+    }
+}
+
+impl From<NetworkPolicy> for NetworkAccessBoundary {
+    fn from(policy: NetworkPolicy) -> Self {
+        match policy {
+            NetworkPolicy::Deny => Self::Deny,
+            NetworkPolicy::Restricted => Self::Restricted,
+            NetworkPolicy::Open => Self::Open,
+        }
+    }
+}
+
 /// Network access mode within one resource policy scope.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -146,16 +171,6 @@ impl ResourcePolicy {
                 SandboxMode::WorkspaceWrite
             }
             FileWriteMode::Unrestricted => SandboxMode::FullAccess,
-        }
-    }
-
-    pub fn network_policy(&self) -> NetworkPolicy {
-        match self.network.access {
-            NetworkAccessBoundary::Deny => NetworkPolicy::Deny,
-            NetworkAccessBoundary::Open => NetworkPolicy::Open,
-            NetworkAccessBoundary::Restricted | NetworkAccessBoundary::Inherit => {
-                NetworkPolicy::Restricted
-            }
         }
     }
 }

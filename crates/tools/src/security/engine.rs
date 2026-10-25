@@ -63,11 +63,10 @@ pub(super) struct SafetyConfig {
     pub(super) global_read_only_roots: Vec<PathBuf>,
     pub(super) global_denied_paths: Vec<PathBuf>,
     pub(super) shell_runtime_read_roots: Vec<PathBuf>,
-    global_network_domains: Vec<String>,
+    pub(super) network: NetworkResourcePolicy,
     pub(super) execution_workspace: ExecutionWorkspace,
     /// Stable working directory bindings restored from Agent session events.
     session_workspaces: HashMap<String, ExecutionWorkspace>,
-    pub(super) network_policy: NetworkPolicy,
     /// Monotonic process-local revision. Configuration/policy changes
     /// invalidate outstanding receipts; the grant attached to the decision
     /// that created a receipt is intentionally applied after final execution.
@@ -132,7 +131,7 @@ impl SafetyConfig {
         self.sandbox_mode = SandboxMode::WorkspaceWrite;
         self.writable_roots = vec![root.to_path_buf()];
         self.execution_workspace = ExecutionWorkspace::open_root(root, 1)?;
-        self.network_policy = network_policy;
+        self.network.access = network_policy.into();
         Ok(())
     }
 }
@@ -173,10 +172,12 @@ impl AuthorizationEngine {
                 global_read_only_roots: Vec::new(),
                 global_denied_paths: Vec::new(),
                 shell_runtime_read_roots: Vec::new(),
-                global_network_domains: Vec::new(),
+                network: NetworkResourcePolicy {
+                    access: NetworkAccessBoundary::Restricted,
+                    allowed_domains: Vec::new(),
+                },
                 execution_workspace,
                 session_workspaces: HashMap::new(),
-                network_policy: NetworkPolicy::Restricted,
                 policy_revision: 0,
                 process_boundary_revision: 0,
                 permanent: SessionGrants::default(),
@@ -291,7 +292,7 @@ impl AuthorizationEngine {
         self: &Arc<Self>,
     ) -> Option<Arc<McpStdioProcessStartAuthorization>> {
         let config = self.config.read().await;
-        if config.network_policy != NetworkPolicy::Open {
+        if config.network.network_policy() != NetworkPolicy::Open {
             return None;
         }
         Some(Arc::new(McpStdioProcessStartAuthorization {
@@ -312,7 +313,7 @@ impl AuthorizationEngine {
         if config.sandbox_mode != SandboxMode::FullAccess {
             return Err("lifecycle hook commands require the Full Access sandbox".into());
         }
-        if config.network_policy != NetworkPolicy::Open {
+        if config.network.network_policy() != NetworkPolicy::Open {
             return Err("lifecycle hook commands require Open network policy".into());
         }
         Ok(LifecycleHookProcessStartAuthorization::new(
@@ -366,14 +367,7 @@ impl AuthorizationEngine {
                     .map(|path| path.to_string_lossy().into_owned())
                     .collect(),
             },
-            network: NetworkResourcePolicy {
-                access: match config.network_policy {
-                    NetworkPolicy::Deny => NetworkAccessBoundary::Deny,
-                    NetworkPolicy::Restricted => NetworkAccessBoundary::Restricted,
-                    NetworkPolicy::Open => NetworkAccessBoundary::Open,
-                },
-                allowed_domains: config.global_network_domains.clone(),
-            },
+            network: config.network.clone(),
         }
     }
 
@@ -580,9 +574,8 @@ impl AuthorizationEngine {
             "security.shell_runtime_read_roots",
         )
         .map(|_| ());
-        let global_network_domains = security.resource_policy.network.allowed_domains.clone();
+        let network = security.resource_policy.network.clone();
         let sandbox_mode = security.resource_policy.sandbox_mode();
-        let network_policy = security.resource_policy.network_policy();
         let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
             || cfg.mxc_isolation_mode != security.mxc_isolation_mode
             || cfg.writable_roots != writable_roots
@@ -590,8 +583,7 @@ impl AuthorizationEngine {
             || cfg.global_read_only_roots != global_read_only_roots
             || cfg.global_denied_paths != global_denied_paths
             || cfg.shell_runtime_read_roots != shell_runtime_read_roots
-            || cfg.network_policy != network_policy
-            || cfg.global_network_domains != global_network_domains;
+            || cfg.network != network;
         let mut permanent = SessionGrants::default();
         for permission in &security.permissions {
             match CapabilityScope::try_new(&permission.key) {
@@ -631,8 +623,7 @@ impl AuthorizationEngine {
             || cfg.global_read_only_roots != global_read_only_roots
             || cfg.global_denied_paths != global_denied_paths
             || cfg.shell_runtime_read_roots != shell_runtime_read_roots
-            || cfg.network_policy != network_policy
-            || cfg.global_network_domains != global_network_domains
+            || cfg.network != network
             || cfg.permanent != permanent;
         cfg.execution_workspace = workspace;
         cfg.execution_mode = security.execution_mode;
@@ -643,8 +634,7 @@ impl AuthorizationEngine {
         cfg.global_read_only_roots = global_read_only_roots;
         cfg.global_denied_paths = global_denied_paths;
         cfg.shell_runtime_read_roots = shell_runtime_read_roots;
-        cfg.network_policy = network_policy;
-        cfg.global_network_domains = global_network_domains;
+        cfg.network = network;
         cfg.permanent = permanent;
         if policy_changed {
             cfg.session_grants.clear();
@@ -705,10 +695,10 @@ impl AuthorizationEngine {
         let mut cfg = self.config.write().await;
         let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
             || cfg.writable_roots != writable_roots
-            || cfg.network_policy != network_policy;
+            || cfg.network.network_policy() != network_policy;
         cfg.sandbox_mode = sandbox_mode;
         cfg.writable_roots = writable_roots;
-        cfg.network_policy = network_policy;
+        cfg.network.access = network_policy.into();
         cfg.session_grants.clear();
         if process_boundaries_changed {
             self.bump_process_boundary_revision(&mut cfg);
@@ -750,11 +740,7 @@ impl AuthorizationEngine {
             SandboxMode::WorkspaceWrite => FileWriteMode::Workspace,
             SandboxMode::FullAccess => FileWriteMode::Unrestricted,
         };
-        let network_access = match cfg.network_policy {
-            NetworkPolicy::Deny => NetworkAccessBoundary::Deny,
-            NetworkPolicy::Restricted => NetworkAccessBoundary::Restricted,
-            NetworkPolicy::Open => NetworkAccessBoundary::Open,
-        };
+        let network_access = cfg.network.access;
         format!(
             "mode={:?}; resource_policy.files.write_mode={file_write_mode:?}; resource_policy.network.access={network_access:?}; always_allowed={always_allowed}; always_denied={always_denied}; disabled_tools={disabled_tools}; disabled_operations={disabled_operations}; operation contracts decide read-only access; higher-risk operations may require confirmation",
             cfg.execution_mode
@@ -2007,8 +1993,8 @@ fn network_resource_block(
     }
 
     let mut domain_policies = Vec::new();
-    if !cfg.global_network_domains.is_empty() {
-        domain_policies.push(cfg.global_network_domains.as_slice());
+    if !cfg.network.allowed_domains.is_empty() {
+        domain_policies.push(cfg.network.allowed_domains.as_slice());
     }
     domain_policies.extend(
         settings
@@ -2018,6 +2004,12 @@ fn network_resource_block(
     );
     if domain_policies.is_empty() {
         return None;
+    }
+    if tool_name == "shell" && operation.network_access == NetworkAccess::Opaque {
+        return Some(
+            "Shell cannot run with configured network domain restrictions because its current process boundary cannot enforce per-domain network rules"
+                .into(),
+        );
     }
 
     let destinations = resources
@@ -2066,8 +2058,8 @@ fn network_domain_extension_allowed(
     let [super::DeclaredResource::NetworkDestination { host, .. }] = resources else {
         return false;
     };
-    if cfg.global_network_domains.is_empty()
-        || haven_common::network::http_domain_allowed(host, &cfg.global_network_domains)
+    if cfg.network.allowed_domains.is_empty()
+        || haven_common::network::http_domain_allowed(host, &cfg.network.allowed_domains)
     {
         return false;
     }
@@ -2092,8 +2084,8 @@ fn network_domain_constraints_for_config(
     include_global: bool,
 ) -> Vec<Vec<String>> {
     let mut constraints = Vec::new();
-    if include_global && !cfg.global_network_domains.is_empty() {
-        constraints.push(cfg.global_network_domains.clone());
+    if include_global && !cfg.network.allowed_domains.is_empty() {
+        constraints.push(cfg.network.allowed_domains.clone());
     }
     constraints.extend(
         tool_setting_names(tool_name)
@@ -2437,7 +2429,7 @@ fn check_policy_boundaries(
             resource_extension_allowed: false,
         });
     }
-    if let Some(reason) = network_policy_block(cfg.network_policy, tool_name, policy) {
+    if let Some(reason) = network_policy_block(cfg.network.network_policy(), tool_name, policy) {
         return Err(PolicyBoundaryFailure {
             reason,
             reason_code: AuthorizationReasonCode::NetworkPolicy,
@@ -4846,7 +4838,7 @@ mod tests {
             // boundary; dedicated network tests use the real Restricted/Deny
             // defaults instead.
             let mut config = engine.config.try_write().unwrap();
-            config.network_policy = NetworkPolicy::Open;
+            config.network.access = NetworkAccessBoundary::Open;
             config.sandbox_mode = SandboxMode::FullAccess;
             drop(config);
             Self { engine, threshold }
@@ -5202,6 +5194,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn changing_network_access_keeps_domain_restrictions_separate() {
+        let engine = AuthorizationEngine::new();
+        let mut security = SecurityConfig::default();
+        security.resource_policy.network.allowed_domains = vec!["trusted.example".into()];
+        engine
+            .apply_security(&security)
+            .await
+            .expect("default security uses the discovered workspace");
+
+        engine
+            .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Deny)
+            .await;
+        {
+            let config = engine.config.read().await;
+            assert_eq!(config.network.access, NetworkAccessBoundary::Deny);
+            assert_eq!(config.network.allowed_domains, ["trusted.example"]);
+        }
+
+        engine
+            .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let config = engine.config.read().await;
+        assert_eq!(config.network.access, NetworkAccessBoundary::Open);
+        assert_eq!(config.network.allowed_domains, ["trusted.example"]);
+    }
+
+    #[tokio::test]
     async fn auto_edit_does_not_auto_approve_ui_schedule_or_process_effects() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         gateway
@@ -5334,6 +5353,99 @@ mod tests {
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn shell_with_domain_restrictions_is_blocked_before_network_confirmation() {
+        let shell_policy = OperationPolicy::native(
+            "shell",
+            capability_scope!("shell"),
+            RiskLevel::High,
+            NetworkAccess::Opaque,
+        );
+        let request = fixture_request(None, "shell", &json!({}), &shell_policy);
+        let unrestricted_files = FileResourcePolicy {
+            write_mode: FileWriteMode::Unrestricted,
+            ..FileResourcePolicy::default()
+        };
+        let open_network = NetworkResourcePolicy {
+            access: NetworkAccessBoundary::Open,
+            allowed_domains: Vec::new(),
+        };
+
+        let no_domain_engine = AuthorizationEngine::new();
+        no_domain_engine
+            .apply_security(&SecurityConfig {
+                resource_policy: ResourcePolicy {
+                    files: unrestricted_files.clone(),
+                    network: open_network.clone(),
+                },
+                ..SecurityConfig::default()
+            })
+            .await
+            .expect("open network without a domain list is valid");
+        assert!(matches!(
+            no_domain_engine
+                .authorize_for_execution(&request)
+                .await
+                .decision,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+
+        let global_domain_engine = AuthorizationEngine::new();
+        global_domain_engine
+            .apply_security(&SecurityConfig {
+                resource_policy: ResourcePolicy {
+                    files: unrestricted_files.clone(),
+                    network: NetworkResourcePolicy {
+                        allowed_domains: vec!["trusted.example".into()],
+                        ..open_network.clone()
+                    },
+                },
+                ..SecurityConfig::default()
+            })
+            .await
+            .expect("global domain restriction is valid");
+
+        let tool_domain_engine = AuthorizationEngine::new();
+        tool_domain_engine
+            .apply_security(&SecurityConfig {
+                resource_policy: ResourcePolicy {
+                    files: unrestricted_files,
+                    network: open_network,
+                },
+                ..SecurityConfig::default()
+            })
+            .await
+            .expect("open global network policy is valid");
+        tool_domain_engine
+            .set_tool_settings(HashMap::from([(
+                "shell".into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        network: NetworkResourcePolicy {
+                            access: NetworkAccessBoundary::Inherit,
+                            allowed_domains: vec!["trusted.example".into()],
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            )]))
+            .await;
+
+        for engine in [&global_domain_engine, &tool_domain_engine] {
+            let AuthorizationDecision::Blocked {
+                reason_code,
+                reason,
+                ..
+            } = engine.authorize_for_execution(&request).await.decision
+            else {
+                panic!("Shell with a domain restriction must be denied before confirmation");
+            };
+            assert_eq!(reason_code, AuthorizationReasonCode::NetworkPolicy);
+            assert!(reason.contains("per-domain network rules"));
+        }
     }
 
     #[tokio::test]
@@ -6486,13 +6598,13 @@ mod tests {
             "host-process sandbox failure must win over network and path failures"
         );
         cfg.sandbox_mode = SandboxMode::FullAccess;
-        cfg.network_policy = NetworkPolicy::Deny;
+        cfg.network.access = NetworkAccessBoundary::Deny;
         assert_eq!(
             check(&cfg),
             AuthorizationReasonCode::NetworkPolicy,
             "network failure must win over the path allowlist"
         );
-        cfg.network_policy = NetworkPolicy::Open;
+        cfg.network.access = NetworkAccessBoundary::Open;
         assert_eq!(
             check(&cfg),
             AuthorizationReasonCode::SandboxBoundary,

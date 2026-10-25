@@ -1305,6 +1305,7 @@
 - [1399：语音转写绑定录音目标并保留可重试源音频](1399-bind-voice-transcription-to-capture-and-retain-failures.md)
 - [1400：上传租约在输入接受后再绑定会话](1400-keep-upload-leases-pending-until-ingress-acceptance.md)
 - [1401：Shell 使用 MXC 结构化拒绝记录发起一次性资源确认](1401-shell-mxc-structured-denial-confirmation.md)
+- [1402：域名限制配置下拒绝 Shell 联网执行](1402-block-shell-networking-under-domain-restrictions.md)
 - [1403：在聊天输入区拖放加入附件](1403-chat-composer-file-drop.md)
 - [1404：由授权 owner 将 Shell 文件策略编译到 MXC](1404-compile-shell-filesystem-policy-into-mxc.md)
 - [1405：将 MXC 兼容隔离改为显式选择](1405-explicit-mxc-compatibility-isolation.md)
@@ -1312,3 +1313,4 @@
 - [1409：拒绝 MXC Shell 写根中的 hardlink 越界](1409-refuse-mxc-shell-hardlink-escapes.md)
 - [1412：MCP 与 Skill 外部调用逐次确认](1412-require-per-call-approval-for-external-adapters.md)
 - [1413：权限确认展示实际调用参数并折叠疑似凭据](1413-show-invocation-details-in-permission-prompts.md)
+- [1414：网络开关与域名约束共用运行时策略快照](1414-keep-network-access-policy-as-one-runtime-snapshot.md)
