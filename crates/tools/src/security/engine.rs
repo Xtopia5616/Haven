@@ -7,7 +7,7 @@ use super::contract::{
 use super::execution::execution_policy_denied;
 use super::execution::{
     ExecutionPolicyAuthorization, LifecycleHookProcessStartAuthorization,
-    McpStdioProcessStartAuthorization,
+    McpStdioProcessStartAuthorization, opaque_network_is_unrestricted,
 };
 use super::filesystem::{
     FileReadPolicy, FileWritePolicy, is_unc_or_device_path, open_directory_roots,
@@ -296,7 +296,19 @@ impl AuthorizationEngine {
         self: &Arc<Self>,
     ) -> Option<Arc<McpStdioProcessStartAuthorization>> {
         let config = self.config.read().await;
-        if config.network.network_policy() != NetworkPolicy::Open {
+        let opaque_network_is_open = config.network.network_policy() == NetworkPolicy::Open
+            && config.network.allowed_domains.is_empty()
+            && ["mcp_stdio", "mcp"].into_iter().all(|name| {
+                config.tool_settings.get(name).is_none_or(|setting| {
+                    !matches!(
+                        setting.resource_policy.network.access,
+                        NetworkAccessBoundary::Deny | NetworkAccessBoundary::Restricted
+                    ) && setting.resource_policy.network.allowed_domains.is_empty()
+                })
+            });
+        if !matches!(config.sandbox_mode, SandboxMode::WorkspaceWrite if cfg!(windows))
+            && !(config.sandbox_mode == SandboxMode::FullAccess && opaque_network_is_open)
+        {
             return None;
         }
         Some(Arc::new(McpStdioProcessStartAuthorization {
@@ -314,11 +326,21 @@ impl AuthorizationEngine {
         self: &Arc<Self>,
     ) -> Result<LifecycleHookProcessStartAuthorization, String> {
         let config = self.config.read().await;
-        if config.sandbox_mode != SandboxMode::FullAccess {
-            return Err("lifecycle hook commands require the Full Access sandbox".into());
-        }
-        if config.network.network_policy() != NetworkPolicy::Open {
-            return Err("lifecycle hook commands require Open network policy".into());
+        match config.sandbox_mode {
+            SandboxMode::FullAccess
+                if opaque_network_is_unrestricted(&config, "lifecycle_hook") => {}
+            SandboxMode::FullAccess => {
+                return Err(
+                    "lifecycle hook commands require Open network policy without domain allowlists in Full Access".into(),
+                );
+            }
+            SandboxMode::WorkspaceWrite if cfg!(windows) => {}
+            SandboxMode::WorkspaceWrite => {
+                return Err("Workspace Write lifecycle hooks require Windows MXC isolation".into());
+            }
+            SandboxMode::ReadOnly => {
+                return Err("lifecycle hook commands are blocked by the read-only sandbox".into());
+            }
         }
         Ok(LifecycleHookProcessStartAuthorization::new(
             Arc::clone(self),
@@ -480,6 +502,7 @@ impl AuthorizationEngine {
             .checked_add(1)
             .ok_or_else(|| "workspace generation is exhausted".to_string())?;
         cfg.execution_workspace = candidate.with_generation(generation);
+        self.bump_process_boundary_revision(&mut cfg);
         Ok(cfg.execution_workspace.snapshot())
     }
 
@@ -582,6 +605,7 @@ impl AuthorizationEngine {
         let sandbox_mode = security.resource_policy.sandbox_mode();
         let network_policy_changed = cfg.network != network;
         let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
+            || !cfg.execution_workspace.same_root(&workspace)
             || cfg.mxc_isolation_mode != security.mxc_isolation_mode
             || cfg.writable_roots != writable_roots
             || cfg.global_file_roots != global_file_roots
@@ -738,6 +762,12 @@ impl AuthorizationEngine {
             .cloned()
             .collect::<HashSet<_>>();
         cfg.tool_settings = settings;
+        if changed_tool_names
+            .iter()
+            .any(|name| matches!(name.as_str(), "mcp" | "mcp_stdio"))
+        {
+            self.bump_process_boundary_revision(&mut cfg);
+        }
         advance_policy_revision(&mut cfg);
         self.cancel_tool_settings_processes(&changed_tool_names);
     }
@@ -1020,6 +1050,7 @@ impl AuthorizationEngine {
             network_destination_extension,
             execution_authorization: Some(ExecutionPolicyAuthorization {
                 authorization: Arc::clone(self),
+                tool_name: request.tool_name.clone(),
                 policy_revision: proof.binding.policy_revision,
                 session_execution_mode_revision: proof.binding.session_execution_mode_revision,
                 execution_workspace_generation: execution_workspace.generation(),
@@ -4189,7 +4220,7 @@ mod tests {
             .await
             .expect("explicitly open network policy permits an MCP stdio snapshot");
         let permit = authorization
-            .acquire()
+            .acquire(haven_mcp::McpStdioProcessStartRequest::default())
             .await
             .expect("the current open policy permits process creation");
         drop(permit);
@@ -4203,7 +4234,10 @@ mod tests {
             .await;
 
         assert!(
-            authorization.acquire().await.is_err(),
+            authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                .await
+                .is_err(),
             "a captured stdio start authorization must be rejected after policy revision changes"
         );
         assert!(
@@ -4225,17 +4259,29 @@ mod tests {
             .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
             .await;
         assert!(
-            authorization.acquire().await.is_err(),
+            authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                .await
+                .is_err(),
             "changing to WorkspaceWrite must revoke an existing stdio start permit"
         );
-        let workspace_authorization = engine
-            .capture_mcp_stdio_process_start_authorization()
-            .await
-            .expect("Open network permits a scoped MCP authorization snapshot");
-        assert!(
-            workspace_authorization.acquire().await.is_err(),
-            "WorkspaceWrite must reject host-process MCP stdio"
-        );
+        let workspace_authorization = engine.capture_mcp_stdio_process_start_authorization().await;
+        if cfg!(windows) {
+            let workspace_authorization = workspace_authorization
+                .expect("WorkspaceWrite on Windows permits MXC-backed MCP startup");
+            let permit = workspace_authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                .await
+                .expect("WorkspaceWrite MCP startup compiles an isolated policy");
+            assert!(
+                haven_mcp::McpStdioProcessStartPermit::sandboxed_process_policy(&permit)
+                    .expect("MCP has an MXC policy")
+                    .network_policy
+                    .allow_public_egress
+            );
+        } else {
+            assert!(workspace_authorization.is_none());
+        }
     }
 
     #[tokio::test]
@@ -4252,13 +4298,19 @@ mod tests {
 
         engine.set_execution_mode(ExecutionMode::Analyze).await;
         assert!(
-            authorization.acquire().await.is_ok(),
+            authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                .await
+                .is_ok(),
             "permission mode changes affect tool calls, not the lifetime of an already-open stdio server"
         );
 
         engine.set_tool_settings(HashMap::new()).await;
         assert!(
-            authorization.acquire().await.is_ok(),
+            authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                .await
+                .is_ok(),
             "tool settings changes must not revoke an unrelated server process"
         );
 
@@ -4278,7 +4330,10 @@ mod tests {
                 .await
         );
         assert!(
-            authorization.acquire().await.is_ok(),
+            authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                .await
+                .is_ok(),
             "revoking a session-scoped shell grant must not disconnect MCP servers"
         );
 
@@ -4298,7 +4353,10 @@ mod tests {
         };
         engine.apply_security(&security).await.unwrap();
         assert!(
-            authorization.acquire().await.is_ok(),
+            authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                .await
+                .is_ok(),
             "applying unrelated security settings without changing process boundaries must preserve the server generation"
         );
         assert!(
@@ -4323,7 +4381,10 @@ mod tests {
             .expect("network boundary changes must notify the MCP process owner")
             .expect("MCP process boundary signal remains available");
         assert!(
-            authorization.acquire().await.is_err(),
+            authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                .await
+                .is_err(),
             "a network boundary change must still invalidate the captured server authorization"
         );
 
@@ -4340,9 +4401,61 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            workspace_authorization.acquire().await.is_err(),
+            workspace_authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                .await
+                .is_err(),
             "workspace changes must continue to revoke captured MCP server generations"
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_stdio_tool_network_policy_revokes_live_process_authorization() {
+        for tool_name in ["mcp_stdio", "mcp"] {
+            let engine = Arc::new(AuthorizationEngine::new());
+            engine
+                .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+                .await;
+            let old_authorization = engine
+                .capture_mcp_stdio_process_start_authorization()
+                .await
+                .expect("initial Open policy allows a Full Access server");
+            let mut process_changes = engine.subscribe_stdio_process_changes();
+            let settings = HashMap::from([(
+                tool_name.into(),
+                ToolConfig {
+                    resource_policy: ResourcePolicy {
+                        network: NetworkResourcePolicy {
+                            access: NetworkAccessBoundary::Deny,
+                            allowed_domains: Vec::new(),
+                        },
+                        ..ResourcePolicy::default()
+                    },
+                    ..ToolConfig::default()
+                },
+            )]);
+
+            engine.set_tool_settings(settings).await;
+
+            assert!(
+                old_authorization
+                    .acquire(haven_mcp::McpStdioProcessStartRequest::default())
+                    .await
+                    .is_err(),
+                "changing {tool_name} process policy must reject old start proofs"
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(1), process_changes.changed())
+                .await
+                .expect("the MCP manager must be notified to stop old generations")
+                .expect("the process-boundary watcher remains available");
+            assert!(
+                engine
+                    .capture_mcp_stdio_process_start_authorization()
+                    .await
+                    .is_none(),
+                "Full Access must not start an opaque process when {tool_name} denies access"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4431,10 +4544,18 @@ mod tests {
             "idempotently selecting the same root does not invalidate current proofs"
         );
 
+        let mut process_boundary_changes = engine.subscribe_stdio_process_changes();
         let after = engine
             .switch_execution_workspace(next_root.path())
             .await
             .expect("a valid local directory can become the execution workspace");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            process_boundary_changes.changed(),
+        )
+        .await
+        .expect("workspace switch must notify the MCP process owner")
+        .expect("the process-boundary watcher remains available");
         assert_eq!(after.generation, before.generation + 1);
         assert_eq!(after.root.as_deref(), Some(next_root.path()));
         assert!(

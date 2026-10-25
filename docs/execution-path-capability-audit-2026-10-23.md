@@ -78,3 +78,18 @@ Rust 全 workspace 测试与 strict Clippy 均通过。该运行时补充不把 
 ## Windows 网络方向权限复验（2026-10-25）
 
 MXC 网络权限改为独立的公网出站、私网双向访问与宿主回环字段后，平台单测验证公网出站不会推导私网/回环访问；真实 Windows MXC 测试 `workspace_write_shell_keeps_host_loopback_separate_from_public_egress` 通过。该测试确认 Shell `Open` 请求允许公网出站，但私网与宿主 loopback 仍拒绝。上文 2026-10-24 的 loopback 结果是旧的布尔策略行为，不代表当前策略。详见 [ADR 1417](adr/1417-separate-mxc-public-egress-from-local-network.md)。
+
+## Skill WorkspaceWrite 隔离补充（2026-10-25）
+
+ADR 1420 已将 Skill venv 创建、requirements 安装和脚本执行分别接入 Tools 的实时 process-start authorization 与 Windows MXC。venv/setup 只写 app-owned venv 和单次 scratch，默认离线；pip 只有全局与 Skill 网络均允许 Open 且无域名 allowlist 时才有公网出口；Skill 脚本沿用当前工作区写根与工具资源约束并离线运行。FullAccess 保留宿主进程，ReadOnly 和非 Windows WorkspaceWrite 拒绝子进程。取消/策略撤销继续终止并收割进程树。
+
+策略编译、Skill crate 50 项测试和两项 WorkspaceWrite setup policy 测试通过。真实 MXC 用例已执行但未通过：当前 Python Install Manager runtime 报 `STATUS_ACCESS_DENIED`，MXC 捕获到 runtime 路径的写入/执行拒绝；更换 MXC 可访问的 Python 发行版后仍需重验。10 月 23 日表格是当时的静态快照，其中“Skill 未接入 MXC”不再代表当前实现状态。
+
+## 其它进程 WorkspaceWrite 隔离补充（2026-10-25）
+
+- **Lifecycle Hooks（ADR 1421）：**Windows WorkspaceWrite 下通过 MXC 离线运行；授权 owner 编译 Hook 文件范围和运行时依赖。当前 Windows MXC Hook 写入端到端用例和相关授权/行为回归通过。FullAccess 仍是宿主权限且要求 Open 网络。
+- **Everything（ADR 1422）：**Windows WorkspaceWrite 下只允许搜索工作区内的目录，目录和运行时依赖只读，仅 app-owned scratch 可写，网络关闭。外部 Everything 服务仍是独立 IPC 对端；当前没有证明 MXC 能在所有支持机器上访问其本机 IPC，启动失败不回退宿主进程。
+- **MCP stdio（ADR 1423）：**WorkspaceWrite 的 Windows server generation 使用 MXC；配置 cwd 限于工作区只读子树，运行时路径只读，scratch 独立可写。仅 global Open 且没有域名 allowlist 时允许公网出站，私网与宿主 loopback 始终关闭；Restricted/Deny 或有域名列表时进程可离线启动。Process-start authorization 与逐次 MCP call 授权仍分开；策略变化继续断开旧 stdio generation。120 项 MCP crate 测试和 64 项 Tools MCP 回归通过，真实 server/MXC 联合启动仍未验收。
+- 运行时依赖目录的提取已下沉到 Platform，Shell、Git、LSP、Skill、Hooks、Everything 和 MCP 共用同一目录发现函数；Tools 授权 owner 仍分别编译各入口的目录和网络策略。
+
+因此 10 月 23 日表格保持历史快照性质：Skill、Lifecycle Hooks、Everything 和 MCP stdio 的 WorkspaceWrite 路径现已接入 MXC，但各自的真实 runtime 与外部服务验证状态不同，不能互相代替。进程内 reqwest provider、HTTP 工具、系统浏览器和 OAuth callback 仍是不同执行边界；当前改动没有把它们声称成 MXC 子进程能力。

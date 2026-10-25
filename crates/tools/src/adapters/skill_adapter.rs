@@ -130,8 +130,8 @@ impl Tool for SkillToolAdapter {
         if let Some(authorization) = &self.authorization {
             let sandbox_mode = authorization.sandbox_mode().await;
             policy = skill_execution_policy_for_sandbox(policy, sandbox_mode);
-            if sandbox_mode == haven_common::types::SandboxMode::WorkspaceWrite {
-                return Err("Skill subprocesses are unavailable in Workspace Write mode".into());
+            if sandbox_mode == haven_common::types::SandboxMode::WorkspaceWrite && !cfg!(windows) {
+                return Err("Workspace Write Skill processes require Windows MXC isolation".into());
             }
         }
         Ok(ToolAuthorizationContract {
@@ -194,10 +194,13 @@ impl Tool for SkillToolAdapter {
                 self.execute_with_authorization(input, cancel, execution_authorization)
                     .await
             }
-            haven_common::types::SandboxMode::WorkspaceWrite => {
-                Err(crate::security::execution_policy_denied(
-                    "Skill subprocesses are unavailable in Workspace Write mode".into(),
-                ))
+            haven_common::types::SandboxMode::WorkspaceWrite
+                if execution_authorization.execution_boundary()
+                    == crate::ExecutionBoundary::SandboxedHost
+                    && cfg!(windows) =>
+            {
+                self.execute_with_authorization(input, cancel, execution_authorization)
+                    .await
             }
             haven_common::types::SandboxMode::ReadOnly => {
                 Err(crate::security::execution_policy_denied(

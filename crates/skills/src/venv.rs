@@ -15,9 +15,35 @@ const MAX_REQUIREMENTS_BYTES: usize = 1024 * 1024;
 
 /// Opaque short-lived permit held while a Skill setup child is created and
 /// attached to process containment.
-pub trait ProcessStartPermit: Send {}
+pub trait ProcessStartPermit: Send {
+    /// Owner-compiled MXC policy for WorkspaceWrite. `None` means the owner
+    /// explicitly selected its host-process boundary (for example FullAccess).
+    fn sandboxed_process_policy(
+        &self,
+    ) -> Option<haven_platform::sandboxed_process::SandboxedProcessPolicy> {
+        None
+    }
+}
 
-impl<T: Send> ProcessStartPermit for T {}
+impl ProcessStartPermit for () {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillProcessPurpose {
+    CreateEnvironment,
+    InstallRequirements,
+    Execute,
+}
+
+/// Resource request for one Skill-owned process. The authorization owner
+/// compiles these paths against current global and per-tool restrictions.
+#[derive(Debug, Clone, Default)]
+pub struct SkillProcessRequest {
+    pub purpose: Option<SkillProcessPurpose>,
+    pub skill_root: PathBuf,
+    pub venv_directory: PathBuf,
+    pub scratch_directory: PathBuf,
+    pub runtime_read_roots: Vec<PathBuf>,
+}
 
 /// Owner-provided authorization for each OS process started by Skill setup.
 /// The future returns an opaque RAII permit that is released after the child
@@ -25,6 +51,7 @@ impl<T: Send> ProcessStartPermit for T {}
 pub trait ProcessStartAuthorization: Send + Sync {
     fn acquire_process_start_permit(
         &self,
+        request: SkillProcessRequest,
     ) -> impl Future<Output = anyhow::Result<Box<dyn ProcessStartPermit>>> + Send;
 }
 
@@ -33,7 +60,10 @@ struct UnrestrictedProcessStartAuthorization;
 
 #[cfg(test)]
 impl ProcessStartAuthorization for UnrestrictedProcessStartAuthorization {
-    async fn acquire_process_start_permit(&self) -> anyhow::Result<Box<dyn ProcessStartPermit>> {
+    async fn acquire_process_start_permit(
+        &self,
+        _request: SkillProcessRequest,
+    ) -> anyhow::Result<Box<dyn ProcessStartPermit>> {
         Ok(Box::new(()))
     }
 }
@@ -57,8 +87,8 @@ fn configure_skill_setup_environment(command: &mut Command) {
         .env("PYTHONUTF8", "1");
 }
 
-fn venv_creation_command(venv: &Path) -> Command {
-    let mut command = Command::new("python");
+fn venv_creation_command(python: &Path, venv: &Path) -> Command {
+    let mut command = Command::new(python);
     command
         .arg("-m")
         .arg("venv")
@@ -66,6 +96,79 @@ fn venv_creation_command(venv: &Path) -> Command {
         .current_dir(haven_common::config::default_runtime_temp_root());
     configure_skill_setup_environment(&mut command);
     command
+}
+
+/// Resolve Python without starting a host process. MXC needs an absolute
+/// executable path because it does not resolve bare commands through PATH
+/// while creating the ProcessContainer.
+fn resolve_python_executable() -> anyhow::Result<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    #[cfg(windows)]
+    let names = ["python.exe", "python"];
+    #[cfg(not(windows))]
+    let names = ["python3", "python"];
+    let mut candidates = Vec::new();
+    for directory in std::env::split_paths(&path) {
+        for name in names {
+            candidates.push(directory.join(name));
+        }
+    }
+    #[cfg(windows)]
+    candidates.extend(local_python_install_candidates());
+
+    for candidate in candidates {
+        if !candidate.is_file() {
+            continue;
+        }
+        // WindowsApps\python.exe is an App Execution Alias. Launching it can
+        // redirect to a Python installation outside the executable path, so
+        // MXC could not receive an exact read-only runtime grant.
+        #[cfg(windows)]
+        if candidate
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("WindowsApps"))
+        {
+            continue;
+        }
+        let Ok(candidate) = std::path::absolute(candidate) else {
+            continue;
+        };
+        let Some(parent) = candidate.parent() else {
+            continue;
+        };
+        if haven_platform::filesystem::DirectoryCapability::open(parent).is_ok() {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("Python runtime executable is not available at a direct install path")
+}
+
+/// Python's Windows Install Manager places concrete runtimes under
+/// `%LOCALAPPDATA%\\Python\\pythoncore-*`; the PATH entry can be only an
+/// App Execution Alias. Search known runtime locations without launching the
+/// alias outside MXC.
+#[cfg(windows)]
+fn local_python_install_candidates() -> Vec<PathBuf> {
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let mut candidates = Vec::new();
+    for root in [
+        local_app_data.join("Python"),
+        local_app_data.join("Programs").join("Python"),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(root) {
+            let mut directories = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .collect::<Vec<_>>();
+            directories.sort();
+            candidates.extend(directories.into_iter().map(|path| path.join("python.exe")));
+        }
+    }
+    candidates
 }
 
 fn pip_install_command(python: &Path, requirements_path: &Path) -> Command {
@@ -94,6 +197,7 @@ async fn run_contained_output(
         command,
         skill_name,
         spawn_error_context,
+        SkillProcessRequest::default(),
         &UnrestrictedProcessStartAuthorization,
     )
     .await
@@ -103,6 +207,7 @@ async fn run_contained_output_with_authorization<A: ProcessStartAuthorization + 
     mut command: Command,
     skill_name: &str,
     spawn_error_context: &str,
+    request: SkillProcessRequest,
     authorization: &A,
 ) -> anyhow::Result<Output> {
     command
@@ -110,10 +215,55 @@ async fn run_contained_output_with_authorization<A: ProcessStartAuthorization + 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    let sandbox_scratch_directory = request.scratch_directory.clone();
+    let spawn_permit = authorization.acquire_process_start_permit(request).await?;
+    if let Some(policy) = spawn_permit.sandboxed_process_policy() {
+        #[cfg(windows)]
+        {
+            command
+                .current_dir(&sandbox_scratch_directory)
+                .env("TEMP", &sandbox_scratch_directory)
+                .env("TMP", &sandbox_scratch_directory)
+                .env("TMPDIR", &sandbox_scratch_directory);
+            let request = haven_platform::sandboxed_process::SandboxedProcessRequest::from_command(
+                command.as_std(),
+                &policy,
+                false,
+            )?;
+            let mut process = haven_platform::sandboxed_process::SandboxedProcess::spawn(
+                request,
+                policy.isolation_mode,
+            )
+            .await?;
+            drop(spawn_permit);
+            let stdout = process.take_stdout();
+            let stderr = process.take_stderr();
+            let (stdout, stderr, exit) = tokio::join!(
+                read_stream_capped(stdout),
+                read_stream_capped(stderr),
+                process.wait(),
+            );
+            let exit = exit
+                .map_err(|_| anyhow::anyhow!("{spawn_error_context} for skill '{skill_name}'"))?;
+            let stdout = stdout?;
+            let stderr = stderr?;
+            use std::os::windows::process::ExitStatusExt;
+            return Ok(Output {
+                status: std::process::ExitStatus::from_raw(exit.exit_code as u32),
+                stdout,
+                stderr,
+            });
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (policy, command, sandbox_scratch_directory);
+            anyhow::bail!("Workspace Write Skill setup requires Windows MXC isolation")
+        }
+    }
+
     let containment = ProcessContainment::new()
         .map_err(|_| anyhow::anyhow!("failed to contain setup process for skill '{skill_name}'"))?;
     containment.prepare_command(command.as_std_mut(), 0);
-    let spawn_permit = authorization.acquire_process_start_permit().await?;
     let child_spawn_result = {
         let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
         command.kill_on_drop(true).spawn()
@@ -177,6 +327,45 @@ where
     }
 }
 
+fn create_setup_scratch() -> anyhow::Result<tempfile::TempDir> {
+    let root = haven_common::config::default_runtime_temp_root().join("skill-setup-scratch");
+    std::fs::create_dir_all(&root)?;
+    haven_platform::filesystem::DirectoryCapability::open(&root)?;
+    Ok(tempfile::Builder::new()
+        .prefix("haven-skill-setup-")
+        .tempdir_in(root)?)
+}
+
+fn setup_runtime_read_roots(command: &Command) -> Vec<PathBuf> {
+    let std_command = command.as_std();
+    let mut roots = std_command
+        .get_envs()
+        .filter_map(|(key, value)| {
+            value.filter(|_| key.to_string_lossy().eq_ignore_ascii_case("PATH"))
+        })
+        .flat_map(std::env::split_paths)
+        .collect::<Vec<_>>();
+    if let Some(program) = std_command.get_program().to_str().map(PathBuf::from)
+        && program.is_absolute()
+        && let Some(parent) = program.parent()
+    {
+        roots.push(parent.to_path_buf());
+    }
+    if let Some(system_root) = std_command
+        .get_envs()
+        .find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case("SYSTEMROOT"))
+        .and_then(|(_, value)| value)
+    {
+        let root = PathBuf::from(system_root);
+        roots.push(root.clone());
+        roots.push(root.join("System32"));
+    }
+    roots.retain(|path| haven_platform::filesystem::DirectoryCapability::open(path).is_ok());
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
 /// Read a requirements file without blocking the async executor and without
 /// retaining more than the configured cap. Dropping the caller's future drops
 /// the file reader, so setup cancellation cannot proceed into pip installation.
@@ -222,6 +411,45 @@ impl VenvManager {
 
     fn venv_dir(&self, skill_name: &str) -> PathBuf {
         self.root.join(skill_name)
+    }
+
+    /// Return the app-owned environment directory for one validated skill.
+    pub fn environment_directory(&self, skill_name: &str) -> anyhow::Result<PathBuf> {
+        crate::validate_skill_name(skill_name)?;
+        Ok(self.venv_dir(skill_name))
+    }
+
+    /// Read-only Python base runtime directories required by this venv.
+    /// These are separate from the writable venv and must be included by the
+    /// owner when compiling WorkspaceWrite process policy.
+    pub fn runtime_read_roots(&self, skill_name: &str) -> anyhow::Result<Vec<PathBuf>> {
+        crate::validate_skill_name(skill_name)?;
+        let venv = self.venv_dir(skill_name);
+        let configuration = std::fs::read_to_string(venv.join("pyvenv.cfg"))
+            .map_err(|_| anyhow::anyhow!("failed to read Skill Python runtime configuration"))?;
+        let mut roots = Vec::new();
+        for line in configuration.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let path = match key.trim() {
+                "home" => Some(PathBuf::from(value.trim())),
+                "executable" => Path::new(value.trim()).parent().map(Path::to_path_buf),
+                _ => None,
+            };
+            if let Some(path) = path.filter(|path| path.is_absolute())
+                && haven_platform::filesystem::DirectoryCapability::open(&path).is_ok()
+            {
+                roots.push(path);
+            }
+        }
+        roots.sort();
+        roots.dedup();
+        anyhow::ensure!(
+            !roots.is_empty(),
+            "Skill Python base runtime directories are unavailable"
+        );
+        Ok(roots)
     }
 
     /// Return the path to the Python executable inside the venv.
@@ -378,18 +606,32 @@ impl VenvManager {
 
         if !python.exists() {
             tracing::info!("creating venv for skill");
+            let base_python = resolve_python_executable()?;
             tokio::fs::create_dir_all(&venv)
                 .await
                 .map_err(|_| anyhow::anyhow!("failed to prepare venv for skill '{skill_name}'"))?;
+            let scratch = create_setup_scratch()?;
+            let command = venv_creation_command(&base_python, &venv);
+            let request = SkillProcessRequest {
+                purpose: Some(SkillProcessPurpose::CreateEnvironment),
+                skill_root: skill_root.to_path_buf(),
+                venv_directory: venv.clone(),
+                scratch_directory: scratch.path().to_path_buf(),
+                runtime_read_roots: setup_runtime_read_roots(&command),
+            };
             let output = run_contained_output_with_authorization(
-                venv_creation_command(&venv),
+                command,
                 skill_name,
                 "failed to create venv",
+                request,
                 authorization,
             )
             .await?;
             if !output.status.success() {
-                anyhow::bail!("venv creation failed for skill '{skill_name}'");
+                anyhow::bail!(
+                    "venv creation failed for skill '{skill_name}' (exit {:?})",
+                    output.status.code()
+                );
             }
         }
 
@@ -397,16 +639,29 @@ impl VenvManager {
             Self::requirements_snapshot(skill_root, skill_name).await?
         {
             let python_for_install = python.clone();
+            let requirements_root_for_install = requirements_root.clone();
             self.ensure_requirements_snapshot_with(
                 skill_name,
                 &requirements_root,
                 &content,
                 |req_path| async move {
                     tracing::info!("installing requirements for skill");
+                    let scratch = create_setup_scratch()?;
+                    let command = pip_install_command(&python_for_install, &req_path);
+                    let mut runtime_read_roots = setup_runtime_read_roots(&command);
+                    runtime_read_roots.extend(self.runtime_read_roots(skill_name)?);
+                    let request = SkillProcessRequest {
+                        purpose: Some(SkillProcessPurpose::InstallRequirements),
+                        skill_root: requirements_root_for_install.clone(),
+                        venv_directory: venv.clone(),
+                        scratch_directory: scratch.path().to_path_buf(),
+                        runtime_read_roots,
+                    };
                     let output = run_contained_output_with_authorization(
-                        pip_install_command(&python_for_install, &req_path),
+                        command,
                         skill_name,
                         "pip install failed",
+                        request,
                         authorization,
                     )
                     .await?;
@@ -521,8 +776,9 @@ mod tests {
     fn setup_commands_keep_the_existing_arguments_and_working_directory() {
         let runtime_temp_root = haven_common::config::default_runtime_temp_root();
         let venv = PathBuf::from("skill-venvs/example");
-        let create = venv_creation_command(&venv);
-        assert_eq!(create.as_std().get_program(), "python");
+        let base_python = PathBuf::from("C:/Python/python.exe");
+        let create = venv_creation_command(&base_python, &venv);
+        assert_eq!(create.as_std().get_program(), base_python);
         assert_eq!(
             create
                 .as_std()
@@ -1009,12 +1265,15 @@ mod tests {
     impl ProcessStartAuthorization for RejectSpawnAuthorization {
         async fn acquire_process_start_permit(
             &self,
+            _request: SkillProcessRequest,
         ) -> anyhow::Result<Box<dyn ProcessStartPermit>> {
             anyhow::bail!("policy denied setup process")
         }
     }
 
     struct NotifyingPermit(Arc<tokio::sync::Notify>);
+
+    impl ProcessStartPermit for NotifyingPermit {}
 
     impl Drop for NotifyingPermit {
         fn drop(&mut self) {
@@ -1027,6 +1286,7 @@ mod tests {
     impl ProcessStartAuthorization for NotifyingSpawnAuthorization {
         async fn acquire_process_start_permit(
             &self,
+            _request: SkillProcessRequest,
         ) -> anyhow::Result<Box<dyn ProcessStartPermit>> {
             Ok(Box::new(NotifyingPermit(Arc::clone(&self.0))))
         }
@@ -1038,6 +1298,7 @@ mod tests {
             contained_test_command("success"),
             "example-skill",
             "test command failed",
+            SkillProcessRequest::default(),
             &RejectSpawnAuthorization,
         )
         .await
@@ -1055,6 +1316,7 @@ mod tests {
                 contained_test_command("wait"),
                 "example-skill",
                 "test command failed",
+                SkillProcessRequest::default(),
                 &authorization,
             )
             .await

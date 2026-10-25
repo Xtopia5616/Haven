@@ -1,91 +1,49 @@
 use super::*;
 use haven_common::types::NetworkPolicy;
-use std::path::PathBuf;
 
-const STDIO_PROBE_MARKER: &str = "HAVEN_MCP_STDIO_POLICY_PROBE";
+struct RejectingProcessAuthorization;
 
-struct ProbeMarker(PathBuf);
-
-impl ProbeMarker {
-    fn new() -> Self {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock is after Unix epoch")
-            .as_nanos();
-        Self(std::env::temp_dir().join(format!(
-            "haven-mcp-stdio-policy-{}-{stamp}.marker",
-            std::process::id()
-        )))
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for ProbeMarker {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+impl crate::McpStdioProcessStartAuthorization for RejectingProcessAuthorization {
+    fn acquire_process_start_permit(
+        &self,
+        _request: crate::McpStdioProcessStartRequest,
+    ) -> crate::McpStdioProcessStartPermitFuture<'_> {
+        Box::pin(async {
+            Err(anyhow::anyhow!(
+                "process authorization reached the stdio startup boundary"
+            ))
+        })
     }
 }
 
 #[tokio::test]
-async fn non_open_network_policies_reject_stdio_before_spawning_the_command() {
-    let probe = ProbeMarker::new();
-    let executable = std::env::current_exe().expect("current test executable");
-    let mut probe_command = std::process::Command::new(&executable);
-    probe_command
-        .args([
-            "--exact",
-            "tests::stdio_network_policy_tests::stdio_spawn_probe_child",
-            "--nocapture",
-        ])
-        .env(STDIO_PROBE_MARKER, probe.path());
-    let probe_child = {
-        let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-        probe_command.spawn().expect("start spawn-probe test child")
-    };
-    let probe_output = probe_child
-        .wait_with_output()
-        .expect("collect spawn-probe test child");
-    assert!(
-        probe_output.status.success(),
-        "spawn-probe child failed: {}",
-        String::from_utf8_lossy(&probe_output.stderr)
-    );
-    assert!(probe.path().exists(), "spawn-probe child must write marker");
-    std::fs::remove_file(probe.path()).expect("remove spawn-probe marker before policy checks");
-
-    for policy in [
-        NetworkPolicy::Restricted,
-        NetworkPolicy::Restricted,
-        NetworkPolicy::Deny,
-    ] {
-        let marker = ProbeMarker::new();
+async fn stdio_policy_decision_is_delegated_to_the_process_authorization() {
+    for policy in [NetworkPolicy::Restricted, NetworkPolicy::Deny] {
         let config = McpServerConfig {
             name: format!("stdio-policy-{policy:?}"),
             transport: haven_common::mcp::McpServerTransport::Stdio,
-            command: executable.to_string_lossy().into_owned(),
-            args: vec![
-                "--exact".into(),
-                "tests::stdio_network_policy_tests::stdio_spawn_probe_child".into(),
-                "--nocapture".into(),
-            ],
-            env: vec![format!("{STDIO_PROBE_MARKER}={}", marker.path().display())],
+            command: "must-not-spawn".into(),
             ..Default::default()
         };
-        let client = McpClient::new(&config, 1024, 1024);
+        let client = McpClient::new_managed_with_launcher(
+            &config,
+            1024,
+            1024,
+            Some(Arc::new(RejectingProcessAuthorization)),
+            crate::client::local_stdio_process_launcher(),
+        );
         client.set_network_policy(policy).await;
 
-        let outcome = tokio::time::timeout(Duration::from_secs(3), client.connect()).await;
+        let error = tokio::time::timeout(Duration::from_secs(3), client.connect())
+            .await
+            .expect("startup authorization must be bounded")
+            .expect_err("the injected process authorization rejects startup");
 
         assert!(
-            !marker.path().exists(),
-            "{policy:?} policy must reject stdio before spawning its configured command"
-        );
-        assert!(
-            matches!(outcome, Ok(Err(_))),
-            "{policy:?} policy should synchronously reject stdio, got {outcome:?}"
+            error
+                .to_string()
+                .contains("process authorization reached the stdio startup boundary"),
+            "{policy:?} must be decided by the process authorization, got {error}"
         );
         assert!(matches!(
             client.status().await,
@@ -95,19 +53,11 @@ async fn non_open_network_policies_reject_stdio_before_spawning_the_command() {
 }
 
 #[tokio::test]
-async fn stdio_process_start_without_a_tools_authorization_snapshot_fails_closed() {
-    let marker = ProbeMarker::new();
-    let executable = std::env::current_exe().expect("current test executable");
+async fn stdio_without_a_tools_authorization_snapshot_fails_closed() {
     let config = McpServerConfig {
         name: "stdio-missing-process-authorization".into(),
         transport: haven_common::mcp::McpServerTransport::Stdio,
-        command: executable.to_string_lossy().into_owned(),
-        args: vec![
-            "--exact".into(),
-            "tests::stdio_network_policy_tests::stdio_spawn_probe_child".into(),
-            "--nocapture".into(),
-        ],
-        env: vec![format!("{STDIO_PROBE_MARKER}={}", marker.path().display())],
+        command: "must-not-spawn".into(),
         ..Default::default()
     };
     let client = crate::client::McpClient::new_managed_with_launcher(
@@ -119,19 +69,10 @@ async fn stdio_process_start_without_a_tools_authorization_snapshot_fails_closed
     );
     client.set_network_policy(NetworkPolicy::Open).await;
 
-    let result = tokio::time::timeout(Duration::from_secs(3), client.connect()).await;
+    let error = tokio::time::timeout(Duration::from_secs(3), client.connect())
+        .await
+        .expect("startup authorization must be bounded")
+        .expect_err("a stdio process must not spawn without Tools authorization");
 
-    assert!(matches!(result, Ok(Err(_))));
-    assert!(
-        !marker.path().exists(),
-        "an MCP stdio child must not spawn without a Tools-owned authorization snapshot"
-    );
-}
-
-#[test]
-fn stdio_spawn_probe_child() {
-    let Ok(path) = std::env::var(STDIO_PROBE_MARKER) else {
-        return;
-    };
-    std::fs::write(path, b"spawned").expect("write stdio spawn marker");
+    assert!(error.to_string().contains("no process-start authorization"));
 }

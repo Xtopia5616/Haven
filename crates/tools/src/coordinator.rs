@@ -120,22 +120,11 @@ impl ToolRuntimeCoordinator {
             .mcp_manager
             .set_network_resource_policy(network_policy.clone())
             .await;
-        self.builtins
-            .mcp_manager
-            .set_stdio_process_start_authorization(
-                self.core
-                    .authorization
-                    .capture_mcp_stdio_process_start_authorization()
-                    .await
-                    .map(|authorization| {
-                        authorization as Arc<dyn haven_mcp::McpStdioProcessStartAuthorization>
-                    }),
-            )
-            .await;
         self.core
             .authorization
             .set_tool_settings(tool_settings.clone())
             .await;
+        self.refresh_mcp_stdio_process_authorization().await;
         self.runtime
             .tool_run_service
             .set_tool_run_store(tool_run_store)
@@ -168,17 +157,7 @@ impl ToolRuntimeCoordinator {
         Ok(())
     }
 
-    pub(crate) async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String> {
-        let authorization_result = self.core.authorization.apply_security(security).await;
-        let network_policy = self
-            .core
-            .authorization
-            .network_resource_policy_snapshot()
-            .await;
-        self.builtins
-            .mcp_manager
-            .set_network_resource_policy(network_policy.clone())
-            .await;
+    async fn refresh_mcp_stdio_process_authorization(&self) {
         self.builtins
             .mcp_manager
             .set_stdio_process_start_authorization(
@@ -191,6 +170,20 @@ impl ToolRuntimeCoordinator {
                     }),
             )
             .await;
+    }
+
+    pub(crate) async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String> {
+        let authorization_result = self.core.authorization.apply_security(security).await;
+        let network_policy = self
+            .core
+            .authorization
+            .network_resource_policy_snapshot()
+            .await;
+        self.builtins
+            .mcp_manager
+            .set_network_resource_policy(network_policy.clone())
+            .await;
+        self.refresh_mcp_stdio_process_authorization().await;
         self.runtime
             .update_platform(|current| {
                 let mut next = current.clone();
@@ -243,12 +236,32 @@ impl ToolRuntimeCoordinator {
         // Settings are not a security-policy change. Replaying `apply_security`
         // here would clear session grants.
         self.core.authorization.set_tool_settings(settings).await;
+        if affected
+            .iter()
+            .any(|name| matches!(name.as_str(), "mcp" | "mcp_stdio"))
+        {
+            self.refresh_mcp_stdio_process_authorization().await;
+        }
         if !affected.is_empty() {
             self.rebuild_catalog_scoped(CatalogRebuildScope::Roots(affected))
                 .await
         } else {
             Ok(CatalogRebuildOutcome::Unchanged)
         }
+    }
+
+    pub(crate) async fn switch_execution_workspace(
+        &self,
+        root: &std::path::Path,
+    ) -> anyhow::Result<crate::ExecutionWorkspaceSnapshot> {
+        let workspace = self
+            .core
+            .authorization
+            .switch_execution_workspace(root)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        self.refresh_mcp_stdio_process_authorization().await;
+        Ok(workspace)
     }
 
     pub(crate) async fn set_tool_enabled(

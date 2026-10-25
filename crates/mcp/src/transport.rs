@@ -136,7 +136,7 @@ impl StdioInner {
     }
 
     pub(crate) async fn is_alive(&self) -> bool {
-        self.process.lock().await.is_alive().unwrap_or(false)
+        self.process.lock().await.is_alive().await.unwrap_or(false)
     }
 
     pub(crate) async fn start_kill(&self) -> std::io::Result<()> {
@@ -1128,6 +1128,7 @@ pub(crate) async fn http_is_alive(shared: &Arc<HttpShared>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::future::BoxFuture;
     use std::process::Stdio;
     use std::sync::atomic::AtomicUsize;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1159,8 +1160,9 @@ mod tests {
             Ok(self.stderr.take())
         }
 
-        fn is_alive(&mut self) -> std::io::Result<bool> {
-            Ok(self.alive.load(Ordering::Acquire))
+        fn is_alive(&mut self) -> BoxFuture<'_, std::io::Result<bool>> {
+            let alive = self.alive.clone();
+            Box::pin(async move { Ok(alive.load(Ordering::Acquire)) })
         }
 
         fn start_kill(&mut self) -> std::io::Result<()> {

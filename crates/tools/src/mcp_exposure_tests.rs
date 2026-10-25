@@ -213,7 +213,7 @@ async fn load_mcp_authorization_resolves_transport_from_config_before_connecting
         })
         .await;
     authorization
-        .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
+        .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Deny)
         .await;
     let stdio_request = facade
         .resolve_authorization_request(None, "load_mcp", &input)
@@ -221,16 +221,21 @@ async fn load_mcp_authorization_resolves_transport_from_config_before_connecting
         .expect("trusted stdio profile should resolve to its process boundary");
     assert_eq!(
         stdio_request.policy.execution_boundary,
-        crate::ExecutionBoundary::HostProcess
+        crate::ExecutionBoundary::SandboxedHost
+    );
+    assert_eq!(
+        stdio_request.policy.network_access,
+        crate::NetworkAccess::None
     );
     assert_ne!(http_request.target_binding, stdio_request.target_binding);
-    assert!(matches!(
+    assert!(!matches!(
         authorization
             .authorize_for_execution(&stdio_request)
             .await
             .decision,
         crate::AuthorizationDecision::Blocked {
-            reason_code: crate::AuthorizationReasonCode::SandboxBoundary,
+            reason_code: crate::AuthorizationReasonCode::SandboxBoundary
+                | crate::AuthorizationReasonCode::NetworkPolicy,
             ..
         }
     ));

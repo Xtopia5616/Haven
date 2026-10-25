@@ -182,7 +182,7 @@ export function parseHooksImport(text: string): LifecycleHooksConfig {
 export function hookFailureHelp(code: string | null): string {
 	switch (code) {
 		case 'security_policy_denied':
-			return '检查当前沙箱和网络策略；外部 Hook 需要 FullAccess 与 Open。';
+			return '检查执行边界：FullAccess 需开放网络且无域名白名单；WorkspaceWrite 需 Windows MXC 且 Hook 路径须在授权范围内。';
 		case 'policy_changed':
 			return '执行期间安全策略已变更，进程树已终止。';
 		case 'spawn_failed':

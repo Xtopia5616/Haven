@@ -356,19 +356,13 @@ impl McpManager {
         }
         let network_policy = self.network_policy.read().await.clone();
         if matches!(
+            config.transport,
+            haven_common::mcp::McpServerTransport::Http
+        ) && matches!(
             network_policy.network_policy(),
             haven_common::types::NetworkPolicy::Deny
         ) {
             anyhow::bail!("MCP connection blocked by network policy");
-        }
-        if matches!(
-            config.transport,
-            haven_common::mcp::McpServerTransport::Stdio
-        ) && !network_policy.policy.allowed_domains.is_empty()
-        {
-            anyhow::bail!(
-                "MCP stdio connection blocked because its network use is opaque under domain restrictions"
-            );
         }
 
         let stdio_process_authorization = self.stdio_process_authorization.read().await.clone();
@@ -558,12 +552,16 @@ impl McpManager {
         purpose: &ConnectionPurpose,
     ) -> bool {
         let _lifecycle = self.connection_lifecycle.lock().await;
+        let http_network_denied = matches!(
+            reservation.client.transport,
+            haven_common::mcp::McpServerTransport::Http
+        ) && matches!(
+            self.network_policy.read().await.network_policy(),
+            haven_common::types::NetworkPolicy::Deny
+        );
         if self.shutting_down.load(Ordering::SeqCst)
             || reservation.cancel.is_cancelled()
-            || matches!(
-                self.network_policy.read().await.network_policy(),
-                haven_common::types::NetworkPolicy::Deny
-            )
+            || http_network_denied
         {
             return false;
         }
@@ -798,14 +796,49 @@ impl McpManager {
         self.set_network_resource_policy(snapshot).await;
     }
 
-    /// Set the authorization snapshot used for future stdio client
-    /// generations. Existing generations keep their original snapshot and are
-    /// disconnected when the bound policy signal changes.
+    /// Replace the authorization snapshot used for future stdio generations.
+    /// Existing generations are synchronously removed before another caller
+    /// can reuse them under the previous process policy.
     pub async fn set_stdio_process_start_authorization(
         &self,
         authorization: Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>,
     ) {
-        *self.stdio_process_authorization.write().await = authorization;
+        let clients = {
+            let _lifecycle = self.connection_lifecycle.lock().await;
+            *self.stdio_process_authorization.write().await = authorization;
+            let mut clients = self.clients.lock().await;
+            let names = clients
+                .iter()
+                .filter(|(_, client)| {
+                    matches!(
+                        client.transport,
+                        haven_common::mcp::McpServerTransport::Stdio
+                    )
+                })
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>();
+            let mut removed = Vec::with_capacity(names.len());
+            let mut active = self
+                .active_connections
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for name in names {
+                if let Some(client) = clients.remove(&name) {
+                    if active
+                        .get(&name)
+                        .is_some_and(|attempt| Arc::ptr_eq(&attempt.client, &client))
+                        && let Some(attempt) = active.remove(&name)
+                    {
+                        attempt.cancel.cancel();
+                    }
+                    removed.push((name, client));
+                }
+            }
+            removed
+        };
+        for (name, client) in clients {
+            self.cleanup_client_runtime(&name, client, true).await;
+        }
     }
 
     /// Subscribe to the authorization owner's policy signal. Each change
@@ -1148,13 +1181,10 @@ impl McpManager {
             self.remove_client(&name).await;
         }
 
-        if matches!(
+        let network_denied = matches!(
             self.network_policy().await,
             haven_common::types::NetworkPolicy::Deny
-        ) {
-            tracing::info!("MCP discovery skipped because the network policy denies connections");
-            return;
-        }
+        );
 
         let mut pending = Vec::new();
         let candidates = reconcile
@@ -1166,7 +1196,14 @@ impl McpManager {
                     .to_connect_changed
                     .into_iter()
                     .map(|server| (server, true)),
-            );
+            )
+            .filter(|(server, _)| {
+                !network_denied
+                    || matches!(
+                        server.transport,
+                        haven_common::mcp::McpServerTransport::Stdio
+                    )
+            });
         for (server, changed_config) in candidates {
             // Acquire before creating the client or starting its notification
             // consumer, so both connection attempts and queued setup stay
@@ -1230,6 +1267,9 @@ impl McpManager {
         config: &haven_common::config::McpServerConfig,
     ) -> anyhow::Result<()> {
         if matches!(
+            config.transport,
+            haven_common::mcp::McpServerTransport::Http
+        ) && matches!(
             self.network_policy().await,
             haven_common::types::NetworkPolicy::Deny
         ) {
@@ -1273,12 +1313,6 @@ impl McpManager {
         if self.shutting_down.load(Ordering::SeqCst) {
             anyhow::bail!("MCP manager is shutting down");
         }
-        if matches!(
-            self.network_policy.read().await.network_policy(),
-            haven_common::types::NetworkPolicy::Deny
-        ) {
-            anyhow::bail!("MCP reconnect blocked by network policy");
-        }
         let client = self
             .clients
             .lock()
@@ -1286,6 +1320,15 @@ impl McpManager {
             .get(name)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", name))?;
+        if matches!(
+            client.transport,
+            haven_common::mcp::McpServerTransport::Http
+        ) && matches!(
+            self.network_policy.read().await.network_policy(),
+            haven_common::types::NetworkPolicy::Deny
+        ) {
+            anyhow::bail!("MCP reconnect blocked by network policy");
+        }
         let reservation = {
             let mut active = self
                 .active_connections
@@ -1330,14 +1373,13 @@ impl McpManager {
     pub async fn start_monitors(&self, config: &haven_common::config::McpDiscoveryConfig) {
         *self.discovery_config.write().await = config.clone();
         let _lifecycle = self.connection_lifecycle.lock().await;
-        if self.shutting_down.load(Ordering::SeqCst)
-            || matches!(
-                self.network_policy.read().await.network_policy(),
-                haven_common::types::NetworkPolicy::Deny
-            )
-        {
+        if self.shutting_down.load(Ordering::SeqCst) {
             return;
         }
+        let network_denied = matches!(
+            self.network_policy.read().await.network_policy(),
+            haven_common::types::NetworkPolicy::Deny
+        );
         let clients = self
             .clients
             .lock()
@@ -1347,6 +1389,14 @@ impl McpManager {
             .collect::<Vec<_>>();
         for client in clients {
             let name = client.name().to_string();
+            if network_denied
+                && matches!(
+                    client.transport,
+                    haven_common::mcp::McpServerTransport::Http
+                )
+            {
+                continue;
+            }
             if self
                 .active_connections
                 .lock()
@@ -1497,7 +1547,14 @@ impl McpManager {
     /// Manually trigger a reconnect for a client, bypassing the retry-limit.
     /// A successful reconnect also installs the manager-owned health monitor.
     pub async fn reconnect(&self, name: &str) -> anyhow::Result<()> {
+        let client = self
+            .client(name)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("MCP client '{}' not found", name))?;
         if matches!(
+            client.transport,
+            haven_common::mcp::McpServerTransport::Http
+        ) && matches!(
             self.network_policy().await,
             haven_common::types::NetworkPolicy::Deny
         ) {
@@ -1746,6 +1803,68 @@ mod manager_lifecycle_tests {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::task::JoinSet;
+
+    struct RejectingStdioAuthorization;
+
+    impl crate::McpStdioProcessStartAuthorization for RejectingStdioAuthorization {
+        fn acquire_process_start_permit(
+            &self,
+            _request: crate::McpStdioProcessStartRequest,
+        ) -> crate::McpStdioProcessStartPermitFuture<'_> {
+            Box::pin(async {
+                Err(anyhow::anyhow!(
+                    "manager reached stdio process-start authorization"
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn manager_routes_offline_and_domain_scoped_stdio_to_process_authorization() {
+        let restricted = haven_common::config::NetworkResourcePolicySnapshot::new(
+            1,
+            haven_common::config::NetworkResourcePolicy {
+                access: haven_common::config::NetworkAccessBoundary::Restricted,
+                allowed_domains: vec!["example.com".into()],
+            },
+        );
+        for policy in [
+            haven_common::config::NetworkResourcePolicySnapshot::new(
+                1,
+                haven_common::config::NetworkResourcePolicy {
+                    access: haven_common::config::NetworkAccessBoundary::Deny,
+                    allowed_domains: Vec::new(),
+                },
+            ),
+            restricted,
+        ] {
+            let manager = McpManager::new();
+            manager.set_network_resource_policy(policy.clone()).await;
+            manager
+                .set_stdio_process_start_authorization(Some(Arc::new(RejectingStdioAuthorization)))
+                .await;
+            let config = McpServerConfig {
+                name: format!("offline-stdio-{}", policy.revision),
+                transport: McpServerTransport::Stdio,
+                command: "must-not-spawn".into(),
+                ..Default::default()
+            };
+
+            let error = manager
+                .connect_server(&config)
+                .await
+                .expect_err("the process authorization rejects the test server");
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("manager reached stdio process-start authorization"),
+                "stdio network policy should reach the process authorization, got {error}"
+            );
+            assert!(!manager.has_client(&config.name).await);
+            manager.shutdown_all().await;
+        }
+    }
 
     type MockRequestGate = Arc<Mutex<Option<(String, usize, oneshot::Receiver<()>)>>>;
 

@@ -11,7 +11,7 @@ use serde_json::Value;
 #[cfg(not(test))]
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -284,11 +284,6 @@ fn cleanup_stale_skill_work_directories(
     Ok(removed)
 }
 
-async fn terminate_skill_child(child: &mut tokio::process::Child) {
-    let _ = child.start_kill();
-    let _ = child.wait().await;
-}
-
 #[cfg(not(test))]
 fn default_skill_script_snapshot_root() -> PathBuf {
     let runtime_temp_root = haven_common::config::default_runtime_temp_root();
@@ -366,9 +361,83 @@ fn is_skill_script_snapshot_name(name: &str) -> bool {
 }
 
 struct SkillProcessOutput {
-    exit_status: std::process::ExitStatus,
+    exit_code: i32,
     stdout: CappedStreamRead,
     stderr: CappedStreamRead,
+}
+
+type SkillReadPipe = Box<dyn AsyncRead + Unpin + Send>;
+type SkillWritePipe = Box<dyn AsyncWrite + Unpin + Send>;
+
+enum SkillChild {
+    Host {
+        child: tokio::process::Child,
+        _containment: ProcessContainment,
+    },
+    #[cfg(windows)]
+    Sandboxed(haven_platform::sandboxed_process::SandboxedProcess),
+}
+
+impl SkillChild {
+    fn take_stdin(&mut self) -> Option<SkillWritePipe> {
+        match self {
+            Self::Host { child, .. } => child
+                .stdin
+                .take()
+                .map(|pipe| Box::new(pipe) as SkillWritePipe),
+            #[cfg(windows)]
+            Self::Sandboxed(child) => child
+                .take_stdin()
+                .map(|pipe| Box::new(pipe) as SkillWritePipe),
+        }
+    }
+
+    fn take_stdout(&mut self) -> Option<SkillReadPipe> {
+        match self {
+            Self::Host { child, .. } => child
+                .stdout
+                .take()
+                .map(|pipe| Box::new(pipe) as SkillReadPipe),
+            #[cfg(windows)]
+            Self::Sandboxed(child) => child
+                .take_stdout()
+                .map(|pipe| Box::new(pipe) as SkillReadPipe),
+        }
+    }
+
+    fn take_stderr(&mut self) -> Option<SkillReadPipe> {
+        match self {
+            Self::Host { child, .. } => child
+                .stderr
+                .take()
+                .map(|pipe| Box::new(pipe) as SkillReadPipe),
+            #[cfg(windows)]
+            Self::Sandboxed(child) => child
+                .take_stderr()
+                .map(|pipe| Box::new(pipe) as SkillReadPipe),
+        }
+    }
+
+    async fn wait(&mut self) -> std::io::Result<i32> {
+        match self {
+            Self::Host { child, .. } => Ok(child.wait().await?.code().unwrap_or(-1)),
+            #[cfg(windows)]
+            Self::Sandboxed(child) => child.wait().await.map(|exit| exit.exit_code),
+        }
+    }
+
+    async fn kill(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Host { child, .. } => child.kill().await,
+            #[cfg(windows)]
+            Self::Sandboxed(child) => child.kill().await,
+        }
+    }
+}
+
+async fn terminate_skill_child(child: &mut SkillChild) {
+    let _ = child.kill().await;
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
 }
 
 /// Sandbox executor for skill scripts (M4-02).
@@ -391,6 +460,7 @@ struct TestUnrestrictedProcessStartAuthorization;
 impl haven_skills::ProcessStartAuthorization for TestUnrestrictedProcessStartAuthorization {
     async fn acquire_process_start_permit(
         &self,
+        _request: haven_skills::SkillProcessRequest,
     ) -> anyhow::Result<Box<dyn haven_skills::ProcessStartPermit>> {
         Ok(Box::new(()))
     }
@@ -591,14 +661,27 @@ impl SkillRunner {
             cmd.env("COMSPEC", std::env::var("COMSPEC").unwrap_or_default());
         }
 
-        let containment = ProcessContainment::new().map_err(|error| {
-            anyhow::anyhow!(
-                "failed to create process containment for skill '{}': {}",
-                pid_label,
-                sanitize_error_text(&error.to_string())
-            )
-        })?;
-        containment.prepare_command(cmd.as_std_mut(), 0);
+        let venv_directory = self.venv.environment_directory(skill.name())?;
+        let mut runtime_read_roots = Vec::new();
+        #[cfg(windows)]
+        runtime_read_roots.extend(crate::process_sandbox::runtime_dependency_roots(
+            cmd.as_std(),
+        ));
+        runtime_read_roots.push(skill.root().to_path_buf());
+        runtime_read_roots.push(venv_directory.clone());
+        runtime_read_roots.extend(self.venv.runtime_read_roots(skill.name())?);
+        let script_snapshot_path: &std::path::Path = script_snapshot.as_ref();
+        if let Some(parent) = script_snapshot_path.parent() {
+            runtime_read_roots.push(parent.to_path_buf());
+        }
+        if let Some(parent) = python.parent() {
+            runtime_read_roots.push(parent.to_path_buf());
+        }
+        runtime_read_roots.sort();
+        runtime_read_roots.dedup();
+        runtime_read_roots
+            .retain(|path| haven_platform::filesystem::DirectoryCapability::open(path).is_ok());
+
         let spawn_permit = match execution_authorization.as_ref() {
             Some(authorization) => {
                 let permit = tokio::select! {
@@ -606,7 +689,15 @@ impl SkillRunner {
                     _ = &mut policy_revoked => {
                         return Ok(ToolResult::cancelled(format!("skill '{}' cancelled because execution policy changed", skill.name())));
                     }
-                    result = authorization.acquire() => {
+                    result = authorization.acquire_skill_process_start_permit(
+                        haven_skills::SkillProcessRequest {
+                            purpose: Some(haven_skills::SkillProcessPurpose::Execute),
+                            skill_root: skill.root().to_path_buf(),
+                            venv_directory,
+                            scratch_directory: work_dir.path().to_path_buf(),
+                            runtime_read_roots,
+                        },
+                    ) => {
                         result.map_err(crate::security::execution_policy_denied)?
                     }
                 };
@@ -614,41 +705,87 @@ impl SkillRunner {
             }
             None => None,
         };
-        let child_spawn_result = {
-            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-            cmd.kill_on_drop(true).spawn()
+        let mut child = if let Some(policy) = spawn_permit
+            .as_ref()
+            .and_then(|permit| permit.sandboxed_process_policy())
+        {
+            #[cfg(windows)]
+            {
+                cmd.env("TEMP", work_dir.path())
+                    .env("TMP", work_dir.path())
+                    .env("TMPDIR", work_dir.path());
+                let request =
+                    haven_platform::sandboxed_process::SandboxedProcessRequest::from_command(
+                        cmd.as_std(),
+                        policy,
+                        false,
+                    )?;
+                SkillChild::Sandboxed(
+                    haven_platform::sandboxed_process::SandboxedProcess::spawn(
+                        request,
+                        policy.isolation_mode,
+                    )
+                    .await?,
+                )
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (policy, cmd);
+                anyhow::bail!("Workspace Write Skill processes require Windows MXC isolation")
+            }
+        } else {
+            let containment = ProcessContainment::new().map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to create process containment for skill '{}': {}",
+                    pid_label,
+                    sanitize_error_text(&error.to_string())
+                )
+            })?;
+            containment.prepare_command(cmd.as_std_mut(), 0);
+            let child_spawn_result = {
+                let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+                cmd.kill_on_drop(true).spawn()
+            };
+            let child = child_spawn_result.map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to spawn skill '{}': {}",
+                    pid_label,
+                    sanitize_error_text(&error.to_string())
+                )
+            })?;
+            let pid = child.id().ok_or_else(|| {
+                anyhow::anyhow!("skill '{}' did not expose a child process id", pid_label)
+            })?;
+            #[cfg(windows)]
+            let attach_result = child
+                .raw_handle()
+                .ok_or_else(|| std::io::Error::other("skill child process handle is unavailable"))
+                .and_then(|handle| containment.attach_and_resume(pid, handle));
+            #[cfg(not(windows))]
+            let attach_result = containment.attach_and_resume(pid, ());
+            if let Err(error) = attach_result {
+                let mut child = SkillChild::Host {
+                    child,
+                    _containment: containment,
+                };
+                terminate_skill_child(&mut child).await;
+                drop(spawn_permit);
+                anyhow::bail!(
+                    "failed to attach skill '{}' to process containment: {}",
+                    pid_label,
+                    sanitize_error_text(&error.to_string())
+                );
+            }
+            SkillChild::Host {
+                child,
+                _containment: containment,
+            }
         };
-        let mut child = child_spawn_result.map_err(|e| {
-            anyhow::anyhow!(
-                "failed to spawn skill '{}': {}",
-                pid_label,
-                sanitize_error_text(&e.to_string())
-            )
-        })?;
-        let pid = child.id().ok_or_else(|| {
-            anyhow::anyhow!("skill '{}' did not expose a child process id", pid_label)
-        })?;
-        #[cfg(windows)]
-        let attach_result = child
-            .raw_handle()
-            .ok_or_else(|| std::io::Error::other("skill child process handle is unavailable"))
-            .and_then(|handle| containment.attach_and_resume(pid, handle));
-        #[cfg(not(windows))]
-        let attach_result = containment.attach_and_resume(pid, ());
-        if let Err(error) = attach_result {
-            terminate_skill_child(&mut child).await;
-            drop(spawn_permit);
-            anyhow::bail!(
-                "failed to attach skill '{}' to process containment: {}",
-                pid_label,
-                sanitize_error_text(&error.to_string())
-            );
-        }
         drop(spawn_permit);
 
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        let stdin = child.take_stdin();
+        let stdout = child.take_stdout();
+        let stderr = child.take_stderr();
         let max_lines = self.config.max_output_lines;
 
         // Feed stdin, drain both output pipes, and wait for process exit as one
@@ -702,7 +839,7 @@ impl SkillRunner {
                         sanitize_error_text(&error.to_string())
                     );
                 }
-                let exit_status = status.map_err(|error| {
+                let exit_code = status.map_err(|error| {
                     anyhow::anyhow!(
                         "skill '{}' wait error: {}",
                         pid_label,
@@ -710,7 +847,7 @@ impl SkillRunner {
                     )
                 })?;
                 Ok::<_, anyhow::Error>(SkillProcessOutput {
-                    exit_status,
+                    exit_code,
                     stdout,
                     stderr,
                 })
@@ -769,7 +906,7 @@ impl SkillRunner {
 
         let stdout = encoding::decode_lossy(&process_output.stdout.bytes);
         let stderr = encoding::decode_lossy(&process_output.stderr.bytes);
-        let exit_code = process_output.exit_status.code().unwrap_or(-1);
+        let exit_code = process_output.exit_code;
 
         let out_line_count = stdout.lines().take(max_lines.saturating_add(1)).count();
         let err_line_count = stderr.lines().take(max_lines.saturating_add(1)).count();
@@ -1077,7 +1214,9 @@ mod tests {
 
         let runner = std::sync::Arc::new(runner);
         let (execution_authorization, authorization) =
-            crate::security::ExecutionPolicyAuthorization::for_test_with_engine();
+            crate::security::ExecutionPolicyAuthorization::for_test_with_engine_and_sandbox_mode(
+                haven_common::types::SandboxMode::FullAccess,
+            );
         let execution_runner = std::sync::Arc::clone(&runner);
         let execution = tokio::spawn(async move {
             execution_runner
@@ -1116,6 +1255,64 @@ mod tests {
         descendant
             .wait_for_exit(pid, Duration::from_secs(5))
             .expect("policy revocation must close the Skill Job Object");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires the Windows MXC ProcessContainer runtime"]
+    async fn workspace_write_skill_setup_and_script_obey_mxc_file_policy() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let skills_root = temp.path().join("skills");
+        let workspace_output = workspace.join("skill-output.txt");
+        let outside_path = temp.path().join("outside.txt");
+        let script = format!(
+            "import json\nfrom pathlib import Path\nPath('inside.txt').write_text('scratch', encoding='utf-8')\nPath({}).write_text('workspace', encoding='utf-8')\noutside_denied = False\ntry:\n    Path({}).write_text('escape', encoding='utf-8')\nexcept OSError:\n    outside_denied = True\nprint(json.dumps({{'inside': Path('inside.txt').read_text(encoding='utf-8'), 'workspace_written': True, 'outside_denied': outside_denied}}))\n",
+            python_path_literal(&workspace_output),
+            python_path_literal(&outside_path)
+        );
+        let skill = scripted_skill(&skills_root, &script).await;
+        let config = SkillsExecConfig {
+            timeout_secs: 30,
+            venv_root: temp.path().join("venvs"),
+            work_dir: temp.path().join("runtime/work"),
+            ..Default::default()
+        };
+        let mut runner = SkillRunner::new(VenvManager::new(config.venv_root.clone()), config);
+        runner.script_snapshot_root = temp.path().join("runtime/script-snapshots");
+        let (authorization, _) =
+            crate::security::ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                haven_common::types::NetworkPolicy::Deny,
+            );
+
+        runner
+            .venv
+            .ensure(skill.name(), skill.root(), &authorization)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("MXC must create the private Skill environment: {error:#}")
+            });
+        let result = runner
+            .execute_with_authorization(
+                &skill,
+                &serde_json::json!({}),
+                CancellationToken::new(),
+                authorization,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(result.output["inside"], "scratch");
+        assert_eq!(result.output["workspace_written"], true);
+        assert_eq!(result.output["outside_denied"], true);
+        assert_eq!(
+            std::fs::read_to_string(workspace_output).unwrap(),
+            "workspace"
+        );
+        assert!(!outside_path.exists());
     }
 
     #[tokio::test]
@@ -1167,7 +1364,8 @@ mod tests {
         .unwrap();
 
         assert!(!result.success);
-        assert!(result.error.unwrap().contains("output exceeded its limit"));
+        let error = result.error.unwrap();
+        assert!(error.contains("output exceeded its limit"), "{error}");
         assert_eq!(result.output["truncated"], true);
         assert!(result.truncated);
         assert!(

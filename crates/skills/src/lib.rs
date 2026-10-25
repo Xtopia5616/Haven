@@ -26,7 +26,10 @@ const MAX_SKILL_ROOT_ENTRIES: usize = 1024;
 
 mod venv;
 
-pub use venv::{ProcessStartAuthorization, ProcessStartPermit, VenvManager};
+pub use venv::{
+    ProcessStartAuthorization, ProcessStartPermit, SkillProcessPurpose, SkillProcessRequest,
+    VenvManager,
+};
 
 /// Scripting language supported by a Skill. First-class is `Python`; anything
 /// else is preserved verbatim so the UI/later phases can render it without

@@ -1322,3 +1322,7 @@
 - [1417：分离 MXC 公网出站与本地网络权限](1417-separate-mxc-public-egress-from-local-network.md)
 - [1418：在 WorkspaceWrite 下隔离 LSP server](1418-isolate-lsp-in-workspace-write.md)
 - [1419：通过受控 Git 入口写入仓库元数据](1419-isolate-git-metadata-writes.md)
+- [1420：在 WorkspaceWrite 下隔离 Skill 子进程](1420-isolate-skill-processes-in-workspace-write.md)
+- [1421：在 WorkspaceWrite 下隔离 Lifecycle Hooks](1421-isolate-lifecycle-hooks-in-workspace-write.md)
+- [1422：在 WorkspaceWrite 下隔离 Everything CLI](1422-isolate-everything-cli-in-workspace-write.md)
+- [1423：在 WorkspaceWrite 下隔离 MCP stdio server](1423-isolate-mcp-stdio-in-workspace-write.md)

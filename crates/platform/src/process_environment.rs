@@ -5,6 +5,7 @@
 //! user can access. Callers may add operation-specific values after filtering.
 
 use std::ffi::{OsStr, OsString};
+use std::path::PathBuf;
 
 const BASELINE_ENVIRONMENT_KEYS: &[&str] = &["PATH", "SYSTEMROOT", "TEMP", "TMP"];
 const SHELL_CONTEXT_ENVIRONMENT_KEYS: &[&str] = &[
@@ -39,7 +40,9 @@ const PROXY_ENVIRONMENT_KEYS: &[&str] = &[
 ];
 
 /// Whether a process environment variable belongs to the minimal runtime
-/// baseline required to locate executables and create temporary files.
+/// baseline required to locate executables, create temporary files, or start
+/// a Windows MXC ProcessContainer. LOCALAPPDATA is only a path value here; it
+/// does not grant file access to that directory.
 pub fn is_runtime_baseline_variable(key: &OsStr) -> bool {
     let Some(key) = key.to_str() else {
         return false;
@@ -55,7 +58,9 @@ pub fn is_runtime_baseline_variable(key: &OsStr) -> bool {
             key == *allowed
         }
     }) || cfg!(windows)
-        && (key.eq_ignore_ascii_case("COMSPEC") || key.eq_ignore_ascii_case("PATHEXT"))
+        && (key.eq_ignore_ascii_case("COMSPEC")
+            || key.eq_ignore_ascii_case("PATHEXT")
+            || key.eq_ignore_ascii_case("LOCALAPPDATA"))
 }
 
 /// Keep only the runtime baseline from a supplied environment snapshot.
@@ -89,6 +94,47 @@ pub fn filter_shell_environment(
         .collect()
 }
 
+/// Discover existing read-only runtime directories referenced by a prepared
+/// command. Callers still compile these paths through their live resource
+/// policy before granting them to a sandbox.
+#[cfg(windows)]
+pub fn runtime_dependency_roots(command: &std::process::Command) -> Vec<PathBuf> {
+    let environment = command
+        .get_envs()
+        .filter_map(|(key, value)| value.map(|value| (key.to_os_string(), value.to_os_string())))
+        .collect::<Vec<_>>();
+    let mut roots = Vec::new();
+    if let Some(system_root) = environment
+        .iter()
+        .find(|(key, _)| {
+            key.to_str()
+                .is_some_and(|key| key.eq_ignore_ascii_case("SYSTEMROOT"))
+        })
+        .map(|(_, value)| PathBuf::from(value))
+    {
+        roots.push(system_root.clone());
+        roots.push(system_root.join("System32"));
+        roots.push(system_root.join(r"System32\WindowsPowerShell\v1.0"));
+    }
+    roots.extend(
+        environment
+            .iter()
+            .find(|(key, _)| {
+                key.to_str()
+                    .is_some_and(|key| key.eq_ignore_ascii_case("PATH"))
+            })
+            .map(|(_, value)| std::env::split_paths(value).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    );
+    roots.retain(|path| crate::filesystem::DirectoryCapability::open(path).is_ok());
+    roots
+}
+
+#[cfg(not(windows))]
+pub fn runtime_dependency_roots(_command: &std::process::Command) -> Vec<PathBuf> {
+    Vec::new()
+}
+
 fn matches_environment_key(key: &OsStr, allowed_keys: &[&str]) -> bool {
     let Some(key) = key.to_str() else {
         return false;
@@ -118,6 +164,7 @@ mod tests {
             ("TMP", "C:/Temp"),
             ("COMSPEC", "C:/Windows/System32/cmd.exe"),
             ("PATHEXT", ".COM;.EXE;.BAT;.CMD"),
+            ("LOCALAPPDATA", "C:/Users/Alice/AppData/Local"),
             ("OPENAI_API_KEY", "provider-secret"),
             ("AWS_SECRET_ACCESS_KEY", "cloud-secret"),
             ("HTTPS_PROXY", "https://user:secret@example.invalid"),
@@ -141,6 +188,7 @@ mod tests {
         }
         assert_eq!(keys.iter().any(|key| key == "COMSPEC"), cfg!(windows));
         assert_eq!(keys.iter().any(|key| key == "PATHEXT"), cfg!(windows));
+        assert_eq!(keys.iter().any(|key| key == "LOCALAPPDATA"), cfg!(windows));
         for key in [
             "OPENAI_API_KEY",
             "AWS_SECRET_ACCESS_KEY",

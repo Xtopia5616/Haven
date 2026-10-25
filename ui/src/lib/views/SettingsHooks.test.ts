@@ -67,6 +67,28 @@ describe('SettingsHooks', () => {
 		expect(saveHooks.mock.calls[1][0].pre_tool_use[0].command).toBe('changed.exe');
 	});
 
+	it('explains offline MXC execution for WorkspaceWrite hooks', async () => {
+		const settings = fixture();
+		settings.resource_policy.files.write_mode = 'workspace';
+		settings.resource_policy.network.access = 'restricted';
+		getSettings.mockResolvedValue(settings);
+		render(SettingsHooks, { active: false, onDraftState: vi.fn() });
+		await screen.findByLabelText('可执行文件');
+		expect(screen.getByText('WorkspaceWrite 使用 MXC 启动 Hook')).toBeTruthy();
+		expect(screen.getByText(/禁用网络/)).toBeTruthy();
+		expect(screen.getByText(/非 Windows 或 MXC 无法启动时/)).toBeTruthy();
+	});
+
+	it('blocks FullAccess hooks when the network has a domain allowlist', async () => {
+		const settings = fixture();
+		settings.resource_policy.network.allowed_domains = ['hooks.example'];
+		getSettings.mockResolvedValue(settings);
+		render(SettingsHooks, { active: false, onDraftState: vi.fn() });
+		await screen.findByLabelText('可执行文件');
+		expect(screen.getByText('当前策略会阻止 Hook 运行')).toBeTruthy();
+		expect(screen.getByText(/没有域名白名单/)).toBeTruthy();
+	});
+
 	it('disables without deleting, saves a plain snapshot, and restores discarded state', async () => {
 		render(SettingsHooks, { active: false, onDraftState: vi.fn() });
 		const toggle = await screen.findByLabelText('启用');
@@ -162,6 +184,6 @@ describe('SettingsHooks', () => {
 		expect(screen.getByText('失败，已阻止工具')).toBeTruthy();
 		expect(screen.getByText('失败，主操作继续')).toBeTruthy();
 		const row = screen.getByText('失败，已阻止工具').parentElement!;
-		expect(within(row).getByText(/检查当前沙箱和网络策略/)).toBeTruthy();
+		expect(within(row).getByText(/检查执行边界/)).toBeTruthy();
 	});
 });

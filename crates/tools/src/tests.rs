@@ -2225,7 +2225,16 @@ async fn registered_operation_manifest_matches_runtime_policy() {
 
     for tool in &tools {
         let name = tool.name();
-        let runtime = tool.operation_policy(&json!({}));
+        // Git requires a subcommand. An empty object intentionally projects a
+        // restrictive invalid-input fallback, so use its ordinary local
+        // read-only operation when comparing the static manifest to runtime
+        // policy.
+        let policy_input = if name == "git" {
+            json!({"subcommand": "status"})
+        } else {
+            json!({})
+        };
+        let runtime = tool.operation_policy(&policy_input);
         let manifest = tool.tool_manifest();
         let def = tool.tool_def();
         assert_eq!(tool.catalog_group(), def.catalog_group, "{name}");

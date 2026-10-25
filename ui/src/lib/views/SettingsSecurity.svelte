@@ -636,7 +636,7 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 		<SettingsField
 			label="系统与工具链只读目录"
 			id="security-shell-runtime-read-roots"
-			description="Windows 运行时和命令 PATH 目录会自动纳入；每行可补充已存在的 SDK、解释器或库目录。Shell 只能读取这些目录。新增范围仍受全局和 Shell 工具级文件访问目录限制，拒绝路径始终优先。"
+			description="Windows 运行时和命令 PATH 目录会自动纳入；每行可补充已存在的 SDK、解释器或库目录。Shell 及使用 MXC 的工具进程可读取这些目录；实际范围仍受全局与工具级文件策略约束，拒绝路径始终优先。"
 			stacked
 		>
 			<textarea

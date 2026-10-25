@@ -19,6 +19,7 @@ fn tool_for_tests() -> LoadMcpTool {
     LoadMcpTool {
         mcp_manager: Arc::new(McpManager::new()),
         mcp_server_config_source: McpServerConfigSource::default(),
+        authorization: Arc::new(crate::security::AuthorizationEngine::new()),
         registry: ToolRegistry::new(),
         session_tool_overlay: SessionToolOverlay::new(),
         max_tools_per_request: 128,
@@ -37,6 +38,7 @@ fn tool_with_source(source: McpServerConfigSource) -> LoadMcpTool {
     LoadMcpTool {
         mcp_manager: Arc::new(McpManager::new()),
         mcp_server_config_source: source,
+        authorization: Arc::new(crate::security::AuthorizationEngine::new()),
         registry: ToolRegistry::new(),
         session_tool_overlay: SessionToolOverlay::new(),
         max_tools_per_request: 128,
@@ -190,7 +192,9 @@ async fn authorization_contract_uses_trusted_transport_and_network_policy_stays_
             ..Default::default()
         })
         .await;
-    let tool = tool_with_source(source.clone());
+    let mut tool = tool_with_source(source.clone());
+    let engine = Arc::new(crate::AuthorizationEngine::new());
+    tool.authorization = engine.clone();
     let input = serde_json::json!({"server_name": "remote"});
     let contract = tool.authorization_contract(&input).await.unwrap();
     assert_eq!(
@@ -199,7 +203,6 @@ async fn authorization_contract_uses_trusted_transport_and_network_policy_stays_
     );
     assert_eq!(contract.policy.network_access, crate::NetworkAccess::Public);
 
-    let engine = crate::AuthorizationEngine::new();
     engine
         .set_boundaries(
             haven_common::types::SandboxMode::WorkspaceWrite,
@@ -238,28 +241,33 @@ async fn authorization_contract_uses_trusted_transport_and_network_policy_stays_
             ..Default::default()
         })
         .await;
-    let stdio_contract = tool.authorization_contract(&input).await.unwrap();
-    assert_eq!(
-        stdio_contract.policy.execution_boundary,
-        crate::ExecutionBoundary::HostProcess
-    );
     engine
         .set_boundaries(
             haven_common::types::SandboxMode::WorkspaceWrite,
             Vec::new(),
-            haven_common::types::NetworkPolicy::Open,
+            haven_common::types::NetworkPolicy::Deny,
         )
         .await;
+    let stdio_contract = tool.authorization_contract(&input).await.unwrap();
+    assert_eq!(
+        stdio_contract.policy.execution_boundary,
+        crate::ExecutionBoundary::SandboxedHost
+    );
+    assert_eq!(
+        stdio_contract.policy.network_access,
+        crate::NetworkAccess::None
+    );
     let stdio_request =
         crate::AuthorizationRequest::new(None, "load_mcp", input, stdio_contract.policy)
             .with_target_binding(stdio_contract.target_binding);
-    assert!(matches!(
+    assert!(!matches!(
         engine
             .authorize_for_execution(&stdio_request)
             .await
             .decision,
         crate::AuthorizationDecision::Blocked {
-            reason_code: crate::AuthorizationReasonCode::SandboxBoundary,
+            reason_code: crate::AuthorizationReasonCode::SandboxBoundary
+                | crate::AuthorizationReasonCode::NetworkPolicy,
             ..
         }
     ));

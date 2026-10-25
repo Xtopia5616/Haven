@@ -41,33 +41,5 @@ pub(crate) fn request_from_command(
 
 #[cfg(windows)]
 pub(crate) fn runtime_dependency_roots(command: &Command) -> Vec<PathBuf> {
-    let environment = command
-        .get_envs()
-        .filter_map(|(key, value)| value.map(|value| (key.to_os_string(), value.to_os_string())))
-        .collect::<Vec<_>>();
-    let mut roots = Vec::new();
-    if let Some(system_root) = environment
-        .iter()
-        .find(|(key, _)| {
-            key.to_str()
-                .is_some_and(|key| key.eq_ignore_ascii_case("SYSTEMROOT"))
-        })
-        .map(|(_, value)| PathBuf::from(value))
-    {
-        roots.push(system_root.clone());
-        roots.push(system_root.join("System32"));
-        roots.push(system_root.join(r"System32\WindowsPowerShell\v1.0"));
-    }
-    roots.extend(
-        environment
-            .iter()
-            .find(|(key, _)| {
-                key.to_str()
-                    .is_some_and(|key| key.eq_ignore_ascii_case("PATH"))
-            })
-            .map(|(_, value)| std::env::split_paths(value).collect::<Vec<_>>())
-            .unwrap_or_default(),
-    );
-    roots.retain(|path| path.is_dir());
-    roots
+    haven_platform::process_environment::runtime_dependency_roots(command)
 }

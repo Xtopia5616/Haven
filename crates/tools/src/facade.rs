@@ -1253,12 +1253,7 @@ impl ToolsFacade {
         &self,
         root: &Path,
     ) -> anyhow::Result<ExecutionWorkspaceSnapshot> {
-        self.coordinator
-            .core
-            .authorization
-            .switch_execution_workspace(root)
-            .await
-            .map_err(anyhow::Error::msg)
+        self.coordinator.switch_execution_workspace(root).await
     }
 
     /// Construct the capability view used by facade reads and builtin catalog

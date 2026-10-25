@@ -13,10 +13,11 @@ use crate::transport::{
 };
 use crate::{McpStdioLaunchSpec, McpStdioProcess, McpStdioProcessLauncher};
 use futures_util::future::BoxFuture;
+#[cfg(any(test, feature = "test-support"))]
+use haven_common::types::NetworkPolicy;
 use haven_common::{
     config::{NetworkAccessBoundary, NetworkResourcePolicy, NetworkResourcePolicySnapshot},
     mcp::McpServerTransport,
-    types::NetworkPolicy,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -24,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -90,8 +91,9 @@ mod stdio_launcher_tests {
             Ok(None)
         }
 
-        fn is_alive(&mut self) -> std::io::Result<bool> {
-            Ok(self.alive.load(Ordering::Acquire))
+        fn is_alive(&mut self) -> BoxFuture<'_, std::io::Result<bool>> {
+            let alive = self.alive.clone();
+            Box::pin(async move { Ok(alive.load(Ordering::Acquire)) })
         }
 
         fn start_kill(&mut self) -> std::io::Result<()> {
@@ -201,6 +203,96 @@ mod stdio_launcher_tests {
         assert!(!launcher.alive.load(Ordering::Acquire));
     }
 
+    #[tokio::test]
+    async fn offline_stdio_connection_reaches_the_authorized_process_launcher() {
+        let launcher = Arc::new(StreamLauncher {
+            debug_spec: StdMutex::new(None),
+            server_stream: StdMutex::new(None),
+            alive: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        });
+        let config = haven_common::config::McpServerConfig {
+            name: "offline-stream-test".into(),
+            transport: McpServerTransport::Stdio,
+            command: "authorization-owned-command".into(),
+            ..Default::default()
+        };
+        let client = Arc::new(McpClient::new_managed_with_launcher(
+            &config,
+            1024,
+            1024,
+            Some(Arc::new(TestMcpStdioProcessStartAuthorization)),
+            launcher.clone(),
+        ));
+        client.set_network_policy(NetworkPolicy::Deny).await;
+
+        let connecting = {
+            let client = client.clone();
+            tokio::spawn(async move { client.connect().await })
+        };
+        let server_stream = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(stream) = launcher
+                    .server_stream
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                {
+                    break stream;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("process authorization should reach the injected launcher");
+        let server = tokio::spawn(async move {
+            let (server_read, mut server_write) = tokio::io::split(server_stream);
+            let mut reader = BufReader::new(server_read);
+            for _ in 0..2 {
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let result = match request["method"].as_str().unwrap() {
+                    "server/discover" => serde_json::json!({
+                        "resultType": "complete",
+                        "supportedVersions": [crate::protocol::MODERN_PROTOCOL_VERSION],
+                        "capabilities": {"tools": {}},
+                        "_meta": {
+                            "io.modelcontextprotocol/serverInfo": {
+                                "name": "offline-test-server",
+                                "version": "1"
+                            }
+                        }
+                    }),
+                    "tools/list" => serde_json::json!({
+                        "tools": [],
+                        "ttlMs": 60_000,
+                        "cacheScope": "private"
+                    }),
+                    method => panic!("unexpected MCP request method: {method}"),
+                };
+                let response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": request["id"],
+                    "result": result
+                });
+                server_write
+                    .write_all(format!("{}\n", response).as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(3), connecting)
+            .await
+            .expect("offline MCP handshake must finish")
+            .unwrap()
+            .expect("the authorized offline process should connect");
+        server.await.unwrap();
+        assert!(matches!(client.status().await, McpClientStatus::Connected));
+        client.shutdown().await.unwrap();
+        assert!(!launcher.alive.load(Ordering::Acquire));
+    }
+
     struct FailingWaitProcess {
         stdin: Option<McpStdioWriter>,
         stdout: Option<McpStdioReader>,
@@ -224,8 +316,8 @@ mod stdio_launcher_tests {
             Ok(None)
         }
 
-        fn is_alive(&mut self) -> std::io::Result<bool> {
-            Ok(true)
+        fn is_alive(&mut self) -> BoxFuture<'_, std::io::Result<bool>> {
+            Box::pin(async { Ok(true) })
         }
 
         fn start_kill(&mut self) -> std::io::Result<()> {
@@ -551,11 +643,19 @@ pub(crate) fn local_stdio_process_launcher() -> Arc<dyn McpStdioProcessLauncher>
 struct LocalMcpStdioProcessLauncher;
 
 struct LocalMcpStdioProcess {
-    child: Child,
-    _containment: haven_platform::process_containment::ProcessContainment,
-    stdin: Option<ChildStdin>,
-    stdout: Option<ChildStdout>,
-    stderr: Option<ChildStderr>,
+    process: LocalMcpChild,
+    stdin: Option<crate::McpStdioWriter>,
+    stdout: Option<crate::McpStdioReader>,
+    stderr: Option<crate::McpStdioReader>,
+    _lifetime_resource: Option<Box<dyn Send>>,
+}
+
+enum LocalMcpChild {
+    Host {
+        child: Child,
+        _containment: haven_platform::process_containment::ProcessContainment,
+    },
+    Mxc(haven_platform::sandboxed_process::SandboxedProcess),
 }
 
 impl McpStdioProcess for LocalMcpStdioProcess {
@@ -580,16 +680,33 @@ impl McpStdioProcess for LocalMcpStdioProcess {
             .map(|stream| Box::new(stream) as crate::McpStdioReader))
     }
 
-    fn is_alive(&mut self) -> std::io::Result<bool> {
-        self.child.try_wait().map(|status| status.is_none())
+    fn is_alive(&mut self) -> BoxFuture<'_, std::io::Result<bool>> {
+        match &mut self.process {
+            LocalMcpChild::Host { child, .. } => {
+                Box::pin(async move { child.try_wait().map(|status| status.is_none()) })
+            }
+            LocalMcpChild::Mxc(process) => {
+                Box::pin(async move { process.try_wait().await.map(|status| status.is_none()) })
+            }
+        }
     }
 
     fn start_kill(&mut self) -> std::io::Result<()> {
-        self.child.start_kill()
+        match &mut self.process {
+            LocalMcpChild::Host { child, .. } => child.start_kill(),
+            LocalMcpChild::Mxc(process) => process.start_kill(),
+        }
     }
 
     fn wait(&mut self) -> BoxFuture<'_, std::io::Result<()>> {
-        Box::pin(async move { self.child.wait().await.map(|_| ()) })
+        match &mut self.process {
+            LocalMcpChild::Host { child, .. } => {
+                Box::pin(async move { child.wait().await.map(|_| ()) })
+            }
+            LocalMcpChild::Mxc(process) => {
+                Box::pin(async move { process.wait().await.map(|_| ()) })
+            }
+        }
     }
 }
 
@@ -597,70 +714,171 @@ impl McpStdioProcessLauncher for LocalMcpStdioProcessLauncher {
     fn launch<'a>(
         &'a self,
         spec: &'a McpStdioLaunchSpec,
-        permit: Box<dyn crate::McpStdioProcessStartPermit>,
+        mut permit: Box<dyn crate::McpStdioProcessStartPermit>,
     ) -> BoxFuture<'a, anyhow::Result<Box<dyn McpStdioProcess>>> {
         Box::pin(async move {
-            // MCP servers may use relative command/cwd paths from trusted
-            // configuration; this local launcher preserves that behavior.
-            let build = |program: &str, args: &[String]| {
-                let mut command = Command::new(program);
-                command
-                    .args(args)
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .kill_on_drop(true);
-                configure_stdio_server_environment(
-                    command.as_std_mut(),
-                    std::env::vars_os(),
-                    spec.environment(),
-                );
-                if let Some(working_directory) = spec.working_directory() {
-                    command.current_dir(working_directory);
+            let policy = permit.sandboxed_process_policy();
+            let child = if let Some(policy) = policy.as_ref() {
+                let scratch = permit.sandboxed_temp_directory().ok_or_else(|| {
+                    anyhow::anyhow!("MCP sandbox scratch directory is unavailable")
+                })?;
+                let mut spawned = None;
+                let mut last_error = None;
+                for (program, args) in mcp_command_candidates(spec.command(), spec.args()) {
+                    let mut command = build_stdio_server_command(
+                        &program,
+                        &args,
+                        spec,
+                        permit.sandboxed_working_directory(),
+                        Some(scratch),
+                    );
+                    let request =
+                        haven_platform::sandboxed_process::SandboxedProcessRequest::from_command(
+                            command.as_std_mut(),
+                            policy,
+                            false,
+                        )?;
+                    match haven_platform::sandboxed_process::SandboxedProcess::spawn(
+                        request,
+                        policy.isolation_mode,
+                    )
+                    .await
+                    {
+                        Ok(process) => {
+                            spawned = Some(process);
+                            break;
+                        }
+                        Err(error) => last_error = Some(error),
+                    }
                 }
-                command
-            };
-
-            let containment = haven_platform::process_containment::ProcessContainment::new()
-                .map_err(|error| {
+                LocalMcpChild::Mxc(spawned.ok_or_else(|| {
+                    let detail = last_error
+                        .as_ref()
+                        .map(|error| haven_common::error::sanitize_error_text(&error.to_string()))
+                        .unwrap_or_else(|| "no supported command variant".into());
                     anyhow::anyhow!(
-                        "failed to create process containment for MCP server '{}': {error}",
+                        "failed to start MCP server '{}' in MXC: {detail}",
                         spec.server_name()
                     )
-                })?;
-            let child = spawn_mcp_child(
-                spec.server_name(),
-                spec.command(),
-                spec.args(),
-                &build,
-                &containment,
-            )
-            .map_err(|error| {
-                let hint = windows_spawn_hint(spec.command(), &error);
-                anyhow::anyhow!(
-                    "failed to spawn MCP server '{}': {}{}",
+                })?)
+            } else {
+                // Full Access keeps existing command resolution and Job Object
+                // lifecycle. MXC failures never retry through this host path.
+                let containment = haven_platform::process_containment::ProcessContainment::new()
+                    .map_err(|error| {
+                        anyhow::anyhow!(
+                            "failed to create process containment for MCP server '{}': {error}",
+                            spec.server_name()
+                        )
+                    })?;
+                let build = |program: &str, args: &[String]| {
+                    build_stdio_server_command(program, args, spec, None, None)
+                };
+                let child = spawn_mcp_child(
                     spec.server_name(),
-                    haven_common::error::sanitize_error_text(&error.to_string()),
-                    hint
+                    spec.command(),
+                    spec.args(),
+                    &build,
+                    &containment,
                 )
-            })?;
+                .map_err(|error| {
+                    let hint = windows_spawn_hint(spec.command(), &error);
+                    anyhow::anyhow!(
+                        "failed to spawn MCP server '{}': {}{}",
+                        spec.server_name(),
+                        haven_common::error::sanitize_error_text(&error.to_string()),
+                        hint
+                    )
+                })?;
+                LocalMcpChild::Host {
+                    child,
+                    _containment: containment,
+                }
+            };
 
-            // `spawn_mcp_child` returns only after OS containment has attached
-            // and the process has resumed.
+            // Keep an isolated generation's scratch alive until process
+            // teardown; the policy read guard can end once MXC is attached.
+            let lifetime_resource = permit.take_lifetime_resource();
             drop(permit);
             let mut process = LocalMcpStdioProcess {
-                child,
-                _containment: containment,
+                process: child,
                 stdin: None,
                 stdout: None,
                 stderr: None,
+                _lifetime_resource: lifetime_resource,
             };
-            process.stdin = process.child.stdin.take();
-            process.stdout = process.child.stdout.take();
-            process.stderr = process.child.stderr.take();
+            match &mut process.process {
+                LocalMcpChild::Host { child, .. } => {
+                    process.stdin = child.stdin.take().map(|stream| Box::new(stream) as _);
+                    process.stdout = child.stdout.take().map(|stream| Box::new(stream) as _);
+                    process.stderr = child.stderr.take().map(|stream| Box::new(stream) as _);
+                }
+                LocalMcpChild::Mxc(child) => {
+                    process.stdin = child.take_stdin().map(|stream| Box::new(stream) as _);
+                    process.stdout = child.take_stdout().map(|stream| Box::new(stream) as _);
+                    process.stderr = child.take_stderr().map(|stream| Box::new(stream) as _);
+                }
+            }
             Ok(Box::new(process) as Box<dyn McpStdioProcess>)
         })
     }
+}
+
+fn build_stdio_server_command(
+    program: &str,
+    args: &[String],
+    spec: &McpStdioLaunchSpec,
+    sandboxed_working_directory: Option<&std::path::Path>,
+    scratch_directory: Option<&std::path::Path>,
+) -> Command {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    configure_stdio_server_environment(
+        command.as_std_mut(),
+        std::env::vars_os(),
+        spec.environment(),
+    );
+    if let Some(scratch) = scratch_directory {
+        command
+            .env("TEMP", scratch)
+            .env("TMP", scratch)
+            .env("TMPDIR", scratch);
+    }
+    if let Some(cwd) = sandboxed_working_directory {
+        command.current_dir(cwd);
+    } else if let Some(working_directory) = spec.working_directory() {
+        command.current_dir(working_directory);
+    }
+    command
+}
+
+fn mcp_command_candidates(command: &str, args: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut candidates = vec![(command.to_owned(), args.to_vec())];
+    #[cfg(windows)]
+    {
+        let extensionless = !command.contains(['\\', '/', '.']);
+        if extensionless {
+            candidates.push((format!("{command}.cmd"), args.to_vec()));
+        }
+        let ps1 = command.to_lowercase().ends_with(".ps1");
+        if ps1 || extensionless {
+            let mut powershell_args = vec![
+                "-NoProfile".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                command.to_owned(),
+            ];
+            powershell_args.extend(args.iter().cloned());
+            candidates.push(("powershell".into(), powershell_args));
+        }
+    }
+    candidates
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -668,7 +886,10 @@ struct TestMcpStdioProcessStartAuthorization;
 
 #[cfg(any(test, feature = "test-support"))]
 impl crate::McpStdioProcessStartAuthorization for TestMcpStdioProcessStartAuthorization {
-    fn acquire_process_start_permit(&self) -> crate::McpStdioProcessStartPermitFuture<'_> {
+    fn acquire_process_start_permit(
+        &self,
+        _request: crate::McpStdioProcessStartRequest,
+    ) -> crate::McpStdioProcessStartPermitFuture<'_> {
         Box::pin(async { Ok(Box::new(()) as Box<dyn crate::McpStdioProcessStartPermit>) })
     }
 }
@@ -961,8 +1182,31 @@ impl McpClient {
                 self.name
             )
         })?;
+        let command = build_stdio_server_command(
+            self.stdio_launch_spec.command(),
+            self.stdio_launch_spec.args(),
+            &self.stdio_launch_spec,
+            None,
+            None,
+        );
+        let mut runtime_read_roots =
+            haven_platform::process_environment::runtime_dependency_roots(command.as_std());
+        let configured_program = std::path::PathBuf::from(self.stdio_launch_spec.command());
+        if configured_program.is_absolute()
+            && let Some(parent) = configured_program.parent()
+            && haven_platform::filesystem::DirectoryCapability::open(parent).is_ok()
+        {
+            runtime_read_roots.push(parent.to_path_buf());
+        }
+        let request = crate::McpStdioProcessStartRequest {
+            working_directory: self
+                .stdio_launch_spec
+                .working_directory()
+                .map(std::path::PathBuf::from),
+            runtime_read_roots,
+        };
         let spawn_permit = authorization
-            .acquire_process_start_permit()
+            .acquire_process_start_permit(request)
             .await
             .map_err(|error| {
                 anyhow::anyhow!(
@@ -1062,24 +1306,6 @@ impl McpClient {
                 }
             })
         });
-        let network_policy = self.network_policy.read().await.clone();
-        if matches!(self.transport, McpServerTransport::Stdio)
-            && (!matches!(network_policy.network_policy(), NetworkPolicy::Open)
-                || !network_policy.policy.allowed_domains.is_empty())
-        {
-            let error = anyhow::anyhow!(
-                "MCP stdio server '{}' is blocked by network policy because its network use is opaque or its domain policy cannot be enforced",
-                self.name
-            );
-            *self.status.lock().await = McpClientStatus::Offline {
-                error: error.to_string(),
-            };
-            if let Some(watcher) = cancellation_watcher {
-                watcher.abort();
-                let _ = watcher.await;
-            }
-            return Err(error);
-        }
         *self.status.lock().await = McpClientStatus::Connecting;
         *self.last_diagnostic.lock().await = None;
         // A new connection must repopulate this cache from the new server.

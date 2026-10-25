@@ -381,6 +381,8 @@ async fn mcp_manager_network_deny_removes_clients_and_blocks_connections() {
     let client = Arc::new(McpClient::new(
         &McpServerConfig {
             name: "blocked".into(),
+            transport: haven_common::mcp::McpServerTransport::Http,
+            url: "http://127.0.0.1:1/mcp".into(),
             command: "echo".into(),
             ..Default::default()
         },
@@ -395,6 +397,8 @@ async fn mcp_manager_network_deny_removes_clients_and_blocks_connections() {
     assert!(
         mgr.connect_server(&McpServerConfig {
             name: "new-blocked".into(),
+            transport: haven_common::mcp::McpServerTransport::Http,
+            url: "http://127.0.0.1:1/mcp".into(),
             command: "echo".into(),
             ..Default::default()
         })
@@ -404,25 +408,28 @@ async fn mcp_manager_network_deny_removes_clients_and_blocks_connections() {
 }
 
 #[tokio::test]
-async fn mcp_stdio_requires_open_network_policy() {
-    let client = McpClient::new(
+async fn mcp_stdio_requires_tools_owned_process_start_authorization() {
+    let client = McpClient::new_managed_with_launcher(
         &McpServerConfig {
             name: "restricted-stdio".into(),
-            command: "echo".into(),
+            transport: haven_common::mcp::McpServerTransport::Stdio,
+            command: "must-not-spawn".into(),
             ..Default::default()
         },
         2 * 1024 * 1024,
         2 * 1024 * 1024,
+        None,
+        crate::client::local_stdio_process_launcher(),
     );
     client
-        .set_network_policy(haven_common::types::NetworkPolicy::Restricted)
+        .set_network_policy(haven_common::types::NetworkPolicy::Deny)
         .await;
 
     let error = client
         .connect()
         .await
-        .expect_err("ask-mode stdio must be blocked");
-    assert!(error.to_string().contains("network policy"));
+        .expect_err("stdio must not start without a process-start permit");
+    assert!(error.to_string().contains("no process-start authorization"));
     assert!(matches!(
         client.status().await,
         McpClientStatus::Offline { .. }

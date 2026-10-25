@@ -73,9 +73,21 @@
 		savedHooks !== null && JSON.stringify(hooks) !== JSON.stringify(savedHooks),
 	);
 
+	const hookExecutionMode = $derived.by(() => {
+		const policy = settings?.resource_policy;
+		if (!policy) return 'unknown';
+		if (policy.files.write_mode === 'unrestricted') {
+			return policy.network.access === 'open' && policy.network.allowed_domains.length === 0
+				? 'full_access'
+				: 'blocked';
+		}
+		if (policy.files.write_mode === 'workspace' || policy.files.write_mode === 'roots') {
+			return 'workspace_write';
+		}
+		return 'blocked';
+	});
 	const hookExecutionAllowed = $derived(
-		settings?.resource_policy.files.write_mode === 'unrestricted' &&
-			settings.resource_policy.network.access === 'open',
+		hookExecutionMode === 'full_access' || hookExecutionMode === 'workspace_write',
 	);
 
 	async function reload() {
@@ -237,19 +249,23 @@
 <div class="settings-hooks">
 	<SettingsSection
 		title="执行边界"
-		description="Hook 命令继承 Haven 当前安全策略；只有 FullAccess 与开放网络同时启用时才会启动外部进程。"
+		description="FullAccess 下需要开放网络且没有域名白名单；WorkspaceWrite 下仅在 Windows 通过 MXC 启动并关闭网络；ReadOnly 下不会启动 Hook。"
 	>
 		<div class:allowed={hookExecutionAllowed} class="hook-policy" role="status">
 			<strong
 				>{!settings
 					? '尚未读取执行策略'
-					: hookExecutionAllowed
-						? '当前策略允许 Hook 运行'
-						: '当前策略会阻止 Hook 运行'}</strong
+					: hookExecutionMode === 'full_access'
+						? 'FullAccess 允许 Hook 运行'
+						: hookExecutionMode === 'workspace_write'
+							? 'WorkspaceWrite 使用 MXC 启动 Hook'
+							: '当前策略会阻止 Hook 运行'}</strong
 			>
 			<span>
-				{#if hookExecutionAllowed}
-					命令仍通过 Haven 的进程授权与进程树清理边界启动。
+				{#if hookExecutionMode === 'full_access'}
+					命令在宿主用户权限下运行，并受 Haven 的进程授权与进程树清理约束。
+				{:else if hookExecutionMode === 'workspace_write'}
+					Windows MXC 按当前 Hook 文件范围限制读写且禁用网络。非 Windows 或 MXC 无法启动时，Hook 会被拒绝。
 				{:else}
 					匹配到的启用 PreToolUse 无法启动时会阻止工具；通知型事件会跳过 Hook 并记录诊断。
 				{/if}
@@ -292,8 +308,7 @@
 				>
 			</div>
 			{#if template !== 'blank'}<p class="hooks-note motion-surface-enter">
-					模板只填充启动参数。请在执行工作区创建对应 scripts/hook
-					脚本，或将参数改为已有脚本的绝对路径。
+					模板只填充启动参数。优先将脚本放在执行工作区；WorkspaceWrite 下，工作区外的脚本目录必须位于安全设置的系统与工具链只读目录范围内。
 				</p>{/if}
 			{#each EVENTS.filter((event) => eventFilter === 'all' || event.key === eventFilter) as event (event.key)}
 				<section class="hook-event" aria-labelledby={`hook-event-${event.key}`}>

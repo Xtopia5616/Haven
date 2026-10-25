@@ -8,6 +8,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
@@ -54,6 +55,54 @@ pub struct SandboxedProcessRequest {
     /// The process still keeps clipboard, input injection, system settings,
     /// and desktop control restrictions.
     pub allow_desktop_handle_access: bool,
+}
+
+/// A complete, owner-compiled resource grant that can be applied to a child
+/// command by any Platform-backed process adapter.
+#[derive(Debug, Clone)]
+pub struct SandboxedProcessPolicy {
+    pub isolation_mode: MxcIsolationMode,
+    pub readwrite_paths: Vec<PathBuf>,
+    pub readonly_paths: Vec<PathBuf>,
+    pub protected_readonly_paths: Vec<PathBuf>,
+    pub denied_paths: Vec<PathBuf>,
+    pub network_policy: SandboxedProcessNetworkPolicy,
+}
+
+impl SandboxedProcessRequest {
+    /// Preserve the prepared command while attaching a policy already
+    /// compiled by its authorization owner.
+    pub fn from_command(
+        command: &std::process::Command,
+        policy: &SandboxedProcessPolicy,
+        allow_desktop_handle_access: bool,
+    ) -> anyhow::Result<Self> {
+        let working_directory = command
+            .get_current_dir()
+            .map(PathBuf::from)
+            .unwrap_or(std::env::current_dir()?);
+        let environment = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| (key.to_os_string(), value.to_os_string()))
+            })
+            .collect();
+        Ok(Self {
+            program: command.get_program().to_os_string(),
+            arguments: command
+                .get_args()
+                .map(|argument| argument.to_os_string())
+                .collect(),
+            working_directory,
+            readwrite_paths: policy.readwrite_paths.clone(),
+            readonly_paths: policy.readonly_paths.clone(),
+            protected_readonly_paths: policy.protected_readonly_paths.clone(),
+            denied_paths: policy.denied_paths.clone(),
+            environment,
+            network_policy: policy.network_policy,
+            allow_desktop_handle_access,
+        })
+    }
 }
 
 /// Terminal status and structured policy denials from one isolated process.
@@ -214,6 +263,7 @@ impl std::ops::Deref for SandboxLaunchReport {
 /// A live MXC process with async pipes and cancellation-safe lifecycle calls.
 pub struct SandboxedProcess {
     process: Arc<Mutex<mxc_sdk::v1::MxcProcess>>,
+    kill_started: AtomicBool,
     stdin: Option<tokio::io::DuplexStream>,
     stdout: Option<SandboxedPipeReader>,
     stderr: Option<SandboxedPipeReader>,
@@ -259,6 +309,7 @@ impl SandboxedProcess {
         let stderr = process.take_stderr().map(make_async_reader);
         Ok(Self {
             process: Arc::new(Mutex::new(process)),
+            kill_started: AtomicBool::new(false),
             stdin,
             stdout,
             stderr,
@@ -351,14 +402,41 @@ impl SandboxedProcess {
 
     pub async fn kill(&self) -> io::Result<()> {
         let process = Arc::clone(&self.process);
-        tokio::task::spawn_blocking(move || lock_process(&process).kill())
+        let result = tokio::task::spawn_blocking(move || lock_process(&process).kill())
             .await
-            .map_err(|_| io::Error::other("MXC process termination task failed"))?
+            .map_err(|_| io::Error::other("MXC process termination task failed"))?;
+        if result.is_ok() {
+            self.kill_started.store(true, Ordering::Release);
+        }
+        result
+    }
+
+    /// Begin process-tree termination for lifecycle adapters whose shutdown
+    /// contract has a synchronous start phase followed by an async wait.
+    pub fn start_kill(&self) -> io::Result<()> {
+        if self.kill_started.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        let process = Arc::clone(&self.process);
+        match std::thread::Builder::new()
+            .name("haven-mxc-start-kill".into())
+            .spawn(move || {
+                let _ = lock_process(&process).kill();
+            }) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                self.kill_started.store(false, Ordering::Release);
+                Err(error)
+            }
+        }
     }
 }
 
 impl Drop for SandboxedProcess {
     fn drop(&mut self) {
+        if self.kill_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let process = Arc::clone(&self.process);
         let _ = std::thread::Builder::new()
             .name("haven-mxc-cleanup".into())

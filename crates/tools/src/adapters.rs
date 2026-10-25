@@ -4,7 +4,7 @@ use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolPresentation, ToolPrompt, ToolRootPresentation,
     ToolSource,
 };
-use haven_common::types::{CapabilityScope, RiskLevel};
+use haven_common::types::{CapabilityScope, RiskLevel, SandboxMode};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -73,20 +73,30 @@ fn mcp_operation_spec(
     operation: &str,
     schema: Value,
     transport: &McpServerTransport,
+    sandbox_mode: SandboxMode,
 ) -> OperationSpec {
+    let mut policy = OperationPolicy::external(
+        CapabilityScope::try_new(name).expect("provider-safe MCP tool name is a valid scope"),
+        RiskLevel::High,
+    );
+    match (transport, sandbox_mode) {
+        (McpServerTransport::Stdio, SandboxMode::WorkspaceWrite) => {
+            policy.execution_boundary = crate::ExecutionBoundary::SandboxedHost;
+            policy.network_access = crate::NetworkAccess::None;
+        }
+        (McpServerTransport::Stdio, SandboxMode::FullAccess | SandboxMode::ReadOnly) => {
+            policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
+        }
+        (McpServerTransport::Http, _) => {
+            policy.execution_boundary = crate::ExecutionBoundary::InProcess;
+        }
+    }
     OperationSpec {
         name: name.to_string().into(),
         description: description.to_string().into(),
         fixed: Vec::new(),
         schema,
-        policy: OperationPolicy::external(
-            CapabilityScope::try_new(name).expect("provider-safe MCP tool name is a valid scope"),
-            RiskLevel::High,
-        )
-        .with_execution_boundary(match transport {
-            McpServerTransport::Stdio => crate::ExecutionBoundary::HostProcess,
-            McpServerTransport::Http => crate::ExecutionBoundary::InProcess,
-        }),
+        policy,
         policy_rule: None,
         catalog_group: ToolCatalogGroup::Extensions,
         presentation: ToolPresentation {
@@ -175,7 +185,7 @@ fn skill_execution_policy_for_sandbox(
 ) -> OperationPolicy {
     match sandbox_mode {
         haven_common::types::SandboxMode::WorkspaceWrite => {
-            policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
+            policy.execution_boundary = crate::ExecutionBoundary::SandboxedHost;
             policy.network_access = crate::NetworkAccess::None;
         }
         haven_common::types::SandboxMode::FullAccess
@@ -272,6 +282,22 @@ impl McpToolAdapter {
         info: McpToolInfo,
         transport: McpServerTransport,
     ) -> Self {
+        Self::new_with_transport_and_sandbox_mode(
+            manager,
+            server_name,
+            info,
+            transport,
+            SandboxMode::FullAccess,
+        )
+    }
+
+    pub(crate) fn new_with_transport_and_sandbox_mode(
+        manager: McpManager,
+        server_name: &str,
+        info: McpToolInfo,
+        transport: McpServerTransport,
+        sandbox_mode: SandboxMode,
+    ) -> Self {
         let server_name = server_name.to_string();
         let name = Self::qualified_name_of(&server_name, &info.name);
         let description = sanitize_external_description(&info.description);
@@ -284,6 +310,7 @@ impl McpToolAdapter {
             &operation,
             schema,
             &transport,
+            sandbox_mode,
         );
         Self {
             manager,
@@ -672,7 +699,7 @@ mod tests {
         );
         assert_eq!(
             workspace_write.execution_boundary,
-            crate::ExecutionBoundary::HostProcess
+            crate::ExecutionBoundary::SandboxedHost
         );
         assert_eq!(workspace_write.network_access, crate::NetworkAccess::None);
         assert_eq!(
@@ -690,7 +717,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn skill_workspace_write_denies_host_process_execution() {
+    async fn skill_workspace_write_uses_mxc_boundary_when_available() {
         let root = tempfile::tempdir().unwrap();
         let skill = Arc::new(
             crate::test_support::discover_skill_fixture(root.path(), "echo", "Echo", None).await,
@@ -707,11 +734,23 @@ mod tests {
             .await;
         let adapter = SkillToolAdapter::new(skill, runner).with_authorization_engine(authorization);
 
-        let error = adapter
+        let contract = adapter
             .authorization_contract(&serde_json::json!({ "params": {} }))
-            .await
-            .unwrap_err();
-        assert!(error.contains("Skill subprocesses are unavailable in Workspace Write mode"));
+            .await;
+        if cfg!(windows) {
+            let contract = contract.expect("Workspace Write Skills use MXC on Windows");
+            assert_eq!(
+                contract.policy.execution_boundary,
+                crate::ExecutionBoundary::SandboxedHost
+            );
+            assert_eq!(contract.policy.network_access, crate::NetworkAccess::None);
+        } else {
+            assert!(
+                contract
+                    .expect_err("unsupported hosts fail closed")
+                    .contains("Windows MXC isolation")
+            );
+        }
     }
 
     #[tokio::test]
@@ -745,12 +784,28 @@ mod tests {
             info.clone(),
             McpServerTransport::Stdio,
         );
+        let isolated_stdio = McpToolAdapter::new_with_transport_and_sandbox_mode(
+            manager.clone(),
+            "server",
+            info.clone(),
+            McpServerTransport::Stdio,
+            SandboxMode::WorkspaceWrite,
+        );
         let http =
             McpToolAdapter::new_with_transport(manager, "server", info, McpServerTransport::Http);
 
         assert_eq!(
             stdio.operation_policy(&Value::Null).execution_boundary,
             crate::ExecutionBoundary::HostProcess
+        );
+        let isolated_stdio_policy = isolated_stdio.operation_policy(&Value::Null);
+        assert_eq!(
+            isolated_stdio_policy.execution_boundary,
+            crate::ExecutionBoundary::SandboxedHost
+        );
+        assert_eq!(
+            isolated_stdio_policy.network_access,
+            crate::NetworkAccess::None
         );
         let http_policy = http.operation_policy(&Value::Null);
         assert_eq!(

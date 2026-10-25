@@ -410,6 +410,7 @@ pub(crate) async fn register_builtin_tools(
     tools.push(Arc::new(load_mcp::LoadMcpTool {
         mcp_manager: mcp_manager.clone(),
         mcp_server_config_source: mcp_server_config_source.clone(),
+        authorization: authorization.clone(),
         registry: registry.clone(),
         session_tool_overlay,
         max_tools_per_request: max_tools,

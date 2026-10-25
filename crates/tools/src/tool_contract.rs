@@ -201,6 +201,7 @@ impl OperationPolicy {
 
     /// Mark an external adapter that uses only Haven's in-process transport.
     /// Its network permission remains governed by `network_access`.
+    #[cfg(test)]
     pub(crate) fn with_execution_boundary(mut self, boundary: ExecutionBoundary) -> Self {
         self.execution_boundary = boundary;
         self
@@ -1793,12 +1794,13 @@ impl ToolExecutionContext {
 
     pub(crate) async fn acquire_everything_process_start_permit(
         &self,
+        request: crate::security::EverythingProcessStartRequest,
     ) -> Result<crate::security::ExecutionPolicyPermit, String> {
         let authorization = self.execution_authorization.as_ref().ok_or_else(|| {
             "Everything CLI process requires proof-derived execution authorization".to_string()
         })?;
         authorization
-            .acquire_everything_process_start_permit()
+            .acquire_everything_process_start_permit(request)
             .await
     }
 

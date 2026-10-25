@@ -17,6 +17,7 @@ use haven_mcp::McpManager;
 pub struct LoadMcpTool {
     pub mcp_manager: Arc<McpManager>,
     pub mcp_server_config_source: McpServerConfigSource,
+    pub authorization: Arc<crate::security::AuthorizationEngine>,
     /// Global registry (builtins) — used with session overlays for the
     /// per-request tool budget check.
     pub registry: ToolRegistry,
@@ -227,6 +228,7 @@ impl LoadMcpTool {
                 &server_name,
                 self.mcp_manager.as_ref().clone(),
                 config.transport.clone(),
+                self.authorization.sandbox_mode().await,
                 selected_tools,
             )
             .await?
@@ -303,6 +305,7 @@ impl LoadMcpTool {
         server_name: &str,
         manager: McpManager,
         transport: haven_common::mcp::McpServerTransport,
+        sandbox_mode: haven_common::types::SandboxMode,
         tools: Vec<haven_mcp::McpToolInfo>,
     ) -> anyhow::Result<ActivateOutcome> {
         let global_count = self.registry.list().await.len();
@@ -311,11 +314,12 @@ impl LoadMcpTool {
         for info in tools {
             let tool_name = info.name.clone();
             let description = crate::adapters::sanitize_external_description(&info.description);
-            let adapter = McpToolAdapter::new_with_transport(
+            let adapter = McpToolAdapter::new_with_transport_and_sandbox_mode(
                 manager.clone(),
                 server_name,
                 info,
                 transport.clone(),
+                sandbox_mode,
             );
             // The next provider request receives the full schema through
             // `tools[]`; returning it here would duplicate the schema inside
@@ -500,8 +504,17 @@ impl Tool for LoadMcpTool {
                 policy.network_access = crate::NetworkAccess::Public;
             }
             haven_common::mcp::McpServerTransport::Stdio => {
-                policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
-                policy.network_access = crate::NetworkAccess::Opaque;
+                match self.authorization.sandbox_mode().await {
+                    haven_common::types::SandboxMode::WorkspaceWrite => {
+                        policy.execution_boundary = crate::ExecutionBoundary::SandboxedHost;
+                        policy.network_access = crate::NetworkAccess::None;
+                    }
+                    haven_common::types::SandboxMode::FullAccess
+                    | haven_common::types::SandboxMode::ReadOnly => {
+                        policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
+                        policy.network_access = crate::NetworkAccess::Opaque;
+                    }
+                }
             }
         }
         Ok(crate::ToolAuthorizationContract {

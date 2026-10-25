@@ -11,7 +11,8 @@ pub use contract::{
 };
 pub use engine::AuthorizationEngine;
 pub(crate) use execution::{
-    ExecutionPolicyAuthorization, ExecutionPolicyPermit, LifecycleHookProcessStartAuthorization,
+    EverythingProcessStartRequest, ExecutionPolicyAuthorization, ExecutionPolicyPermit,
+    LifecycleHookProcessStartAuthorization, LifecycleHookProcessStartRequest,
     execution_policy_denied,
 };
 pub use filesystem::is_safe_local_path;

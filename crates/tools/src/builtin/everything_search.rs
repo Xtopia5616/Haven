@@ -10,8 +10,9 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
-use tokio::process::Command;
+use tempfile::TempDir;
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::{Child, Command};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -19,6 +20,83 @@ const MAX_EVERYTHING_CONCURRENT: usize = 2;
 const MAX_STDOUT_BYTES: usize = MAX_SEARCH_RESULT_BYTES;
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 const EVERYTHING_TIMEOUT: Duration = Duration::from_secs(15);
+const EVERYTHING_SCRATCH_DIRECTORY: &str = "everything-scratch";
+
+struct EverythingScratch(TempDir);
+
+impl EverythingScratch {
+    fn create() -> anyhow::Result<Self> {
+        let root =
+            haven_common::config::default_runtime_temp_root().join(EVERYTHING_SCRATCH_DIRECTORY);
+        std::fs::create_dir_all(&root)?;
+        haven_platform::filesystem::DirectoryCapability::open(&root)?;
+        Ok(Self(
+            tempfile::Builder::new()
+                .prefix("search-")
+                .tempdir_in(root)?,
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+enum EverythingProcess {
+    Host {
+        child: Child,
+        _containment: haven_platform::process_containment::ProcessContainment,
+    },
+    Mxc(haven_platform::sandboxed_process::SandboxedProcess),
+}
+
+impl EverythingProcess {
+    fn take_stdout(&mut self) -> Option<Box<dyn AsyncRead + Send + Unpin>> {
+        match self {
+            Self::Host { child, .. } => child
+                .stdout
+                .take()
+                .map(|stream| Box::new(stream) as Box<dyn AsyncRead + Send + Unpin>),
+            Self::Mxc(process) => process
+                .take_stdout()
+                .map(|stream| Box::new(stream) as Box<dyn AsyncRead + Send + Unpin>),
+        }
+    }
+
+    fn take_stderr(&mut self) -> Option<Box<dyn AsyncRead + Send + Unpin>> {
+        match self {
+            Self::Host { child, .. } => child
+                .stderr
+                .take()
+                .map(|stream| Box::new(stream) as Box<dyn AsyncRead + Send + Unpin>),
+            Self::Mxc(process) => process
+                .take_stderr()
+                .map(|stream| Box::new(stream) as Box<dyn AsyncRead + Send + Unpin>),
+        }
+    }
+
+    async fn wait(&mut self) -> std::io::Result<i32> {
+        match self {
+            Self::Host { child, .. } => child
+                .wait()
+                .await
+                .map(|status| status.code().unwrap_or(i32::MIN)),
+            Self::Mxc(process) => process.wait().await.map(|exit| exit.exit_code),
+        }
+    }
+
+    async fn terminate(&mut self) {
+        match self {
+            Self::Host { child, .. } => {
+                let _ = child.kill().await;
+            }
+            Self::Mxc(process) => {
+                let _ = process.kill().await;
+            }
+        }
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.wait()).await;
+    }
+}
 
 #[derive(Clone)]
 pub(super) struct EverythingSearch {
@@ -90,13 +168,6 @@ impl EverythingSearch {
             _ = cancel.cancelled() => anyhow::bail!("cancelled"),
             permit = self.slots.clone().acquire_owned() => permit.map_err(|_| anyhow::anyhow!("Everything search capacity is unavailable"))?,
         };
-        let execution_permit = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
-            permit = context.acquire_everything_process_start_permit() => {
-                permit.map_err(crate::security::execution_policy_denied)?
-            }
-        };
         let query = request.pattern.clone();
         let root_arg = if root_metadata.is_file() {
             root.parent()
@@ -131,54 +202,106 @@ impl EverythingSearch {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let containment = haven_platform::process_containment::ProcessContainment::new()?;
+        let scratch = EverythingScratch::create()?;
         #[cfg(windows)]
-        containment.prepare_command(command.as_std_mut(), crate::CREATE_NO_WINDOW);
+        let mut runtime_read_roots =
+            crate::process_sandbox::runtime_dependency_roots(command.as_std());
         #[cfg(not(windows))]
-        containment.prepare_command(command.as_std_mut(), 0);
-        let spawned = {
-            let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
-            command.spawn()
-        };
-        let mut child = spawned.map_err(|_| {
-            anyhow::anyhow!("failed to start Everything CLI; check everything.command")
-        })?;
-        let pid = child
-            .id()
-            .ok_or_else(|| anyhow::anyhow!("Everything CLI did not expose a process id"))?;
-        #[cfg(windows)]
-        let attach = child
-            .raw_handle()
-            .ok_or_else(|| std::io::Error::other("Everything CLI process handle is unavailable"))
-            .and_then(|handle| containment.attach_and_resume(pid, handle));
-        #[cfg(not(windows))]
-        let attach = containment.attach_and_resume(pid, ());
-        if attach.is_err() {
-            drop(execution_permit);
-            let _ = child.kill().await;
-            anyhow::bail!("could not contain the Everything CLI process");
+        let mut runtime_read_roots = Vec::new();
+        let program_path = PathBuf::from(command.as_std().get_program());
+        if program_path.is_absolute()
+            && let Some(parent) = program_path.parent()
+            && haven_platform::filesystem::DirectoryCapability::open(parent).is_ok()
+        {
+            runtime_read_roots.push(parent.to_path_buf());
         }
-        drop(execution_permit);
-        let stdout = child
-            .stdout
-            .take()
+        let execution_permit = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+            permit = context.acquire_everything_process_start_permit(
+                crate::security::EverythingProcessStartRequest {
+                    search_root: root.clone(),
+                    scratch_directory: scratch.path().to_path_buf(),
+                    runtime_read_roots,
+                }
+            ) => permit.map_err(crate::security::execution_policy_denied)?,
+        };
+
+        let mut process = if let Some(policy) = execution_permit.sandboxed_process_policy() {
+            command
+                .current_dir(scratch.path())
+                .env("TEMP", scratch.path())
+                .env("TMP", scratch.path())
+                .env("TMPDIR", scratch.path());
+            let request = haven_platform::sandboxed_process::SandboxedProcessRequest::from_command(
+                command.as_std(),
+                policy,
+                false,
+            )?;
+            let process = haven_platform::sandboxed_process::SandboxedProcess::spawn(
+                request,
+                policy.isolation_mode,
+            )
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("could not start Everything CLI in the workspace sandbox")
+            })?;
+            drop(execution_permit);
+            EverythingProcess::Mxc(process)
+        } else {
+            let containment = haven_platform::process_containment::ProcessContainment::new()?;
+            #[cfg(windows)]
+            containment.prepare_command(command.as_std_mut(), crate::CREATE_NO_WINDOW);
+            #[cfg(not(windows))]
+            containment.prepare_command(command.as_std_mut(), 0);
+            let spawned = {
+                let _spawn_guard = haven_platform::process_containment::process_spawn_lock();
+                command.spawn()
+            };
+            let mut child = spawned.map_err(|_| {
+                anyhow::anyhow!("failed to start Everything CLI; check everything.command")
+            })?;
+            let pid = child
+                .id()
+                .ok_or_else(|| anyhow::anyhow!("Everything CLI did not expose a process id"))?;
+            #[cfg(windows)]
+            let attach = child
+                .raw_handle()
+                .ok_or_else(|| {
+                    std::io::Error::other("Everything CLI process handle is unavailable")
+                })
+                .and_then(|handle| containment.attach_and_resume(pid, handle));
+            #[cfg(not(windows))]
+            let attach = containment.attach_and_resume(pid, ());
+            if attach.is_err() {
+                drop(execution_permit);
+                let _ = child.kill().await;
+                anyhow::bail!("could not contain the Everything CLI process");
+            }
+            drop(execution_permit);
+            EverythingProcess::Host {
+                child,
+                _containment: containment,
+            }
+        };
+        let stdout = process
+            .take_stdout()
             .ok_or_else(|| anyhow::anyhow!("Everything output is unavailable"))?;
-        let stderr = child
-            .stderr
-            .take()
+        let stderr = process
+            .take_stderr()
             .ok_or_else(|| anyhow::anyhow!("Everything diagnostics are unavailable"))?;
         let stdout_task = tokio::spawn(read_bounded(stdout, MAX_STDOUT_BYTES));
         let stderr_task = tokio::spawn(read_bounded(stderr, MAX_STDERR_BYTES));
         let status = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
-                let _ = child.kill().await;
+                process.terminate().await;
                 anyhow::bail!("cancelled")
             }
-            result = tokio::time::timeout(EVERYTHING_TIMEOUT, child.wait()) => match result {
+            result = tokio::time::timeout(EVERYTHING_TIMEOUT, process.wait()) => match result {
                 Ok(result) => result.map_err(|_| anyhow::anyhow!("Everything search process failed"))?,
                 Err(_) => {
-                    let _ = child.kill().await;
+                    process.terminate().await;
                     anyhow::bail!("Everything search timed out")
                 }
             }
@@ -189,14 +312,14 @@ impl EverythingSearch {
         if stdout_overflow || stderr_overflow {
             anyhow::bail!("Everything search output exceeded its safety limit");
         }
-        if !status.success() && status.code() != Some(9) {
-            anyhow::bail!(match status.code() {
-                Some(8) => "Everything is not running or its IPC interface is unavailable",
-                Some(7) => "Everything rejected the search request",
+        if status != 0 && status != 9 {
+            anyhow::bail!(match status {
+                8 => "Everything is not running or its IPC interface is unavailable",
+                7 => "Everything rejected the search request",
                 _ => "Everything search failed",
             });
         }
-        let response = if status.code() == Some(9) && stdout.is_empty() {
+        let response = if status == 9 && stdout.is_empty() {
             Vec::new()
         } else {
             parse_entries(&stdout)?

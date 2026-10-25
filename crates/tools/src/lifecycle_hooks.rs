@@ -1,11 +1,12 @@
 //! User-configured lifecycle command execution.
 //!
-//! Hooks are explicit host commands, so they only run in FullAccess with
-//! NetworkPolicy::Open. This is intentionally stricter than a Job Object:
-//! process containment reclaims descendants but does not sandbox filesystem
-//! or network access.
+//! FullAccess hooks run as host commands only with NetworkPolicy::Open;
+//! WorkspaceWrite hooks use Windows MXC. Job Object containment manages the
+//! host process tree but does not itself sandbox filesystem or network access.
 
-use crate::security::{AuthorizationEngine, LifecycleHookProcessStartAuthorization};
+use crate::security::{
+    AuthorizationEngine, LifecycleHookProcessStartAuthorization, LifecycleHookProcessStartRequest,
+};
 use haven_common::config::{
     ConfigService, HookCommand, LifecycleHooksConfig, MAX_HOOKS_PER_EVENT, parse_project_hooks,
 };
@@ -388,13 +389,6 @@ async fn run_hook_command(
     authorization: LifecycleHookProcessStartAuthorization,
     cancel: CancellationToken,
 ) -> Result<HookProcessOutput, HookFailure> {
-    let _permit = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => return Err(HookFailure::Cancelled),
-        permit = authorization.acquire() => permit.map_err(|_| HookFailure::PolicyChanged)?,
-    };
-
-    let containment = ProcessContainment::new().map_err(|_| HookFailure::Spawn)?;
     let mut command = tokio::process::Command::new(&hook.command);
     command
         .args(&hook.args)
@@ -403,15 +397,100 @@ async fn run_hook_command(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env(
-            "SYSTEMROOT",
-            std::env::var("SYSTEMROOT").unwrap_or_default(),
-        )
-        .env("TEMP", std::env::var("TEMP").unwrap_or_default())
-        .env("TMP", std::env::var("TMP").unwrap_or_default());
+        .envs(
+            haven_platform::process_environment::filter_runtime_baseline_environment(
+                std::env::vars_os(),
+            ),
+        );
+
     #[cfg(windows)]
-    command.env("COMSPEC", std::env::var("COMSPEC").unwrap_or_default());
+    let mut runtime_read_roots = crate::process_sandbox::runtime_dependency_roots(command.as_std());
+    #[cfg(windows)]
+    {
+        let configured_program = PathBuf::from(&hook.command);
+        if configured_program.is_absolute()
+            && let Some(parent) = configured_program.parent()
+            && haven_platform::filesystem::DirectoryCapability::open(parent).is_ok()
+        {
+            runtime_read_roots.push(parent.to_path_buf());
+        }
+    }
+    #[cfg(not(windows))]
+    let runtime_read_roots = Vec::new();
+    let request = LifecycleHookProcessStartRequest {
+        working_directory: cwd.to_path_buf(),
+        runtime_read_roots,
+    };
+    let permit = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(HookFailure::Cancelled),
+        permit = authorization.acquire(request) => permit.map_err(|_| HookFailure::PolicyChanged)?,
+    };
+
+    if let Some(policy) = permit.sandboxed_process_policy() {
+        #[cfg(windows)]
+        {
+            command.env("TEMP", cwd).env("TMP", cwd).env("TMPDIR", cwd);
+            let request = haven_platform::sandboxed_process::SandboxedProcessRequest::from_command(
+                command.as_std(),
+                policy,
+                false,
+            )
+            .map_err(|_| HookFailure::Spawn)?;
+            let mut process = haven_platform::sandboxed_process::SandboxedProcess::spawn(
+                request,
+                policy.isolation_mode,
+            )
+            .await
+            .map_err(|_| HookFailure::Spawn)?;
+            drop(permit);
+
+            let stdin = process.take_stdin().ok_or(HookFailure::Io)?;
+            let stdout = process.take_stdout().ok_or(HookFailure::Io)?;
+            let stderr = process.take_stderr().ok_or(HookFailure::Io)?;
+            let process_deadline = tokio::time::Instant::now() + MAX_HOOK_PROCESS_DURATION;
+            let result = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => Err(HookFailure::Cancelled),
+                _ = authorization.wait_for_revocation() => Err(HookFailure::PolicyChanged),
+                _ = tokio::time::sleep_until(process_deadline) => Err(HookFailure::TimeLimit),
+                result = async {
+                    let write_input = async move {
+                        let mut stdin = stdin;
+                        stdin.write_all(&input).await?;
+                        stdin.shutdown().await
+                    };
+                    let read_stdout = read_bounded(stdout, MAX_HOOK_OUTPUT_BYTES);
+                    let read_stderr = read_bounded(stderr, MAX_HOOK_OUTPUT_BYTES);
+                    let wait = async {
+                        process
+                            .wait()
+                            .await
+                            .map(|exit| exit.exit_code == 0)
+                    };
+                    let (_, stdout, _stderr, success) =
+                        tokio::try_join!(write_input, read_stdout, read_stderr, wait)?;
+                    Ok::<_, std::io::Error>((stdout, success))
+                } => match result {
+                    Ok((stdout, true)) => Ok(HookProcessOutput { stdout }),
+                    Ok((_stdout, false)) => Err(HookFailure::NonZeroExit),
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => Err(HookFailure::OutputLimit),
+                    Err(_) => Err(HookFailure::Io),
+                }
+            };
+            if result.is_err() {
+                let _ = process.kill().await;
+                let _ = tokio::time::timeout(PROCESS_CLEANUP_TIMEOUT, process.wait()).await;
+            }
+            return result;
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (policy, command);
+            return Err(HookFailure::Spawn);
+        }
+    }
+    let containment = ProcessContainment::new().map_err(|_| HookFailure::Spawn)?;
     containment.prepare_command(command.as_std_mut(), 0);
 
     let child_spawn_result = {
@@ -432,7 +511,7 @@ async fn run_hook_command(
         let _ = child.wait().await;
         return Err(HookFailure::Spawn);
     }
-    drop(_permit);
+    drop(permit);
 
     let stdin = child.stdin.take().ok_or(HookFailure::Io)?;
     let stdout = child.stdout.take().ok_or(HookFailure::Io)?;
@@ -811,8 +890,15 @@ mod tests {
             .switch_execution_workspace(directory.path())
             .await
             .unwrap();
-        // Default policy cannot launch Hook commands. A disabled veto must not
-        // turn this policy rejection into a denied tool call.
+        authorization
+            .set_boundaries(
+                haven_common::types::SandboxMode::ReadOnly,
+                Vec::new(),
+                haven_common::types::NetworkPolicy::Open,
+            )
+            .await;
+        // ReadOnly cannot launch Hook commands. A disabled veto must not turn
+        // this policy rejection into a denied tool call.
         let mut payload = LifecycleHookPayload::new(LifecycleHookEvent::PreToolUse);
         payload.tool_name = Some("shell".into());
         assert_eq!(
@@ -878,5 +964,50 @@ mod tests {
         .unwrap();
 
         assert!(String::from_utf8_lossy(&output.stdout).contains("lifecycle-hook-ok"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn workspace_write_hook_runs_in_mxc_with_workspace_write_access() {
+        use haven_common::types::{NetworkPolicy, SandboxMode};
+
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let authorization = Arc::new(AuthorizationEngine::new());
+        authorization
+            .switch_execution_workspace(&workspace)
+            .await
+            .unwrap();
+        authorization
+            .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let process_authorization = authorization
+            .capture_lifecycle_hook_process_start_authorization()
+            .await
+            .unwrap();
+        let hook = HookCommand {
+            enabled: true,
+            command: std::env::var("COMSPEC").unwrap(),
+            args: vec![
+                "/D".into(),
+                "/C".into(),
+                "echo lifecycle-hook-mxc>hook-output.txt".into(),
+            ],
+            matcher: None,
+        };
+
+        run_hook_command(
+            &hook,
+            &workspace,
+            br#"{"event":"session_start"}"#.to_vec(),
+            process_authorization,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let output = std::fs::read_to_string(workspace.join("hook-output.txt")).unwrap();
+        assert!(output.contains("lifecycle-hook-mxc"));
     }
 }
