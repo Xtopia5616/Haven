@@ -1321,3 +1321,4 @@
 - [1416：用统一网络决议和版本化快照连接 Tools 与 MCP](1416-version-network-resource-policy-for-mcp.md)
 - [1417：分离 MXC 公网出站与本地网络权限](1417-separate-mxc-public-egress-from-local-network.md)
 - [1418：在 WorkspaceWrite 下隔离 LSP server](1418-isolate-lsp-in-workspace-write.md)
+- [1419：通过受控 Git 入口写入仓库元数据](1419-isolate-git-metadata-writes.md)

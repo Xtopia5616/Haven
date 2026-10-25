@@ -9,6 +9,7 @@ mod file_line_reader;
 mod file_outline;
 pub mod file_search;
 pub mod files;
+mod git;
 pub mod http;
 mod http_content;
 pub mod input;
@@ -316,6 +317,10 @@ pub(crate) async fn register_builtin_tools(
         #[cfg(test)]
         test_output_log_root: None,
     }));
+    tools.push(Arc::new(git::GitTool::new(
+        authorization.clone(),
+        limits.max_observation_chars,
+    )));
     let tool_runs_tool: ToolHandle = Arc::new(tool_runs::ToolRunsTool {
         tool_runs: tool_run_service.clone(),
     });

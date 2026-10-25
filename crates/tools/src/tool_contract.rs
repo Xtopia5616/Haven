@@ -1779,6 +1779,18 @@ impl ToolExecutionContext {
         authorization.acquire_lsp_process_start_permit().await
     }
 
+    pub(crate) async fn acquire_git_process_start_permit(
+        &self,
+        network_required: bool,
+    ) -> Result<crate::security::ExecutionPolicyPermit, String> {
+        let authorization = self.execution_authorization.as_ref().ok_or_else(|| {
+            "Git process requires proof-derived execution authorization".to_string()
+        })?;
+        authorization
+            .acquire_git_process_start_permit(network_required)
+            .await
+    }
+
     pub(crate) async fn acquire_everything_process_start_permit(
         &self,
     ) -> Result<crate::security::ExecutionPolicyPermit, String> {

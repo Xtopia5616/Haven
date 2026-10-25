@@ -29,6 +29,9 @@ const SHELL_CACHE_CAPACITY_MAX_ENTRIES: usize = 1_000_000;
 const LSP_SCRATCH_DIRECTORY: &str = "lsp-scratch";
 pub(crate) const LSP_SCRATCH_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) const LSP_SCRATCH_MAX_ENTRIES: usize = 100_000;
+const GIT_SCRATCH_DIRECTORY: &str = "git-scratch";
+pub(crate) const GIT_SCRATCH_MAX_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const GIT_SCRATCH_MAX_ENTRIES: usize = 100_000;
 
 static SHELL_OUTPUT_LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static SHELL_CAPACITY_SCAN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -37,15 +40,44 @@ static SHELL_SCRATCH_SLOTS: tokio::sync::Semaphore =
 
 pub(crate) struct ProcessScratchDirectory {
     scratch: tempfile::TempDir,
+    max_bytes: u64,
+    max_entries: usize,
 }
 
 impl ProcessScratchDirectory {
     pub(crate) fn create_lsp() -> anyhow::Result<Self> {
-        let root = haven_common::config::default_runtime_temp_root().join(LSP_SCRATCH_DIRECTORY);
+        Self::create(
+            LSP_SCRATCH_DIRECTORY,
+            "lsp-",
+            LSP_SCRATCH_MAX_BYTES,
+            LSP_SCRATCH_MAX_ENTRIES,
+        )
+    }
+
+    pub(crate) fn create_git() -> anyhow::Result<Self> {
+        Self::create(
+            GIT_SCRATCH_DIRECTORY,
+            "git-",
+            GIT_SCRATCH_MAX_BYTES,
+            GIT_SCRATCH_MAX_ENTRIES,
+        )
+    }
+
+    fn create(
+        directory: &str,
+        prefix: &str,
+        max_bytes: u64,
+        max_entries: usize,
+    ) -> anyhow::Result<Self> {
+        let root = haven_common::config::default_runtime_temp_root().join(directory);
         std::fs::create_dir_all(&root)?;
         DirectoryCapability::open(&root)?;
-        let scratch = tempfile::Builder::new().prefix("lsp-").tempdir_in(&root)?;
-        Ok(Self { scratch })
+        let scratch = tempfile::Builder::new().prefix(prefix).tempdir_in(&root)?;
+        Ok(Self {
+            scratch,
+            max_bytes,
+            max_entries,
+        })
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -54,14 +86,20 @@ impl ProcessScratchDirectory {
 
     pub(crate) async fn ensure_within_capacity(&self) -> anyhow::Result<()> {
         let path = self.scratch.path().to_path_buf();
+        let max_bytes = self.max_bytes;
+        let max_entries = self.max_entries;
         let over_budget = tokio::task::spawn_blocking(move || {
-            directory_size_exceeds(&path, LSP_SCRATCH_MAX_BYTES, LSP_SCRATCH_MAX_ENTRIES)
+            directory_size_exceeds(&path, max_bytes, max_entries)
         })
         .await
-        .map_err(|_| anyhow::anyhow!("LSP scratch capacity worker failed"))?
+        .map_err(|_| anyhow::anyhow!("process scratch capacity worker failed"))?
         .map_err(anyhow::Error::msg)?;
-        anyhow::ensure!(!over_budget, "LSP scratch exceeded its capacity limit");
+        anyhow::ensure!(!over_budget, "process scratch exceeded its capacity limit");
         Ok(())
+    }
+
+    pub(crate) fn capacity_limits(&self) -> (u64, usize) {
+        (self.max_bytes, self.max_entries)
     }
 }
 
@@ -522,6 +560,16 @@ pub(crate) fn cleanup_shell_runtime_directories_after_restart() {
         Err(error) => tracing::warn!(
             error = %haven_common::error::sanitize_error_text(&error.to_string()),
             "failed to clean stale LSP scratch directories"
+        ),
+    }
+
+    let git_scratch_root = runtime_root.join(GIT_SCRATCH_DIRECTORY);
+    match cleanup_owned_scratch_directories(&git_scratch_root, "git-") {
+        Ok(0) => {}
+        Ok(removed) => tracing::debug!(removed, "removed stale Git scratch directories"),
+        Err(error) => tracing::warn!(
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "failed to clean stale Git scratch directories"
         ),
     }
 

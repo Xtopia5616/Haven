@@ -5,9 +5,9 @@
 ## 结论
 
 - `ProcessContainment` 在 Windows 上通过 Job Object 管理子进程树、进程数量和关闭时终止；它本身不限制文件或网络访问。
-- 目前只有前台 `shell` 的 `WorkspaceWrite` 路径尝试通过 MXC ProcessContainer 落实文件与网络边界。启动前 probe 必须确认 MXC 能执行完整请求；失败时拒绝启动，不回退到 host process。
+- 前台 `shell`、LSP 与受控 Git 的 `WorkspaceWrite` Windows 路径通过 MXC ProcessContainer 落实文件与网络边界。启动前 probe 必须确认 MXC 能执行完整请求；失败时拒绝启动，不回退到 host process。
 - Shell 的 `FullAccess`、MCP stdio、Skill setup/runtime、LSP、Lifecycle Hook 和 Everything CLI 使用本机权限进程。适用入口另有授权、输入校验、输出预算、取消或 Job Object 管理，但这些不等于 OS 文件/网络隔离。后台 ToolRun 复用目标工具执行器；其资源隔离状态取决于被调用工具，而不是 ToolRun 自身。
-- 按 ADR 1368，Skill、MCP stdio、LSP、Everything 和 lifecycle hooks 不使用 MXC；在 WorkspaceWrite 下依现有入口策略继续拒绝或保持既有 FullAccess 限制。不能因为进程已通过 start authorization 或挂入 Job Object，就把它当作满足 WorkspaceWrite。
+- 按 ADR 1368、1418、1419，Skill、MCP stdio、Everything 和 lifecycle hooks 尚未接入 MXC；在 WorkspaceWrite 下依现有入口策略继续拒绝或保持既有 FullAccess 限制。不能因为进程已通过 start authorization 或挂入 Job Object，就把它当作满足 WorkspaceWrite。
 - URL/文件打开、开机自启、shell 可用性探测、Skill 文件夹打开、媒体目录 junction helper 属于 App/系统集成进程路径，不经过 ReAct 工具执行环境。
 - 当前 `ToolCapabilitySnapshot` 汇总媒体与 Web Search 可用性，不报告子进程隔离能力。因此本表是 Slice 3 的统一 capability 审计记录；它不是进程路径的动态运行时状态 API。
 
@@ -26,7 +26,8 @@
 | 入口 | 创建者与触发方式 | 入口级控制 | 文件/网络边界结论 |
 |---|---|---|---|
 | 前台 Shell，`FullAccess` | `haven-tools` `builtin/shell.rs`，当前 ReAct 工具调用 | 执行策略 permit；Windows Job Object 管理树、取消会 kill 子进程 | 按设计以当前 Windows 用户权限运行；不提供文件/网络 sandbox |
-| 前台 Shell，`WorkspaceWrite` | 同上 | 执行 permit；Windows 先由 MXC probe 校验请求，再在 ProcessContainer 中 spawn；不支持或 probe 失败即拒绝 | 当前唯一接入 MXC 的进程能力；按请求设置工作目录、路径集和 typed 网络范围。MXC 路径不支持时无 host fallback；非 Windows 拒绝此模式 |
+| 前台 Shell，`WorkspaceWrite` | 同上 | 执行 permit；Windows 先由 MXC probe 校验请求，再在 ProcessContainer 中 spawn；不支持或 probe 失败即拒绝 | Shell 入口接入 MXC；按请求设置工作目录、路径集和 typed 网络范围。MXC 路径不支持时无 host fallback；非 Windows 拒绝此模式 |
+| 受控 Git 工具 | `haven-tools` `builtin/git.rs`，模型/ToolRun 调用固定 Git 内建子命令 | 独立 `git` high-risk authorization；WorkspaceWrite Windows 由 MXC 启动，自动保护列表只对当前 `.git` 目录做受控豁免；FullAccess 仍使用 host process | WorkspaceWrite 下 Git 工作树受有效写入根限制，`.git` 写入要求元数据位于根内且不与显式 deny/read-only 重叠；hooks、filters、remote helpers 继承同一 MXC 边界。本地子命令离线，remote 子命令只有 Open 且无域名限制时可用；FullAccess 所有命令要求 Open。linked worktree 暂不支持（ADR 1419） |
 | 后台 ToolRun（包括 Shell） | Agent `start_background_tool` 将已授权目标调用连同 proof 交给 ToolRun 生命周期 owner；后台执行再经普通 Tools 授权执行入口 | ToolRun 管理持久状态、取消、会话归属和结果投递；目标工具重新校验 proof/live policy，并执行自己的文件/网络边界。Shell WorkspaceWrite 因而复用前台 Shell 的 MXC adapter | ToolRun 本身不是另一种文件/网络 sandbox；未接入目标工具 sandbox 的能力仍无 OS 资源隔离。测试专用 legacy Shell helper 不代表生产调用路径 |
 | MCP stdio server | `haven-mcp` `client.rs`，连接配置启动 server 时 | 单独的 process-start permit；`ProcessContainment`；stdio 生命周期随 MCP client 管理；tool invocation 再走 MCP 远程资源授权 | 本机权限，无 MXC 文件/网络策略。启动 server 的授权和每次远程 tool call 是不同边界；stdio 进程实例的执行上下文隔离仍需按提案验收 |
 | MCP Streamable HTTP | `haven-mcp` HTTP transport | 不启动本机子进程；MCP tool call 绑定连接配置指纹、连接代次和参数摘要 | 远程 endpoint/对象调用路径，不是本机进程隔离 |
@@ -56,7 +57,7 @@
 | MXC 子进程网络 | Shell request 分别表达公网出站、私网双向访问和宿主回环；MXC 原生策略仍没有域名、端口、协议或指定私网 endpoint 字段 | 不能据此实现域名白名单、只允许 HTTPS 或只访问某个本地 provider；三项开关不互相推导。受限模式继续对 opaque 子进程拒绝，Open 与具体本地目标也必须区分 |
 | 本机 IPC / 句柄 | Job Object 与网络 profile 不描述 named pipe、COM/RPC、继承句柄或其它本机服务通信 | 对 MCP、Skill、Hook 等不可信或可配置代码，需要评估本地 IPC 是否成为文件/网络策略旁路，并测试 MXC backend 的实际限制 |
 
-因此遗漏项分为三组：需要评估是否能复用 MXC 的本机子进程（Skill、LSP、MCP stdio、Hooks、Everything）；必须共享授权与目标决议但由 Haven 进程内 transport 执行的 provider/HTTP 请求；由操作系统或外部浏览器拥有、不能由 Haven 进程 sandbox 直接强制的访问。后台 ToolRun 应复用目标工具的执行策略，不额外发明 sandbox。全局策略可统一前两组的策略来源和决议契约，但仍需把外部浏览器明确标成外部执行边界。
+因此剩余遗漏项分为三组：需要评估是否能复用 MXC 的本机子进程（Skill、MCP stdio、Hooks、Everything；LSP 与受控 Git 已接入 WorkspaceWrite）；必须共享授权与目标决议但由 Haven 进程内 transport 执行的 provider/HTTP 请求；由操作系统或外部浏览器拥有、不能由 Haven 进程 sandbox 直接强制的访问。后台 ToolRun 应复用目标工具的执行策略，不额外发明 sandbox。全局策略可统一前两组的策略来源和决议契约，但仍需把外部浏览器明确标成外部执行边界。
 
 ## Slice 3 的实现边界
 

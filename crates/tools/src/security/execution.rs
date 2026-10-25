@@ -139,7 +139,7 @@ pub(crate) struct ExecutionPolicyPermit {
 }
 
 #[derive(Debug)]
-pub(crate) struct WorkspaceShellFilesystemPolicy {
+pub(crate) struct WorkspaceProcessFilesystemPolicy {
     pub(crate) readwrite_roots: Vec<haven_platform::filesystem::DirectoryCapability>,
     pub(crate) readonly_roots: Vec<haven_platform::filesystem::DirectoryCapability>,
     pub(crate) protected_readonly_paths: Vec<std::path::PathBuf>,
@@ -164,8 +164,15 @@ impl ExecutionPolicyPermit {
         &self,
         working_directory: &std::path::Path,
         runtime_read_roots: &[std::path::PathBuf],
-    ) -> Result<WorkspaceShellFilesystemPolicy, String> {
-        self.compile_workspace_shell_directories(working_directory, runtime_read_roots, None, &[])
+    ) -> Result<WorkspaceProcessFilesystemPolicy, String> {
+        self.compile_workspace_process_directories(
+            "shell",
+            working_directory,
+            runtime_read_roots,
+            None,
+            &[],
+            None,
+        )
     }
 
     pub(crate) fn workspace_shell_directories_with_runtime_writes(
@@ -174,26 +181,47 @@ impl ExecutionPolicyPermit {
         runtime_read_roots: &[std::path::PathBuf],
         scratch_directory: &std::path::Path,
         cache_directories: &[std::path::PathBuf],
-    ) -> Result<WorkspaceShellFilesystemPolicy, String> {
-        self.compile_workspace_shell_directories(
+    ) -> Result<WorkspaceProcessFilesystemPolicy, String> {
+        self.compile_workspace_process_directories(
+            "shell",
             working_directory,
             runtime_read_roots,
             Some(scratch_directory),
             cache_directories,
+            None,
         )
     }
 
-    /// Compile the final read and write roots for this Workspace Write Shell
-    /// invocation from the live global policy, Shell policy, and any
+    pub(crate) fn workspace_git_directories(
+        &self,
+        working_directory: &std::path::Path,
+        runtime_read_roots: &[std::path::PathBuf],
+        scratch_directory: &std::path::Path,
+        git_metadata_directory: &std::path::Path,
+    ) -> Result<WorkspaceProcessFilesystemPolicy, String> {
+        self.compile_workspace_process_directories(
+            "git",
+            working_directory,
+            runtime_read_roots,
+            Some(scratch_directory),
+            &[],
+            Some(git_metadata_directory),
+        )
+    }
+
+    /// Compile the final read and write roots for a Workspace Write process
+    /// invocation from the live global policy, tool policy, and any
     /// proof-bound resource extension. Roots deliberately name directories,
     /// since MXC ProcessContainer enforces directory ACLs.
-    fn compile_workspace_shell_directories(
+    fn compile_workspace_process_directories(
         &self,
+        tool_name: &str,
         working_directory: &std::path::Path,
         runtime_read_roots: &[std::path::PathBuf],
         scratch_directory: Option<&std::path::Path>,
         cache_directories: &[std::path::PathBuf],
-    ) -> Result<WorkspaceShellFilesystemPolicy, String> {
+        git_metadata_write: Option<&std::path::Path>,
+    ) -> Result<WorkspaceProcessFilesystemPolicy, String> {
         if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
             return Err("MXC process roots require the Workspace Write sandbox".into());
         }
@@ -211,7 +239,7 @@ impl ExecutionPolicyPermit {
         let tool_settings = self
             ._config
             .tool_settings
-            .get("shell")
+            .get(tool_name)
             .into_iter()
             .collect::<Vec<_>>();
         let mut protected_readonly_paths = self._config.global_read_only_roots.clone();
@@ -255,6 +283,15 @@ impl ExecutionPolicyPermit {
             &denied_paths,
             "resource_policy.files.denied_paths",
         )?;
+        let git_metadata_identity = git_metadata_write
+            .map(|path| {
+                super::filesystem::open_filesystem_paths(
+                    &[path.to_path_buf()],
+                    "Git repository metadata",
+                )
+                .map(|mut paths| paths.remove(0))
+            })
+            .transpose()?;
 
         let tool_write_constraint: Option<
             Result<Vec<haven_platform::filesystem::DirectoryCapability>, String>,
@@ -333,12 +370,12 @@ impl ExecutionPolicyPermit {
         let mut extension_readonly = Vec::new();
         if self.resource_boundary_extension {
             if self.authorized_resources.is_empty() {
-                return Err("Shell resource extension has no bound local paths".into());
+                return Err("process resource extension has no bound local paths".into());
             }
             for resource in &self.authorized_resources {
                 let crate::security::DeclaredResource::LocalPath { path, access } = resource else {
                     return Err(
-                        "Shell resource extension contains an unsupported resource type".into(),
+                        "process resource extension contains an unsupported resource type".into(),
                     );
                 };
                 let path = if path.is_absolute() {
@@ -348,14 +385,14 @@ impl ExecutionPolicyPermit {
                         .execution_workspace_for(self.session_id.as_deref())
                         .resolve_relative(path)
                         .ok_or_else(|| {
-                            "relative Shell resource extension has no execution workspace"
+                            "relative process resource extension has no execution workspace"
                                 .to_owned()
                         })?
                 };
                 let directory = haven_platform::filesystem::DirectoryCapability::open(&path)
                     .map_err(|error| {
                         format!(
-                            "Shell resource extension directory is unavailable or unsafe: {}",
+                            "process resource extension directory is unavailable or unsafe: {}",
                             haven_common::error::sanitize_error_text(&error.to_string())
                         )
                     })?;
@@ -414,13 +451,37 @@ impl ExecutionPolicyPermit {
                     .any(|protected| directory_root_contains_path(protected, writable.root()))
         });
 
+        if let Some(git_metadata) = &git_metadata_identity {
+            let metadata_directory =
+                haven_platform::filesystem::DirectoryCapability::open(git_metadata.path())
+                    .map_err(|_| "Git repository metadata is unavailable or unsafe".to_owned())?;
+            if !roots_contain_directory(&write_scope, &metadata_directory) {
+                return Err("Git repository metadata is outside the configured write scope".into());
+            }
+            if denied.iter().any(|deny| {
+                deny.contains_path(metadata_directory.root())
+                    .unwrap_or(true)
+                    || git_metadata.contains_path(deny.path()).unwrap_or(true)
+            }) {
+                return Err("Git repository metadata overlaps a denied path".into());
+            }
+            if protected_readonly.iter().any(|protected| {
+                protected
+                    .contains_path(metadata_directory.root())
+                    .unwrap_or(true)
+                    || git_metadata.contains_path(protected.path()).unwrap_or(true)
+            }) {
+                return Err("Git repository metadata is explicitly protected read-only".into());
+            }
+        }
+
         // Shell-owned runtime files are independent grants. They are not
         // selected from or widened to the first user writable root, and
         // explicit deny/protected-read-only policy still takes precedence.
         if let Some(scratch_directory) = scratch_directory {
             let scratch = super::filesystem::open_directory_roots(
                 &[scratch_directory.to_path_buf()],
-                "Shell per-call scratch directory",
+                "process per-call scratch directory",
             )?;
             let scratch = scratch
                 .into_iter()
@@ -431,7 +492,7 @@ impl ExecutionPolicyPermit {
                 .any(|deny| deny.contains_path(scratch.root()).unwrap_or(true))
             {
                 return Err(
-                    "Shell scratch directory is explicitly denied by the compiled MXC policy"
+                    "process scratch directory is explicitly denied by the compiled MXC policy"
                         .into(),
                 );
             }
@@ -443,7 +504,7 @@ impl ExecutionPolicyPermit {
                     .any(|protected| directory_root_contains_path(protected, scratch.root()))
             {
                 return Err(
-                    "Shell scratch directory is protected read-only by the compiled MXC policy"
+                    "process scratch directory is protected read-only by the compiled MXC policy"
                         .into(),
                 );
             }
@@ -487,6 +548,14 @@ impl ExecutionPolicyPermit {
         );
         let metadata =
             super::filesystem::open_filesystem_paths(&metadata_roots, "protected VCS metadata")?;
+        let metadata = metadata
+            .into_iter()
+            .filter(|protected| {
+                git_metadata_identity
+                    .as_ref()
+                    .is_none_or(|git_metadata| !git_metadata.same_object(protected))
+            })
+            .collect::<Vec<_>>();
 
         let mut protected_readonly_paths = protected_readonly
             .iter()
@@ -532,7 +601,7 @@ impl ExecutionPolicyPermit {
         )
         .map_err(|error| {
             format!(
-                "Shell working directory is unavailable or unsafe: {}",
+                "process working directory is unavailable or unsafe: {}",
                 haven_common::error::sanitize_error_text(&error.to_string())
             )
         })?;
@@ -540,7 +609,7 @@ impl ExecutionPolicyPermit {
             && !roots_contain_directory(&readonly, &working_directory)
         {
             return Err(
-                "Shell working directory is outside the compiled MXC filesystem policy".into(),
+                "process working directory is outside the compiled MXC filesystem policy".into(),
             );
         }
         if denied
@@ -548,7 +617,7 @@ impl ExecutionPolicyPermit {
             .any(|deny| deny.contains_path(working_directory.root()).unwrap_or(true))
         {
             return Err(
-                "Shell working directory is explicitly denied by the compiled MXC policy".into(),
+                "process working directory is explicitly denied by the compiled MXC policy".into(),
             );
         }
 
@@ -566,7 +635,7 @@ impl ExecutionPolicyPermit {
                 })?;
         }
 
-        Ok(WorkspaceShellFilesystemPolicy {
+        Ok(WorkspaceProcessFilesystemPolicy {
             readwrite_roots: write_scope,
             readonly_roots: normalize_directory_roots(readonly),
             protected_readonly_paths,
@@ -705,6 +774,28 @@ impl ExecutionPolicyAuthorization {
             ),
             SandboxMode::ReadOnly => {
                 Err("configured LSP servers are blocked by the read-only sandbox".into())
+            }
+        }
+    }
+
+    pub(crate) async fn acquire_git_process_start_permit(
+        &self,
+        network_required: bool,
+    ) -> Result<ExecutionPolicyPermit, String> {
+        let permit = self.acquire().await?;
+        match permit.sandbox_mode() {
+            SandboxMode::FullAccess if !network_required => Ok(permit),
+            SandboxMode::FullAccess if permit.network_policy() == NetworkPolicy::Open => Ok(permit),
+            SandboxMode::FullAccess => Err(
+                "network-capable Git operations require Open network policy in Full Access mode"
+                    .into(),
+            ),
+            SandboxMode::WorkspaceWrite if cfg!(windows) => Ok(permit),
+            SandboxMode::WorkspaceWrite => {
+                Err("Git operations require Windows MXC isolation in Workspace Write mode".into())
+            }
+            SandboxMode::ReadOnly => {
+                Err("Git operations are blocked by the read-only sandbox".into())
             }
         }
     }
@@ -1014,6 +1105,117 @@ mod tests {
                 .iter()
                 .any(|root| root.root() == workspace)
         );
+    }
+
+    #[tokio::test]
+    async fn git_process_can_write_only_the_selected_repository_metadata() {
+        let root = tempfile::tempdir().expect("temporary root is available");
+        let workspace = root.path().join("workspace");
+        let git_metadata = workspace.join(".git");
+        let scratch = root.path().join("runtime/git-call");
+        std::fs::create_dir_all(&git_metadata).unwrap();
+        std::fs::write(
+            git_metadata.join("config"),
+            "[core]\n\trepositoryformatversion = 0\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        let (authorization, _) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        let permit = authorization.acquire().await.unwrap();
+
+        let shell_policy = permit
+            .workspace_shell_directories_with_runtime_writes(&workspace, &[], &scratch, &[])
+            .expect("ordinary Shell keeps Git metadata protected");
+        assert!(
+            shell_policy
+                .protected_readonly_paths
+                .contains(&git_metadata)
+        );
+
+        let git_policy = permit
+            .workspace_git_directories(&workspace, &[], &scratch, &git_metadata)
+            .expect("scoped Git policy allows its repository metadata");
+        assert!(
+            git_policy
+                .readwrite_roots
+                .iter()
+                .any(|root| root.root() == workspace)
+        );
+        assert!(
+            git_policy
+                .readwrite_roots
+                .iter()
+                .any(|root| root.root() == scratch)
+        );
+        assert!(!git_policy.protected_readonly_paths.contains(&git_metadata));
+    }
+
+    #[tokio::test]
+    async fn git_process_cannot_override_explicit_metadata_denials() {
+        let root = tempfile::tempdir().expect("temporary root is available");
+        let workspace = root.path().join("workspace");
+        let git_metadata = workspace.join(".git");
+        let scratch = root.path().join("runtime/git-call");
+        std::fs::create_dir_all(&git_metadata).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        engine
+            .config
+            .try_write()
+            .expect("test config must be idle")
+            .global_denied_paths = vec![git_metadata.clone()];
+        let permit = authorization.acquire().await.unwrap();
+
+        let error = permit
+            .workspace_git_directories(&workspace, &[], &scratch, &git_metadata)
+            .expect_err("explicit Git metadata denial is authoritative");
+        assert!(error.contains("denied path"));
+    }
+
+    #[tokio::test]
+    async fn git_process_honors_its_own_read_only_tool_policy() {
+        let root = tempfile::tempdir().expect("temporary root is available");
+        let workspace = root.path().join("workspace");
+        let git_metadata = workspace.join(".git");
+        let scratch = root.path().join("runtime/git-call");
+        std::fs::create_dir_all(&git_metadata).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        let (authorization, engine) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        engine
+            .config
+            .try_write()
+            .expect("test config must be idle")
+            .tool_settings
+            .insert(
+                "git".into(),
+                haven_common::config::ToolConfig {
+                    resource_policy: haven_common::config::ResourcePolicy {
+                        files: haven_common::config::FileResourcePolicy {
+                            write_mode: haven_common::config::FileWriteMode::ReadOnly,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+        let permit = authorization.acquire().await.unwrap();
+
+        let error = permit
+            .workspace_git_directories(&workspace, &[], &scratch, &git_metadata)
+            .expect_err("Git tool read-only policy must block metadata writes");
+        assert!(error.contains("outside the configured write scope"));
     }
 
     #[tokio::test]

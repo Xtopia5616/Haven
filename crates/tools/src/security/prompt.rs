@@ -57,6 +57,7 @@ pub(crate) const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("clipboard.write", "clipboard.write", Medium),
     security_case!("clipboard.list_history", "clipboard.list_history", Low),
     security_case!("shell", "execute", High),
+    security_case!("git", "git", High),
     security_case!("toolrun.start", "toolrun.start", Safe),
     security_case!("toolrun.list", "toolrun.list", Safe),
     security_case!("toolrun.inspect", "toolrun.inspect", Safe),
