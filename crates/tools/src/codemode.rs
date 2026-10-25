@@ -120,6 +120,13 @@ pub struct NestedConfirmationRequest {
     pub tool_name: String,
     pub input: Value,
     pub receipt: crate::ConfirmationReceipt,
+    /// Additional user-facing context for a nested confirmation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// Optional structured result retained from the attempt that requested
+    /// this confirmation, returned alongside the confirmed retry result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_result: Option<Value>,
 }
 
 /// The only host capability exposed to CodeMode JavaScript.

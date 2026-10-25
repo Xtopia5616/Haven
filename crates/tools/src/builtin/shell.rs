@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use haven_common::tools::ToolCatalogGroup;
-use haven_common::types::RiskLevel;
+use haven_common::types::{LocalPathAccess, RiskLevel};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -71,6 +71,15 @@ pub struct ShellParams {
     /// Private: owning session id for live output events.
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
+    /// Temporary directory scopes added only by a confirmed post-denial retry.
+    #[serde(default, rename = "_resource_extensions")]
+    pub resource_extensions: Vec<ShellResourceExtension>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ShellResourceExtension {
+    pub path: PathBuf,
+    pub access: LocalPathAccess,
 }
 
 /// Shell executable and working directory selected for one command.
@@ -93,14 +102,19 @@ impl ShellTool {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| self.default_shell.clone());
+        let workspace_root = execution_workspace.map_or_else(
+            || self.execution_workspace.root(),
+            |workspace| workspace.root.as_deref(),
+        );
         let cwd = cwd_arg
-            .filter(|s| !s.is_empty())
+            .filter(|cwd| !cwd.trim().is_empty())
             .map(PathBuf::from)
-            .or_else(|| {
-                execution_workspace
-                    .and_then(|workspace| workspace.root.clone())
-                    .or_else(|| self.execution_workspace.root().map(PathBuf::from))
-            });
+            .map(|cwd| match (cwd.is_absolute(), workspace_root) {
+                (true, _) => cwd,
+                (false, Some(root)) => root.join(cwd),
+                (false, None) => cwd,
+            })
+            .or_else(|| workspace_root.map(PathBuf::from));
         ResolvedShellContext {
             shell,
             working_directory: cwd,
@@ -209,16 +223,21 @@ impl ShellTool {
                             "Shell execution has no live policy authorization".into(),
                         )
                     })?;
-                    let write_root_capabilities = permit
-                        .workspace_write_directories()
+                    let (write_root_capabilities, readonly_root_capabilities) = permit
+                        .workspace_shell_directories()
                         .map_err(crate::security::execution_policy_denied)?;
                     let roots = write_root_capabilities
+                        .iter()
+                        .map(|directory| directory.root().to_path_buf())
+                        .collect();
+                    let readonly_extensions = readonly_root_capabilities
                         .iter()
                         .map(|directory| directory.root().to_path_buf())
                         .collect();
                     let request = sandboxed_shell_request(
                         &std_cmd,
                         roots,
+                        readonly_extensions,
                         !matches!(
                             permit.network_policy(),
                             haven_common::types::NetworkPolicy::Deny
@@ -333,7 +352,12 @@ impl ShellTool {
             }
         };
 
-        let truncated = stdout.overflowed || stderr.overflowed;
+        let denial_list_truncated = status
+            .sandbox_exit
+            .as_ref()
+            .and_then(|exit| exit.capture_denials.as_ref())
+            .is_some_and(|capture| capture.denied_resources_truncated);
+        let truncated = stdout.overflowed || stderr.overflowed || denial_list_truncated;
         let mut raw_combined = String::new();
         if !stdout.text.is_empty() {
             raw_combined.push_str(&stdout.text);
@@ -353,6 +377,36 @@ impl ShellTool {
         let mut output = serde_json::json!({"output": text, "shell": shell_context.shell});
         if let Some(notice) = child.sandbox_notice() {
             output["sandbox_notice"] = serde_json::Value::String(notice.to_owned());
+        }
+        if let Some(sandbox_exit) = status.sandbox_exit {
+            let capture_status = match (
+                sandbox_exit.capture_denials.as_ref(),
+                sandbox_exit.capture_denials_error.as_ref(),
+            ) {
+                (Some(_), None) => "captured",
+                (Some(_), Some(_)) => "partial",
+                (None, _) => "unavailable",
+            };
+            output["sandbox_access"] = match sandbox_exit.capture_denials {
+                Some(capture) => serde_json::json!({
+                    "capture_status": capture_status,
+                    "total_denials": capture.total_denials,
+                    "count_semantics": "unique_resource_access_pairs",
+                    "denied_resources_truncated": capture.denied_resources_truncated,
+                    "capture_complete": capture.capture_complete,
+                    "denied_resources": capture.denials,
+                    "capture_error": sandbox_exit.capture_denials_error,
+                }),
+                None => serde_json::json!({
+                    "capture_status": capture_status,
+                    "total_denials": 0,
+                    "count_semantics": "unique_resource_access_pairs",
+                    "denied_resources_truncated": false,
+                    "capture_complete": false,
+                    "denied_resources": [],
+                    "capture_error": sandbox_exit.capture_denials_error,
+                }),
+            };
         }
         if let Some(code) = exit_code {
             output["exit_code"] = serde_json::Value::from(code);
@@ -431,7 +485,15 @@ impl Tool for ShellTool {
                     access: crate::security::LocalPathAccess::Read,
                 }]
             })
-            .unwrap_or_default())
+            .unwrap_or_default()
+            .into_iter()
+            .chain(params.resource_extensions.into_iter().map(|extension| {
+                crate::security::DeclaredResource::LocalPath {
+                    path: extension.path,
+                    access: extension.access,
+                }
+            }))
+            .collect())
     }
 
     fn catalog_group(&self) -> ToolCatalogGroup {
@@ -534,6 +596,7 @@ struct ShellProcess {
 struct ShellExitStatus {
     code: Option<i32>,
     success: bool,
+    sandbox_exit: Option<haven_platform::sandboxed_process::SandboxedProcessExit>,
 }
 
 impl ShellProcess {
@@ -574,14 +637,17 @@ impl ShellProcess {
                 Ok(ShellExitStatus {
                     code: status.code(),
                     success: status.success(),
+                    sandbox_exit: None,
                 })
             }
             #[cfg(windows)]
             ShellProcessKind::Sandboxed(child) => {
-                let code = child.wait().await?;
+                let exit = child.wait().await?;
+                let code = exit.exit_code;
                 Ok(ShellExitStatus {
                     code: Some(code),
                     success: code == 0,
+                    sandbox_exit: Some(exit),
                 })
             }
         }
@@ -645,6 +711,7 @@ async fn spawn_shell_with_host_permissions(
 fn sandboxed_shell_request(
     std_cmd: &std::process::Command,
     readwrite_paths: Vec<PathBuf>,
+    additional_readonly_paths: Vec<PathBuf>,
     allow_network: bool,
     allow_desktop_handle_access: bool,
 ) -> anyhow::Result<haven_platform::sandboxed_process::SandboxedProcessRequest> {
@@ -664,7 +731,7 @@ fn sandboxed_shell_request(
     environment.push((OsString::from("TEMP"), temp_root.as_os_str().to_os_string()));
     environment.push((OsString::from("TMP"), temp_root.as_os_str().to_os_string()));
 
-    let mut readonly_paths = Vec::new();
+    let mut readonly_paths = additional_readonly_paths;
     if let Some(system_root) = environment
         .iter()
         .find(|(key, _)| os_key_eq_ignore_ascii_case(key, "SYSTEMROOT"))
@@ -909,6 +976,7 @@ mod tests {
                     cwd: None,
                     step_id: None,
                     session_id: None,
+                    resource_extensions: Vec::new(),
                 },
                 CancellationToken::new(),
                 Some(&context),
@@ -965,6 +1033,7 @@ mod tests {
                     cwd: None,
                     step_id: None,
                     session_id: None,
+                    resource_extensions: Vec::new(),
                 },
                 CancellationToken::new(),
                 Some(&context),
@@ -1064,6 +1133,7 @@ mod tests {
                         cwd: None,
                         step_id: None,
                         session_id: None,
+                        resource_extensions: Vec::new(),
                     },
                     CancellationToken::new(),
                     Some(&context),
@@ -1136,6 +1206,7 @@ mod tests {
                     cwd: None,
                     step_id: None,
                     session_id: None,
+                    resource_extensions: Vec::new(),
                 },
                 run_cancel,
                 Some(&context),
@@ -1479,6 +1550,7 @@ mod tests {
                         cwd: None,
                         step_id: None,
                         session_id: None,
+                        resource_extensions: Vec::new(),
                     },
                     CancellationToken::new(),
                     Some(&context),

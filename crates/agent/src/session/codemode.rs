@@ -150,6 +150,8 @@ impl CodeModeSubcallPort for AuthorizedCodeModeSubcallPort {
                             tool_name: tool_name.to_owned(),
                             input: input.clone(),
                             receipt,
+                            summary: None,
+                            prior_result: None,
                         });
                     return Err(format!(
                         "operation '{tool_name}' requires its own user confirmation"

@@ -20,6 +20,8 @@ pub(crate) struct ExecutionPolicyAuthorization {
     pub(super) execution_workspace_generation: u64,
     pub(super) session_id: Option<String>,
     pub(super) execution_boundary: crate::ExecutionBoundary,
+    pub(super) resource_boundary_extension: bool,
+    pub(super) authorized_resources: Vec<crate::security::DeclaredResource>,
     pub(super) expires_at: u64,
     pub(super) process_revocation_signal: Arc<()>,
     pub(super) tool_settings_cancellation: Arc<CancellationToken>,
@@ -80,6 +82,8 @@ impl LifecycleHookProcessStartAuthorization {
         Ok(ExecutionPolicyPermit {
             _config: config,
             session_id: None,
+            resource_boundary_extension: false,
+            authorized_resources: Vec::new(),
         })
     }
 
@@ -124,6 +128,8 @@ pub(crate) struct McpStdioProcessStartAuthorization {
 pub(crate) struct ExecutionPolicyPermit {
     _config: tokio::sync::OwnedRwLockReadGuard<SafetyConfig>,
     session_id: Option<String>,
+    resource_boundary_extension: bool,
+    authorized_resources: Vec<crate::security::DeclaredResource>,
 }
 
 impl ExecutionPolicyPermit {
@@ -135,17 +141,79 @@ impl ExecutionPolicyPermit {
         self._config.network_policy
     }
 
-    /// Resolve the exact write roots that WorkspaceWrite grants to a
-    /// sandboxed host process. Paths are canonicalized again at the spawn
-    /// boundary and an unavailable root fails closed.
-    pub(crate) fn workspace_write_directories(
+    /// Resolve the read and write directory roots granted to this Workspace
+    /// Write Shell invocation. Additional roots come only from resources
+    /// carried by the verified authorization proof and deliberately name
+    /// directories, since MXC ProcessContainer enforces directory ACL roots.
+    pub(crate) fn workspace_shell_directories(
         &self,
-    ) -> Result<Vec<haven_platform::filesystem::DirectoryCapability>, String> {
+    ) -> Result<
+        (
+            Vec<haven_platform::filesystem::DirectoryCapability>,
+            Vec<haven_platform::filesystem::DirectoryCapability>,
+        ),
+        String,
+    > {
         if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
             return Err("MXC process roots require the Workspace Write sandbox".into());
         }
-        self._config
-            .workspace_write_directories(self.session_id.as_deref())
+        let mut writable = self
+            ._config
+            .workspace_write_directories(self.session_id.as_deref())?;
+        let mut readonly = Vec::new();
+        if !self.resource_boundary_extension {
+            return Ok((writable, readonly));
+        }
+        if self.authorized_resources.is_empty() {
+            return Err("Shell resource extension has no bound local paths".into());
+        }
+        for resource in &self.authorized_resources {
+            let crate::security::DeclaredResource::LocalPath { path, access } = resource else {
+                return Err(
+                    "Shell resource extension contains an unsupported resource type".into(),
+                );
+            };
+            let path = if path.is_absolute() {
+                path.clone()
+            } else {
+                self._config
+                    .execution_workspace_for(self.session_id.as_deref())
+                    .resolve_relative(path)
+                    .ok_or_else(|| {
+                        "relative Shell resource extension has no execution workspace".to_owned()
+                    })?
+            };
+            let directory =
+                haven_platform::filesystem::DirectoryCapability::open(&path).map_err(|error| {
+                    format!(
+                        "Shell resource extension directory is unavailable or unsafe: {}",
+                        haven_common::error::sanitize_error_text(&error.to_string())
+                    )
+                })?;
+            match access {
+                haven_common::types::LocalPathAccess::Read => {
+                    if !writable
+                        .iter()
+                        .any(|existing| existing.root() == directory.root())
+                        && !readonly
+                            .iter()
+                            .any(|existing| existing.root() == directory.root())
+                    {
+                        readonly.push(directory);
+                    }
+                }
+                haven_common::types::LocalPathAccess::Write => {
+                    if !writable
+                        .iter()
+                        .any(|existing| existing.root() == directory.root())
+                    {
+                        readonly.retain(|existing| existing.root() != directory.root());
+                        writable.push(directory);
+                    }
+                }
+            }
+        }
+        Ok((writable, readonly))
     }
 }
 
@@ -191,6 +259,8 @@ impl ExecutionPolicyAuthorization {
         Ok(ExecutionPolicyPermit {
             _config: config,
             session_id: self.session_id.clone(),
+            resource_boundary_extension: self.resource_boundary_extension,
+            authorized_resources: self.authorized_resources.clone(),
         })
     }
 
@@ -263,6 +333,8 @@ impl ExecutionPolicyAuthorization {
         Ok(ExecutionPolicyPermit {
             _config: config,
             session_id: self.session_id.clone(),
+            resource_boundary_extension: false,
+            authorized_resources: Vec::new(),
         })
     }
 
@@ -402,6 +474,8 @@ impl McpStdioProcessStartAuthorization {
         Ok(ExecutionPolicyPermit {
             _config: config,
             session_id: None,
+            resource_boundary_extension: false,
+            authorized_resources: Vec::new(),
         })
     }
 }

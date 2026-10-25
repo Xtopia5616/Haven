@@ -857,6 +857,15 @@ impl AuthorizationEngine {
                 {
                     None
                 }
+                resources
+                    if request.tool_name == "shell"
+                        && !resources.is_empty()
+                        && resources.iter().all(|resource| {
+                            matches!(resource, super::DeclaredResource::LocalPath { .. })
+                        }) =>
+                {
+                    None
+                }
                 _ => {
                     return Err(
                         "temporary resource extension does not match one supported typed resource"
@@ -889,6 +898,8 @@ impl AuthorizationEngine {
                 execution_workspace_generation: execution_workspace.generation(),
                 session_id: proof.binding.session_id.clone(),
                 execution_boundary: request.policy.execution_boundary,
+                resource_boundary_extension: proof_resource_boundary_extension(proof),
+                authorized_resources: request.resources.clone(),
                 expires_at: proof.binding.expires_at,
                 process_revocation_signal: self.process_revocations.borrow().clone(),
                 tool_settings_cancellation,
@@ -2418,7 +2429,12 @@ fn path_sandbox_block(
             }
         }
     }
-    if matches!(policy.effect, OperationEffect::WorkspaceWrite) {
+    if matches!(policy.effect, OperationEffect::WorkspaceWrite)
+        || (tool_name == "shell"
+            && paths
+                .iter()
+                .any(|(_, access)| **access == super::LocalPathAccess::Write))
+    {
         for name in tool_setting_names(tool_name) {
             let Some(setting) = cfg.tool_settings.get(name) else {
                 continue;
@@ -2513,6 +2529,35 @@ fn path_sandbox_block(
                     "a path for mutating operation '{tool_name}' is outside its configured write scope"
                 ),
                 reason_code: AuthorizationReasonCode::SandboxBoundary,
+                resource_extension_allowed: true,
+            });
+        }
+    }
+    if matches!(cfg.sandbox_mode, SandboxMode::WorkspaceWrite) && tool_name == "shell" {
+        let allowed: Vec<PathBuf> = if cfg.writable_roots.is_empty() {
+            execution_workspace
+                .root()
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect()
+        } else {
+            cfg.writable_roots.clone()
+        };
+        if allowed.is_empty() {
+            return Some(PolicyBoundaryFailure {
+                reason: "workspace resource policy has no execution root for 'shell'".into(),
+                reason_code: AuthorizationReasonCode::SandboxBoundary,
+                resource_extension_allowed: false,
+            });
+        }
+        if paths.iter().any(|(path, _)| {
+            let path = resolve_relative_sandbox_path((*path).clone(), execution_workspace);
+            !path_is_allowed(&path, &allowed)
+        }) {
+            return Some(PolicyBoundaryFailure {
+                reason: "Shell requested a local path outside its configured Workspace Write roots"
+                    .into(),
+                reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
                 resource_extension_allowed: true,
             });
         }

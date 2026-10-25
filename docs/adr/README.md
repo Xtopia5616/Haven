@@ -1304,3 +1304,4 @@
 - [1398：Schedule handoff 以执行 claim 区分安全重试与结果未知](1398-schedule-handoff-recovery-outcome-boundary.md)
 - [1399：语音转写绑定录音目标并保留可重试源音频](1399-bind-voice-transcription-to-capture-and-retain-failures.md)
 - [1400：上传租约在输入接受后再绑定会话](1400-keep-upload-leases-pending-until-ingress-acceptance.md)
+- [1401：Shell 使用 MXC 结构化拒绝记录发起一次性资源确认](1401-shell-mxc-structured-denial-confirmation.md)

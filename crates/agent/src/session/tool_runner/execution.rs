@@ -323,7 +323,7 @@ impl SessionSupervisor {
                 cancel: cancel.clone(),
                 receipt,
                 step_id: Some(step_id),
-                nested_confirmation,
+                nested_confirmation: nested_confirmation.clone(),
                 parent_execution_id: None,
             })
             .await
@@ -369,10 +369,25 @@ impl SessionSupervisor {
             }
         };
         let ToolExecution {
-            result,
+            mut result,
             risk_level,
             confirmed,
         } = gated;
+        if tool_name == "shell"
+            && !result.success
+            && nested_confirmation.is_none()
+            && let Some(nested) = self
+                .shell_denial_retry_confirmation(
+                    session_id,
+                    input.clone(),
+                    &result.output,
+                    step_id,
+                    tool_index,
+                )
+                .await
+        {
+            result.signals.nested_confirmation = Some(nested);
+        }
         if result.signals.nested_confirmation.is_some() {
             // Keep the parent step open while its nested confirmation waits.
             return Ok(result);
@@ -479,6 +494,60 @@ impl SessionSupervisor {
         Ok(result)
     }
 
+    async fn shell_denial_retry_confirmation(
+        &self,
+        session_id: &str,
+        original_input: Value,
+        output: &Value,
+        step_id: &str,
+        tool_index: u32,
+    ) -> Option<haven_tools::NestedConfirmationRequest> {
+        let extensions = shell_denial_resource_extensions(output)?;
+        let denial_count = output
+            .get("sandbox_access")
+            .and_then(|access| access.get("total_denials"))
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let prior_sandbox_access = output.get("sandbox_access")?.clone();
+        let mut retry_input = original_input;
+        retry_input.as_object_mut()?.insert(
+            "_resource_extensions".into(),
+            Value::Array(extensions.clone()),
+        );
+        let authorization_request = self
+            .authorization
+            .authorization_request(Some(session_id), "shell", &retry_input)
+            .await
+            .ok()?;
+        let decision = self
+            .authorization
+            .authorize_for_execution(&authorization_request)
+            .await
+            .decision;
+        let haven_tools::AuthorizationDecision::RequiresConfirmation {
+            receipt,
+            reason_code: haven_tools::AuthorizationReasonCode::ResourceBoundaryExtension,
+            ..
+        } = decision
+        else {
+            return None;
+        };
+        if !receipt.resource_boundary_extension {
+            return None;
+        }
+        Some(haven_tools::NestedConfirmationRequest {
+            call_index: tool_index,
+            step_id: step_id.to_owned(),
+            tool_name: "shell".into(),
+            input: retry_input,
+            receipt,
+            summary: Some(format!(
+                "MXC 首轮记录了 {denial_count} 个去重后的拒绝项。批准后会对整个命令进行一次重跑，并仅按下方列出的访问类型临时扩展目录权限；读取/执行类拒绝映射为只读目录权限。网络、UI、未知或其他类别不会因此获得权限，仍由原策略阻止。首轮运行可能已经产生部分副作用。"
+            )),
+            prior_result: Some(prior_sandbox_access),
+        })
+    }
+
     /// Execute a tool through the safety gateway. The tool's risk level is
     /// checked against the configured threshold BEFORE anything runs; an
     /// operation at/above the threshold blocks on the user's confirmation
@@ -522,15 +591,38 @@ impl SessionSupervisor {
             nested_confirmation,
             parent_execution_id,
         } = request;
+        let shell_retry = nested_confirmation
+            .as_ref()
+            .filter(|nested| tool_name == "shell" && nested.tool_name == "shell");
+        if shell_retry.is_some_and(|nested| nested.step_id != step_id.unwrap_or_default()) {
+            return Ok(ToolExecution {
+                result: ToolResult::failed_with_class(
+                    Value::Null,
+                    "Shell retry confirmation is not bound to the current tool step",
+                    haven_common::tools::ToolErrorClass::Permission,
+                ),
+                risk_level: self
+                    .authorization
+                    .risk_level(session_id, tool_name, &input)
+                    .await
+                    .unwrap_or(RiskLevel::High),
+                confirmed: Some(false),
+            });
+        }
+        let receipt = shell_retry.map(|nested| nested.receipt.clone()).or(receipt);
+        let effective_input = shell_retry
+            .map(|nested| nested.input.clone())
+            .unwrap_or(input);
+        let prior_sandbox_access = shell_retry.and_then(|nested| nested.prior_result.clone());
         let background_tool = if tool_name == "toolrun.start" {
-            Some(haven_tools::parse_toolrun_start(&input).map_err(anyhow::Error::msg)?)
+            Some(haven_tools::parse_toolrun_start(&effective_input).map_err(anyhow::Error::msg)?)
         } else {
             None
         };
         let (authorization_tool_name, authorization_input) = background_tool
             .as_ref()
             .map(|target| (target.tool_name.as_str(), &target.input))
-            .unwrap_or((tool_name, &input));
+            .unwrap_or((tool_name, &effective_input));
         let authorization_request = self
             .authorization
             .authorization_request(session_id, authorization_tool_name, authorization_input)
@@ -683,22 +775,129 @@ impl SessionSupervisor {
             input: background_tool
                 .as_ref()
                 .map(|target| target.input.clone())
-                .unwrap_or(input),
+                .unwrap_or(effective_input),
             cancel,
             step_id: step_id.map(str::to_owned),
             authorization_proof: Some(execution_proof),
         };
-        let result = if background_tool.is_some() {
+        let mut result = if background_tool.is_some() {
             self.execution.start_background_tool(context).await?
         } else if let Some(subcalls) = codemode_subcalls {
             self.execution.execute_codemode(context, subcalls).await?
         } else {
             self.execution.execute(context).await?
         };
+        if let Some(prior_sandbox_access) = prior_sandbox_access {
+            if let Some(output) = result.output.as_object_mut() {
+                output.insert("previous_sandbox_access".into(), prior_sandbox_access);
+            } else {
+                let output = std::mem::replace(&mut result.output, Value::Null);
+                result.output = serde_json::json!({
+                    "tool_output": output,
+                    "previous_sandbox_access": prior_sandbox_access,
+                });
+            }
+        }
         Ok(ToolExecution {
             result,
             risk_level,
             confirmed,
         })
     }
+}
+
+fn shell_denial_resource_extensions(output: &Value) -> Option<Vec<Value>> {
+    const MAX_EXTENSION_DIRECTORIES: usize = 64;
+
+    let sandbox_access = output.get("sandbox_access")?;
+    if sandbox_access.get("capture_status")?.as_str()? != "captured"
+        || sandbox_access
+            .get("capture_complete")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || sandbox_access
+            .get("capture_error")
+            .is_some_and(|error| !error.is_null())
+        || sandbox_access
+            .get("denied_resources_truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    {
+        return None;
+    }
+    let denials = sandbox_access.get("denied_resources")?.as_array()?;
+    let mut extensions: Vec<(std::path::PathBuf, &'static str)> = Vec::new();
+    for denial in denials {
+        if denial.get("resource_type")?.as_str()? != "file" {
+            continue;
+        }
+        let access = match denial.get("access_type")?.as_str()? {
+            "read" | "execute" => "read",
+            "write" => "write",
+            _ => continue,
+        };
+        let resource = denial.get("resource")?.as_str()?;
+        let directory = match denied_file_parent_directory(resource) {
+            Some(directory) => directory,
+            None => continue,
+        };
+        if extensions.iter().any(|(existing, existing_access)| {
+            *existing_access == access
+                && existing
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&directory.to_string_lossy())
+        }) {
+            continue;
+        }
+        extensions.push((directory, access));
+        if extensions.len() > MAX_EXTENSION_DIRECTORIES {
+            return None;
+        }
+    }
+    if extensions.is_empty() {
+        return None;
+    }
+    Some(
+        extensions
+            .into_iter()
+            .map(|(path, access)| {
+                serde_json::json!({
+                    "path": path.to_string_lossy(),
+                    "access": access,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn denied_file_parent_directory(resource: &str) -> Option<std::path::PathBuf> {
+    let resource = std::path::PathBuf::from(resource);
+    let raw = resource.to_string_lossy();
+    if !resource.is_absolute()
+        || raw.starts_with(r"\\")
+        || raw.starts_with(r"\??\")
+        || raw.starts_with(r"\Device\")
+    {
+        return None;
+    }
+    let candidate = if std::fs::metadata(&resource)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
+    {
+        resource
+    } else {
+        resource.parent()?.to_path_buf()
+    };
+    if candidate.parent().is_none_or(|parent| parent == candidate) {
+        return None;
+    }
+    let candidate = std::fs::canonicalize(candidate).ok()?;
+    if !candidate.is_dir() {
+        return None;
+    }
+    let raw = candidate.to_string_lossy();
+    let raw = raw.strip_prefix(r"\\?\").unwrap_or(&raw);
+    let normalized = std::path::PathBuf::from(raw);
+    (normalized.is_absolute() && !normalized.to_string_lossy().starts_with(r"\\"))
+        .then_some(normalized)
 }

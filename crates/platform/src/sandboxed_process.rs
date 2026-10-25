@@ -18,6 +18,8 @@ mod diagnostics;
 const PIPE_BUFFER_BYTES: usize = 16 * 1024;
 const PIPE_QUEUE_CHUNKS: usize = 4;
 const READ_CHUNK_BYTES: usize = 8 * 1024;
+const MAX_CAPTURED_DENIALS: usize = 64;
+const MAX_CAPTURED_DENIALS_JSON_BYTES: u64 = 4 * 1024 * 1024;
 
 /// One Windows process request with the filesystem and network rights the
 /// caller's live authorization permit granted.
@@ -34,6 +36,36 @@ pub struct SandboxedProcessRequest {
     /// The process still keeps clipboard, input injection, system settings,
     /// and desktop control restrictions.
     pub allow_desktop_handle_access: bool,
+}
+
+/// Terminal status and structured policy denials from one isolated process.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SandboxedProcessExit {
+    pub exit_code: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_denials: Option<CapturedDenials>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_denials_error: Option<String>,
+}
+
+/// Denied resources observed by MXC while the process remained blocked.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CapturedDenials {
+    pub total_denials: usize,
+    pub denied_resources_truncated: bool,
+    pub capture_complete: bool,
+    pub denials: Vec<CapturedDeniedResource>,
+}
+
+/// One distinct denied resource and access type recorded by MXC.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CapturedDeniedResource {
+    pub resource: String,
+    pub resource_type: String,
+    pub access_type: String,
+    pub pid: u32,
+    /// Decimal string preserves the 64-bit FILETIME across JSON/JavaScript.
+    pub filetime: String,
 }
 
 /// A live MXC process with async pipes and cancellation-safe lifecycle calls.
@@ -109,12 +141,55 @@ impl SandboxedProcess {
             .map_err(|_| io::Error::other("MXC process status task failed"))?
     }
 
-    pub async fn wait(&self) -> io::Result<i32> {
+    pub async fn wait(&self) -> io::Result<SandboxedProcessExit> {
         loop {
-            if let Some(status) = self.try_wait().await? {
-                return Ok(status);
+            match self.try_wait().await {
+                Ok(Some(_)) => {
+                    let process = Arc::clone(&self.process);
+                    return tokio::task::spawn_blocking(move || {
+                        let mut process = lock_process(&process);
+                        // MXC finalizes structured output metadata as part of
+                        // wait(), after the sandbox process exits and
+                        // enforcement teardown completes. Keep polling with
+                        // try_wait() first so cancellation can still acquire
+                        // the process lock and terminate a running command.
+                        match process.wait()? {
+                            mxc_sdk::v1::WaitResult::Exited(exit_code) => {
+                                let metadata = process.output_metadata().cloned();
+                                Ok(capture_exit_metadata(exit_code, metadata))
+                            }
+                            mxc_sdk::v1::WaitResult::TimedOut => Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "MXC sandbox process timed out",
+                            )),
+                        }
+                    })
+                    .await
+                    .map_err(|_| io::Error::other("MXC process wait task failed"))?;
+                }
+                Ok(None) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                    // A timeout is a terminal MXC outcome too; call wait()
+                    // once so it can kill/reap the process tree and finalize
+                    // capture cleanup before returning the timeout upstream.
+                    let process = Arc::clone(&self.process);
+                    let terminal = tokio::task::spawn_blocking(move || {
+                        let mut process = lock_process(&process);
+                        let terminal = process.wait()?;
+                        let metadata = process.output_metadata().cloned();
+                        Ok::<_, io::Error>((terminal, metadata))
+                    })
+                    .await
+                    .map_err(|_| io::Error::other("MXC timeout cleanup task failed"))??;
+                    return match terminal.0 {
+                        mxc_sdk::v1::WaitResult::TimedOut => Err(error),
+                        mxc_sdk::v1::WaitResult::Exited(exit_code) => {
+                            Ok(capture_exit_metadata(exit_code, terminal.1))
+                        }
+                    };
+                }
+                Err(error) => return Err(error),
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     }
 
@@ -353,9 +428,9 @@ fn launch_with_fallback<T>(
         ProbeRequirement::CompatibleTier
     };
     match launch_attempt(requested, requested_requirement, &mut probe, &mut spawn) {
-        Ok((process, probe_output)) => {
+        Ok((process, probe_output, capture_notice)) => {
             if probe_is_base_container(&probe_output) {
-                return Ok((process, None));
+                return Ok((process, capture_notice));
             }
             let notice = compatibility_notice(
                 &probe_output,
@@ -370,7 +445,7 @@ fn launch_with_fallback<T>(
                 warnings = %format_warnings(&probe_output.warnings),
                 "MXC started the shell with compatibility isolation"
             );
-            return Ok((process, Some(notice)));
+            return Ok((process, Some(combine_notices(notice, capture_notice))));
         }
         Err(failure) => failures.push(AttemptFailure {
             profile: NetworkProfile::Requested,
@@ -400,7 +475,7 @@ fn launch_with_fallback<T>(
             &mut probe,
             &mut spawn,
         ) {
-            Ok((process, probe_output)) => {
+            Ok((process, probe_output, capture_notice)) => {
                 let notice = compatibility_notice(
                     &probe_output,
                     profile,
@@ -414,7 +489,7 @@ fn launch_with_fallback<T>(
                     warnings = %format_warnings(&probe_output.warnings),
                     "MXC started the shell with compatibility isolation"
                 );
-                return Ok((process, Some(notice)));
+                return Ok((process, Some(combine_notices(notice, capture_notice))));
             }
             Err(failure) => failures.push(AttemptFailure {
                 profile,
@@ -447,6 +522,13 @@ fn launch_with_fallback<T>(
     )
 }
 
+fn combine_notices(isolation_notice: String, capture_notice: Option<String>) -> String {
+    match capture_notice {
+        Some(capture) => format!("{isolation_notice}\n{capture}"),
+        None => isolation_notice,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProbeRequirement {
     BaseContainer,
@@ -467,12 +549,12 @@ struct LaunchFailure {
 }
 
 fn launch_attempt<T>(
-    request: mxc_sdk::v1::ContainerRequest,
+    mut request: mxc_sdk::v1::ContainerRequest,
     requirement: ProbeRequirement,
     probe: &mut impl FnMut(&mxc_sdk::v1::ContainerRequest) -> anyhow::Result<mxc_sdk::v1::ProbeOutput>,
     spawn: &mut impl FnMut(mxc_sdk::v1::ContainerRequest) -> anyhow::Result<T>,
-) -> Result<(T, mxc_sdk::v1::ProbeOutput), LaunchFailure> {
-    let probe_output = probe(&request).map_err(|error| LaunchFailure {
+) -> Result<(T, mxc_sdk::v1::ProbeOutput, Option<String>), LaunchFailure> {
+    let mut probe_output = probe(&request).map_err(|error| LaunchFailure {
         reason: diagnostics::format_mxc_failure("探测", &error),
         warnings: Vec::new(),
     })?;
@@ -487,11 +569,211 @@ fn launch_attempt<T>(
             warnings: probe_output.warnings.clone(),
         });
     }
-    let process = spawn(request).map_err(|error| LaunchFailure {
-        reason: diagnostics::format_mxc_failure("启动", &error),
-        warnings: probe_output.warnings.clone(),
-    })?;
-    Ok((process, probe_output))
+    let mut capture_notice = None;
+    let base_request = request.clone();
+    let capture_available = probe_output.probes.native_capture_available
+        || probe_output.probes.guarded_capture_available;
+    if capture_available {
+        enable_denial_capture(&mut request);
+        match probe(&request) {
+            Ok(capture_probe)
+                if probe_satisfies(&capture_probe, requirement)
+                    && (capture_probe.probes.native_capture_available
+                        || capture_probe.probes.guarded_capture_available) =>
+            {
+                probe_output = capture_probe;
+            }
+            Ok(capture_probe) => {
+                capture_notice = Some(format!(
+                    "MXC 当前隔离层未确认可用的结构化拒绝记录；进程仍按原策略隔离运行。({})",
+                    if probe_satisfies(&capture_probe, requirement) {
+                        "captureDenials 能力探测未通过".to_owned()
+                    } else {
+                        probe_rejection_reason(&capture_probe, requirement)
+                    }
+                ));
+                request = base_request.clone();
+            }
+            Err(error) => {
+                capture_notice = Some(format!(
+                    "MXC 结构化拒绝记录不可用；进程仍按原策略隔离运行。({})",
+                    diagnostics::format_mxc_failure("拒绝记录探测", &error)
+                ));
+                request = base_request.clone();
+            }
+        }
+    } else {
+        capture_notice = Some(
+            "MXC 主机未提供结构化拒绝记录能力；无法列出 Shell 访问被拦截的具体资源。".to_owned(),
+        );
+    }
+    let process = match spawn(request) {
+        Ok(process) => process,
+        Err(error) if capture_notice.is_none() => {
+            let capture_error = diagnostics::format_mxc_failure("拒绝记录启动", &error);
+            match spawn(base_request) {
+                Ok(process) => {
+                    capture_notice = Some(format!(
+                        "MXC 无法启用结构化拒绝记录；进程仍按原策略隔离运行。({capture_error})"
+                    ));
+                    process
+                }
+                Err(error) => {
+                    return Err(LaunchFailure {
+                        reason: diagnostics::format_mxc_failure("启动", &error),
+                        warnings: probe_output.warnings.clone(),
+                    });
+                }
+            }
+        }
+        Err(error) => {
+            return Err(LaunchFailure {
+                reason: diagnostics::format_mxc_failure("启动", &error),
+                warnings: probe_output.warnings.clone(),
+            });
+        }
+    };
+    Ok((process, probe_output, capture_notice))
+}
+
+fn probe_satisfies(probe: &mxc_sdk::v1::ProbeOutput, requirement: ProbeRequirement) -> bool {
+    match requirement {
+        ProbeRequirement::BaseContainer => probe_is_base_container(probe),
+        ProbeRequirement::CompatibleTier => probe_is_compatible_fallback(probe),
+    }
+}
+
+fn enable_denial_capture(request: &mut mxc_sdk::v1::ContainerRequest) {
+    use mxc_sdk::v1::{
+        Containment,
+        configs::{CaptureDenials, CaptureDenialsMode},
+    };
+
+    if let Containment::ProcessContainer(config) = &mut request.containment {
+        let mut capture = CaptureDenials::default();
+        capture.mode = CaptureDenialsMode::Block;
+        capture.output_path = None;
+        capture.retain_etl = false;
+        config.capture_denials = Some(capture);
+    }
+}
+
+fn capture_exit_metadata(
+    exit_code: i32,
+    metadata: Option<mxc_sdk::v1::ExecutionMetadata>,
+) -> SandboxedProcessExit {
+    let Some(metadata) = metadata else {
+        return SandboxedProcessExit {
+            exit_code,
+            capture_denials: None,
+            capture_denials_error: Some("MXC 未返回结构化拒绝记录元数据".into()),
+        };
+    };
+    let Some(output) = metadata.capture_denials else {
+        return SandboxedProcessExit {
+            exit_code,
+            capture_denials: None,
+            capture_denials_error: Some(
+                metadata
+                    .capture_denials_error
+                    .map(|error| haven_common::error::sanitize_error_text(&error.message))
+                    .unwrap_or_else(|| "MXC 未返回拒绝记录文件元数据".into()),
+            ),
+        };
+    };
+
+    let file_result = read_denials_document(&output.output_path);
+    let _ = std::fs::remove_file(&output.output_path);
+    match file_result {
+        Ok(document) => {
+            let summary = document.summary;
+            let truncated_by_haven = document.denials.len() > MAX_CAPTURED_DENIALS;
+            let summary_consistent = summary.exit_code == exit_code
+                && summary.total_denials == output.total_denials
+                && summary.total_denials == document.denials.len()
+                && summary.denied_resources_truncated == output.denied_resources_truncated;
+            let metadata_capture_error = metadata.capture_denials_error;
+            let capture_complete = summary_consistent
+                && metadata_capture_error.is_none()
+                && !truncated_by_haven
+                && !output.denied_resources_truncated;
+            let capture_denials_error = metadata_capture_error
+                .map(|error| haven_common::error::sanitize_error_text(&error.message))
+                .or_else(|| {
+                    (!summary_consistent).then(|| {
+                        "MXC 拒绝记录摘要与进程输出元数据不一致；不会据此自动扩展权限".into()
+                    })
+                });
+            SandboxedProcessExit {
+                exit_code,
+                capture_denials: Some(CapturedDenials {
+                    total_denials: output.total_denials,
+                    denied_resources_truncated: output.denied_resources_truncated
+                        || summary.denied_resources_truncated
+                        || truncated_by_haven
+                        || !summary_consistent,
+                    capture_complete,
+                    denials: document
+                        .denials
+                        .into_iter()
+                        .take(MAX_CAPTURED_DENIALS)
+                        .map(|denial| CapturedDeniedResource {
+                            resource: denial.resource,
+                            resource_type: format!("{:?}", denial.resource_type)
+                                .to_ascii_lowercase(),
+                            access_type: format!("{:?}", denial.access_type).to_ascii_lowercase(),
+                            pid: denial.pid,
+                            filetime: denial.filetime.to_string(),
+                        })
+                        .collect(),
+                }),
+                capture_denials_error,
+            }
+        }
+        Err(error) => SandboxedProcessExit {
+            exit_code,
+            capture_denials: Some(CapturedDenials {
+                total_denials: output.total_denials,
+                denied_resources_truncated: output.denied_resources_truncated,
+                capture_complete: false,
+                denials: Vec::new(),
+            }),
+            capture_denials_error: Some(haven_common::error::sanitize_error_text(&error)),
+        },
+    }
+}
+
+fn read_denials_document(
+    path: &str,
+) -> Result<mxc_sdk::learning_mode_core::DenialsDocument, String> {
+    use std::io::Read;
+
+    let file =
+        std::fs::File::open(path).map_err(|error| format!("无法读取 MXC 拒绝记录文件：{error}"))?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| format!("无法检查 MXC 拒绝记录文件：{error}"))?
+        .len();
+    if file_len > MAX_CAPTURED_DENIALS_JSON_BYTES {
+        return Err(format!(
+            "MXC 拒绝记录文件超过 {} 字节上限",
+            MAX_CAPTURED_DENIALS_JSON_BYTES
+        ));
+    }
+    let capacity =
+        usize::try_from(file_len).map_err(|_| "MXC 拒绝记录文件大小超出当前平台范围".to_owned())?;
+    let mut bytes = Vec::with_capacity(capacity);
+    file.take(MAX_CAPTURED_DENIALS_JSON_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("读取 MXC 拒绝记录文件失败：{error}"))?;
+    if bytes.len() as u64 > MAX_CAPTURED_DENIALS_JSON_BYTES {
+        return Err(format!(
+            "MXC 拒绝记录文件超过 {} 字节上限",
+            MAX_CAPTURED_DENIALS_JSON_BYTES
+        ));
+    }
+    serde_json::from_slice::<mxc_sdk::learning_mode_core::DenialsDocument>(&bytes)
+        .map_err(|error| format!("MXC 拒绝记录格式无效：{error}"))
 }
 
 fn probe_rejection_reason(

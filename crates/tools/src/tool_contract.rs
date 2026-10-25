@@ -2072,6 +2072,10 @@ pub(crate) fn strip_private_tool_fields(input: &mut Value) {
         object.remove("_session_id");
         object.remove("_step_id");
         object.remove("_idempotency_key");
+        // Used only to declare the exact resources in an agent-created
+        // post-denial retry receipt. The execution handler receives those
+        // resources through its verified authorization context instead.
+        object.remove("_resource_extensions");
     }
 }
 

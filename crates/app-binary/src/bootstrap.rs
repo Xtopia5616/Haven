@@ -87,6 +87,13 @@ pub(crate) fn project_interaction(
                 summary.push_str("\n\n此操作超出当前资源策略范围。允许后只会为弹窗列出的资源临时扩展本次调用，不会修改已保存的策略。");
                 event.resource_boundary_extension = true;
             }
+            if let Some(extra) = nested_confirmation
+                .as_ref()
+                .and_then(|nested| nested.summary.as_deref())
+            {
+                summary.push_str("\n\n");
+                summary.push_str(extra);
+            }
             event.summary = Some(summary);
             event.permission_key = receipt
                 .as_ref()
@@ -125,6 +132,13 @@ pub(crate) fn project_interaction(
             if confirmation_receipt.resource_boundary_extension {
                 summary.push_str("\n\n此操作超出当前资源策略范围。允许后只会为弹窗列出的资源临时扩展本次调用，不会修改已保存的策略。");
                 event.resource_boundary_extension = true;
+            }
+            if let Some(extra) = nested_confirmation
+                .as_ref()
+                .and_then(|nested| nested.summary.as_deref())
+            {
+                summary.push_str("\n\n");
+                summary.push_str(extra);
             }
             event.summary = Some(summary);
             event.permission_key = Some(
