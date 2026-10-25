@@ -417,6 +417,64 @@ describe('Composer context menu', () => {
 });
 
 describe('Composer attachment intake', () => {
+	it('accepts files dropped onto the composer through the normal attachment path', async () => {
+		const onsubmit = vi.fn();
+		const readers: FileReader[] = [];
+		const readAsDataURL = vi
+			.spyOn(FileReader.prototype, 'readAsDataURL')
+			.mockImplementation(function (this: FileReader) {
+				readers.push(this);
+			});
+
+		try {
+			const { container } = render(Composer, { onsubmit });
+			const dropZone = container.querySelector('.input-area')!;
+			const file = new File(['dropped content'], 'dropped.txt', { type: 'text/plain' });
+			const transfer = { types: ['Files'], files: [file], items: [] };
+			const dragEvent = (type: string, dataTransfer = transfer) => {
+				const event = new Event(type, { bubbles: true, cancelable: true });
+				Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+				return event;
+			};
+
+			await fireEvent(dropZone, dragEvent('dragenter', { ...transfer, files: [] }));
+			expect(dropZone.classList.contains('is-file-dragging')).toBe(true);
+			expect(screen.getByText('松开以添加附件')).toBeTruthy();
+
+			const dragOver = dragEvent('dragover', { ...transfer, files: [] });
+			await fireEvent(dropZone, dragOver);
+			expect(dragOver.defaultPrevented).toBe(true);
+
+			const drop = dragEvent('drop');
+			await fireEvent(dropZone, drop);
+			expect(drop.defaultPrevented).toBe(true);
+			expect(dropZone.classList.contains('is-file-dragging')).toBe(false);
+			expect(readers).toHaveLength(1);
+
+			Object.defineProperty(readers[0], 'result', {
+				configurable: true,
+				value: 'data:text/plain;base64,ZHJvcHBlZCBjb250ZW50',
+			});
+			readers[0].dispatchEvent(new ProgressEvent('load'));
+			await vi.waitFor(() => expect(container.querySelector('.file-preview')).toBeTruthy());
+
+			await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+			expect(onsubmit).toHaveBeenCalledWith({
+				text: '',
+				images: [],
+				files: [
+					{
+						media_type: 'text/plain',
+						data: 'ZHJvcHBlZCBjb250ZW50',
+						filename: 'dropped.txt',
+					},
+				],
+			});
+		} finally {
+			readAsDataURL.mockRestore();
+		}
+	});
+
 	it('keeps same-name file preview identity stable and omits local keys on submit', async () => {
 		const onsubmit = vi.fn();
 		const readers: FileReader[] = [];

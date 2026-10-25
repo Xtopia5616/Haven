@@ -128,6 +128,8 @@
 	let pendingImageReads = 0;
 	let pendingFileReads = 0;
 	let pendingAttachmentReads = $state(0);
+	let fileDragDepth = 0;
+	let isDraggingFiles = $state(false);
 	// Single hidden picker for both images and files; the picked items are
 	// split by type on selection (images -> pendingImages, rest -> pendingFiles).
 	let attachFileInput = $state<HTMLInputElement | null>(null);
@@ -477,21 +479,62 @@
 		}
 	}
 
-	// Single entry point for the attachment picker: images (by MIME/extension)
-	// go to the vision preview row, everything else to the file/audio row.
+	// Route picked and dropped files through the same image/file attachment paths.
+	function handleAttachFiles(files: File[]) {
+		const images = files.filter(isImageFile);
+		const others = files.filter((file) => !isImageFile(file));
+		if (images.length > 0) addPendingImages(images);
+		if (others.length > 0) addPendingFiles(others);
+	}
+
 	function handleAttachSelect(e: Event) {
 		const input = e.currentTarget;
 		if (!(input instanceof HTMLInputElement)) return;
 		const files: File[] = Array.from(input.files ?? []);
-		const images = files.filter(isImageFile);
-		const others = files.filter((f) => !isImageFile(f));
-		if (images.length > 0) addPendingImages(images);
-		if (others.length > 0) addPendingFiles(others);
+		handleAttachFiles(files);
 		input.value = '';
 	}
 
 	function removePendingFile(previewKey: string) {
 		pendingFiles = pendingFiles.filter((file) => file.previewKey !== previewKey);
+	}
+
+	function hasFileTransfer(event: DragEvent): boolean {
+		const transfer = event.dataTransfer;
+		if (!transfer) return false;
+		return (
+			Array.from(transfer.types).includes('Files') ||
+			Array.from(transfer.items).some((item) => item.kind === 'file')
+		);
+	}
+
+	function handleDragEnter(event: DragEvent) {
+		if (!hasFileTransfer(event)) return;
+		event.preventDefault();
+		fileDragDepth += 1;
+		isDraggingFiles = true;
+	}
+
+	function handleDragOver(event: DragEvent) {
+		if (!hasFileTransfer(event)) return;
+		event.preventDefault();
+		if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+		isDraggingFiles = true;
+	}
+
+	function handleDragLeave(event: DragEvent) {
+		if (!hasFileTransfer(event)) return;
+		fileDragDepth = Math.max(0, fileDragDepth - 1);
+		if (fileDragDepth === 0) isDraggingFiles = false;
+	}
+
+	function handleDrop(event: DragEvent) {
+		const files = Array.from(event.dataTransfer?.files ?? []);
+		if (files.length === 0 && !hasFileTransfer(event)) return;
+		event.preventDefault();
+		fileDragDepth = 0;
+		isDraggingFiles = false;
+		if (files.length > 0) handleAttachFiles(files);
 	}
 
 	// Collect whatever is currently pending (text, images, files) into a
@@ -707,7 +750,16 @@
 	}
 </script>
 
-<div class="input-area">
+<div
+	class="input-area"
+	class:is-file-dragging={isDraggingFiles}
+	role="group"
+	aria-label="消息输入与附件"
+	ondragenter={handleDragEnter}
+	ondragover={handleDragOver}
+	ondragleave={handleDragLeave}
+	ondrop={handleDrop}
+>
 	{#if pendingFiles.length > 0}
 		<div class="file-preview-row">
 			{#each pendingFiles as file (file.previewKey)}
@@ -815,7 +867,7 @@
 			<MaterialIconButton
 				size="toolbar"
 				label="添加附件"
-				title="添加图片、音频或文件"
+				title="添加图片、音频或文件，也可拖入"
 				icon="paperclip"
 				onclick={() => attachFileInput?.click()}
 			></MaterialIconButton>
@@ -861,6 +913,12 @@
 			></MaterialIconButton>
 		</div>
 	</div>
+	{#if isDraggingFiles}
+		<div class="drop-overlay" aria-hidden="true">
+			<strong>松开以添加附件</strong>
+			<span>图片、音频和文件</span>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -910,6 +968,33 @@
 	.input-area:has(.chat-input:focus) {
 		border-color: var(--md-sys-color-primary);
 		box-shadow: var(--md-sys-focus-ring);
+	}
+	.input-area.is-file-dragging {
+		border-color: var(--md-sys-color-primary);
+		box-shadow: var(--md-sys-focus-ring);
+	}
+	.drop-overlay {
+		position: absolute;
+		inset: 1px;
+		z-index: 5;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: var(--md-sys-space-xs);
+		border: 2px dashed var(--md-sys-color-primary);
+		border-radius: calc(var(--md-sys-shape-large) - 1px);
+		background: color-mix(in srgb, var(--md-sys-color-primary-container) 94%, transparent);
+		color: var(--md-sys-color-on-primary-container);
+		pointer-events: none;
+	}
+	.drop-overlay strong {
+		font-size: var(--md-sys-typescale-title-medium-size);
+		line-height: var(--md-sys-typescale-title-medium-line-height);
+	}
+	.drop-overlay span {
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 
 	.image-preview-row {
