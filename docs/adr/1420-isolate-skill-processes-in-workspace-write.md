@@ -2,7 +2,7 @@
 
 ## 状态
 
-已实施；策略编译和 Skill 回归测试通过。真实 MXC 端到端验收仍未通过：本机 Python Install Manager 的 runtime 位于用户 LocalAppData；使用直达 `python.exe` 后，安装管理器仍以 `STATUS_ACCESS_DENIED` 报告 runtime install path 不可访问，MXC 记录了对 runtime 文件的写入/执行拒绝。此路径没有 host-process fallback；需选用 MXC 可访问的 Python 发行版或受控应用 runtime 后再关闭验收项。
+已实施；策略编译和 Skill 回归测试通过。为规避用户 LocalAppData 下 Python Install Manager runtime 在 MXC 中的 `STATUS_ACCESS_DENIED`，Windows 现在优先选择 Program Files 下的机器级 Python，再尝试其它 PATH runtime 与用户级 runtime。真实 MXC 端到端验收仍待完成：本机没有机器级 Python，因此无法验证该候选在 MXC 下创建 venv；没有可用机器级 runtime 时，用户级候选仍会按顺序尝试。此路径没有 host-process fallback。
 
 ## 背景
 
@@ -16,7 +16,7 @@ Skill 激活、venv 创建、requirements 安装和 Skill 脚本执行是不同�
 - `pip install -r requirements.txt` 是独立的 opaque network 操作。只有全局网络为 Open、Skill 工具级网络未设为 Deny/Restricted、且全局与 Skill 都没有域名 allowlist 时才允许公网出站。MXC 不授予私网或宿主 loopback；域名约束存在时拒绝，而不近似实现白名单。
 - Skill 脚本的 WorkspaceWrite 策略继承当前执行工作区、全局与 Skill 工具级文件路径交集、deny/read-only 规则，并额外只写单次 scratch。Skill 源、venv、脚本快照和实际 Python runtime 作为只读依赖；脚本网络离线。Read-only 工具资源策略仍移除 workspace 写权限。
 - setup 命令仅在 MXC 分支把 cwd 与 `TEMP`、`TMP`、`TMPDIR` 指向受控 scratch；FullAccess 保持原有宿主环境。脚本 cancellation、超时和授权撤销会终止子进程并保留 containment owner，直到进程退出。
-- MXC 创建进程前只解析可直接启动的 Python 可执行文件绝对路径，不启动未隔离的 Python 探测进程；跳过 WindowsApps 执行别名，并检查 Windows Install Manager 的常用 runtime 目录。进程自身仍由每次 setup authorization 编译并启动于 MXC。
+- MXC 创建进程前只解析可直接启动的 Python 可执行文件绝对路径，不启动未隔离的 Python 探测进程；跳过 WindowsApps 执行别名，优先搜索 Program Files 下的机器级 Python，再考虑其它 PATH runtime 和用户级 Python Install Manager runtime。进程自身仍由每次 setup authorization 编译并启动于 MXC；runtime 依赖保持只读。
 
 ## 替代方案
 
@@ -38,7 +38,7 @@ WorkspaceWrite 下 Windows 现在可以运行 Skill，但只有脚本获得现�
 
 - `cargo check --locked -p haven-tools` 通过。
 - `cargo test --locked -p haven-tools --lib skill_ -- --test-threads=1`：29 passed；覆盖 Skill authorization、setup 私有写根、pip 网络门槛、取消/撤权、工作区临时目录和输出预算。
-- 实际 Skill MXC 用例 `workspace_write_skill_setup_and_script_obey_mxc_file_policy` 已在 Windows 执行，但失败：跳过 WindowsApps alias 后，Python Install Manager runtime 自身仍报告 `STATUS_ACCESS_DENIED`；MXC 捕获到 runtime 路径的写入/执行拒绝，venv 创建退出码为 5。本 ADR 不把该失败记作通过，仍需换用 MXC 可访问的 runtime 后重新验收。
+- 实际 Skill MXC 用例 `workspace_write_skill_setup_and_script_obey_mxc_file_policy` 曾在 Windows 执行但失败：Python Install Manager runtime 位于用户 LocalAppData，MXC 报告 `STATUS_ACCESS_DENIED`。当前候选顺序的单元测试覆盖机器级 runtime 优先；本机未安装 Program Files Python，真实 MXC 验收需在有机器级 Python 的 Windows 环境重新运行。本 ADR 不把此前失败或候选顺序测试记作端到端通过。
 
 ## 回滚
 

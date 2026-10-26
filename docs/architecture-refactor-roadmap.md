@@ -207,6 +207,8 @@ CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-c
 
 **运行时容量与清理：**Shell scratch 256 MiB、npm 512 MiB、Cargo home 2 GiB、最多八个并发 scratch；LSP/Git/MCP scratch 256 MiB，Everything 64 MiB，每目录 100,000 条目，managed process scratch 合计最多 16 个。运行中监控并终止超限进程，退出清理；重启回收残留时跳过活跃 owner 锁。共享缓存只在 Shell 空闲时重置。真实 Skill Python runtime、Everything 服务 IPC、MCP server 与第三方 LSP 的 Windows 端到端验收仍按各发布 Gate 跟踪。
 
+**Skill runtime 候选验收：**Python 解析优先选择 Program Files 下机器级 runtime，避开已在 MXC 下触发 `STATUS_ACCESS_DENIED` 的用户 LocalAppData Python Install Manager runtime；真实 Skill/MXC 端到端用例仍待有机器级 Python 的 Windows 环境验收。
+
 **全局安全策略写入口（ADR 1427）：**新会话默认执行方式、全局文件/网络资源策略与隔离偏好通过完整 `SecurityConfig` 经 `ToolsFacade::apply_security` 应用；永久权限规则仍由同一 owner 经 typed grant 管理。Agent 通过 session event 绑定单会话执行方式。
 
 - **工具暴露与执行模式：**MCP tool 按工具配置 `availability`、`catalog` 和 `invocation`；原生与 Code Mode adapter 可分别或同时启用。`direct` 将启用的 native adapter 放进 provider surface，`deferred` 要求先发现和显式加载，`hidden` 只从通用目录隐藏；只有 `availability=disabled` 或无对应 adapter 会阻止相应调用路径。Code Mode 使用无宿主 API 的 QuickJS 与有界子调用；每个子调用仍经 Tools 的实时授权、target、sandbox/network 和 durable journal 校验。旧 exposure 配置由 ConfigLoader 保守转换，见 ADR 1383；旧契约背景见 [ADR 1183](adr/1183-add-mcp-model-only-exposure.md) 与 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。

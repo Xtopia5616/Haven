@@ -114,7 +114,13 @@ fn resolve_python_executable() -> anyhow::Result<PathBuf> {
         }
     }
     #[cfg(windows)]
-    candidates.extend(local_python_install_candidates());
+    candidates.extend(windows_python_install_candidates());
+    #[cfg(windows)]
+    let candidates = prioritize_windows_python_candidates(
+        candidates,
+        &system_wide_python_roots(),
+        &user_local_python_roots(),
+    );
 
     for candidate in candidates {
         if !candidate.is_file() {
@@ -144,31 +150,134 @@ fn resolve_python_executable() -> anyhow::Result<PathBuf> {
     anyhow::bail!("Python runtime executable is not available at a direct install path")
 }
 
-/// Python's Windows Install Manager places concrete runtimes under
-/// `%LOCALAPPDATA%\\Python\\pythoncore-*`; the PATH entry can be only an
-/// App Execution Alias. Search known runtime locations without launching the
-/// alias outside MXC.
+/// Find known machine-wide Python installations before per-user runtimes.
+/// Windows MXC needs a system-wide runtime; AppData installations can fail
+/// while loading the interpreter's native extension modules.
 #[cfg(windows)]
-fn local_python_install_candidates() -> Vec<PathBuf> {
-    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
-        return Vec::new();
-    };
+fn windows_python_install_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    for root in [
-        local_app_data.join("Python"),
-        local_app_data.join("Programs").join("Python"),
-    ] {
-        if let Ok(entries) = std::fs::read_dir(root) {
-            let mut directories = entries
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir())
-                .collect::<Vec<_>>();
-            directories.sort();
-            candidates.extend(directories.into_iter().map(|path| path.join("python.exe")));
+
+    for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(program_files) = std::env::var_os(variable).map(PathBuf::from) {
+            candidates.extend(python_runtime_candidates(&program_files, "Python"));
+            candidates.extend(python_runtime_candidates(
+                &program_files.join("Python"),
+                "pythoncore-",
+            ));
         }
     }
+
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        candidates.extend(python_runtime_candidates(
+            &local_app_data.join("Programs").join("Python"),
+            "Python",
+        ));
+        candidates.extend(python_runtime_candidates(
+            &local_app_data.join("Python"),
+            "pythoncore-",
+        ));
+    }
+
     candidates
+}
+
+#[cfg(windows)]
+fn user_local_python_roots() -> Vec<PathBuf> {
+    ["APPDATA", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect()
+}
+
+#[cfg(windows)]
+fn system_wide_python_roots() -> Vec<PathBuf> {
+    ["ProgramFiles", "ProgramFiles(x86)"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect()
+}
+
+#[cfg(windows)]
+fn prioritize_windows_python_candidates(
+    candidates: Vec<PathBuf>,
+    system_wide_roots: &[PathBuf],
+    user_local_roots: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut machine_wide = Vec::new();
+    let mut other = Vec::new();
+    let mut user_local = Vec::new();
+    for candidate in candidates {
+        if system_wide_roots
+            .iter()
+            .any(|root| windows_path_is_within(root, &candidate))
+        {
+            machine_wide.push(candidate);
+        } else if user_local_roots
+            .iter()
+            .any(|root| windows_path_is_within(root, &candidate))
+        {
+            user_local.push(candidate);
+        } else {
+            other.push(candidate);
+        }
+    }
+    machine_wide.extend(other);
+    machine_wide.extend(user_local);
+    machine_wide
+}
+
+#[cfg(windows)]
+fn windows_path_is_within(root: &Path, candidate: &Path) -> bool {
+    let root = root
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase();
+    let candidate = candidate
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    candidate == root || candidate.starts_with(&format!("{root}\\"))
+}
+
+#[cfg(windows)]
+fn python_runtime_candidates(root: &Path, directory_prefix: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut directories = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_dir()
+                && path.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .to_ascii_lowercase()
+                        .starts_with(&directory_prefix.to_ascii_lowercase())
+                })
+        })
+        .collect::<Vec<_>>();
+    directories.sort_by(|left, right| {
+        python_runtime_version_key(right)
+            .cmp(&python_runtime_version_key(left))
+            .then_with(|| left.cmp(right))
+    });
+    directories
+        .into_iter()
+        .map(|path| path.join("python.exe"))
+        .collect()
+}
+
+#[cfg(windows)]
+fn python_runtime_version_key(path: &Path) -> Vec<u32> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .split(|character: char| !character.is_ascii_digit())
+        .filter_map(|component| component.parse().ok())
+        .collect()
 }
 
 fn pip_install_command(python: &Path, requirements_path: &Path) -> Command {
@@ -753,6 +862,83 @@ mod tests {
             PathBuf::from("/tmp/venvs/test/bin/python")
         };
         assert_eq!(p, expected);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn python_runtime_candidates_are_newest_first_and_ignore_other_directories() {
+        let temp = tempdir().unwrap();
+        let runtime_root = temp.path().join("program-files");
+        for name in ["Python311", "Python314", "notes"] {
+            let directory = runtime_root.join(name);
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(directory.join("python.exe"), []).unwrap();
+        }
+
+        assert_eq!(
+            python_runtime_candidates(&runtime_root, "Python"),
+            [
+                runtime_root.join("Python314").join("python.exe"),
+                runtime_root.join("Python311").join("python.exe"),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn python_install_manager_runtime_candidates_are_found_under_machine_python_root() {
+        let temp = tempdir().unwrap();
+        let runtime_root = temp.path().join("Program Files").join("Python");
+        let runtime = runtime_root.join("pythoncore-3.14-64");
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(runtime.join("python.exe"), []).unwrap();
+
+        assert_eq!(
+            python_runtime_candidates(&runtime_root, "pythoncore-"),
+            [runtime.join("python.exe")]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn machine_wide_python_is_preferred_over_user_profile_runtimes() {
+        let candidates = vec![
+            PathBuf::from(r"C:\Users\user\AppData\Local\Python\pythoncore-3.14-64\python.exe"),
+            PathBuf::from(r"C:\Program Files\Python314\python.exe"),
+            PathBuf::from(r"C:\Users\user\AppData\Roaming\uv\python\cpython-3.14.6\python.exe"),
+            PathBuf::from(r"C:\Program Files\Python313\python.exe"),
+        ];
+
+        let selected = prioritize_windows_python_candidates(
+            candidates,
+            &[
+                PathBuf::from(r"C:\Program Files"),
+                PathBuf::from(r"C:\Program Files (x86)"),
+            ],
+            &[
+                PathBuf::from(r"C:\Users\user\AppData\Local"),
+                PathBuf::from(r"C:\Users\user\AppData\Roaming"),
+            ],
+        );
+
+        assert_eq!(
+            selected,
+            [
+                PathBuf::from(r"C:\Program Files\Python314\python.exe"),
+                PathBuf::from(r"C:\Program Files\Python313\python.exe"),
+                PathBuf::from(r"C:\Users\user\AppData\Local\Python\pythoncore-3.14-64\python.exe",),
+                PathBuf::from(r"C:\Users\user\AppData\Roaming\uv\python\cpython-3.14.6\python.exe",),
+            ]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn runtime_under_similarly_named_directory_is_not_a_user_profile_runtime() {
+        assert!(!windows_path_is_within(
+            Path::new(r"C:\Users\user\AppData\Local"),
+            Path::new(r"C:\Users\user\AppData\Locality\Python\python.exe")
+        ));
     }
 
     #[tokio::test]
