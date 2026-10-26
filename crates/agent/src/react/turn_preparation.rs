@@ -154,24 +154,6 @@ fn interval_memory_trigger(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn interval_trigger_is_created_only_for_positive_matching_steps() {
-        assert_eq!(interval_memory_trigger(7, 0, 5), None);
-        assert_eq!(interval_memory_trigger(7, 25, 0), None);
-        assert_eq!(interval_memory_trigger(7, 24, 5), None);
-        assert_eq!(
-            interval_memory_trigger(7, 25, 5),
-            Some(crate::memory_trigger::MemoryTriggerPayload::step_interval(
-                7, 25
-            ))
-        );
-    }
-}
-
-#[cfg(test)]
 pub(crate) struct NoopTurnPreparation;
 
 #[cfg(test)]
@@ -191,5 +173,23 @@ impl TurnPreparation for NoopTurnPreparation {
             catalog,
             None,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interval_trigger_is_created_only_for_positive_matching_steps() {
+        assert_eq!(interval_memory_trigger(7, 0, 5), None);
+        assert_eq!(interval_memory_trigger(7, 25, 0), None);
+        assert_eq!(interval_memory_trigger(7, 24, 5), None);
+        assert_eq!(
+            interval_memory_trigger(7, 25, 5),
+            Some(crate::memory_trigger::MemoryTriggerPayload::step_interval(
+                7, 25
+            ))
+        );
     }
 }

@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.32 | 日期: 2026-10-20
+> 版本: v1.33 | 日期: 2026-10-27
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -524,6 +524,8 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryOutboxStore::p
   与 maintenance 直接复用（ADR 0029、0169、0866、1300）。
 - 调用 `LlmRouter`、执行 `haven-tools` 工具、写 `haven-memory`、
   通过 `AgentEvent` 对外发事件。
+
+终态清理重试由 dispatcher 持有的独立串行 worker 执行，进程内待办按 session 合并并以 FIFO 索引公平重排；唤醒只表达存在待办。每批最多 32 项、单次重试 5 秒，超时保留策略并退避 1 秒；shutdown 在 run wrappers 结束后进行一轮最终尝试，沿用 30 秒总 join 期限。初次 End/run-exit 清理不改变；backlog 总量与跨重启补做不在本切片保证内（[ADR 1432](adr/1432-isolate-terminal-cleanup-retry-worker.md)）。
 
 **步数预算（Phase 7/8 / J1）**：`session.max_steps_per_run` 是每次 ReAct run 获得的步数预算，范围为 1–1000；暂停后恢复会启动新 run 并重新获得该预算。可选
 `session.max_steps_per_session: Option<u32>`（默认 `None` = 不限）限制整个持久 Session 跨所有 run 可到达的绝对 `step_number`，范围为 1–100000。Settings UI 显示 0 代表不限，并在提交时转换为 `None`；TOML/IPC 中显式的 0 不合法。

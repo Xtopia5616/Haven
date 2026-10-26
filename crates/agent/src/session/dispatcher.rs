@@ -346,15 +346,6 @@ impl SessionSupervisor {
             tracing::warn!("session dispatcher start ignored: already running");
             return;
         }
-        let retry_rx = self
-            .terminal_cleanup_retry_rx
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
-        let Some(mut retry_rx) = retry_rx else {
-            tracing::error!("session dispatcher terminal cleanup retry receiver is unavailable");
-            return;
-        };
         let dispatcher = self.clone();
         let dispatcher_cancellation = cancellation.child_token();
         *self
@@ -364,6 +355,16 @@ impl SessionSupervisor {
             Some(dispatcher_cancellation.clone());
         let handle = tokio::spawn(async move {
             let mut run_tasks = tokio::task::JoinSet::new();
+            // Keep retry execution separate from run admission. Dropping this
+            // JoinSet on the dispatcher's shutdown deadline aborts the owned
+            // worker, including its cancellation-safe pending-policy lease.
+            let mut cleanup_tasks = tokio::task::JoinSet::new();
+            let final_cleanup_drain = CancellationToken::new();
+            cleanup_tasks.spawn(
+                dispatcher
+                    .clone()
+                    .run_terminal_cleanup_worker(final_cleanup_drain.clone()),
+            );
             if recover_pending {
                 match dispatcher
                     .recover_pending_sessions_with_retry(&dispatcher_cancellation, 0)
@@ -386,14 +387,11 @@ impl SessionSupervisor {
                         }
                         continue;
                     }
-                    retry_id = retry_rx.recv() => {
-                        let Some(session_id) = retry_id else {
-                            break;
-                        };
-                        if let Some(retry) = dispatcher.terminal_cleanup_retry_queue.take(&session_id) {
-                            dispatcher.retry_terminal_cleanup(&session_id, retry).await;
+                    result = cleanup_tasks.join_next() => {
+                        if let Some(Err(error)) = result {
+                            log_dispatcher_task_failure(error);
                         }
-                        continue;
+                        break;
                     }
                     permit = dispatcher.admission.acquire(&dispatcher_cancellation) => match permit {
                         Some(permit) => permit,
@@ -404,13 +402,11 @@ impl SessionSupervisor {
                     drop(permit);
                     tokio::select! {
                         _ = dispatcher_cancellation.cancelled() => break 'dispatcher,
-                        retry_id = retry_rx.recv() => {
-                            let Some(session_id) = retry_id else {
-                                break;
-                            };
-                            if let Some(retry) = dispatcher.terminal_cleanup_retry_queue.take(&session_id) {
-                                dispatcher.retry_terminal_cleanup(&session_id, retry).await;
+                        result = cleanup_tasks.join_next() => {
+                            if let Some(Err(error)) = result {
+                                log_dispatcher_task_failure(error);
                             }
+                            break 'dispatcher;
                         }
                         result = wake_rx.changed() => {
                             if result.is_err() {
@@ -494,12 +490,13 @@ impl SessionSupervisor {
                 }
             }
 
-            // A run wrapper can enqueue a terminal-cleanup retry while the
-            // dispatcher is draining on shutdown. Give those retries one final
-            // attempt while their session actors and dependent services remain
-            // available; a persistent failure remains visible in the log.
-            for (session_id, retry) in dispatcher.terminal_cleanup_retry_queue.take_all() {
-                dispatcher.retry_terminal_cleanup(&session_id, retry).await;
+            // Run wrappers can enqueue late cleanup. Only now establish the
+            // worker's final FIFO round, while actors and services still live.
+            final_cleanup_drain.cancel();
+            while let Some(result) = cleanup_tasks.join_next().await {
+                if let Err(error) = result {
+                    log_dispatcher_task_failure(error);
+                }
             }
             let remaining_retries = dispatcher.terminal_cleanup_retry_queue.pending_count();
             if remaining_retries > 0 {
@@ -784,21 +781,19 @@ impl SessionSupervisor {
                 .snapshot()
                 .await
                 .is_some_and(|snapshot| snapshot.status == SessionStatus::Running)
-            {
-                if let Err(error) = self
+                && let Err(error) = self
                     .update_session_status_if(
                         session_id,
                         SessionStatus::Running,
                         SessionStatus::Paused,
                     )
                     .await
-                {
-                    tracing::warn!(
-                        session_id,
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "failed to pause a cancelled direct run"
-                    );
-                }
+            {
+                tracing::warn!(
+                    session_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "failed to pause a cancelled direct run"
+                );
             }
             finished
         };

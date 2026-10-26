@@ -23,7 +23,7 @@
 | R01 | 模型热切换与记忆/标题消费者 | 已完成：Agent consumers 共享热切换运行时；见 ADR 1370 | Completed |
 | R02 | 配置保存与运行时应用 | 已完成：显式重试和按目标版本状态；见 ADR 1384 | Completed |
 | R03 | 模型/媒体组合发布 | 已完成：共享代次句柄，ReAct 每次新请求读取最新已发布代次；见 ADR 1385/1396 | Completed |
-| R04 | Session/交互/清理队列 | 主 owner 正确；清理通知使用无界通道 | P2，证明上界并隔离清理调度 |
+| R04 | Session/交互/清理队列 | retry 唤醒与独立串行工作窗口已完成（ADR 1432）；初次清理、backlog 与重启边界保留 | P2，整体容量/恢复仍为 Candidate |
 | R05 | 事件流与前端恢复 | 聊天页以稳定 durable cursor 补齐并拒绝不稳定恢复快照；UI 自动测试通过，Windows 聚焦丢通知与 rollback 并发仍待验收 | Windows acceptance open，见 ADR 1397 |
 | R06 | 语音采集与转写 | 实施录音目标冻结、有限并发、失败保留与显式重试；自动门禁和 Windows 交互仍待完成 | P2，完成故障验收 |
 | R07 | 记忆抽取、检索、维护 | 存储边界合理；编排角色密集 | P2，按工作类型与数据来源收口 |
@@ -79,6 +79,8 @@
 
 **源码复核（2026-10-27）。** 上述证据仍成立：`session/mod.rs` 的 `TerminalCleanupRetryQueue` 以 HashMap 合并策略，仍用无界 ID 通知；`dispatcher.rs::start_dispatcher_inner` 的两个通知分支仍直接 await 清理。`status.rs::finish_terminal_cleanup` 涉及 partial、inbox、后代结束与注册表清理；shutdown 已等待 run wrappers 并最终 drain 重试，不能删除这项保证。首个候选切片应只收敛唤醒和工作窗口：合并唤醒、固定 batch、单清理 worker，保留 actor identity、策略合并和退出 drain，并用阻塞清理证明新 run 可进入 handler。该切片不能声称整体 backlog 有界或跨重启可靠：`cascade=false` 等 retry 策略仍是进程内信息，startup 只恢复 pending session；硬截断 map 会丢工作。完整 backlog/restart 契约须先确定持久标记或可恢复扫描及取消边界，再进入实现。
 
+**实施结论（2026-10-27，ADR 1432）。** 上述基线中的无界通知与 admission 内重试已移除；新 worker 采用合并唤醒、FIFO、32 项 batch、取消安全 lease、5 秒单次期限和 1 秒退避。run wrappers 结束后进行单轮 final drain，保留 30 秒总期限。旧实现先复现准入阻塞，修复后 Agent 全量 697 项测试及本 crate 全目标 strict Clippy 通过，真实期限用例验证无异步 worker/lease 残留。Tools 依赖的既有 Clippy 告警、初次清理占用 run permit、backlog 总量及跨重启补做均未据此关闭。
+
 ## 6. R05：事件传递的可靠性应按消费者声明
 
 **证据。** [EventBus::emit](../crates/agent/src/event.rs) 顺序 await 每个 subscriber。已有 BufferedEmitter、流分片合并以及 overflow 不丢权威事件的测试，不能再建议从零新增全部机制。[MemoryPersistence::session_store](../crates/memory/src/persistence.rs) 每次产生独立 live channel；[AppState](../crates/app-binary/src/app_state.rs) 有意构造 App/命令侧与 supervisor 两个 store。
@@ -132,6 +134,8 @@
 **建议。** 保留这些边界。诊断补充安全的最终路由/降级原因、配置代次、消耗预算，前端区分“未配置”“能力不支持”“临时不可用”。审核 logical request、endpoint fallback、stream restart、工具 retry 的期限能否组合成调用者可预期的上限；不要为了代码复用把有副作用的工具重试并进 provider 重试器。
 
 **验收。** 429/Retry-After、连续 endpoint 失败、流已输出后重试、取消与预算耗尽；总墙钟和调用次数有界，已计费用量不因失败丢失。工具结果未知不可因 provider 层认定“可重试”而重执行。本轮没有完成所有嵌套预算路径证明，保留为待验证风险。
+
+**源码复核（2026-10-27，Candidate 保留）。** `RequestExecutionPolicy::primary` 捕获一次执行策略；`CallExecutor` 和 `AggregatedStreamExecutor::execute` 的单个 timeout 包住 provider retry/backoff，聚合流的 guidance retry 也在同一执行预算内。`router.rs::with_model_permit` 在执行器前等待 permit/cooldown，raw stream 消费由 caller 持有，故 `max_total_duration_secs` 不能解释为整个公开入口的墙钟 SLA；ADR 0327 已明确 raw stream 的这一边界。当前路由只选择配置的 primary，已有不自动切换备用 provider 的行为测试。此次未发现应立即新增重试结构或拆分 owner 的证据；如要改变排队体验，先固定负载测量排队/执行/投影，再单独定义排队期限。本次为只读复核，未运行 LLM 测试或新的负载实验。
 
 ## 12. R11：集成的连接状态、可见性、就绪状态和授权分开
 

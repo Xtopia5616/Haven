@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 #[cfg(test)]
 use tokio::sync::Notify;
-use tokio::sync::{Mutex, broadcast, mpsc, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 /// Last-resort ceiling for [`SessionSupervisor::await_run_finished`]. The
@@ -206,56 +206,6 @@ impl TerminalCleanupGuard {
 
     pub(crate) fn set_retry_policy(&mut self, retry: TerminalCleanupRetry) {
         self.retry = retry;
-    }
-}
-
-/// De-duplicated retry wakeups for interrupted terminal cleanup. The worker is
-/// tied to the session dispatcher lifetime; retries always re-read Actor state
-/// under the lifecycle gate before claiming cleanup again.
-pub(crate) struct TerminalCleanupRetryQueue {
-    queued: StdMutex<HashMap<String, TerminalCleanupRetry>>,
-    sender: mpsc::UnboundedSender<String>,
-}
-
-impl TerminalCleanupRetryQueue {
-    fn enqueue(&self, session_id: &str, retry: TerminalCleanupRetry) {
-        let mut queued = self
-            .queued
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(existing) = queued.get_mut(session_id) {
-            if existing.cascade.is_none() && retry.cascade.is_some() {
-                existing.cascade = retry.cascade;
-            }
-            existing.remove_error_actor |= retry.remove_error_actor;
-        } else {
-            queued.insert(session_id.to_string(), retry);
-            if self.sender.send(session_id.to_string()).is_err() {
-                queued.remove(session_id);
-            }
-        }
-    }
-
-    pub(crate) fn take(&self, session_id: &str) -> Option<TerminalCleanupRetry> {
-        self.queued
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(session_id)
-    }
-
-    pub(crate) fn take_all(&self) -> Vec<(String, TerminalCleanupRetry)> {
-        self.queued
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .drain()
-            .collect()
-    }
-
-    pub(crate) fn pending_count(&self) -> usize {
-        self.queued
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .len()
     }
 }
 
@@ -445,7 +395,6 @@ pub struct SessionSupervisor {
     /// drops while a run is still unwinding, until run-exit cleanup consumes it.
     terminal_cleanup_cascade_overrides: Arc<StdMutex<HashMap<String, bool>>>,
     terminal_cleanup_retry_queue: Arc<TerminalCleanupRetryQueue>,
-    terminal_cleanup_retry_rx: StdMutex<Option<mpsc::UnboundedReceiver<String>>>,
     /// Test-only direct SessionRun admissions can be cancelled by lifecycle
     /// operations instead of waiting for unrelated work to release capacity.
     #[cfg(test)]
@@ -513,6 +462,10 @@ mod nested_execution;
 mod queues;
 mod run_engine;
 mod status;
+mod terminal_cleanup;
+use terminal_cleanup::TerminalCleanupRetryQueue;
+#[cfg(test)]
+mod terminal_cleanup_tests;
 mod tool_ports;
 mod tool_runner;
 #[cfg(test)]
@@ -587,7 +540,6 @@ impl SessionSupervisor {
             lifecycle_hooks,
         } = ports;
         let (event_tx, _) = broadcast::channel(256);
-        let (retry_tx, retry_rx) = mpsc::unbounded_channel();
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
             store,
@@ -615,11 +567,7 @@ impl SessionSupervisor {
             closing_sessions: Arc::new(StdMutex::new(HashMap::new())),
             terminal_cleanup_sessions: Arc::new(StdMutex::new(HashSet::new())),
             terminal_cleanup_cascade_overrides: Arc::new(StdMutex::new(HashMap::new())),
-            terminal_cleanup_retry_queue: Arc::new(TerminalCleanupRetryQueue {
-                queued: StdMutex::new(HashMap::new()),
-                sender: retry_tx,
-            }),
-            terminal_cleanup_retry_rx: StdMutex::new(Some(retry_rx)),
+            terminal_cleanup_retry_queue: Arc::new(TerminalCleanupRetryQueue::default()),
             #[cfg(test)]
             direct_session_run_admission_waiters: Arc::new(Mutex::new(HashMap::new())),
             #[cfg(test)]
@@ -1724,7 +1672,6 @@ mod tests {
             resource_policy: haven_common::config::ResourcePolicy {
                 network: haven_common::config::NetworkResourcePolicy {
                     access: haven_common::config::NetworkAccessBoundary::Open,
-                    ..haven_common::config::NetworkResourcePolicy::default()
                 },
                 ..haven_common::config::ResourcePolicy::default()
             },
@@ -2060,11 +2007,8 @@ mod tests {
         drop(closing);
         assert_eq!(
             exec.terminal_cleanup_retry_queue
-                .queued
-                .lock()
-                .unwrap()
-                .get(&session.session_id),
-            Some(&TerminalCleanupRetry {
+                .pending_retry(&session.session_id),
+            Some(TerminalCleanupRetry {
                 cascade: Some(false),
                 remove_error_actor: true,
             }),

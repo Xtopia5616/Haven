@@ -1335,3 +1335,4 @@
 - [1429：外部工具内容不构成指令或授权](1429-treat-external-tool-content-as-untrusted.md)
 - [1430：为活动 scratch 共享容量预算](1430-shared-active-scratch-budget.md)
 - [1431：派生会话的创建结果与页面协调分层](1431-ui-fork-session-action-results.md)
+- [1432：终态清理重试的合并唤醒与独立工作窗口](1432-isolate-terminal-cleanup-retry-worker.md)
