@@ -18,6 +18,7 @@ use haven_common::hooks::{LifecycleHookEvent, LifecycleHookPayload};
 use haven_input::{KeyCode, KeyCombo, KeyModifier};
 use haven_memory::SessionStore;
 use haven_tools::ToolRunLifecycleEvent;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::Emitter;
@@ -29,6 +30,16 @@ use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::reload;
 
 const TOOL_RUN_HOOK_QUEUE_CAPACITY: usize = 32;
+
+// Tauri setup callbacks are synchronous. Under the app's multi-thread Tokio
+// runtime, block_in_place lets them wait on setup futures without nesting a runtime.
+fn block_on_setup<F: Future>(future: F) -> F::Output {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        tauri::async_runtime::block_on(future)
+    }
+}
 
 macro_rules! log_ignored_result {
     ($context:expr, $result:expr) => {{
@@ -416,7 +427,7 @@ pub(crate) fn run() {
             app.manage(notifications.clone());
             {
                 let state = handle.state::<Arc<AppState>>();
-                tauri::async_runtime::block_on(state.runtime.tools.set_permission_interaction(
+                block_on_setup(state.runtime.tools.set_permission_interaction(
                     Arc::new(commands::confirmation::RuntimePermissionInteraction(handle.clone())),
                 ));
             }
@@ -1313,10 +1324,16 @@ fn init_app_state(
 
 #[cfg(test)]
 mod tests {
-    use super::{pause_running_sessions_on_exit, project_interaction};
+    use super::{block_on_setup, pause_running_sessions_on_exit, project_interaction};
     use haven_common::lifecycle::SessionStatus;
     use haven_memory::{Database, SessionStore};
     use std::sync::Arc;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setup_block_on_works_inside_the_tauri_runtime() {
+        let value = block_on_setup(async { 42 });
+        assert_eq!(value, 42);
+    }
 
     #[test]
     fn interaction_projection_keeps_typed_lifecycle_values_on_the_existing_wire() {
