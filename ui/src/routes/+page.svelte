@@ -13,7 +13,10 @@
 	} from '$lib/sessionStatus.ts';
 	import { submitTranscript } from '$lib/submit.ts';
 	import { createChatSessionController } from '$lib/chatSessionController.ts';
-	import { submitAndRefreshSessionList } from '$lib/chatSessionOperationResults.ts';
+	import {
+		forkAndRefreshSessionList,
+		submitAndRefreshSessionList,
+	} from '$lib/chatSessionOperationResults.ts';
 	import { createChatEventController } from '$lib/chatEventController.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionStartup } from '$lib/chatSessionStartup.ts';
@@ -361,6 +364,7 @@
 		content: '',
 	});
 	let forkLoading = $state(false);
+	let forkActionInFlight = $state(false);
 
 	// Model switcher state: configured chat-capable model profiles and the
 	// current primary profile selected by the Chat request route.
@@ -1068,7 +1072,7 @@
 		warn: (message) => logger.warn('+page', message),
 		reportError,
 	});
-	const { loadSessions, scheduleLoadSessions } = sessionStartup;
+	const { loadSessions, refreshSessionListForAction, scheduleLoadSessions } = sessionStartup;
 
 	const chatSessionController = createChatSessionController({
 		commands: {
@@ -1095,9 +1099,6 @@
 		},
 		setRollbackLoading: (loading) => (rollbackLoading = loading),
 		setForkLoading: (loading) => (forkLoading = loading),
-		closeForkDialog: () => {
-			forkDialog = { open: false, messageId: '', content: '' };
-		},
 		setContinuePending: (pending) => (continuePending = pending),
 		setInterruptPending: (pending) => (interruptPending = pending),
 		setAutoFollow: (follow) => chatViewController.setAutoFollow(follow),
@@ -1113,7 +1114,7 @@
 	): Promise<void> {
 		const result = await submitAndRefreshSessionList(
 			() => chatSessionController.submitMessage(...args),
-			loadSessions,
+			refreshSessionListForAction,
 		);
 		if (result.kind === 'failed') {
 			reportError(result.error, { context: '+page', message: '发送失败', log: false });
@@ -1172,7 +1173,7 @@
 			}
 		}
 		try {
-			await loadSessions();
+			await refreshSessionListForAction();
 		} catch (error) {
 			reportError(error, {
 				context: '+page',
@@ -1182,9 +1183,54 @@
 		}
 	}
 
-	function confirmForkSession() {
-		if (!forkDialog.messageId) return;
-		return chatSessionController.forkSessionFromMessage(forkDialog.messageId);
+	async function confirmForkSession() {
+		if (!forkDialog.messageId || forkActionInFlight) return;
+		const requestedDialog = forkDialog;
+		forkActionInFlight = true;
+		try {
+			const result = await forkAndRefreshSessionList(
+				() => chatSessionController.forkSessionFromMessage(requestedDialog.messageId),
+				refreshSessionListForAction,
+				(fork) => chatSessionController.selectForkedSession(fork),
+			);
+			if (result.kind === 'ignored') return;
+			if (result.kind === 'rejected') {
+				addNotification('消息仍在保存，请稍后再试', 'info', 2000);
+				return;
+			}
+			if (forkDialog === requestedDialog)
+				forkDialog = { open: false, messageId: '', content: '' };
+			if (result.kind === 'failed') {
+				reportError(result.error, {
+					context: '+page',
+					message: '创建派生会话失败',
+					log: false,
+				});
+				return;
+			}
+			if (result.selection.kind === 'failed') {
+				reportError(result.selection.error, {
+					context: '+page',
+					message: '派生会话已创建，切换会话失败',
+					log: false,
+				});
+			} else {
+				addNotification(
+					result.selection.kind === 'switched' ? '已切换到派生会话' : '已创建派生会话',
+					'info',
+					2000,
+				);
+			}
+			if (result.refresh.kind === 'failed') {
+				reportError(result.refresh.error, {
+					context: '+page',
+					message: '刷新会话列表失败',
+					log: false,
+				});
+			}
+		} finally {
+			forkActionInFlight = false;
+		}
 	}
 
 	function pendingInteractionRequestIdsForSession(sessionId: string) {
@@ -1480,8 +1526,8 @@
 			/>
 			<MaterialButton
 				variant="filled"
-				label={forkLoading ? '创建中…' : '创建并切换'}
-				disabled={forkLoading}
+				label={forkLoading ? '创建中…' : forkActionInFlight ? '切换中…' : '创建并切换'}
+				disabled={forkActionInFlight}
 				onclick={confirmForkSession}
 			/>
 		{/snippet}

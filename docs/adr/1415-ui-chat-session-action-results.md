@@ -4,6 +4,8 @@
 
 已实施 — 2026-10-25。
 
+显式操作刷新失败的生产传播边界于 [ADR 1431](1431-ui-fork-session-action-results.md) 补齐；下述当时的替身测试不代表列表 owner 已传播真实查询拒绝。
+
 ## 背景与证据
 
 `ChatSessionController` 的会话切换、rollback 与消息提交同时承担命令/投影协调和页面通知、草稿、弹窗或列表刷新。切换以 `boolean` 混合了过期选择与失败；rollback 和提交返回 `void`，页面无法区分未执行、已提交及其后刷新失败。提交完成后列表刷新使用未等待的 Promise，刷新拒绝可能未处理，也无法表达 transcript 已成功提交。

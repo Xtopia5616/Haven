@@ -14,6 +14,7 @@ export function createSessionRefreshScheduler(
 	refreshFn: () => Promise<void>,
 	delayMs = 300,
 	timers: Pick<typeof globalThis, 'setTimeout' | 'clearTimeout'> = globalThis,
+	onBackgroundError: (error: unknown, request: Promise<void>) => void = () => {},
 ): SessionRefreshScheduler {
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	let active: Promise<void> | null = null;
@@ -27,10 +28,15 @@ export function createSessionRefreshScheduler(
 			if (timer) timers.clearTimeout(timer);
 			timer = null;
 			queued = false;
-			void refresh();
+			refreshInBackground();
 		} else {
 			queued = false;
 		}
+	}
+
+	function refreshInBackground() {
+		const request = refresh();
+		void request.catch((error: unknown) => onBackgroundError(error, request));
 	}
 
 	function refresh(): Promise<void> {
@@ -53,7 +59,7 @@ export function createSessionRefreshScheduler(
 		if (timer) timers.clearTimeout(timer);
 		timer = timers.setTimeout(() => {
 			timer = null;
-			void refresh();
+			refreshInBackground();
 		}, delayMs);
 	}
 

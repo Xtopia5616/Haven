@@ -2,6 +2,34 @@ import { describe, expect, it, vi } from 'vitest';
 import { createSessionRefreshScheduler } from './sessionRefresh.ts';
 
 describe('createSessionRefreshScheduler', () => {
+	it('handles scheduled and queued background rejection while exposing explicit refresh rejection', async () => {
+		vi.useFakeTimers();
+		try {
+			const error = new Error('refresh failed');
+			const report = vi.fn();
+			const scheduler = createSessionRefreshScheduler(
+				async () => {
+					throw error;
+				},
+				300,
+				globalThis,
+				report,
+			);
+			scheduler.schedule();
+			await vi.advanceTimersByTimeAsync(300);
+			expect(report).toHaveBeenCalledTimes(1);
+			const first = scheduler.refresh();
+			const queued = scheduler.refresh();
+			expect(queued).toBe(first);
+			await expect(first).rejects.toBe(error);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(report).toHaveBeenCalledTimes(2);
+			scheduler.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('debounces lifecycle refreshes and queues one follow-up during an active load', async () => {
 		vi.useFakeTimers();
 		const deferred: Array<() => void> = [];

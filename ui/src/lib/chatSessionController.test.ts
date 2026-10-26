@@ -3,7 +3,10 @@ import {
 	createChatSessionController,
 	type ChatSessionControllerDependencies,
 } from './chatSessionController.ts';
-import { submitAndRefreshSessionList } from './chatSessionOperationResults.ts';
+import {
+	forkAndRefreshSessionList,
+	submitAndRefreshSessionList,
+} from './chatSessionOperationResults.ts';
 import type { InteractionRequest } from './contracts/app.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { TranscriptSubmissionResultView } from './contracts/transcriptSubmissionResult.ts';
@@ -126,7 +129,6 @@ function makeHarness(
 		clearPersistedFreshSessionIntent: () => persistedIntentClears++,
 		setRollbackLoading: (loading) => rollbackLoading.push(loading),
 		setForkLoading: () => {},
-		closeForkDialog: () => {},
 		setContinuePending: (pending) => continuePending.push(pending),
 		setInterruptPending: (pending) => interruptPending.push(pending),
 		setAutoFollow: (follow) => autoFollow.push(follow),
@@ -184,6 +186,163 @@ function pendingInteraction(sessionId = SESSION_ID): InteractionRequest {
 		createdAt: '2026-09-25T00:00:00Z',
 	};
 }
+
+describe('ChatSessionController fork', () => {
+	function forkHarness() {
+		return makeHarness({
+			runCommand: (command) =>
+				command === 'fork_session_from_message'
+					? CREATED_SESSION_ID
+					: resumeResponseFixture(),
+		});
+	}
+
+	it('keeps a created child successful when list refresh fails and still selects it', async () => {
+		const harness = forkHarness();
+		const error = new Error('refresh failed');
+		const result = await forkAndRefreshSessionList(
+			() => harness.controller.forkSessionFromMessage(USER_MESSAGE_ID),
+			async () => {
+				throw error;
+			},
+			(fork) => harness.controller.selectForkedSession(fork),
+		);
+		expect(result).toMatchObject({
+			kind: 'created',
+			sessionId: CREATED_SESSION_ID,
+			refresh: { kind: 'failed', error },
+			selection: { kind: 'switched' },
+		});
+		expect(harness.reducer.snapshot().activeSessionId).toBe(CREATED_SESSION_ID);
+		expect(harness.notifications).toEqual([]);
+		expect(harness.reportedErrors).toEqual([]);
+	});
+
+	it('does not select a child after a newer choice during list refresh', async () => {
+		const harness = forkHarness();
+		const result = await forkAndRefreshSessionList(
+			() => harness.controller.forkSessionFromMessage(USER_MESSAGE_ID),
+			async () => {
+				harness.controller.beginUserSessionSelection();
+			},
+			(fork) => harness.controller.selectForkedSession(fork),
+		);
+		expect(result).toMatchObject({ kind: 'created', selection: { kind: 'superseded' } });
+		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
+		expect(harness.commandCalls.map((call) => call.command)).toEqual([
+			'fork_session_from_message',
+		]);
+	});
+
+	it('returns created when selecting the persisted child fails', async () => {
+		const error = new Error('resume failed');
+		const harness = makeHarness({
+			runCommand: (command) => {
+				if (command === 'fork_session_from_message') return CREATED_SESSION_ID;
+				throw error;
+			},
+		});
+		const result = await forkAndRefreshSessionList(
+			() => harness.controller.forkSessionFromMessage(USER_MESSAGE_ID),
+			async () => {},
+			(fork) => harness.controller.selectForkedSession(fork),
+		);
+		expect(result).toMatchObject({ kind: 'created', selection: { kind: 'failed', error } });
+	});
+
+	it('does not select a late child after switching away and back while creating', async () => {
+		let finish!: (value: string) => void;
+		const harness = makeHarness({
+			runCommand: () =>
+				new Promise<string>((resolve) => {
+					finish = resolve;
+				}),
+		});
+		const pending = harness.controller.forkSessionFromMessage(USER_MESSAGE_ID);
+		harness.controller.beginUserSessionSelection();
+		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
+		harness.controller.beginUserSessionSelection();
+		harness.reducer.dispatch({ type: 'session/selected', sessionId: SESSION_ID });
+		finish(CREATED_SESSION_ID);
+		const fork = await pending;
+		expect(fork.kind).toBe('created');
+		if (fork.kind !== 'created') throw new Error('expected created fork');
+		expect(await harness.controller.selectForkedSession(fork)).toEqual({ kind: 'superseded' });
+		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
+	});
+
+	it.each([false, true])(
+		'fences child resume after a newer selection (failure=%s)',
+		async (fail) => {
+			let finish!: (value: unknown) => void;
+			let reject!: (error: Error) => void;
+			const harness = makeHarness({
+				runCommand: (command) =>
+					command === 'fork_session_from_message'
+						? CREATED_SESSION_ID
+						: new Promise((resolve, rejectPromise) => {
+								finish = resolve;
+								reject = rejectPromise;
+							}),
+			});
+			const fork = await harness.controller.forkSessionFromMessage(USER_MESSAGE_ID);
+			if (fork.kind !== 'created') throw new Error('expected created fork');
+			const pending = harness.controller.selectForkedSession(fork);
+			harness.controller.beginUserSessionSelection();
+			harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
+			if (fail) reject(new Error('late resume failure'));
+			else finish(resumeResponseFixture());
+			expect(await pending).toEqual({ kind: 'superseded' });
+			expect(harness.reducer.snapshot().activeSessionId).toBe(OTHER_SESSION_ID);
+			expect(
+				harness.actions.filter(
+					(action) => action.type === 'session/messages/resume-loaded',
+				),
+			).toEqual([]);
+		},
+	);
+
+	it('rejects unsaved messages and avoids refresh after creation fails', async () => {
+		const error = new Error('create failed');
+		const harness = makeHarness({
+			runCommand: () => {
+				throw error;
+			},
+		});
+		expect(await harness.controller.forkSessionFromMessage('pending')).toEqual({
+			kind: 'rejected',
+			reason: 'message-not-persisted',
+		});
+		let refreshes = 0;
+		const result = await forkAndRefreshSessionList(
+			() => harness.controller.forkSessionFromMessage(USER_MESSAGE_ID),
+			async () => {
+				refreshes++;
+			},
+			(fork) => harness.controller.selectForkedSession(fork),
+		);
+		expect(result).toEqual({ kind: 'failed', error });
+		expect(refreshes).toBe(0);
+	});
+
+	it('rejects concurrent creates without duplicating the backend operation', async () => {
+		let finish!: (value: string) => void;
+		const harness = makeHarness({
+			runCommand: () =>
+				new Promise<string>((resolve) => {
+					finish = resolve;
+				}),
+		});
+		const pending = harness.controller.forkSessionFromMessage(USER_MESSAGE_ID);
+		expect(await harness.controller.forkSessionFromMessage(USER_MESSAGE_ID)).toEqual({
+			kind: 'ignored',
+			reason: 'already-in-flight',
+		});
+		finish(CREATED_SESSION_ID);
+		expect(await pending).toMatchObject({ kind: 'created', sessionId: CREATED_SESSION_ID });
+		expect(harness.commandCalls).toHaveLength(1);
+	});
+});
 
 describe('ChatSessionController rollback', () => {
 	it('pauses and restores the draft when rolling back a persisted user message', async () => {

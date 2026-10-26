@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
 > 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1–5 的实现及 Slice 3/4 验收已完成（ADR 1373–1383）；Slice 2 的执行预设、typed 资源合同、规范 `ResourcePolicy` 与精确边界扩展已完成（ADR 1374、1376–1381）。Shell 系统与工具链读取根配置已完成（ADR 1408）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
-> 更新日期：2026-10-26
+> 更新日期：2026-10-27
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -74,6 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
+| **Completed** | R12 派生会话动作结果（[ADR 1431](adr/1431-ui-fork-session-action-results.md)）：将创建成功与后续刷新/切换失败分开，页面按发起时的选择版本和弹窗身份协调后续动作；显式操作刷新接通真实查询失败，后台刷新继续安全处理；UI 1532 项测试、检查与生产构建通过，真实 WebView 交互仍归 §5.1。 |
 | **Completed** | R12 继续生成的异步选择隔离（[ADR 1390](adr/1390-fence-continue-reload-by-user-selection.md)）：恢复快照与续写提交均校验发起时的会话和选择版本；重载成功/失败、切换会话、新建及切走再切回均有回归覆盖。R12 其余动作职责仍按源码证据复核，不视为整体完成。 |
 | **Completed** | R12 UI 会话操作结果切片（[ADR 1415](adr/1415-ui-chat-session-action-results.md)）：切换、rollback 和消息提交返回具名结果；路由处理 rollback 的通知、草稿、弹窗和刷新，提交成功与列表刷新失败分别表达。快速切换、rollback 重入/旧选择及提交后刷新失败均有回归覆盖。R12 其他会话动作仍按源码证据复核，不视为整体完成。 |
 | **Completed** | R05 durable UI 事件补齐与 R12 的恢复/rollback 快照竞态切片（ADR 1386）：聊天页可见期间每 5 秒读取当前会话的轻量 durable cursor；序号跳跃或后端 cursor 前进时，双侧 cursor 稳定后才应用恢复投影。快照水位拒绝旧事件，rollback/continue 会使在途旧快照失效。自动化门禁和持续聚焦丢事件的隔离 Windows 验收已通过；恢复与 rollback 并发 UI 场景仍属于 §5.1。R12 其余页面动作职责仍按审查报告作为候选。 |
@@ -170,7 +171,7 @@ Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request 
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1359）、§5.10 Prompt 记忆召回分路（ADR 1360）与 §5.11 事实历史与按时点查询（ADR 1361）已完成；§5.12 推断事实先审核再写入（ADR 1362）、§5.13 原文证据核验与受控自动接受（ADR 1363）、§5.14 有界两跳事实图召回（ADR 1364）与 §5.15 事实现实有效时间（ADR 1365）已完成。当前没有 Active/Next 结构切片。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布验收仍按 §5.1 跟踪。
+**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1359）、§5.10 Prompt 记忆召回分路（ADR 1360）与 §5.11 事实历史与按时点查询（ADR 1361）已完成；§5.12 推断事实先审核再写入（ADR 1362）、§5.13 原文证据核验与受控自动接受（ADR 1363）、§5.14 有界两跳事实图召回（ADR 1364）与 §5.15 事实现实有效时间（ADR 1365）已完成。R12 派生会话动作结果及显式刷新失败传播已完成（ADR 1431）；下一候选为 R04 清理唤醒与工作窗口，实施前须定义 backlog/重启策略边界，不能以丢弃待办实现容量上限。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布验收仍按 §5.1 跟踪。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 

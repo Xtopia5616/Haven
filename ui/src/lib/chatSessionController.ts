@@ -43,6 +43,12 @@ type RollbackTranscriptRefresh = 'loaded' | 'superseded' | { kind: 'failed'; err
 export type SessionSwitchResult =
 	{ kind: 'switched' } | { kind: 'superseded' } | { kind: 'failed'; error: unknown };
 
+export type SessionForkResult =
+	| { kind: 'ignored'; reason: 'no-active-session' | 'already-in-flight' }
+	| { kind: 'rejected'; reason: 'message-not-persisted' }
+	| { kind: 'failed'; error: unknown }
+	| { kind: 'created'; sessionId: string; sourceSessionId: string; selectionVersion: number };
+
 export interface ChatSessionControllerDependencies {
 	commands: Pick<
 		typeof sessionCommandAdapter,
@@ -76,7 +82,6 @@ export interface ChatSessionControllerDependencies {
 	clearPersistedFreshSessionIntent: () => void;
 	setRollbackLoading: (loading: boolean) => void;
 	setForkLoading: (loading: boolean) => void;
-	closeForkDialog: () => void;
 	setContinuePending: (pending: boolean) => void;
 	setInterruptPending: (pending: boolean) => void;
 	setAutoFollow: (follow: boolean) => void;
@@ -234,13 +239,13 @@ export class ChatSessionController {
 		}
 	}
 
-	/** Create and select an independent child session from one user message. */
-	async forkSessionFromMessage(messageId: string): Promise<void> {
+	/** Create a child and capture the selection intent for the later page refresh. */
+	async forkSessionFromMessage(messageId: string): Promise<SessionForkResult> {
 		const sourceSessionId = this.dependencies.getActiveSessionId();
-		if (!sourceSessionId || this.forkInFlight) return;
+		if (!sourceSessionId) return { kind: 'ignored', reason: 'no-active-session' };
+		if (this.forkInFlight) return { kind: 'ignored', reason: 'already-in-flight' };
 		if (!isCanonicalEntityId(messageId, 'msg')) {
-			this.dependencies.notify('消息仍在保存，请稍后再试', 'info', 2000);
-			return;
+			return { kind: 'rejected', reason: 'message-not-persisted' };
 		}
 
 		const selectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
@@ -251,30 +256,29 @@ export class ChatSessionController {
 				sessionId: sourceSessionId,
 				messageId,
 			});
-			await this.dependencies.loadSessions();
-			if (
-				this.dependencies.reducer.isUserSelectionCurrent(selectionVersion) &&
-				this.dependencies.getActiveSessionId() === sourceSessionId
-			) {
-				const switchResult = await this.switchToSession(childSessionId, selectionVersion);
-				if (switchResult.kind === 'failed') {
-					this.report(switchResult.error, '切换会话失败');
-				} else if (switchResult.kind === 'switched') {
-					const session = this.dependencies
-						.getSessionSnapshot()
-						.find((item) => item.sessionId === childSessionId);
-					this.dependencies.notify(`已切换到：${session?.title || '会话'}`, 'info', 1500);
-				}
-			} else {
-				this.dependencies.notify('已创建派生会话', 'info', 2000);
-			}
+			return {
+				kind: 'created',
+				sessionId: childSessionId,
+				sourceSessionId,
+				selectionVersion,
+			};
 		} catch (error) {
-			this.report(error, '创建派生会话失败');
+			return { kind: 'failed', error };
 		} finally {
 			this.forkInFlight = false;
 			this.dependencies.setForkLoading(false);
-			this.dependencies.closeForkDialog();
 		}
+	}
+
+	async selectForkedSession(
+		fork: Extract<SessionForkResult, { kind: 'created' }>,
+	): Promise<SessionSwitchResult> {
+		if (
+			!this.isUserSessionSelectionCurrent(fork.selectionVersion) ||
+			this.dependencies.getActiveSessionId() !== fork.sourceSessionId
+		)
+			return { kind: 'superseded' };
+		return this.switchToSession(fork.sessionId, fork.selectionVersion);
 	}
 
 	/** Load and select a persisted session, then reclaim terminal prior-session memory. */

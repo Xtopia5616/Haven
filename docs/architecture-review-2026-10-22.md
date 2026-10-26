@@ -77,6 +77,8 @@
 
 **验收。** 结束/删除大量会话且清理持续失败时，队列与内存保持有界，新会话仍可运行；退出不丢失必须重启补做的工作。新的 worker 必须在实施中给出并发、batch、截止期限和取消合同，不能只把 await 挪进裸 spawn。
 
+**源码复核（2026-10-27）。** 上述证据仍成立：`session/mod.rs` 的 `TerminalCleanupRetryQueue` 以 HashMap 合并策略，仍用无界 ID 通知；`dispatcher.rs::start_dispatcher_inner` 的两个通知分支仍直接 await 清理。`status.rs::finish_terminal_cleanup` 涉及 partial、inbox、后代结束与注册表清理；shutdown 已等待 run wrappers 并最终 drain 重试，不能删除这项保证。首个候选切片应只收敛唤醒和工作窗口：合并唤醒、固定 batch、单清理 worker，保留 actor identity、策略合并和退出 drain，并用阻塞清理证明新 run 可进入 handler。该切片不能声称整体 backlog 有界或跨重启可靠：`cascade=false` 等 retry 策略仍是进程内信息，startup 只恢复 pending session；硬截断 map 会丢工作。完整 backlog/restart 契约须先确定持久标记或可恢复扫描及取消边界，再进入实现。
+
 ## 6. R05：事件传递的可靠性应按消费者声明
 
 **证据。** [EventBus::emit](../crates/agent/src/event.rs) 顺序 await 每个 subscriber。已有 BufferedEmitter、流分片合并以及 overflow 不丢权威事件的测试，不能再建议从零新增全部机制。[MemoryPersistence::session_store](../crates/memory/src/persistence.rs) 每次产生独立 live channel；[AppState](../crates/app-binary/src/app_state.rs) 有意构造 App/命令侧与 supervisor 两个 store。

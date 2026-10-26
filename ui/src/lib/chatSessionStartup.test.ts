@@ -10,6 +10,10 @@ import type {
 import type { InteractionRequest } from './contracts/app.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { SessionResumeTarget } from './sessionIntentStore.ts';
+import {
+	forkAndRefreshSessionList,
+	submitAndRefreshSessionList,
+} from './chatSessionOperationResults.ts';
 
 const SESSION_ID = 'ses-00000000000000000000000000000001';
 const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
@@ -167,6 +171,79 @@ afterEach(() => {
 });
 
 describe('createChatSessionStartup', () => {
+	it('propagates a real list failure into the fork outcome without reporting it twice', async () => {
+		const error = new Error('runtime list failed');
+		const harness = createHarness({
+			listRuntimeSessions: async () => {
+				throw error;
+			},
+		});
+		const result = await forkAndRefreshSessionList(
+			async () => ({
+				kind: 'created',
+				sessionId: OTHER_SESSION_ID,
+				sourceSessionId: SESSION_ID,
+				selectionVersion: 0,
+			}),
+			harness.startup.refreshSessionListForAction,
+			async () => ({ kind: 'switched' }),
+		);
+		expect(result).toMatchObject({
+			kind: 'created',
+			refresh: { kind: 'failed', error },
+			selection: { kind: 'switched' },
+		});
+		expect(harness.errors).toEqual([]);
+	});
+
+	it('keeps transcript acceptance distinct from a real action refresh failure', async () => {
+		const error = new Error('runtime list failed');
+		const harness = createHarness({
+			listRuntimeSessions: async () => {
+				throw error;
+			},
+		});
+		expect(
+			await submitAndRefreshSessionList(
+				async () => ({ kind: 'submitted', sessionId: SESSION_ID }),
+				harness.startup.refreshSessionListForAction,
+			),
+		).toEqual({ kind: 'submitted', sessionId: SESSION_ID, refresh: { kind: 'failed', error } });
+		expect(harness.errors).toEqual([]);
+	});
+
+	it('absorbs background refresh failures and reports once for each shared query', async () => {
+		vi.useFakeTimers();
+		const error = new Error('runtime list failed');
+		const harness = createHarness({
+			listRuntimeSessions: async () => {
+				throw error;
+			},
+		});
+		harness.startup.scheduleLoadSessions();
+		await vi.advanceTimersByTimeAsync(300);
+		expect(harness.errors).toEqual([{ error, message: '加载会话列表失败' }]);
+		await expect(harness.startup.loadSessions()).resolves.toBeUndefined();
+		expect(harness.errors).toHaveLength(2);
+	});
+
+	it('lets the action report a shared background query failure and keeps startup waits settled', async () => {
+		const response = deferred<RuntimeSessionListResponse>();
+		const harness = createHarness({ listRuntimeSessions: () => response.promise });
+		const background = harness.startup.loadSessions();
+		const action = harness.startup.refreshSessionListForAction();
+		const rejection = expect(action).rejects.toThrow('shared failure');
+		response.reject(new Error('shared failure'));
+		await Promise.all([background, rejection]);
+		// The second caller requested one coalesced follow-up query; its own failure is
+		// independently owned by the background scheduler.
+		await vi.waitFor(() => expect(harness.sessionListCalls).toBe(2));
+		expect(harness.errors).toHaveLength(1);
+		await expect(
+			harness.startup.loadInitialSessions({ sessionId: SESSION_ID, wasError: true }),
+		).resolves.toBeUndefined();
+	});
+
 	it('projects runtime session rows into the reducer renderer shape', async () => {
 		const runtimeSessions = list(SESSION_ID);
 		runtimeSessions.sessions[0]!.inputText = '运行时首条输入';

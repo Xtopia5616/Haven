@@ -44,7 +44,23 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		return !disposed && generation === expectedGeneration;
 	}
 
-	const loadSessionsRefresh = createSessionRefreshScheduler(() => loadSessionsNow());
+	const reportedRefreshes = new WeakSet<Promise<void>>();
+	const actionRefreshes = new WeakSet<Promise<void>>();
+	function reportRefreshFailure(error: unknown, request: Promise<void>) {
+		if (disposed || actionRefreshes.has(request) || reportedRefreshes.has(request)) return;
+		reportedRefreshes.add(request);
+		dependencies.reportError(error, {
+			context: '+page',
+			message: '加载会话列表失败',
+			log: false,
+		});
+	}
+	const loadSessionsRefresh = createSessionRefreshScheduler(
+		() => loadSessionsNow(),
+		300,
+		globalThis,
+		reportRefreshFailure,
+	);
 
 	function retainErroredSession(
 		resumeTarget: Pick<SessionResumeTarget, 'sessionId' | 'inputText' | 'title'>,
@@ -162,15 +178,8 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			// Lifecycle changes can reap background ToolRuns or ScheduleRuns without a
 			// matching action-board terminal event.
 			dependencies.refreshToolRuns();
-		})().catch((error: unknown) => {
-			if (!isCurrentGeneration(requestGeneration)) return;
-			dependencies.reportError(error, {
-				context: '+page',
-				message: '加载会话列表失败',
-				log: false,
-			});
-		});
-		loadSessionsSettled = run;
+		})();
+		loadSessionsSettled = run.catch(() => {});
 		return run;
 	}
 
@@ -178,7 +187,17 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 	function loadSessions(): Promise<void> {
 		if (disposed) return Promise.resolve();
 		const run = loadSessionsRefresh.refresh();
-		loadSessionsSettled = run;
+		const settled = run.catch((error: unknown) => reportRefreshFailure(error, run));
+		loadSessionsSettled = settled;
+		return settled;
+	}
+
+	/** Action callers own reporting; the shared scheduler still owns query ordering. */
+	function refreshSessionListForAction(): Promise<void> {
+		if (disposed) return Promise.resolve();
+		const run = loadSessionsRefresh.refresh();
+		actionRefreshes.add(run);
+		loadSessionsSettled = run.catch(() => {});
 		return run;
 	}
 
@@ -327,6 +346,7 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 		hydrateFreshSessionIntent,
 		loadInitialSessions,
 		loadSessions,
+		refreshSessionListForAction,
 		applyResumeTarget,
 		scheduleLoadSessions,
 	};
