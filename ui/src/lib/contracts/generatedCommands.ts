@@ -213,8 +213,8 @@ export interface RequestPolicyInput { request?: RequestKindInput; primary?: stri
 export interface RequestPolicy { request: RequestKind; primary: string }
 export interface HookCommandInput { enabled?: boolean; command: string; args?: string[]; matcher?: string | null }
 export interface HookCommand { enabled: boolean; command: string; args: string[]; matcher: string | null }
-export interface LifecycleHooksConfigInput { pre_tool_use?: HookCommandInput[]; post_tool_use?: HookCommandInput[]; session_start?: HookCommandInput[]; run_start?: HookCommandInput[]; run_end?: HookCommandInput[]; pre_compact?: HookCommandInput[]; post_compact?: HookCommandInput[]; session_end?: HookCommandInput[] }
-export interface LifecycleHooksConfig { pre_tool_use: HookCommand[]; post_tool_use: HookCommand[]; session_start: HookCommand[]; run_start: HookCommand[]; run_end: HookCommand[]; pre_compact: HookCommand[]; post_compact: HookCommand[]; session_end: HookCommand[] }
+export interface LifecycleHooksConfigInput { pre_tool_use?: HookCommandInput[]; permission_request?: HookCommandInput[]; post_tool_use?: HookCommandInput[]; session_start?: HookCommandInput[]; run_start?: HookCommandInput[]; run_end?: HookCommandInput[]; pre_compact?: HookCommandInput[]; post_compact?: HookCommandInput[]; session_end?: HookCommandInput[]; toolrun_start?: HookCommandInput[]; toolrun_end?: HookCommandInput[] }
+export interface LifecycleHooksConfig { pre_tool_use: HookCommand[]; permission_request: HookCommand[]; post_tool_use: HookCommand[]; session_start: HookCommand[]; run_start: HookCommand[]; run_end: HookCommand[]; pre_compact: HookCommand[]; post_compact: HookCommand[]; session_end: HookCommand[]; toolrun_start: HookCommand[]; toolrun_end: HookCommand[] }
 export interface SettingsPatchInput { default_shell?: ShellChoiceInput | null; llm?: LlmConfigInput | null; hotkey?: HotkeyConfigInput | null; session?: SessionConfigInput | null; context_limits?: ContextLimitsConfigInput | null; memory?: MemoryConfigInput | null; security?: SecurityConfigInput | null; media?: MediaConfigInput | null; notification?: NotificationConfigInput | null; log?: LogConfigInput | null }
 export interface SettingsSnapshot { default_shell: ShellChoice; llm: LlmConfig; hotkey: HotkeyConfig; session: SessionConfig; context_limits: ContextLimitsConfig; memory: MemoryConfig; security: SecurityConfig; media: MediaConfig; skills: SkillsConfig; skills_exec: SkillsExecConfig; mcp_discovery: McpDiscoveryConfig; mcp_servers: McpServerConfig[]; notification: NotificationConfig; log: LogConfig; tool_settings: Record<string, ToolConfig> }
 export interface AudioConfigInput { max_duration_secs?: number; silence_timeout_ms?: number; vad_threshold?: number }
@@ -282,7 +282,7 @@ export interface ToolConfig { enabled: boolean; timeout_secs?: number; max_outpu
 export interface LifecycleHookCommandLocation { source: LifecycleHookCommandSource; index: number }
 export const LIFECYCLE_HOOK_COMMAND_SOURCE_VALUES = ['user', 'project'] as const;
 export type LifecycleHookCommandSource = (typeof LIFECYCLE_HOOK_COMMAND_SOURCE_VALUES)[number];
-export const LIFECYCLE_HOOK_EVENT_VALUES = ['pre_tool_use', 'post_tool_use', 'session_start', 'run_start', 'run_end', 'pre_compact', 'post_compact', 'session_end'] as const;
+export const LIFECYCLE_HOOK_EVENT_VALUES = ['pre_tool_use', 'permission_request', 'post_tool_use', 'session_start', 'run_start', 'run_end', 'pre_compact', 'post_compact', 'session_end', 'toolrun_start', 'toolrun_end'] as const;
 export type LifecycleHookEvent = (typeof LIFECYCLE_HOOK_EVENT_VALUES)[number];
 export interface LifecycleHookEventDiagnostics { event: LifecycleHookEvent; event_runs: number; command_attempts: number; command_starts: number; failures: number; denials: number; last_outcome: LifecycleHookOutcome | null; last_failure_code: string | null; last_problem_command: LifecycleHookCommandLocation | null }
 export const LIFECYCLE_HOOK_OUTCOME_VALUES = ['no_hooks', 'succeeded', 'denied', 'failed_open'] as const;
@@ -2608,6 +2608,30 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 							}
 						} },
 					},
+					'permission_request': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					},
 					'post_tool_use': {
 						optional: false,
 						shape: { kind: 'array', items: {
@@ -2751,7 +2775,7 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 								}
 							}
 						} },
-					}
+					},
 					'session_end': {
 						optional: false,
 						shape: { kind: 'array', items: {
@@ -2776,6 +2800,54 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 							}
 						} },
 					},
+					'toolrun_start': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					},
+					'toolrun_end': {
+						optional: false,
+						shape: { kind: 'array', items: {
+							kind: 'object',
+							fields: {
+								'enabled': {
+									optional: false,
+									shape: { kind: 'boolean' },
+								},
+								'command': {
+									optional: false,
+									shape: { kind: 'string' },
+								},
+								'args': {
+									optional: false,
+									shape: { kind: 'array', items: { kind: 'string' } },
+								},
+								'matcher': {
+									optional: false,
+									shape: { kind: 'nullable', inner: { kind: 'string' } },
+								}
+							}
+						} },
+					}
 				}
 			},
 		},

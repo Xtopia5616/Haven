@@ -1,6 +1,7 @@
 //! FIFO dispatcher and run-lifecycle coordination.
 
 use super::*;
+use haven_common::hooks::LifecycleHookRunSource;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::Notify;
 use tracing::Instrument;
@@ -258,9 +259,34 @@ impl SessionSupervisor {
     }
 
     pub(super) async fn enqueue_pending(&self, session_id: &str) {
+        self.enqueue_pending_with_source(session_id, LifecycleHookRunSource::Continue)
+            .await;
+    }
+
+    pub(super) async fn enqueue_pending_with_source(
+        &self,
+        session_id: &str,
+        run_source: LifecycleHookRunSource,
+    ) {
         let mut queue = self.pending_queue.lock().await;
-        if !queue.iter().any(|id| id == session_id) {
-            queue.push_back(session_id.to_string());
+        if let Some(queued_run) = queue.iter_mut().find(|run| run.session_id == session_id) {
+            queued_run.run_source = run_source;
+        } else {
+            queue.push_back(PendingSessionRun {
+                session_id: session_id.to_string(),
+                run_source,
+            });
+        }
+    }
+
+    pub(crate) async fn update_pending_run_source(
+        &self,
+        session_id: &str,
+        run_source: LifecycleHookRunSource,
+    ) {
+        let mut queue = self.pending_queue.lock().await;
+        if let Some(queued_run) = queue.iter_mut().find(|run| run.session_id == session_id) {
+            queued_run.run_source = run_source;
         }
     }
 
@@ -268,7 +294,7 @@ impl SessionSupervisor {
         self.pending_queue
             .lock()
             .await
-            .retain(|id| id != session_id);
+            .retain(|run| run.session_id != session_id);
     }
 
     pub fn subscribe_dispatch(&self) -> watch::Receiver<u64> {
@@ -374,7 +400,7 @@ impl SessionSupervisor {
                         None => break,
                     },
                 };
-                let Some(session_id) = dispatcher.try_claim_pending().await else {
+                let Some(pending_run) = dispatcher.try_claim_pending().await else {
                     drop(permit);
                     tokio::select! {
                         _ = dispatcher_cancellation.cancelled() => break 'dispatcher,
@@ -394,6 +420,8 @@ impl SessionSupervisor {
                     }
                     continue;
                 };
+                let session_id = pending_run.session_id;
+                let run_source = pending_run.run_source;
                 let supervisor = dispatcher.clone();
                 let runner = engine.clone();
                 let span = tracing::info_span!("run_session", session_id = %session_id);
@@ -402,7 +430,7 @@ impl SessionSupervisor {
                         let actor = supervisor.actor_for(&session_id).await.ok_or_else(|| {
                             anyhow::anyhow!("session actor disappeared before run")
                         })?;
-                        actor.run(runner).await
+                        actor.run_with_source(runner, run_source).await
                     }
                     .instrument(span)
                     .await;
@@ -521,7 +549,7 @@ impl SessionSupervisor {
         }
     }
 
-    pub(crate) async fn try_claim_pending(&self) -> Option<String> {
+    pub(crate) async fn try_claim_pending(&self) -> Option<PendingSessionRun> {
         // Claiming is a lifecycle admission, not just a queue operation. Keep
         // the registry gate across the queue scan + closing check + actor
         // claim so delete/clear cannot remove an actor between its check and
@@ -532,20 +560,23 @@ impl SessionSupervisor {
         }
         let scan_count = self.pending_queue.lock().await.len();
         for _ in 0..scan_count {
-            let session_id = self.pending_queue.lock().await.pop_front()?;
-            if self.is_session_closing(&session_id) {
+            let pending_run = self.pending_queue.lock().await.pop_front()?;
+            let session_id = pending_run.session_id.as_str();
+            let run_source = pending_run.run_source;
+            if self.is_session_closing(session_id) {
                 continue;
             }
             #[cfg(test)]
-            if self.direct_session_run_lease_active(&session_id) {
-                self.enqueue_pending(&session_id).await;
+            if self.direct_session_run_lease_active(session_id) {
+                self.enqueue_pending_with_source(session_id, run_source)
+                    .await;
                 continue;
             }
-            let Some(actor) = self.actor_for(&session_id).await else {
+            let Some(actor) = self.actor_for(session_id).await else {
                 continue;
             };
             match actor.claim_session_run().await {
-                Ok(claim) if claim.accepted => return Some(session_id),
+                Ok(claim) if claim.accepted => return Some(pending_run),
                 Ok(_) => continue,
                 Err(error) => {
                     tracing::error!(
@@ -553,7 +584,8 @@ impl SessionSupervisor {
                         error = %haven_common::error::sanitize_error_text(&error.to_string()),
                         "failed to claim session"
                     );
-                    self.enqueue_pending(&session_id).await;
+                    self.enqueue_pending_with_source(session_id, run_source)
+                        .await;
                     return None;
                 }
             }

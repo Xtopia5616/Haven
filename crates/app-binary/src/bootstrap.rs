@@ -14,6 +14,7 @@ use crate::startup_error::{StartupFailure, should_show_startup_error, show_start
 use crate::startup_error::{WebviewFailure, WebviewFailureMonitor};
 use haven_common::config::LogConfig;
 use haven_common::error::sanitize_error_text;
+use haven_common::hooks::{LifecycleHookEvent, LifecycleHookPayload};
 use haven_input::{KeyCode, KeyCombo, KeyModifier};
 use haven_memory::SessionStore;
 use haven_tools::ToolRunLifecycleEvent;
@@ -27,6 +28,8 @@ use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::reload;
 
+const TOOL_RUN_HOOK_QUEUE_CAPACITY: usize = 32;
+
 macro_rules! log_ignored_result {
     ($context:expr, $result:expr) => {{
         if let Err(error) = $result {
@@ -37,6 +40,86 @@ macro_rules! log_ignored_result {
             );
         }
     }};
+}
+
+fn project_tool_run_hook_payload(
+    event: LifecycleHookEvent,
+    session_id: String,
+    tool_run_id: String,
+    tool_name: String,
+    source_step_id: Option<String>,
+    status: haven_common::lifecycle::ToolRunStatus,
+) -> LifecycleHookPayload {
+    let mut hook = LifecycleHookPayload::new(event);
+    hook.session_id = Some(session_id);
+    hook.tool_name = Some(tool_name);
+    hook.tool_run_id = Some(tool_run_id);
+    hook.source_step_id = source_step_id;
+    hook.tool_run_status = Some(status);
+    if event == LifecycleHookEvent::ToolRunEnd {
+        hook.success = Some(status == haven_common::lifecycle::ToolRunStatus::Completed);
+    }
+    hook
+}
+
+fn project_tool_run_hook_payloads(event: &ToolRunLifecycleEvent) -> Vec<LifecycleHookPayload> {
+    match event {
+        ToolRunLifecycleEvent::Created(payload) => {
+            let Some(session_id) = payload.session_id.clone() else {
+                return Vec::new();
+            };
+            vec![project_tool_run_hook_payload(
+                LifecycleHookEvent::ToolRunStart,
+                session_id,
+                payload.tool_run_id.clone(),
+                payload.tool_name.clone(),
+                payload.source_step_id.clone(),
+                payload.state.status(),
+            )]
+        }
+        ToolRunLifecycleEvent::Finished(payload) => {
+            let Some(session_id) = payload.session_id.clone() else {
+                return Vec::new();
+            };
+            vec![project_tool_run_hook_payload(
+                LifecycleHookEvent::ToolRunEnd,
+                session_id,
+                payload.tool_run_id.clone(),
+                payload.tool_name.clone(),
+                payload.source_step_id.clone(),
+                payload.state.status(),
+            )]
+        }
+        ToolRunLifecycleEvent::Updated(haven_tools::ToolRunLifecycleUpdate::SessionAttached(
+            payload,
+        )) => {
+            let Some(status) = payload.status else {
+                return Vec::new();
+            };
+            let mut hooks = vec![project_tool_run_hook_payload(
+                LifecycleHookEvent::ToolRunStart,
+                payload.session_id.clone(),
+                payload.tool_run_id.clone(),
+                payload.tool_name.clone(),
+                payload.source_step_id.clone(),
+                haven_common::lifecycle::ToolRunStatus::Running,
+            )];
+            if status.is_terminal() {
+                hooks.push(project_tool_run_hook_payload(
+                    LifecycleHookEvent::ToolRunEnd,
+                    payload.session_id.clone(),
+                    payload.tool_run_id.clone(),
+                    payload.tool_name.clone(),
+                    payload.source_step_id.clone(),
+                    status,
+                ));
+            }
+            hooks
+        }
+        ToolRunLifecycleEvent::Updated(haven_tools::ToolRunLifecycleUpdate::StateChanged(_)) => {
+            Vec::new()
+        }
+    }
 }
 
 pub(crate) fn project_interaction(
@@ -488,9 +571,61 @@ pub(crate) fn run() {
             // Project the typed ToolRun lifecycle stream into the App-owned
             // IPC DTO before it reaches the frontend.
             let tool_run_sink_handle = handle.clone();
+            let tool_run_hook_tools = Arc::clone(&state.runtime.tools);
+            let tool_run_hook_runtime = Arc::clone(&state.runtime);
+            let tool_run_hook_cancel = tool_run_hook_runtime.cancellation_token();
+            let (tool_run_hook_sender, mut tool_run_hook_receiver) =
+                tokio::sync::mpsc::channel::<Vec<LifecycleHookPayload>>(
+                    TOOL_RUN_HOOK_QUEUE_CAPACITY,
+                );
+            let hook_worker_cancel = tool_run_hook_cancel.clone();
+            if !tool_run_hook_runtime.spawn_cancellable(
+                "tool-run-lifecycle-hooks",
+                async move {
+                    while let Some(payloads) = tokio::select! {
+                        biased;
+                        _ = hook_worker_cancel.cancelled() => None,
+                        payloads = tool_run_hook_receiver.recv() => payloads,
+                    } {
+                        for payload in payloads {
+                            if hook_worker_cancel.is_cancelled() {
+                                return;
+                            }
+                            let _ = tool_run_hook_tools
+                                .run_lifecycle_hooks(
+                                    payload,
+                                    hook_worker_cancel.child_token(),
+                                )
+                                .await;
+                        }
+                    }
+                },
+            ) {
+                tracing::warn!(
+                    "ToolRun lifecycle Hook worker could not be registered"
+                );
+            }
             state.runtime.services.tool_runs.set_lifecycle_event_sink(Arc::new(
                 move |event: ToolRunLifecycleEvent| {
+                    let hook_payloads = project_tool_run_hook_payloads(&event);
                     emit_tool_run_event(&tool_run_sink_handle, event);
+                    if !hook_payloads.is_empty() {
+                        match tool_run_hook_sender.try_send(hook_payloads) {
+                            Ok(()) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                tracing::warn!(
+                                    failure_kind = "queue_full",
+                                    "ToolRun lifecycle Hook batch was dropped because the bounded queue is full"
+                                );
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                tracing::warn!(
+                                    failure_kind = "worker_stopped",
+                                    "ToolRun lifecycle Hook batch was dropped because the worker stopped"
+                                );
+                            }
+                        }
+                    }
                 },
             ));
 

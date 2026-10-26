@@ -7,6 +7,7 @@
 use crate::AgentLayer;
 use crate::react::ReActEngine;
 use crate::types::TranscriptRecord;
+use haven_common::hooks::LifecycleHookRunSource;
 use haven_common::lifecycle::SessionStatus;
 use haven_common::types::{is_canonical_id, new_id};
 use haven_memory::{SessionEventInput, SessionForkBranchPoint, SessionForkSnapshot};
@@ -224,7 +225,11 @@ impl AgentLayer {
             }
             self.spawn_title_generation(&child.session_id);
             self.executor
-                .update_session_status(&child.session_id, SessionStatus::Pending)
+                .update_session_status_with_run_source(
+                    &child.session_id,
+                    SessionStatus::Pending,
+                    LifecycleHookRunSource::NewInput,
+                )
                 .await?;
             self.executor
                 .get_runtime_session(&child.session_id)

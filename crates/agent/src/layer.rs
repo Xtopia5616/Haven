@@ -6,6 +6,7 @@
 use super::*;
 use crate::memory_inference::RouterMemoryInferencePort;
 use crate::session::{SessionRunHandler, SessionSupervisorEvent};
+use haven_common::hooks::LifecycleHookRunSource;
 use haven_common::lifecycle::{ScheduleRunStatus, SessionStatus};
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use serde_json::Value;
@@ -551,9 +552,13 @@ impl AgentLayer {
         }
         let agent = self.clone();
         let executor = self.executor.clone();
-        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String, run_source| {
             let agent = agent.clone();
-            Box::pin(async move { agent.run_session_from_dispatcher(&session_id).await })
+            Box::pin(async move {
+                agent
+                    .run_session_from_dispatcher_with_source(&session_id, run_source)
+                    .await
+            })
         });
         match recovery {
             PendingSessionRecovery::RecoverImmediately => {
@@ -1500,7 +1505,11 @@ impl AgentLayer {
         if dispatch {
             // Wake the dispatcher now that the message is persisted.
             self.executor
-                .update_session_status(&record.session_id, SessionStatus::Pending)
+                .update_session_status_with_run_source(
+                    &record.session_id,
+                    SessionStatus::Pending,
+                    LifecycleHookRunSource::NewInput,
+                )
                 .await?;
         }
         let session = self
@@ -1814,7 +1823,11 @@ impl AgentLayer {
             .mark_has_children(&req.parent_session_id)
             .await;
         self.executor
-            .update_session_status(&session.session_id, SessionStatus::Pending)
+            .update_session_status_with_run_source(
+                &session.session_id,
+                SessionStatus::Pending,
+                LifecycleHookRunSource::NewInput,
+            )
             .await?;
         // Emit after title is on the SessionInfo so toast/wire never use the brief.
         self.events.emit_session_created(&session).await;

@@ -11,6 +11,7 @@ use serde_json::Value;
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleHookEvent {
     PreToolUse,
+    PermissionRequest,
     PostToolUse,
     SessionStart,
     RunStart,
@@ -18,6 +19,10 @@ pub enum LifecycleHookEvent {
     PreCompact,
     PostCompact,
     SessionEnd,
+    #[serde(rename = "toolrun_start")]
+    ToolRunStart,
+    #[serde(rename = "toolrun_end")]
+    ToolRunEnd,
 }
 
 /// Content-free outcome visible in the Hooks settings diagnostics.
@@ -28,6 +33,18 @@ pub enum LifecycleHookOutcome {
     Succeeded,
     Denied,
     FailedOpen,
+}
+
+/// Why Haven started the current Agent run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleHookRunSource {
+    /// A new user/session input made the session runnable.
+    NewInput,
+    /// The user or an interaction explicitly continued an existing run.
+    Continue,
+    /// Startup restored a session that was already pending.
+    Recovery,
 }
 
 /// Bounded in-memory counters for one event. No command, arguments, payload,
@@ -44,6 +61,7 @@ pub struct LifecycleHookEventDiagnostics {
     pub denials: u64,
     pub last_outcome: Option<LifecycleHookOutcome>,
     pub last_failure_code: Option<String>,
+    /// Location of the most recent command failure or explicit veto.
     pub last_problem_command: Option<LifecycleHookCommandLocation>,
 }
 
@@ -72,9 +90,21 @@ pub struct LifecycleHookPayload {
     pub session_id: Option<String>,
     pub run_id: Option<u64>,
     pub start_step: Option<u32>,
+    /// Present on `permission_request`; identifies the tool call's step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_number: Option<u32>,
+    /// Present on `run_start`; omitted from other Hook payloads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_source: Option<LifecycleHookRunSource>,
     pub tool_name: Option<String>,
     pub tool_input: Option<Value>,
     pub tool_output: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_step_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_run_status: Option<crate::lifecycle::ToolRunStatus>,
     pub success: Option<bool>,
     pub tokens_before: Option<u64>,
     pub tokens_after: Option<u64>,
@@ -90,9 +120,14 @@ impl LifecycleHookPayload {
             session_id: None,
             run_id: None,
             start_step: None,
+            step_number: None,
+            run_source: None,
             tool_name: None,
             tool_input: None,
             tool_output: None,
+            tool_run_id: None,
+            source_step_id: None,
+            tool_run_status: None,
             success: None,
             tokens_before: None,
             tokens_after: None,
@@ -102,7 +137,24 @@ impl LifecycleHookPayload {
     }
 }
 
-/// PreToolUse's only policy decision. `Allow` never skips Haven authorization.
+#[cfg(test)]
+mod tests {
+    use super::{LifecycleHookEvent, LifecycleHookPayload};
+
+    #[test]
+    fn permission_request_serializes_step_number() {
+        let mut payload = LifecycleHookPayload::new(LifecycleHookEvent::PermissionRequest);
+        payload.step_number = Some(7);
+
+        let value = serde_json::to_value(payload).unwrap();
+
+        assert_eq!(value["event"], "permission_request");
+        assert_eq!(value["step_number"], 7);
+    }
+}
+
+/// A veto-only decision for PreToolUse and PermissionRequest. `Allow` never
+/// skips Haven authorization or the normal user confirmation prompt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum LifecycleHookDecision {
     #[default]

@@ -26,6 +26,7 @@ use crate::react::{ReActRunInput, ReActRunReplay};
 use crate::resume_support::{
     decode_builtin_tool_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
 };
+use haven_common::hooks::LifecycleHookRunSource;
 
 #[cfg(test)]
 use crate::session::DirectSessionRunLease;
@@ -147,6 +148,7 @@ pub(crate) struct InitialUserInput<'a> {
     attachments: &'a [haven_common::types::MessageAttachment],
     media_inputs: &'a [MediaInput],
     message_id: Option<&'a str>,
+    run_source: LifecycleHookRunSource,
 }
 
 impl AgentLayer {
@@ -258,6 +260,7 @@ impl AgentLayer {
             .run_session_from_id_with_error_owner(
                 session_id,
                 TerminalErrorEventOwner::AgentEventBus,
+                LifecycleHookRunSource::NewInput,
             )
             .await?;
         Ok(project_react_rounds(&events))
@@ -266,10 +269,21 @@ impl AgentLayer {
     /// Dispatcher-only entrypoint. The supervisor reports a failed run on
     /// its typed lifecycle stream, so suppress the matching ReAct error event
     /// while preserving all other Agent events and the returned error.
+    #[cfg(test)]
     pub(crate) async fn run_session_from_dispatcher(&self, session_id: &str) -> anyhow::Result<()> {
+        self.run_session_from_dispatcher_with_source(session_id, LifecycleHookRunSource::NewInput)
+            .await
+    }
+
+    pub(crate) async fn run_session_from_dispatcher_with_source(
+        &self,
+        session_id: &str,
+        run_source: LifecycleHookRunSource,
+    ) -> anyhow::Result<()> {
         self.run_session_from_id_with_error_owner(
             session_id,
             TerminalErrorEventOwner::SessionSupervisor,
+            run_source,
         )
         .await?;
         Ok(())
@@ -279,6 +293,7 @@ impl AgentLayer {
         &self,
         session_id: &str,
         terminal_error_owner: TerminalErrorEventOwner,
+        run_source: LifecycleHookRunSource,
     ) -> anyhow::Result<Vec<TranscriptRecord>> {
         tracing::debug!("run_session_from_id: session_id={}", session_id);
         let session = self
@@ -428,6 +443,7 @@ impl AgentLayer {
                     run_id,
                     &description,
                     terminal_error_owner,
+                    run_source,
                 )
                 .await
             }
@@ -470,6 +486,7 @@ impl AgentLayer {
                         attachments: &initial_attachments,
                         media_inputs: &initial_media_inputs,
                         message_id: initial_message_id.as_deref(),
+                        run_source,
                     },
                     terminal_error_owner,
                 )
@@ -537,6 +554,7 @@ impl AgentLayer {
         run_id: u64,
         description: &str,
         terminal_error_owner: TerminalErrorEventOwner,
+        run_source: LifecycleHookRunSource,
     ) -> anyhow::Result<Vec<TranscriptRecord>> {
         let events = replay.events;
         let mut canonical =
@@ -609,6 +627,7 @@ impl AgentLayer {
                     emitter: emitter_arc,
                     run_id,
                     is_session_start: false,
+                    run_source,
                 },
             )
             .await?;
@@ -688,6 +707,7 @@ impl AgentLayer {
         initial: InitialUserInput<'_>,
         terminal_error_owner: TerminalErrorEventOwner,
     ) -> anyhow::Result<Vec<TranscriptRecord>> {
+        let run_source = initial.run_source;
         self.executor
             .register_managed_assets_for_session(session_id, initial.attachments);
         tracing::debug!(
@@ -793,6 +813,7 @@ impl AgentLayer {
                     emitter: emitter_arc,
                     run_id,
                     is_session_start: false,
+                    run_source,
                 },
             )
             .await?;
@@ -1112,6 +1133,7 @@ mod direct_session_run_guard_tests {
                         emitter: Arc::new(NoopEmitter),
                         run_id: 1,
                         is_session_start: false,
+                        run_source: LifecycleHookRunSource::NewInput,
                     },
                 )
                 .await

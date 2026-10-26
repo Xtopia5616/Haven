@@ -36,7 +36,11 @@ pub(crate) struct ToolCallIdentity {
 /// across async calls.
 pub(crate) struct BeforeToolRequest {
     pub executor: Arc<crate::session::SessionSupervisor>,
+    pub lifecycle_hooks: Arc<dyn crate::LifecycleHooksPort>,
+    pub cancel: tokio_util::sync::CancellationToken,
     pub session_id: String,
+    pub run_id: u64,
+    pub step_number: u32,
     pub catalog: haven_tools::ToolCatalogSnapshot,
     pub identity: ToolCallIdentity,
     pub tool_name: String,
@@ -87,7 +91,11 @@ mod tests {
         let decision = RejectAllToolAdmission
             .admit_tool(BeforeToolRequest {
                 executor,
+                lifecycle_hooks: Arc::new(crate::agent_tool_ports::NoopLifecycleHooksPort),
+                cancel: tokio_util::sync::CancellationToken::new(),
                 session_id: session_id.into(),
+                run_id: 1,
+                step_number: 1,
                 catalog,
                 identity: ToolCallIdentity {
                     step_id: "step-37d95174ca2a846e8425178b7dc6ed84".into(),

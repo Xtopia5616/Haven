@@ -103,6 +103,7 @@ pub(crate) struct ReActRunInput {
     pub(crate) start_step: u32,
     pub(crate) emitter: Arc<dyn AgentEventEmitter>,
     pub(crate) run_id: u64,
+    pub(crate) run_source: haven_common::hooks::LifecycleHookRunSource,
     /// Set by the session actor exactly once per actor lifetime.
     pub(crate) is_session_start: bool,
 }
@@ -165,6 +166,7 @@ impl ReActEngine {
             start_step,
             emitter,
             run_id,
+            run_source,
             is_session_start,
         } = input;
         let session_id = session_id.as_str();
@@ -200,6 +202,7 @@ impl ReActEngine {
         run_start.session_id = Some(session_id.to_owned());
         run_start.run_id = Some(run_id);
         run_start.start_step = Some(start_step);
+        run_start.run_source = Some(run_source);
         let _ = self
             .lifecycle_hooks
             .run(

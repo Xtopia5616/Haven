@@ -183,11 +183,11 @@ describe('SettingsHooks', () => {
 		getSettings.mockResolvedValue(settings);
 		render(SettingsHooks, { active: false, onDraftState: vi.fn() });
 		await screen.findByLabelText('可执行文件');
-		expect(screen.getByText('失败，已阻止工具')).toBeTruthy();
+		expect(screen.getByText('失败，已阻止操作')).toBeTruthy();
 		expect(screen.getByText('失败，主操作继续')).toBeTruthy();
 		expect(screen.getAllByText(/命令尝试 2 次 · 已启动 1 次/)).toHaveLength(2);
 		expect(screen.getAllByText(/最近问题命令：项目级第 1 条/)).toHaveLength(2);
-		const row = screen.getByText('失败，已阻止工具').parentElement!;
+		const row = screen.getByText('失败，已阻止操作').parentElement!;
 		expect(within(row).getByText(/检查执行边界/)).toBeTruthy();
 	});
 });

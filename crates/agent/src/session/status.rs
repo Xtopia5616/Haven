@@ -1,6 +1,7 @@
 //! Session lifecycle owned by [`SessionSupervisor`].
 
 use super::*;
+use haven_common::hooks::LifecycleHookRunSource;
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use std::time::{Duration, Instant};
 
@@ -23,7 +24,8 @@ impl SessionSupervisor {
         let mut info = SessionInfo::from_db_record(&record);
         info.summary = summary.to_string();
         self.install_actor(info.clone()).await?;
-        self.enqueue_pending(&info.session_id).await;
+        self.enqueue_pending_with_source(&info.session_id, LifecycleHookRunSource::NewInput)
+            .await;
         self.wake_dispatcher();
         Ok(info)
     }
@@ -773,7 +775,24 @@ impl SessionSupervisor {
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<bool> {
-        self.update_session_status_inner(session_id, None, status, true, None)
+        self.update_session_status_inner(
+            session_id,
+            None,
+            status,
+            true,
+            None,
+            LifecycleHookRunSource::Continue,
+        )
+        .await
+    }
+
+    pub async fn update_session_status_with_run_source(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+        run_source: LifecycleHookRunSource,
+    ) -> anyhow::Result<bool> {
+        self.update_session_status_inner(session_id, None, status, true, None, run_source)
             .await
     }
 
@@ -783,8 +802,15 @@ impl SessionSupervisor {
         status: SessionStatus,
         run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
     ) -> anyhow::Result<bool> {
-        self.update_session_status_inner(session_id, None, status, true, run_end_kind)
-            .await
+        self.update_session_status_inner(
+            session_id,
+            None,
+            status,
+            true,
+            run_end_kind,
+            LifecycleHookRunSource::Continue,
+        )
+        .await
     }
 
     pub async fn persist_session_run_end_reason(
@@ -810,7 +836,25 @@ impl SessionSupervisor {
         expected: SessionStatus,
         status: SessionStatus,
     ) -> anyhow::Result<bool> {
-        self.update_session_status_inner(session_id, Some(expected), status, true, None)
+        self.update_session_status_inner(
+            session_id,
+            Some(expected),
+            status,
+            true,
+            None,
+            LifecycleHookRunSource::Continue,
+        )
+        .await
+    }
+
+    pub async fn update_session_status_if_with_run_source(
+        &self,
+        session_id: &str,
+        expected: SessionStatus,
+        status: SessionStatus,
+        run_source: LifecycleHookRunSource,
+    ) -> anyhow::Result<bool> {
+        self.update_session_status_inner(session_id, Some(expected), status, true, None, run_source)
             .await
     }
 
@@ -869,8 +913,15 @@ impl SessionSupervisor {
         if status.is_terminal() {
             anyhow::bail!("memory-only session updates cannot commit a terminal status");
         }
-        self.update_session_status_inner(session_id, None, status, false, None)
-            .await
+        self.update_session_status_inner(
+            session_id,
+            None,
+            status,
+            false,
+            None,
+            LifecycleHookRunSource::Continue,
+        )
+        .await
     }
 
     async fn update_session_status_inner(
@@ -880,6 +931,7 @@ impl SessionSupervisor {
         status: SessionStatus,
         persist: bool,
         run_end_kind: Option<haven_common::lifecycle::SessionRunEndKind>,
+        run_source: LifecycleHookRunSource,
     ) -> anyhow::Result<bool> {
         let Some(actor) = self.actor_for(session_id).await else {
             return Ok(false);
@@ -893,7 +945,8 @@ impl SessionSupervisor {
             }
         };
         if transition.pending {
-            self.enqueue_pending(session_id).await;
+            self.enqueue_pending_with_source(session_id, run_source)
+                .await;
             self.wake_dispatcher();
         }
         if !transition.changed {
@@ -1353,7 +1406,11 @@ impl SessionSupervisor {
                 .await
                 .is_some_and(|snapshot| snapshot.status == SessionStatus::Pending)
             {
-                self.enqueue_pending(&record.session_id).await;
+                self.enqueue_pending_with_source(
+                    &record.session_id,
+                    LifecycleHookRunSource::Recovery,
+                )
+                .await;
                 found_pending_actor = true;
             }
         }

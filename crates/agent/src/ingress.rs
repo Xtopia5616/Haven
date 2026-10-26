@@ -6,6 +6,7 @@
 
 use crate::AgentLayer;
 use crate::types::TranscriptSubmissionResult;
+use haven_common::hooks::LifecycleHookRunSource;
 use haven_common::lifecycle::SessionStatus;
 use haven_common::types::MessageAttachment;
 
@@ -318,14 +319,19 @@ impl AgentLayer {
                             && !(delivery_mode == InputDeliveryMode::FollowUp
                                 && interaction_gates.ask_pending)
                         {
-                            self.set_session_status_if(
-                                session_id,
-                                SessionStatus::Paused,
-                                SessionStatus::Pending,
-                            )
-                            .await?;
+                            self.executor
+                                .update_session_status_if_with_run_source(
+                                    session_id,
+                                    SessionStatus::Paused,
+                                    SessionStatus::Pending,
+                                    LifecycleHookRunSource::NewInput,
+                                )
+                                .await?;
                         }
                     }
+                    self.executor
+                        .update_pending_run_source(session_id, LifecycleHookRunSource::NewInput)
+                        .await;
                     return Ok(TranscriptSubmissionResult::supplemented(
                         session_id.clone(),
                         message_id,
@@ -340,13 +346,18 @@ impl AgentLayer {
                 && !confirm_blocked
                 && !(delivery_mode == InputDeliveryMode::FollowUp && interaction_gates.ask_pending)
             {
-                self.set_session_status_if(
-                    session_id,
-                    SessionStatus::Paused,
-                    SessionStatus::Pending,
-                )
-                .await?;
+                self.executor
+                    .update_session_status_if_with_run_source(
+                        session_id,
+                        SessionStatus::Paused,
+                        SessionStatus::Pending,
+                        LifecycleHookRunSource::NewInput,
+                    )
+                    .await?;
             }
+            self.executor
+                .update_pending_run_source(session_id, LifecycleHookRunSource::NewInput)
+                .await;
             Ok(TranscriptSubmissionResult::supplemented(
                 session_id.clone(),
                 persisted_msg.as_ref().map(|m| m.message_id.clone()),

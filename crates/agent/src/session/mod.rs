@@ -1,4 +1,5 @@
 use crate::interaction::{InteractionEnvelope, InteractionRequest};
+use haven_common::hooks::LifecycleHookRunSource;
 use haven_common::lifecycle::SessionRunEndKind;
 use haven_common::lifecycle::SessionStatus;
 use haven_common::lifecycle::SessionStepStatus;
@@ -42,8 +43,19 @@ pub use haven_common::types::FollowUp;
 /// perform the ReAct loop for `session_id` and return `Ok(())` on completion.
 /// It is responsible for acquiring no permits (dispatcher already does) but
 /// is expected to update the session status on completion/error.
-pub(crate) type SessionRunHandler =
-    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
+pub(crate) type SessionRunHandler = Arc<
+    dyn Fn(
+            String,
+            LifecycleHookRunSource,
+        ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>
+        + Send
+        + Sync,
+>;
+
+pub(crate) struct PendingSessionRun {
+    pub(crate) session_id: String,
+    pub(crate) run_source: LifecycleHookRunSource,
+}
 
 /// A direct SessionRun blocked on admission capacity. The id unregisters only
 /// this waiter; lifecycle operations cancel its token to wake the capacity wait.
@@ -456,13 +468,13 @@ pub struct SessionSupervisor {
     /// Join owner for the dispatcher loop. The loop owns and drains the per-run
     /// tasks so shutdown cannot outlive the reconciliation work it starts.
     dispatcher_task: StdMutex<Option<tokio::task::JoinHandle<()>>>,
-    /// FIFO dispatch queue: session ids in the order they became `Pending`
+    /// FIFO dispatch queue: session ids and run sources in the order they became `Pending`
     /// (insertion order ≈ creation order for fresh sessions). The dispatcher
     /// claims from the front, so queued sessions run in submission order instead
     /// of the nondeterministic `HashMap` iteration order a full scan would
     /// produce. Entries are (re-)enqueued on every transition to Pending and
     /// removed on terminal states / claims / explicit removal.
-    pending_queue: Arc<Mutex<VecDeque<String>>>,
+    pending_queue: Arc<Mutex<VecDeque<PendingSessionRun>>>,
     /// Dispatch wake counter: incremented on every transition to Pending.
     /// The dispatcher waits on a receiver of this watch, so a session that
     /// becomes Pending right after a failed claim still wakes it (no missed
@@ -1872,7 +1884,7 @@ mod tests {
                 .lock()
                 .await
                 .iter()
-                .any(|id| id == &session.session_id)
+                .any(|run| run.session_id == session.session_id)
         );
     }
 
@@ -2003,7 +2015,7 @@ mod tests {
         // lease claim and cleanup completion.
         drop(cleanup);
         let cancellation = CancellationToken::new();
-        let handler: SessionRunHandler = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let handler: SessionRunHandler = Arc::new(|_, _| Box::pin(async { Ok(()) }));
         exec.clone()
             .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
 
@@ -2057,7 +2069,7 @@ mod tests {
         );
 
         let cancellation = CancellationToken::new();
-        let handler: SessionRunHandler = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let handler: SessionRunHandler = Arc::new(|_, _| Box::pin(async { Ok(()) }));
         exec.clone()
             .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -2117,7 +2129,7 @@ mod tests {
 
         let mut events = exec.subscribe_events();
 
-        let handler: SessionRunHandler = Arc::new(move |_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |_id: String, _run_source| {
             Box::pin(async move {
                 panic!("simulated handler panic");
                 #[allow(unreachable_code)]
@@ -2195,7 +2207,7 @@ mod tests {
         let in_handler_h = in_handler.clone();
         let exited_h = exited.clone();
         let exec_ref = exec.clone();
-        let handler: SessionRunHandler = Arc::new(move |id: String| {
+        let handler: SessionRunHandler = Arc::new(move |id: String, _run_source| {
             let release_h = release_h.clone();
             let in_handler_h = in_handler_h.clone();
             let exited_h = exited_h.clone();
@@ -2276,7 +2288,7 @@ mod tests {
         let pk = peak.clone();
         let done = completed.clone();
         let exec_ref = exec.clone();
-        let handler: SessionRunHandler = Arc::new(move |id: String| {
+        let handler: SessionRunHandler = Arc::new(move |id: String, _run_source| {
             let cur = cur.clone();
             let pk = pk.clone();
             let done = done.clone();
@@ -2326,7 +2338,10 @@ mod tests {
         let session = exec.create_session("t1").await.unwrap();
 
         let claimed = exec.try_claim_pending().await;
-        assert_eq!(claimed.as_deref(), Some(session.session_id.as_str()));
+        assert_eq!(
+            claimed.as_ref().map(|run| run.session_id.as_str()),
+            Some(session.session_id.as_str())
+        );
 
         let state = exec.get_active_session_status(&session.session_id).await;
         assert_eq!(state, Some(SessionStatus::Running));
@@ -2348,7 +2363,10 @@ mod tests {
         let exec = make_executor(2);
         let session = exec.create_session("t1").await.unwrap();
         assert_eq!(
-            exec.try_claim_pending().await.as_deref(),
+            exec.try_claim_pending()
+                .await
+                .as_ref()
+                .map(|run| run.session_id.as_str()),
             Some(session.session_id.as_str())
         );
         assert!(exec.is_run_in_flight(&session.session_id).await);
@@ -2363,7 +2381,10 @@ mod tests {
             .await;
         exec.enqueue_pending(&session.session_id).await;
         let claimed = exec.try_claim_pending().await;
-        assert_eq!(claimed.as_deref(), Some(session.session_id.as_str()));
+        assert_eq!(
+            claimed.as_ref().map(|run| run.session_id.as_str()),
+            Some(session.session_id.as_str())
+        );
         assert_eq!(
             exec.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Running)
@@ -2382,9 +2403,18 @@ mod tests {
         let c1 = exec.try_claim_pending().await;
         let c2 = exec.try_claim_pending().await;
         let c3 = exec.try_claim_pending().await;
-        assert_eq!(c1.as_deref(), Some(t1.session_id.as_str()));
-        assert_eq!(c2.as_deref(), Some(t2.session_id.as_str()));
-        assert_eq!(c3.as_deref(), Some(t3.session_id.as_str()));
+        assert_eq!(
+            c1.as_ref().map(|run| run.session_id.as_str()),
+            Some(t1.session_id.as_str())
+        );
+        assert_eq!(
+            c2.as_ref().map(|run| run.session_id.as_str()),
+            Some(t2.session_id.as_str())
+        );
+        assert_eq!(
+            c3.as_ref().map(|run| run.session_id.as_str()),
+            Some(t3.session_id.as_str())
+        );
         assert!(exec.try_claim_pending().await.is_none());
     }
 
@@ -3322,7 +3352,7 @@ mod tests {
         let allow_exit_handler = allow_exit.clone();
         let exited_handler = exited.clone();
         let exec_handler = exec.clone();
-        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String, _run_source| {
             let started = started_handler.clone();
             let cancellation_seen = cancellation_seen_handler.clone();
             let allow_exit = allow_exit_handler.clone();
@@ -3415,7 +3445,7 @@ mod tests {
         let allow_exit_handler = allow_exit.clone();
         let exited_handler = exited.clone();
         let exec_handler = exec.clone();
-        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String, _run_source| {
             let started = started_handler.clone();
             let cancellation_seen = cancellation_seen_handler.clone();
             let allow_exit = allow_exit_handler.clone();
@@ -3521,7 +3551,7 @@ mod tests {
         let allow_exit_handler = allow_exit.clone();
         let exited_handler = exited.clone();
         let exec_handler = exec.clone();
-        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String, _run_source| {
             let started = started_handler.clone();
             let cancellation_seen = cancellation_seen_handler.clone();
             let allow_exit = allow_exit_handler.clone();
@@ -3870,7 +3900,10 @@ mod tests {
         assert_eq!(loaded, 1);
 
         let claimed = exec2.try_claim_pending().await;
-        assert_eq!(claimed.as_deref(), Some(session.session_id.as_str()));
+        assert_eq!(
+            claimed.as_ref().map(|run| run.session_id.as_str()),
+            Some(session.session_id.as_str())
+        );
         assert_eq!(
             exec2.get_active_session_status(&session.session_id).await,
             Some(SessionStatus::Running)
@@ -3957,7 +3990,10 @@ mod tests {
             .expect("recovery should wake the dispatcher even when queue insertion is deduped")
             .expect("dispatcher wake channel should remain open");
         assert_eq!(
-            exec.try_claim_pending().await.as_deref(),
+            exec.try_claim_pending()
+                .await
+                .as_ref()
+                .map(|run| run.session_id.as_str()),
             Some(session.session_id.as_str()),
             "an already-installed Pending actor must be requeued by recovery"
         );
@@ -3986,7 +4022,7 @@ mod tests {
         let handled = Arc::new(AtomicU32::new(0));
         let handled_by_runner = handled.clone();
         let exec_for_runner = exec.clone();
-        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String, _run_source| {
             let handled = handled_by_runner.clone();
             let exec = exec_for_runner.clone();
             Box::pin(async move {
@@ -4101,7 +4137,7 @@ mod tests {
         let handled = Arc::new(AtomicU32::new(0));
         let handled_by_runner = handled.clone();
         let exec_for_runner = exec2.clone();
-        let handler: SessionRunHandler = Arc::new(move |session_id: String| {
+        let handler: SessionRunHandler = Arc::new(move |session_id: String, _run_source| {
             let handled = handled_by_runner.clone();
             let exec = exec_for_runner.clone();
             Box::pin(async move {
@@ -4697,7 +4733,10 @@ mod tests {
             .unwrap();
         assert_eq!(*dispatch_wake.borrow(), wake_before + 1);
         assert_eq!(
-            exec.try_claim_pending().await.as_deref(),
+            exec.try_claim_pending()
+                .await
+                .as_ref()
+                .map(|run| run.session_id.as_str()),
             Some(session.session_id.as_str())
         );
         assert!(exec.try_claim_pending().await.is_none());
@@ -4793,7 +4832,10 @@ mod tests {
             .unwrap();
         assert_eq!(*dispatch_wake.borrow(), wake_before + 1);
         assert_eq!(
-            exec.try_claim_pending().await.as_deref(),
+            exec.try_claim_pending()
+                .await
+                .as_ref()
+                .map(|run| run.session_id.as_str()),
             Some(session.session_id.as_str())
         );
         assert!(exec.try_claim_pending().await.is_none());

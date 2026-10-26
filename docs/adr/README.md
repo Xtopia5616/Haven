@@ -1327,3 +1327,5 @@
 - [1422：在 WorkspaceWrite 下隔离 Everything CLI](1422-isolate-everything-cli-in-workspace-write.md)
 - [1423：在 WorkspaceWrite 下隔离 MCP stdio server](1423-isolate-mcp-stdio-in-workspace-write.md)
 - [1424：增加 SessionEnd 生命周期 Hook](1424-add-session-end-lifecycle-hook.md)
+- [1425：增加 PermissionRequest 与 ToolRun 生命周期 Hook](1425-add-permission-and-toolrun-lifecycle-hooks.md)
+- [1426：为 RunStart Hook 增加运行来源](1426-add-run-source-to-run-start-hook.md)

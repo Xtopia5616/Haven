@@ -157,7 +157,7 @@ async fn dispatcher_react_failure_has_one_terminal_event_owner() {
     let mut events = executor.subscribe_events();
 
     let run_agent = agent.clone();
-    let handler: SessionRunHandler = Arc::new(move |session_id: String| {
+    let handler: SessionRunHandler = Arc::new(move |session_id: String, _run_source| {
         let run_agent = run_agent.clone();
         Box::pin(async move {
             run_agent
@@ -373,7 +373,11 @@ async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
         "Continue should reuse the actor from the interrupted run"
     );
     assert_eq!(
-        executor.try_claim_pending().await.as_deref(),
+        executor
+            .try_claim_pending()
+            .await
+            .as_ref()
+            .map(|run| run.session_id.as_str()),
         Some(session.session_id.as_str()),
         "dispatcher should claim the continued session"
     );

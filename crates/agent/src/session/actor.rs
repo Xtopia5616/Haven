@@ -15,6 +15,7 @@ use super::{FollowUp, SessionInfo, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
 use crate::react::{LoopExit, ReActEngine, ReActRunInput, ReActRunReplay, ReActState};
 use futures_util::FutureExt;
+use haven_common::hooks::LifecycleHookRunSource;
 use haven_common::lifecycle::{SessionRunEndKind, SessionStatus, SessionWaitingReason};
 use haven_common::types::MessageAttachment;
 #[cfg(test)]
@@ -161,6 +162,7 @@ pub(crate) enum ActorCommand {
     Session(SessionCommand),
     Run {
         engine: SessionRunEngine,
+        run_source: LifecycleHookRunSource,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
     RunReActLoop {
@@ -444,9 +446,24 @@ impl SessionActorHandle {
     /// Start and await a run that is polled by this actor task. While the
     /// handler is suspended on a provider, tool, or storage future, the actor
     /// continues receiving and applying external mailbox commands.
+    #[cfg(test)]
     pub(crate) async fn run(&self, engine: SessionRunEngine) -> anyhow::Result<()> {
+        self.run_with_source(engine, LifecycleHookRunSource::NewInput)
+            .await
+    }
+
+    pub(crate) async fn run_with_source(
+        &self,
+        engine: SessionRunEngine,
+        run_source: LifecycleHookRunSource,
+    ) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::Run { engine, reply }).await?;
+        self.send(ActorCommand::Run {
+            engine,
+            run_source,
+            reply,
+        })
+        .await?;
         rx.await.map_err(|_| {
             anyhow::anyhow!("session actor '{}' dropped run result", self.session_id)
         })?
@@ -1119,7 +1136,11 @@ pub(crate) fn spawn(
                         let _ = reply.send(result);
                     }
                 },
-                ActorCommand::Run { engine, reply } => {
+                ActorCommand::Run {
+                    engine,
+                    run_source,
+                    reply,
+                } => {
                     if active_run.is_some() || !state.running {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "session actor '{}' cannot start a run in its current state",
@@ -1129,7 +1150,7 @@ pub(crate) fn spawn(
                     }
                     let session_id = state.info.session_id.clone();
                     active_run = Some(Box::pin(async move {
-                        match AssertUnwindSafe(engine.run(session_id))
+                        match AssertUnwindSafe(engine.run(session_id, run_source))
                             .catch_unwind()
                             .await
                         {
@@ -2090,15 +2111,16 @@ mod queue_tests {
 
         let (started_tx, mut started_rx) = watch::channel(false);
         let cancellation = actor.run_cancellation_token();
-        let handler: crate::session::SessionRunHandler = Arc::new(move |_session_id| {
-            let cancellation = cancellation.clone();
-            let started_tx = started_tx.clone();
-            Box::pin(async move {
-                started_tx.send_replace(true);
-                cancellation.cancelled().await;
-                Ok(())
-            })
-        });
+        let handler: crate::session::SessionRunHandler =
+            Arc::new(move |_session_id, _run_source| {
+                let cancellation = cancellation.clone();
+                let started_tx = started_tx.clone();
+                Box::pin(async move {
+                    started_tx.send_replace(true);
+                    cancellation.cancelled().await;
+                    Ok(())
+                })
+            });
         let run_actor = actor.clone();
         let run = tokio::spawn(async move { run_actor.run(SessionRunEngine::new(handler)).await });
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -2184,22 +2206,23 @@ mod queue_tests {
         let run_polls = Arc::new(AtomicUsize::new(0));
         let run_cancellation = actor.run_cancellation_token();
         let handler_polls = run_polls.clone();
-        let handler: crate::session::SessionRunHandler = Arc::new(move |_session_id| {
-            let cancellation = run_cancellation.clone();
-            let polls = handler_polls.clone();
-            Box::pin(async move {
-                let mut tick = tokio::time::interval(Duration::from_millis(2));
-                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                loop {
-                    tokio::select! {
-                        _ = cancellation.cancelled() => return Ok(()),
-                        _ = tick.tick() => {
-                            polls.fetch_add(1, Ordering::Relaxed);
+        let handler: crate::session::SessionRunHandler =
+            Arc::new(move |_session_id, _run_source| {
+                let cancellation = run_cancellation.clone();
+                let polls = handler_polls.clone();
+                Box::pin(async move {
+                    let mut tick = tokio::time::interval(Duration::from_millis(2));
+                    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    loop {
+                        tokio::select! {
+                            _ = cancellation.cancelled() => return Ok(()),
+                            _ = tick.tick() => {
+                                polls.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
                     }
-                }
-            })
-        });
+                })
+            });
         let run_actor = actor.clone();
         let run = tokio::spawn(async move { run_actor.run(SessionRunEngine::new(handler)).await });
 
@@ -2417,6 +2440,7 @@ mod queue_tests {
                             emitter: Arc::new(NoopEmitter),
                             run_id,
                             is_session_start: false,
+                            run_source: LifecycleHookRunSource::NewInput,
                         },
                     )
                     .await

@@ -201,6 +201,7 @@ async fn run_preparation_case(
                 emitter: Arc::new(SilentEmitter),
                 run_id: 1,
                 is_session_start: false,
+                run_source: haven_common::hooks::LifecycleHookRunSource::NewInput,
             },
             &mut state,
         ),

@@ -1,6 +1,7 @@
 //! Production authorization and confirmation admission for ReAct tool calls.
 
 use futures_util::future::BoxFuture;
+use haven_common::hooks::{LifecycleHookDecision, LifecycleHookEvent, LifecycleHookPayload};
 use haven_tools::AuthorizationDecision;
 use std::sync::Arc;
 
@@ -58,7 +59,37 @@ impl ToolAdmission for DefaultToolAdmission {
                     ),
                 },
                 AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
-                    BeforeToolCallDecision::NeedConfirm { receipt }
+                    if request.cancel.is_cancelled() {
+                        return BeforeToolCallDecision::Block {
+                            error: format!(
+                                "operation '{}' was cancelled before its confirmation prompt",
+                                request.tool_name
+                            ),
+                        };
+                    }
+                    let mut payload =
+                        LifecycleHookPayload::new(LifecycleHookEvent::PermissionRequest);
+                    payload.session_id = Some(request.session_id.clone());
+                    payload.run_id = Some(request.run_id);
+                    payload.step_number = Some(request.step_number);
+                    payload.tool_name = Some(request.tool_name.clone());
+                    payload.tool_input = Some(request.input.clone());
+                    match request
+                        .lifecycle_hooks
+                        .run(payload, request.cancel.clone())
+                        .await
+                    {
+                        LifecycleHookDecision::Allow => {
+                            // Allow only reaches the regular Haven confirmation flow.
+                            BeforeToolCallDecision::NeedConfirm { receipt }
+                        }
+                        LifecycleHookDecision::Deny { reason } => BeforeToolCallDecision::Block {
+                            error: format!(
+                                "operation '{}' was blocked by the PermissionRequest hook ({reason}); explain the block and ask what the user wants to do next",
+                                request.tool_name
+                            ),
+                        },
+                    }
                 }
             }
         })

@@ -224,14 +224,14 @@ impl LifecycleHookService {
                     had_failure = true;
                     event_failure_code = Some(failure.code());
                     self.record_failure(payload.event, failure.code(), Some(location));
-                    if payload.event == LifecycleHookEvent::PreToolUse {
+                    if is_veto_event(payload.event) {
                         self.finish_event(
                             payload.event,
                             LifecycleHookOutcome::FailedOpen,
                             Some(failure.code()),
                         );
                         return LifecycleHookDecision::Deny {
-                            reason: failure.public_reason().to_owned(),
+                            reason: failure.public_reason(payload.event),
                         };
                     }
                     tracing::warn!(event = ?payload.event, failure = failure.code(), "lifecycle hook was skipped");
@@ -241,14 +241,17 @@ impl LifecycleHookService {
                     had_failure = true;
                     event_failure_code = Some("event_time_limit");
                     self.record_failure(payload.event, "event_time_limit", Some(location));
-                    if payload.event == LifecycleHookEvent::PreToolUse {
+                    if is_veto_event(payload.event) {
                         self.finish_event(
                             payload.event,
                             LifecycleHookOutcome::FailedOpen,
                             Some("event_time_limit"),
                         );
                         return LifecycleHookDecision::Deny {
-                            reason: "PreToolUse hook exceeded its time limit".into(),
+                            reason: format!(
+                                "{} hook exceeded its time limit",
+                                veto_event_name(payload.event)
+                            ),
                         };
                     }
                     tracing::warn!(event = ?payload.event, "lifecycle hook event exceeded its time limit");
@@ -256,8 +259,8 @@ impl LifecycleHookService {
                 }
             };
 
-            if payload.event == LifecycleHookEvent::PreToolUse {
-                match parse_pre_tool_reply(&output.stdout) {
+            if is_veto_event(payload.event) {
+                match parse_veto_reply(&output.stdout, payload.event) {
                     Ok(LifecycleHookDecision::Allow) => {}
                     Ok(denied @ LifecycleHookDecision::Deny { .. }) => {
                         self.record_problem_command(payload.event, location);
@@ -272,7 +275,7 @@ impl LifecycleHookService {
                             Some(failure.code()),
                         );
                         return LifecycleHookDecision::Deny {
-                            reason: failure.public_reason().to_owned(),
+                            reason: failure.public_reason(payload.event),
                         };
                     }
                 }
@@ -396,9 +399,9 @@ impl LifecycleHookService {
         self.record_failure(event, failure, None);
         self.finish_event(event, LifecycleHookOutcome::FailedOpen, Some(failure));
         tracing::warn!(event = ?event, failure, "lifecycle hook event could not run");
-        if event == LifecycleHookEvent::PreToolUse {
+        if is_veto_event(event) {
             LifecycleHookDecision::Deny {
-                reason: "PreToolUse hook failed closed".into(),
+                reason: format!("{} hook failed closed", veto_event_name(event)),
             }
         } else {
             LifecycleHookDecision::Allow
@@ -411,11 +414,29 @@ fn event_order(event: LifecycleHookEvent) -> u8 {
         LifecycleHookEvent::SessionStart => 0,
         LifecycleHookEvent::RunStart => 1,
         LifecycleHookEvent::PreToolUse => 2,
-        LifecycleHookEvent::PostToolUse => 3,
-        LifecycleHookEvent::PreCompact => 4,
-        LifecycleHookEvent::PostCompact => 5,
-        LifecycleHookEvent::RunEnd => 6,
-        LifecycleHookEvent::SessionEnd => 7,
+        LifecycleHookEvent::PermissionRequest => 3,
+        LifecycleHookEvent::PostToolUse => 4,
+        LifecycleHookEvent::ToolRunStart => 5,
+        LifecycleHookEvent::ToolRunEnd => 6,
+        LifecycleHookEvent::PreCompact => 7,
+        LifecycleHookEvent::PostCompact => 8,
+        LifecycleHookEvent::RunEnd => 9,
+        LifecycleHookEvent::SessionEnd => 10,
+    }
+}
+
+fn is_veto_event(event: LifecycleHookEvent) -> bool {
+    matches!(
+        event,
+        LifecycleHookEvent::PreToolUse | LifecycleHookEvent::PermissionRequest
+    )
+}
+
+fn veto_event_name(event: LifecycleHookEvent) -> &'static str {
+    match event {
+        LifecycleHookEvent::PreToolUse => "PreToolUse",
+        LifecycleHookEvent::PermissionRequest => "PermissionRequest",
+        _ => "lifecycle",
     }
 }
 
@@ -441,19 +462,24 @@ impl HookFailure {
             Self::Spawn => "spawn_failed",
             Self::Io => "io_failed",
             Self::NonZeroExit => "nonzero_exit",
-            Self::InvalidReply => "invalid_pre_tool_reply",
+            Self::InvalidReply => "invalid_veto_reply",
         }
     }
 
-    fn public_reason(&self) -> &'static str {
+    fn public_reason(&self, event: LifecycleHookEvent) -> String {
+        let event_name = veto_event_name(event);
         match self {
-            Self::Cancelled => "PreToolUse hook was cancelled",
-            Self::PolicyChanged => "PreToolUse hook stopped because the security policy changed",
-            Self::TimeLimit => "PreToolUse hook exceeded its time limit",
-            Self::OutputLimit => "PreToolUse hook exceeded its output limit",
-            Self::Spawn | Self::Io => "PreToolUse hook could not be started or completed",
+            Self::Cancelled => format!("{event_name} hook was cancelled"),
+            Self::PolicyChanged => {
+                format!("{event_name} hook stopped because the security policy changed")
+            }
+            Self::TimeLimit => format!("{event_name} hook exceeded its time limit"),
+            Self::OutputLimit => format!("{event_name} hook exceeded its output limit"),
+            Self::Spawn | Self::Io => {
+                format!("{event_name} hook could not be started or completed")
+            }
             Self::NonZeroExit | Self::InvalidReply => {
-                "PreToolUse hook rejected or returned an invalid response"
+                format!("{event_name} hook rejected or returned an invalid response")
             }
         }
     }
@@ -655,33 +681,36 @@ where
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PreToolReply {
-    decision: PreToolReplyDecision,
+struct VetoHookReply {
+    decision: VetoHookReplyDecision,
     #[serde(default)]
     reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum PreToolReplyDecision {
+enum VetoHookReplyDecision {
     Allow,
     Deny,
 }
 
-fn parse_pre_tool_reply(output: &[u8]) -> Result<LifecycleHookDecision, HookFailure> {
+fn parse_veto_reply(
+    output: &[u8],
+    event: LifecycleHookEvent,
+) -> Result<LifecycleHookDecision, HookFailure> {
     if output.iter().all(u8::is_ascii_whitespace) {
         return Ok(LifecycleHookDecision::Allow);
     }
-    let reply: PreToolReply =
+    let reply: VetoHookReply =
         serde_json::from_slice(output).map_err(|_| HookFailure::InvalidReply)?;
     match reply.decision {
-        PreToolReplyDecision::Allow => Ok(LifecycleHookDecision::Allow),
-        PreToolReplyDecision::Deny => Ok(LifecycleHookDecision::Deny {
+        VetoHookReplyDecision::Allow => Ok(LifecycleHookDecision::Allow),
+        VetoHookReplyDecision::Deny => Ok(LifecycleHookDecision::Deny {
             reason: reply
                 .reason
                 .map(|reason| clip_reason(&reason))
                 .filter(|reason| !reason.is_empty())
-                .unwrap_or_else(|| "Denied by PreToolUse hook".into()),
+                .unwrap_or_else(|| format!("Denied by {} hook", veto_event_name(event))),
         }),
     }
 }
@@ -850,17 +879,29 @@ mod tests {
     #[test]
     fn pre_tool_reply_can_only_allow_or_deny_and_clips_reason() {
         assert_eq!(
-            parse_pre_tool_reply(br#"{"decision":"allow"}"#).unwrap(),
+            parse_veto_reply(br#"{"decision":"allow"}"#, LifecycleHookEvent::PreToolUse).unwrap(),
             LifecycleHookDecision::Allow
         );
         assert_eq!(
-            parse_pre_tool_reply(br#"{"decision":"deny","reason":"blocked"}"#).unwrap(),
+            parse_veto_reply(
+                br#"{"decision":"deny","reason":"blocked"}"#,
+                LifecycleHookEvent::PreToolUse,
+            )
+            .unwrap(),
             LifecycleHookDecision::Deny {
                 reason: "blocked".into()
             }
         );
-        assert!(parse_pre_tool_reply(br#"{"decision":"prompt"}"#).is_err());
-        assert!(parse_pre_tool_reply(br#"{"decision":"allow","extra":true}"#).is_err());
+        assert!(
+            parse_veto_reply(br#"{"decision":"prompt"}"#, LifecycleHookEvent::PreToolUse,).is_err()
+        );
+        assert!(
+            parse_veto_reply(
+                br#"{"decision":"allow","extra":true}"#,
+                LifecycleHookEvent::PreToolUse,
+            )
+            .is_err()
+        );
     }
 
     #[test]

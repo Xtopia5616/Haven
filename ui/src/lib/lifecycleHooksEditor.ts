@@ -15,6 +15,12 @@ export const HOOK_EVENTS: Array<{
 		veto: true,
 	},
 	{
+		key: 'permission_request',
+		label: 'PermissionRequest',
+		description: '权限确认弹窗出现前检查；deny 或 Hook 失败会阻止操作，allow 仍会显示 Haven 确认弹窗。',
+		veto: true,
+	},
+	{
 		key: 'post_tool_use',
 		label: 'PostToolUse',
 		description: '工具执行结束后通知；失败不改变工具结果。',
@@ -45,6 +51,18 @@ export const HOOK_EVENTS: Array<{
 		veto: false,
 	},
 	{
+		key: 'toolrun_start',
+		label: 'ToolRunStart',
+		description: '后台任务运行状态和会话归属提交后通知，包含 tool_run_id、工具名和状态。',
+		veto: false,
+	},
+	{
+		key: 'toolrun_end',
+		label: 'ToolRunEnd',
+		description: '后台任务终态持久化后通知，包含 tool_run_id、工具名、状态和成功标记。',
+		veto: false,
+	},
+	{
 		key: 'pre_compact',
 		label: 'PreCompact',
 		description: '上下文压缩前通知，包含 tokens_before。',
@@ -60,6 +78,7 @@ export const HOOK_EVENTS: Array<{
 
 export const emptyHooks = (): LifecycleHooksConfig => ({
 	pre_tool_use: [],
+	permission_request: [],
 	post_tool_use: [],
 	session_start: [],
 	run_start: [],
@@ -67,6 +86,8 @@ export const emptyHooks = (): LifecycleHooksConfig => ({
 	session_end: [],
 	pre_compact: [],
 	post_compact: [],
+	toolrun_start: [],
+	toolrun_end: [],
 });
 
 export const HOOK_TEMPLATES = {
@@ -196,15 +217,15 @@ export function hookFailureHelp(code: string | null): string {
 			return '检查可执行文件是否已安装、路径是否正确，以及脚本文件是否存在。';
 		case 'nonzero_exit':
 			return '脚本退出码非零；请在本地使用示例 stdin 检查脚本。';
-		case 'invalid_pre_tool_reply':
-			return 'PreToolUse 的 stdout 只能为空或包含 allow/deny JSON；调试信息请写 stderr。';
+		case 'invalid_veto_reply':
+			return 'PreToolUse 和 PermissionRequest 的 stdout 只能为空或包含 allow/deny JSON；调试信息请写 stderr。';
 		case 'time_limit':
 		case 'event_time_limit':
 			return '单事件总预算为 5 秒；缩短脚本耗时或减少同事件的命令。';
 		case 'output_limit':
 			return '每个 stdout/stderr 流最多 64 KiB；请减少输出。';
 		case 'payload_exceeds_limit':
-			return '事件输入超过 64 KiB；PreToolUse 为安全起见拒绝执行。';
+			return '事件输入超过 64 KiB；veto Hook 为安全起见拒绝执行。';
 		case 'project_configuration_invalid':
 			return '检查已信任项目的 .haven/hooks.toml 格式、大小和重解析点。';
 		case 'execution_workspace_unavailable':

@@ -562,9 +562,10 @@ impl ToolRunService {
             }
         }
         // Record the owning session in the persisted row too, so terminal
-        // history and any undelivered completion keep their owner (spawn rows
-        // start with session_id NULL). Do not update memory if the transaction
-        // fails; otherwise the runtime could claim a binding the outbox lacks.
+        // history and any undelivered completion keep their owner. Some
+        // ToolRuns enter this path without an owner; do not update memory if
+        // the transaction fails or the runtime could claim a binding the
+        // outbox lacks.
         let tool_run_store = self.tool_run_store.read().await.clone();
         if let Some(store) = &tool_run_store
             && let Err(e) = store
@@ -578,7 +579,7 @@ impl ToolRunService {
             );
             return;
         }
-        let (terminal_state, source_step_id, entry_tool_name) = {
+        let (terminal_state, status, source_step_id, entry_tool_name) = {
             let mut tool_runs = self.tool_runs.write().await;
             let Some(entry) = tool_runs.get_mut(tool_run_id) else {
                 return;
@@ -589,6 +590,7 @@ impl ToolRunService {
             entry.session_id = Some(session_id.to_string());
             (
                 entry.state.is_terminal().then(|| entry.state.clone()),
+                entry.state.status(),
                 entry.source_step_id.clone(),
                 entry.tool_name.clone(),
             )
@@ -599,6 +601,7 @@ impl ToolRunService {
                 tool_name: entry_tool_name.clone(),
                 session_id: session_id.to_string(),
                 source_step_id: source_step_id.clone(),
+                status: Some(status),
             }),
         ));
         // Headless mode has no durable outbox to recover a completion that was

@@ -228,8 +228,12 @@
 		return {
 			no_hooks: '没有匹配的 Hook',
 			succeeded: '成功',
-			denied: '已拒绝工具',
-			failed_open: item.event === 'pre_tool_use' ? '失败，已阻止工具' : '失败，主操作继续',
+			denied:
+				item.event === 'permission_request' ? '已阻止确认请求' : '已拒绝工具',
+			failed_open:
+				item.event === 'pre_tool_use' || item.event === 'permission_request'
+					? '失败，已阻止操作'
+					: '失败，主操作继续',
 		}[outcome];
 	}
 
@@ -267,7 +271,7 @@
 				{:else if hookExecutionMode === 'workspace_write'}
 					Windows MXC 按当前 Hook 文件范围限制读写且禁用网络。非 Windows 或 MXC 无法启动时，Hook 会被拒绝。
 				{:else}
-					匹配到的启用 PreToolUse 无法启动时会阻止工具；通知型事件会跳过 Hook 并记录诊断。
+					匹配到的启用 PreToolUse 或 PermissionRequest 无法启动时会阻止操作；通知型事件会跳过 Hook 并记录诊断。
 				{/if}
 			</span>
 		</div>
@@ -339,8 +343,11 @@
 									count={hooks[event.key].length}
 									eventLabel={event.label}
 									veto={event.veto}
-									toolEvent={event.key === 'pre_tool_use' ||
-										event.key === 'post_tool_use'}
+					toolEvent={event.key === 'pre_tool_use' ||
+						event.key === 'permission_request' ||
+						event.key === 'post_tool_use' ||
+						event.key === 'toolrun_start' ||
+						event.key === 'toolrun_end'}
 									disabled={saving}
 									onPatch={(patch) => patchHook(event.key, index, patch)}
 									onMove={(offset) => moveHook(event.key, index, offset)}
@@ -441,9 +448,18 @@
 					<div class="hook-diagnostic-row">
 						<strong>{item.event}</strong>
 						<span>{outcomeLabel(item)}</span>
-						<span>事件 {item.event_runs} 次 · 命令尝试 {item.command_attempts} 次 · 已启动 {item.command_starts} 次</span>
+						<span
+							>事件 {item.event_runs} 次 · 命令尝试 {item.command_attempts} 次 · 已启动
+							{item.command_starts} 次</span
+						>
 						{#if item.failures || item.denials}
-							<small>失败 {item.failures} · 脚本拒绝 {item.denials} · {item.last_failure_code ?? ''}{#if item.last_problem_command} · 最近问题命令：{item.last_problem_command.source === 'user' ? '用户级' : '项目级'}第 {item.last_problem_command.index + 1} 条{/if}</small>
+							<small
+								>失败 {item.failures} · 脚本拒绝 {item.denials} · {item.last_failure_code ??
+									''}{#if item.last_problem_command} · 最近问题命令：{item.last_problem_command.source ===
+										'user'
+										? '用户级'
+										: '项目级'}第 {item.last_problem_command.index + 1} 条{/if}</small
+							>
 						{/if}
 						{#if item.last_failure_code}<small
 								>{hookFailureHelp(item.last_failure_code)}</small

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default, deny_unknown_fields)]
 pub struct LifecycleHooksConfig {
     pub pre_tool_use: Vec<HookCommand>,
+    pub permission_request: Vec<HookCommand>,
     pub post_tool_use: Vec<HookCommand>,
     pub session_start: Vec<HookCommand>,
     pub run_start: Vec<HookCommand>,
@@ -12,12 +13,15 @@ pub struct LifecycleHooksConfig {
     pub pre_compact: Vec<HookCommand>,
     pub post_compact: Vec<HookCommand>,
     pub session_end: Vec<HookCommand>,
+    pub toolrun_start: Vec<HookCommand>,
+    pub toolrun_end: Vec<HookCommand>,
 }
 
 impl LifecycleHooksConfig {
     pub fn for_event(&self, event: crate::hooks::LifecycleHookEvent) -> &[HookCommand] {
         match event {
             crate::hooks::LifecycleHookEvent::PreToolUse => &self.pre_tool_use,
+            crate::hooks::LifecycleHookEvent::PermissionRequest => &self.permission_request,
             crate::hooks::LifecycleHookEvent::PostToolUse => &self.post_tool_use,
             crate::hooks::LifecycleHookEvent::SessionStart => &self.session_start,
             crate::hooks::LifecycleHookEvent::RunStart => &self.run_start,
@@ -25,11 +29,14 @@ impl LifecycleHooksConfig {
             crate::hooks::LifecycleHookEvent::PreCompact => &self.pre_compact,
             crate::hooks::LifecycleHookEvent::PostCompact => &self.post_compact,
             crate::hooks::LifecycleHookEvent::SessionEnd => &self.session_end,
+            crate::hooks::LifecycleHookEvent::ToolRunStart => &self.toolrun_start,
+            crate::hooks::LifecycleHookEvent::ToolRunEnd => &self.toolrun_end,
         }
     }
 
     pub fn is_empty(&self) -> bool {
         self.pre_tool_use.is_empty()
+            && self.permission_request.is_empty()
             && self.post_tool_use.is_empty()
             && self.session_start.is_empty()
             && self.run_start.is_empty()
@@ -37,6 +44,8 @@ impl LifecycleHooksConfig {
             && self.pre_compact.is_empty()
             && self.post_compact.is_empty()
             && self.session_end.is_empty()
+            && self.toolrun_start.is_empty()
+            && self.toolrun_end.is_empty()
     }
 }
 
@@ -92,6 +101,7 @@ pub fn parse_project_hooks(input: &str) -> anyhow::Result<LifecycleHooksConfig> 
 pub(crate) fn validate_lifecycle_hooks(config: &LifecycleHooksConfig) -> anyhow::Result<()> {
     for (event, commands) in [
         ("pre_tool_use", &config.pre_tool_use),
+        ("permission_request", &config.permission_request),
         ("post_tool_use", &config.post_tool_use),
         ("session_start", &config.session_start),
         ("run_start", &config.run_start),
@@ -99,6 +109,8 @@ pub(crate) fn validate_lifecycle_hooks(config: &LifecycleHooksConfig) -> anyhow:
         ("pre_compact", &config.pre_compact),
         ("post_compact", &config.post_compact),
         ("session_end", &config.session_end),
+        ("toolrun_start", &config.toolrun_start),
+        ("toolrun_end", &config.toolrun_end),
     ] {
         anyhow::ensure!(
             commands.len() <= super::MAX_HOOKS_PER_EVENT,

@@ -131,6 +131,10 @@ pub struct ToolRunSessionAttachedPayload {
     pub tool_name: String,
     pub session_id: String,
     pub source_step_id: Option<String>,
+    /// State observed after the owner binding commits. Consumers may use this
+    /// to recover lifecycle notifications when a ToolRun finished before it
+    /// could be attached to its session.
+    pub status: Option<ToolRunStatus>,
 }
 
 impl ToolRunSessionAttachedPayload {
@@ -148,6 +152,7 @@ impl ToolRunSessionAttachedPayload {
             tool_name: tool_name.into(),
             session_id: session_id.into(),
             source_step_id,
+            status: None,
         }
     }
 }

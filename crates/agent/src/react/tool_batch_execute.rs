@@ -67,6 +67,16 @@ struct DeferredAdmissionFailure {
     error: String,
 }
 
+struct ToolBatchAdmissionRequest<'a> {
+    session_id: &'a str,
+    step_number: u32,
+    gate_ctx: &'a StepCtx,
+    cancel: &'a tokio_util::sync::CancellationToken,
+    catalog: &'a haven_tools::ToolCatalogSnapshot,
+    plan: &'a ToolBatchPlan,
+    validation_failures: &'a [ToolInputValidationFailure],
+}
+
 struct ToolBatchAdmission {
     runnable: Vec<AdmittedTool>,
     need_confirm: Vec<crate::interaction::InteractionRequest>,
@@ -120,15 +130,16 @@ impl ReActEngine {
     /// Perform all pre-execution decisions against one immutable plan. Failed
     /// admission is normalized into the same observation type as a tool
     /// failure; only approved calls reach the executor.
-    async fn admit_tool_batch(
-        &self,
-        session_id: &str,
-        step_number: u32,
-        gate_ctx: &StepCtx,
-        catalog: &haven_tools::ToolCatalogSnapshot,
-        plan: &ToolBatchPlan,
-        validation_failures: &[ToolInputValidationFailure],
-    ) -> ToolBatchAdmission {
+    async fn admit_tool_batch(&self, request: ToolBatchAdmissionRequest<'_>) -> ToolBatchAdmission {
+        let ToolBatchAdmissionRequest {
+            session_id,
+            step_number,
+            gate_ctx,
+            cancel,
+            catalog,
+            plan,
+            validation_failures,
+        } = request;
         let mut admission = ToolBatchAdmission {
             runnable: Vec::new(),
             need_confirm: Vec::new(),
@@ -177,6 +188,10 @@ impl ReActEngine {
             let tool_call_id = planned.tool_call.tool_call_id.clone();
             let tool_name = planned.tool_call.tool_name.clone();
             let tool_input = planned.tool_call.tool_input.clone();
+            let lifecycle_hooks = Arc::clone(&self.lifecycle_hooks);
+            let cancel = cancel.clone();
+            let run_id = gate_ctx.run_id;
+            let request_step_number = step_number;
             let validation_failure = validation_failures
                 .iter()
                 .find(|failure| failure.tool_index == tool_index)
@@ -197,7 +212,11 @@ impl ReActEngine {
 
             let gate = self.tool_admission.admit_tool(BeforeToolRequest {
                 executor: Arc::clone(&self.executor),
+                lifecycle_hooks,
+                cancel,
                 session_id: gate_ctx.session_id.clone(),
+                run_id,
+                step_number: request_step_number,
                 catalog: catalog.clone(),
                 identity: ToolCallIdentity {
                     step_id,
@@ -636,14 +655,15 @@ impl ReActEngine {
             let _timer =
                 self.metrics
                     .start(MetricsPhase::ToolAdmission, session_id, run_id, step_number);
-            self.admit_tool_batch(
+            self.admit_tool_batch(ToolBatchAdmissionRequest {
                 session_id,
                 step_number,
-                &step_ctx,
-                catalog.as_ref(),
-                &plan,
-                &validation_failures,
-            )
+                gate_ctx: &step_ctx,
+                cancel: cancel_res,
+                catalog: catalog.as_ref(),
+                plan: &plan,
+                validation_failures: &validation_failures,
+            })
             .await
         };
         let ToolBatchAdmission {
