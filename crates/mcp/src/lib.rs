@@ -26,7 +26,7 @@ pub struct McpStdioProcessStartRequest {
 /// Opaque short-lived permit held until the selected MCP stdio execution
 /// boundary confirms that the generation has started.
 pub trait McpStdioProcessStartPermit: Send {
-    fn scratch_capacity_budget(&self) -> Option<(PathBuf, u64, usize)> {
+    fn scratch_capacity_budget(&self) -> Option<haven_platform::filesystem::DirectoryBudgetLease> {
         None
     }
     /// MXC policy compiled by the authorization owner for this process.

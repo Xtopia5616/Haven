@@ -1,9 +1,33 @@
 use super::*;
 
 #[tokio::test]
+async fn managed_scratch_admission_waits_for_a_slot_and_times_out_boundedly() {
+    let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+    let held = slots.clone().acquire_owned().await.unwrap();
+    let waiter = tokio::spawn(acquire_process_scratch_slot(
+        slots.clone(),
+        Duration::from_secs(1),
+    ));
+    tokio::task::yield_now().await;
+    assert!(!waiter.is_finished(), "admission should wait while full");
+    drop(held);
+    let permit = waiter.await.unwrap().unwrap();
+    drop(permit);
+
+    let held = slots.clone().acquire_owned().await.unwrap();
+    let error = acquire_process_scratch_slot(slots, Duration::from_millis(1))
+        .await
+        .expect_err("full admission must stop waiting at its deadline");
+    assert!(error.to_string().contains("remained full"));
+    drop(held);
+}
+
+#[tokio::test]
 async fn managed_scratch_enforces_capacity_preserves_live_owners_and_cleans_after_drop() {
     let root = tempfile::tempdir().unwrap();
-    let scratch = ProcessScratchDirectory::create_at(root.path(), "server-", 8, 10).unwrap();
+    let scratch = ProcessScratchDirectory::create_at(root.path(), "server-", 8, 10)
+        .await
+        .unwrap();
     let path = scratch.path().to_path_buf();
     assert_eq!(
         cleanup_owned_scratch_directories(root.path(), "server-").unwrap(),

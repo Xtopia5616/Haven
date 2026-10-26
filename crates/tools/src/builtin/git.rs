@@ -128,7 +128,7 @@ impl GitTool {
             .map_err(|_| anyhow::anyhow!("Git execution workspace is unavailable or unsafe"))?;
         let working_directory = resolve_working_directory(&params.cwd, &workspace)?;
         let (_repository_root, git_metadata) = find_repository(&working_directory, &workspace)?;
-        let scratch = crate::shell_runtime::ProcessScratchDirectory::create_git()?;
+        let scratch = crate::shell_runtime::ProcessScratchDirectory::create_git().await?;
         scratch.ensure_within_capacity().await?;
         let global_git_config = scratch.path().join("global.gitconfig");
         std::fs::File::create(&global_git_config)?;
@@ -217,16 +217,12 @@ impl GitTool {
         drop(permit);
 
         let output_cap = crate::collect_byte_cap(self.max_output_chars);
-        let capacity = scratch.capacity_limits();
-        let capacity_path = scratch.path().to_path_buf();
+        let capacity_budget = scratch.capacity_budget();
         let capacity_exceeded = async move {
             loop {
                 tokio::time::sleep(SCRATCH_CHECK_INTERVAL).await;
-                let path = capacity_path.clone();
-                let exceeded = tokio::task::spawn_blocking(move || {
-                    crate::shell_runtime::directory_size_exceeds(&path, capacity.0, capacity.1)
-                })
-                .await;
+                let budget = capacity_budget.clone();
+                let exceeded = tokio::task::spawn_blocking(move || budget.check_exceeded()).await;
                 match exceeded {
                     Ok(Ok(false)) => {}
                     Ok(Ok(true)) => return "Git scratch exceeded its capacity limit".to_owned(),

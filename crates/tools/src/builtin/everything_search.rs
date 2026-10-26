@@ -181,7 +181,7 @@ impl EverythingSearch {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let scratch = EverythingScratch::create_everything()?;
+        let scratch = EverythingScratch::create_everything().await?;
         #[cfg(windows)]
         let mut runtime_read_roots =
             crate::process_sandbox::runtime_dependency_roots(command.as_std());

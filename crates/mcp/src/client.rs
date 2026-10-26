@@ -643,7 +643,7 @@ pub(crate) fn local_stdio_process_launcher() -> Arc<dyn McpStdioProcessLauncher>
 struct LocalMcpStdioProcessLauncher;
 
 struct LocalMcpStdioProcess {
-    scratch_capacity_budget: Option<(std::path::PathBuf, u64, usize)>,
+    scratch_capacity_budget: Option<haven_platform::filesystem::DirectoryBudgetLease>,
     process: LocalMcpChild,
     stdin: Option<crate::McpStdioWriter>,
     stdout: Option<crate::McpStdioReader>,
@@ -660,7 +660,7 @@ enum LocalMcpChild {
 }
 
 impl McpStdioProcess for LocalMcpStdioProcess {
-    fn scratch_capacity_budget(&self) -> Option<(std::path::PathBuf, u64, usize)> {
+    fn scratch_capacity_budget(&self) -> Option<haven_platform::filesystem::DirectoryBudgetLease> {
         self.scratch_capacity_budget.clone()
     }
     fn take_stdin(&mut self) -> std::io::Result<crate::McpStdioWriter> {

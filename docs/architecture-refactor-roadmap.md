@@ -205,7 +205,7 @@ CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-c
 
 **统一资源授权（ADR 1428）：**明确资源允许优先于 capability 拒绝，默认只读读取继续执行，额外文件/网络/外部效果进入统一确认；Analyze 与 Unattended 均可申请。取消普通 Shell/Files 的 VCS 自动只读保护，保留显式路径拒绝、句柄安全与撤权校验。删除域名名单，HTTP/MCP HTTP 按 origin 申请，私网与 loopback 同样申请并固定 DNS 地址。Shell、Git remote、LSP、Skill、Lifecycle Hook、Everything 与 MCP stdio 共用授权 owner 和交互端口；无法逐域名约束的进程明确申请 `ProcessNetwork` 实际范围，不宣称已有透明代理。Hook 用户等待不消耗进程执行预算。
 
-**运行时容量与清理：**Shell scratch 256 MiB、npm 512 MiB、Cargo home 2 GiB、最多八个并发 scratch；LSP/Git/MCP scratch 256 MiB，Everything 64 MiB，每目录 100,000 条目，managed process scratch 合计最多 16 个。运行中监控并终止超限进程，退出清理；重启回收残留时跳过活跃 owner 锁。共享缓存只在 Shell 空闲时重置。真实 Skill Python runtime、Everything 服务 IPC、MCP server 与第三方 LSP 的 Windows 端到端验收仍按各发布 Gate 跟踪。
+**运行时容量与清理：**Shell scratch 256 MiB、npm 512 MiB、Cargo home 2 GiB、最多八个并发 scratch；LSP/Git/MCP scratch 256 MiB，Everything 64 MiB，每目录 100,000 条目。活动 Shell 与受管进程 scratch 共享 4 GiB 字节预算，受管进程 scratch 最多 16 个；满载时最多排队 15 秒。运行中监控并终止超限进程，摘要日志仅记录容量，不含路径或内容；退出清理，重启回收残留时跳过活跃 owner 锁。共享缓存只在 Shell 空闲时重置。容量仍是轮询软限制，不是操作系统硬磁盘配额。真实 Skill Python runtime、Everything 服务 IPC、MCP server 与第三方 LSP 的 Windows 端到端验收仍按各发布 Gate 跟踪。详见 [ADR 1430](adr/1430-shared-active-scratch-budget.md)。
 
 **Skill runtime 候选验收：**Python 解析优先选择 Program Files 下机器级 runtime，避开已在 MXC 下触发 `STATUS_ACCESS_DENIED` 的用户 LocalAppData Python Install Manager runtime；真实 Skill/MXC 端到端用例仍待有机器级 Python 的 Windows 环境验收。
 

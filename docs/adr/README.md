@@ -1333,3 +1333,4 @@
 
 - [1428：以资源授权和统一申请替代默认拒绝](1428-permission-first-resource-consent.md)
 - [1429：外部工具内容不构成指令或授权](1429-treat-external-tool-content-as-untrusted.md)
+- [1430：为活动 scratch 共享容量预算](1430-shared-active-scratch-budget.md)

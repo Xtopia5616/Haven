@@ -78,11 +78,10 @@ pub(crate) struct McpStdioProcessStartPermit {
 }
 
 impl haven_mcp::McpStdioProcessStartPermit for McpStdioProcessStartPermit {
-    fn scratch_capacity_budget(&self) -> Option<(std::path::PathBuf, u64, usize)> {
-        self.scratch.as_ref().map(|scratch| {
-            let (bytes, entries) = scratch.capacity_limits();
-            (scratch.path().to_path_buf(), bytes, entries)
-        })
+    fn scratch_capacity_budget(&self) -> Option<haven_platform::filesystem::DirectoryBudgetLease> {
+        self.scratch
+            .as_ref()
+            .map(crate::shell_runtime::ProcessScratchDirectory::capacity_budget)
     }
     fn sandboxed_process_policy(
         &self,
@@ -1312,8 +1311,15 @@ impl McpStdioProcessStartAuthorization {
                     .into(),
             ),
             SandboxMode::WorkspaceWrite if cfg!(windows) => {
-                let scratch = crate::shell_runtime::ProcessScratchDirectory::create_mcp()
-                    .map_err(|_| "MCP process scratch directory is unavailable".to_owned())?;
+                let scratch = tokio::select! {
+                    biased;
+                    _ = request.cancellation.cancelled() => {
+                        return Err("MCP process start was cancelled while waiting for scratch capacity".into());
+                    }
+                    scratch = crate::shell_runtime::ProcessScratchDirectory::create_mcp() => {
+                        scratch.map_err(|_| "MCP process scratch directory is unavailable".to_owned())?
+                    }
+                };
                 let allow_public_egress = permit.opaque_network_is_unrestricted();
                 let (policy, working_directory) = permit.mcp_stdio_process_policy(
                     &request,
@@ -1469,7 +1475,9 @@ mod tests {
         let workspace = root.path().join("workspace");
         let search = workspace.join("project");
         std::fs::create_dir_all(&search).unwrap();
-        let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp().unwrap();
+        let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp()
+            .await
+            .unwrap();
         let (authorization, _) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
             &workspace,
             NetworkPolicy::Open,
@@ -1509,7 +1517,9 @@ mod tests {
         let workspace = root.path().join("workspace");
         let cwd = workspace.join("server");
         std::fs::create_dir_all(&cwd).unwrap();
-        let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp().unwrap();
+        let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp()
+            .await
+            .unwrap();
         let (authorization, _) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
             &workspace,
             NetworkPolicy::Deny,

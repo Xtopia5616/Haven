@@ -1,4 +1,6 @@
-use haven_platform::filesystem::{DirectoryCapability, DirectoryEntryKind};
+use haven_platform::filesystem::{
+    DirectoryBudgetLease, DirectoryBudgetPool, DirectoryCapability, DirectoryEntryKind,
+};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -19,6 +21,9 @@ const SHELL_CACHE_DIRECTORY: &str = "shell-cache";
 const SCRATCH_OWNER_LOCK: &str = ".haven-owner.lock";
 const MAX_PROCESS_SCRATCH_DIRECTORIES: usize = 16;
 static PROCESS_SCRATCH_SLOTS: OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = OnceLock::new();
+const PROCESS_SCRATCH_MAX_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const PROCESS_SCRATCH_ADMISSION_TIMEOUT: Duration = Duration::from_secs(15);
+static PROCESS_SCRATCH_BUDGET_POOL: OnceLock<std::sync::Arc<DirectoryBudgetPool>> = OnceLock::new();
 const SHELL_SCRATCH_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const SHELL_NPM_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const SHELL_CARGO_HOME_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -46,78 +51,81 @@ static SHELL_SCRATCH_SLOTS: tokio::sync::Semaphore =
 pub(crate) struct ProcessScratchDirectory {
     _owner_lock: std::fs::File,
     _slot: tokio::sync::OwnedSemaphorePermit,
+    budget: DirectoryBudgetLease,
     scratch: tempfile::TempDir,
-    max_bytes: u64,
-    max_entries: usize,
 }
 
 impl ProcessScratchDirectory {
-    pub(crate) fn create_lsp() -> anyhow::Result<Self> {
+    pub(crate) async fn create_lsp() -> anyhow::Result<Self> {
         Self::create(
             LSP_SCRATCH_DIRECTORY,
             "lsp-",
             LSP_SCRATCH_MAX_BYTES,
             LSP_SCRATCH_MAX_ENTRIES,
         )
+        .await
     }
 
-    pub(crate) fn create_mcp() -> anyhow::Result<Self> {
-        Self::create(MCP_SCRATCH_DIRECTORY, "server-", 256 * 1024 * 1024, 100_000)
+    pub(crate) async fn create_mcp() -> anyhow::Result<Self> {
+        Self::create(MCP_SCRATCH_DIRECTORY, "server-", 256 * 1024 * 1024, 100_000).await
     }
 
-    pub(crate) fn create_everything() -> anyhow::Result<Self> {
+    pub(crate) async fn create_everything() -> anyhow::Result<Self> {
         Self::create(
             EVERYTHING_SCRATCH_DIRECTORY,
             "search-",
             64 * 1024 * 1024,
             100_000,
         )
+        .await
     }
 
-    pub(crate) fn create_git() -> anyhow::Result<Self> {
+    pub(crate) async fn create_git() -> anyhow::Result<Self> {
         Self::create(
             GIT_SCRATCH_DIRECTORY,
             "git-",
             GIT_SCRATCH_MAX_BYTES,
             GIT_SCRATCH_MAX_ENTRIES,
         )
+        .await
     }
 
-    fn create(
+    async fn create(
         directory: &str,
         prefix: &str,
         max_bytes: u64,
         max_entries: usize,
     ) -> anyhow::Result<Self> {
         let root = haven_common::config::default_runtime_temp_root().join(directory);
-        Self::create_at(&root, prefix, max_bytes, max_entries)
+        Self::create_at(&root, prefix, max_bytes, max_entries).await
     }
 
-    fn create_at(
+    async fn create_at(
         root: &Path,
         prefix: &str,
         max_bytes: u64,
         max_entries: usize,
     ) -> anyhow::Result<Self> {
-        let slot = PROCESS_SCRATCH_SLOTS
+        let slots = PROCESS_SCRATCH_SLOTS
             .get_or_init(|| {
                 std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PROCESS_SCRATCH_DIRECTORIES))
             })
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| anyhow::anyhow!("managed process scratch capacity is full"))?;
+            .clone();
+        let slot = acquire_process_scratch_slot(slots, PROCESS_SCRATCH_ADMISSION_TIMEOUT).await?;
         std::fs::create_dir_all(root)?;
         DirectoryCapability::open(root)?;
         let scratch = tempfile::Builder::new().prefix(prefix).tempdir_in(root)?;
         let owner_lock = DirectoryCapability::open(scratch.path())?
             .create_new_file(Path::new(SCRATCH_OWNER_LOCK))?;
         owner_lock.try_lock()?;
+        let budget = process_scratch_budget_pool()
+            .track(scratch.path(), max_bytes, max_entries)
+            .map_err(anyhow::Error::msg)?;
         Ok(Self {
             _owner_lock: owner_lock,
             _slot: slot,
+            budget,
             scratch,
-            max_bytes,
-            max_entries,
         })
     }
 
@@ -126,26 +134,26 @@ impl ProcessScratchDirectory {
     }
 
     pub(crate) async fn ensure_within_capacity(&self) -> anyhow::Result<()> {
-        let path = self.scratch.path().to_path_buf();
-        let max_bytes = self.max_bytes;
-        let max_entries = self.max_entries;
-        let over_budget = tokio::task::spawn_blocking(move || {
-            directory_size_exceeds(&path, max_bytes, max_entries)
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("process scratch capacity worker failed"))?
-        .map_err(anyhow::Error::msg)?;
-        anyhow::ensure!(!over_budget, "process scratch exceeded its capacity limit");
+        let budget = self.budget.clone();
+        let over_budget = tokio::task::spawn_blocking(move || budget.check_exceeded())
+            .await
+            .map_err(|_| anyhow::anyhow!("process scratch capacity worker failed"))?
+            .map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            !over_budget,
+            "process scratch exceeded its directory or shared capacity limit"
+        );
         Ok(())
     }
 
-    pub(crate) fn capacity_limits(&self) -> (u64, usize) {
-        (self.max_bytes, self.max_entries)
+    pub(crate) fn capacity_budget(&self) -> DirectoryBudgetLease {
+        self.budget.clone()
     }
 }
 
 pub(crate) struct ShellRuntimeDirectories {
     _owner_lock: std::fs::File,
+    scratch_budget: DirectoryBudgetLease,
     scratch: tempfile::TempDir,
     scratch_root: PathBuf,
     npm_cache: PathBuf,
@@ -173,8 +181,16 @@ impl ShellRuntimeDirectories {
         let owner_lock = DirectoryCapability::open(scratch.path())?
             .create_new_file(Path::new(SCRATCH_OWNER_LOCK))?;
         owner_lock.try_lock()?;
+        let scratch_budget = process_scratch_budget_pool()
+            .track(
+                scratch.path(),
+                SHELL_SCRATCH_MAX_BYTES,
+                SHELL_CAPACITY_MAX_ENTRIES,
+            )
+            .map_err(anyhow::Error::msg)?;
         Ok(Self {
             _owner_lock: owner_lock,
+            scratch_budget,
             scratch,
             scratch_root,
             npm_cache,
@@ -282,7 +298,7 @@ impl ShellRuntimeDirectories {
     }
 
     async fn capacity_violation(&self, check_shared: bool) -> anyhow::Result<Option<String>> {
-        let scratch = self.scratch.path().to_path_buf();
+        let scratch_budget = self.scratch_budget.clone();
         let scratch_root = self.scratch_root.clone();
         let npm_cache = self.npm_cache.clone();
         let cargo_home = self.cargo_home.clone();
@@ -293,12 +309,15 @@ impl ShellRuntimeDirectories {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
             });
-            let mut roots = vec![(
-                scratch,
-                SHELL_SCRATCH_MAX_BYTES,
-                SHELL_CAPACITY_MAX_ENTRIES,
-                "Shell scratch",
-            )];
+            if scratch_budget
+                .check_exceeded()
+                .map_err(anyhow::Error::msg)?
+            {
+                return Ok(Some(
+                    "Shell scratch or shared scratch capacity exceeded".to_owned(),
+                ));
+            }
+            let mut roots = Vec::new();
             if check_shared {
                 roots.extend([
                     (
@@ -338,6 +357,29 @@ impl ShellRuntimeDirectories {
 
 pub(crate) fn shell_scratch_slots() -> &'static tokio::sync::Semaphore {
     &SHELL_SCRATCH_SLOTS
+}
+
+fn process_scratch_budget_pool() -> std::sync::Arc<DirectoryBudgetPool> {
+    PROCESS_SCRATCH_BUDGET_POOL
+        .get_or_init(|| {
+            std::sync::Arc::new(DirectoryBudgetPool::new(PROCESS_SCRATCH_MAX_TOTAL_BYTES))
+        })
+        .clone()
+}
+
+async fn acquire_process_scratch_slot(
+    slots: std::sync::Arc<tokio::sync::Semaphore>,
+    timeout: Duration,
+) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
+    tokio::time::timeout(timeout, slots.acquire_owned())
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "managed process scratch capacity remained full for {} seconds",
+                timeout.as_secs()
+            )
+        })?
+        .map_err(|_| anyhow::anyhow!("managed process scratch capacity is unavailable"))
 }
 
 /// Build the platform command used to run `command` in the requested

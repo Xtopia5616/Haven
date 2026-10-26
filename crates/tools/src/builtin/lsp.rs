@@ -818,7 +818,7 @@ async fn spawn_lsp_server(
         haven_common::types::SandboxMode::WorkspaceWrite => {
             #[cfg(windows)]
             {
-                let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp()?;
+                let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp().await?;
                 scratch.ensure_within_capacity().await?;
                 let mut command = std::process::Command::new(&server.command);
                 command
@@ -884,22 +884,16 @@ async fn spawn_lsp_server(
                     .take_stdout()
                     .map(|pipe| Box::new(pipe) as Box<dyn AsyncRead + Unpin + Send>);
                 let monitor_cancel = cancel.clone();
-                let monitor_path = scratch.path().to_path_buf();
+                let monitor_budget = scratch.capacity_budget();
                 let scratch_monitor = tokio::spawn(async move {
                     loop {
                         tokio::select! {
                             _ = monitor_cancel.cancelled() => return,
                             _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                         }
-                        let path = monitor_path.clone();
-                        let exceeded = tokio::task::spawn_blocking(move || {
-                            crate::shell_runtime::directory_size_exceeds(
-                                &path,
-                                crate::shell_runtime::LSP_SCRATCH_MAX_BYTES,
-                                crate::shell_runtime::LSP_SCRATCH_MAX_ENTRIES,
-                            )
-                        })
-                        .await;
+                        let budget = monitor_budget.clone();
+                        let exceeded =
+                            tokio::task::spawn_blocking(move || budget.check_exceeded()).await;
                         match exceeded {
                             Ok(Ok(false)) => {}
                             Ok(Ok(true)) | Ok(Err(_)) | Err(_) => {

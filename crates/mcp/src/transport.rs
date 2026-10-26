@@ -121,24 +121,17 @@ impl StdioInner {
         let reader_task = tokio::spawn(read_stdio_messages(BufReader::new(stdout), io.clone()));
         let budget = process.scratch_capacity_budget();
         let process = Arc::new(AsyncMutex::new(process));
-        let capacity_task = budget.map(|(path, bytes, entries)| {
+        let capacity_task = budget.map(|budget| {
             let process = process.clone();
             let io = io.clone();
             tokio::spawn(async move {
                 loop {
-                    let directory = path.clone();
-                    let exceeded = tokio::task::spawn_blocking(move || {
-                        haven_platform::filesystem::directory_size_exceeds(
-                            &directory, bytes, entries,
-                        )
-                    })
-                    .await
-                    .map_or(true, |result| result.unwrap_or(true));
+                    let budget = budget.clone();
+                    let exceeded = tokio::task::spawn_blocking(move || budget.check_exceeded())
+                        .await
+                        .map_or(true, |result| result.unwrap_or(true));
                     if exceeded {
-                        tracing::warn!(
-                            limit_bytes = bytes,
-                            "MCP scratch capacity exceeded or could not be inspected"
-                        );
+                        tracing::warn!("MCP scratch capacity exceeded or could not be inspected");
                         let _ = process.lock().await.start_kill();
                         io.reader_failed.store(true, Ordering::Release);
                         return;
@@ -1174,7 +1167,7 @@ mod tests {
     use tokio::process::Command;
 
     struct PipeProcess {
-        budget: Option<(std::path::PathBuf, u64, usize)>,
+        budget: Option<haven_platform::filesystem::DirectoryBudgetLease>,
         stdin: Option<crate::McpStdioWriter>,
         stdout: Option<crate::McpStdioReader>,
         stderr: Option<crate::McpStdioReader>,
@@ -1183,7 +1176,9 @@ mod tests {
     }
 
     impl McpStdioProcess for PipeProcess {
-        fn scratch_capacity_budget(&self) -> Option<(std::path::PathBuf, u64, usize)> {
+        fn scratch_capacity_budget(
+            &self,
+        ) -> Option<haven_platform::filesystem::DirectoryBudgetLease> {
             self.budget.clone()
         }
         fn take_stdin(&mut self) -> std::io::Result<crate::McpStdioWriter> {
@@ -1228,12 +1223,15 @@ mod tests {
     async fn stdio_capacity_monitor_stops_a_generation_before_it_can_keep_growing() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("payload"), b"oversized").unwrap();
+        let budget_pool =
+            std::sync::Arc::new(haven_platform::filesystem::DirectoryBudgetPool::new(1024));
+        let budget = budget_pool.track(root.path(), 1, 10).unwrap();
         let (client_stream, _peer_stream) = tokio::io::duplex(64);
         let (stdout, stdin) = tokio::io::split(client_stream);
         let alive = Arc::new(AtomicBool::new(true));
         let kill_count = Arc::new(AtomicUsize::new(0));
         let process = Box::new(PipeProcess {
-            budget: Some((root.path().to_path_buf(), 1, 10)),
+            budget: Some(budget),
             stdin: Some(Box::new(stdin)),
             stdout: Some(Box::new(stdout)),
             stderr: None,

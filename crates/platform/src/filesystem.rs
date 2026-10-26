@@ -1,7 +1,10 @@
 //! Shared low-level filesystem metadata checks.
 
 mod runtime_budget;
-pub use runtime_budget::directory_size_exceeds;
+pub use runtime_budget::{
+    DirectoryBudgetLease, DirectoryBudgetPool, DirectoryUsage, directory_size_exceeds,
+    directory_usage,
+};
 
 use std::ffi::OsString;
 use std::fs::{File, Metadata, OpenOptions};
