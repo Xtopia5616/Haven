@@ -1332,3 +1332,4 @@
 - [1427：全局安全策略仅通过完整 SecurityConfig 应用](1427-keep-global-security-policy-writes-behind-security-config.md)
 
 - [1428：以资源授权和统一申请替代默认拒绝](1428-permission-first-resource-consent.md)
+- [1429：外部工具内容不构成指令或授权](1429-treat-external-tool-content-as-untrusted.md)

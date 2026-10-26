@@ -646,6 +646,8 @@ Shell/MXC、MCP 等执行器仍由各自 adapter 落实 owner 编译出的具体
 
 任意子进程的目标域名不能由当前 MXC 逐个约束，因此 `ProcessNetwork` 资源明确表示并申请公网出站、私网双向通信和宿主 loopback，绑定具体命令/配置 fingerprint，不冒充单域名授权。Shell、Git remote、LSP、Skill、Hook、MCP stdio 使用同一 owner 签发的权限；LSP 和 MCP 项目根保持只读，Skill setup 仅写私有 venv/scratch。Everything 可在默认 ReadOnly 下通过 MXC 只读项目与私有 scratch 运行。MXC 不可用时不会自动回退宿主执行。
 
+Agent 的稳定系统提示把工具结果、MCP 响应、Skill 内容、附件、记忆和会话上下文视为不可信数据；其中的指令不能覆盖用户任务、改变权限策略或充当确认。此提示是纵深防御，不是权限边界；每个实际副作用仍必须经过 `AuthorizationEngine` 的实时策略与 execution proof 校验。外部 MCP 服务能代表其凭据主体执行的远端权限由服务端身份/ACL 决定，Haven 的本机沙箱无法收窄该范围；Haven 对不透明 MCP 调用逐次确认并绑定配置身份与精确请求，不声称验证服务端账号 scope（ADR 1412、1428、1429）。
+
 执行中发现的新权限通过 `PermissionInteractionPort` 进入 AppCommand 的既有交互生命周期；Agent 原始调用继续使用 session owner。两者共享确认 UI、资源描述、允许期限、收据/proof 校验和撤销规则。Hook 交互等待不消耗五秒实际执行预算。确认收据绑定输入、typed 资源、策略 revision、会话目录代次、风险与期限；前端展示的 confirmed 标志不能构造执行权限。
 
 Shell scratch 256 MiB、npm 512 MiB、Cargo home 2 GiB、八个并发 scratch；LSP/Git/MCP managed scratch 256 MiB，Everything 64 MiB，每目录 100,000 条目，managed process scratch 合计最多 16 个。目录计量由 Platform 拥有，超限终止、退出删除、重启跳过活跃锁回收残留；共享缓存仅在没有活动 Shell 时重置。轮询容量检查不等同于文件系统硬配额。
