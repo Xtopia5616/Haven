@@ -625,6 +625,15 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 
 ### 2.5.3 权限 / 确认（AuthorizationPort；内部实现 AuthorizationEngine）
 
+全局默认执行方式、文件/网络 `ResourcePolicy` 与隔离偏好只通过
+`ToolsFacade::apply_security(&SecurityConfig)` 整份应用；组合根负责先持久化配置，再协调 Tools 运行态。
+`AuthorizationEngine` 在一个写锁事务中编译并替换这些策略。跨层 `AuthorizationPort` 与 Agent 的
+`ToolAuthorizationPort` 是消费能力，不提供全局配置替换、单独改执行模式或拆开改文件/网络边界的入口；
+永久权限规则仍由同一 owner 经 typed grant/revoke 操作管理，并从 `SecurityConfig` 恢复；Agent 只绑定
+由 session event 拥有的会话执行方式。Files、HTTP、
+Shell/MXC、MCP 等执行器仍由各自 adapter 落实 owner 编译出的具体边界，并在副作用前重新验证 proof。
+详见 [ADR 1427](adr/1427-keep-global-security-policy-writes-behind-security-config.md)。
+
 决策顺序（fail-closed）：
 
 1. `NetworkPolicy` / `SandboxMode` / `tool_settings.disabled_operations` / typed resource declarations → **Blocked** on hard-boundary failure

@@ -6,7 +6,7 @@ use haven_common::mcp::{
     McpCatalogPresentation as Catalog, McpInvocationAdapters as Adapters, McpServerTransport,
     McpToolAvailability as Availability, McpToolExposure,
 };
-use haven_common::types::{NetworkPolicy, SandboxMode};
+use haven_common::types::NetworkPolicy;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -164,10 +164,10 @@ async fn stale_session_mcp_calls_follow_current_exposure_policy() {
 #[tokio::test]
 async fn load_mcp_authorization_resolves_transport_from_config_before_connecting() {
     let facade = ToolsFacade::new();
+    let mut security = haven_common::config::SecurityConfig::default();
+    security.resource_policy.network.access = haven_common::config::NetworkAccessBoundary::Open;
+    facade.apply_security(&security).await.unwrap();
     let authorization = facade.share_services().authorization;
-    authorization
-        .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
-        .await;
 
     let http_config = McpServerConfig {
         name: "deferred_remote".into(),
@@ -212,9 +212,8 @@ async fn load_mcp_authorization_resolves_transport_from_config_before_connecting
             ..http_config
         })
         .await;
-    authorization
-        .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Deny)
-        .await;
+    security.resource_policy.network.access = haven_common::config::NetworkAccessBoundary::Deny;
+    facade.apply_security(&security).await.unwrap();
     let stdio_request = facade
         .resolve_authorization_request(None, "load_mcp", &input)
         .await
@@ -353,10 +352,10 @@ async fn native_mcp_tools_are_independent_from_catalog_visibility_and_availabili
             .is_some()
     );
 
-    let authorization = facade.share_services().authorization;
-    authorization
-        .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
-        .await;
+    let mut security = haven_common::config::SecurityConfig::default();
+    security.resource_policy.files.write_mode = haven_common::config::FileWriteMode::Unrestricted;
+    security.resource_policy.network.access = haven_common::config::NetworkAccessBoundary::Open;
+    facade.apply_security(&security).await.unwrap();
     let mut dual_adapter = config.clone();
     dual_adapter.exposure.default = exposure(Catalog::Direct, Adapters::NativeAndCodeMode);
     facade.upsert_mcp_server_config(dual_adapter).await;

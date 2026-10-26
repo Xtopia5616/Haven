@@ -374,27 +374,6 @@ impl ToolAuthorizationPort for ToolsFacadeAgentAdapter {
             .await;
     }
 
-    async fn apply_security(&self, security: &haven_common::config::SecurityConfig) {
-        if let Err(error) = self.authorization.apply_security(security).await {
-            tracing::error!(%error, "security configuration applied with execution workspace unavailable");
-        }
-    }
-
-    async fn set_execution_mode(&self, mode: haven_common::types::ExecutionMode) {
-        self.authorization.set_execution_mode(mode).await;
-    }
-
-    async fn set_boundaries(
-        &self,
-        sandbox_mode: haven_common::types::SandboxMode,
-        writable_roots: Vec<std::path::PathBuf>,
-        network_policy: haven_common::types::NetworkPolicy,
-    ) {
-        self.authorization
-            .set_boundaries(sandbox_mode, writable_roots, network_policy)
-            .await;
-    }
-
     async fn list_permanent(&self) -> Vec<haven_common::config::StoredPermission> {
         self.authorization.list_permanent().await
     }

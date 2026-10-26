@@ -1493,10 +1493,11 @@ mod tests {
             first_tools.clone(),
             2,
         ));
-        first
-            .authorization
-            .set_execution_mode(ExecutionMode::Analyze)
-            .await;
+        let initial_security = haven_common::config::SecurityConfig {
+            execution_mode: ExecutionMode::Analyze,
+            ..haven_common::config::SecurityConfig::default()
+        };
+        first_tools.apply_security(&initial_security).await.unwrap();
         let record = first
             .store
             .create_session_with_creation(
@@ -1531,10 +1532,11 @@ mod tests {
             .set_session_execution_mode(&record.session_id, ExecutionMode::Collaborative)
             .await
             .unwrap();
-        first
-            .authorization
-            .set_execution_mode(ExecutionMode::Unattended)
-            .await;
+        let changed_default = haven_common::config::SecurityConfig {
+            execution_mode: ExecutionMode::Unattended,
+            ..haven_common::config::SecurityConfig::default()
+        };
+        first_tools.apply_security(&changed_default).await.unwrap();
 
         let second = Arc::new(SessionSupervisor::new_for_test(db, first_tools, 2));
         assert_eq!(
@@ -1658,9 +1660,10 @@ mod tests {
     async fn session_grant_persists_and_restores_when_session_actor_is_reloaded() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let record = db.create_session("durable session permission").unwrap();
+        let first_tools = Arc::new(ToolsFacade::new());
         let first = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(ToolsFacade::new()),
+            first_tools.clone(),
             1,
         ));
         first
@@ -1727,7 +1730,7 @@ mod tests {
             },
             ..haven_common::config::SecurityConfig::default()
         };
-        first.authorization.apply_security(&changed_security).await;
+        first_tools.apply_security(&changed_security).await.unwrap();
         first.restore_session_authorization_grants().await.unwrap();
         assert!(matches!(
             first

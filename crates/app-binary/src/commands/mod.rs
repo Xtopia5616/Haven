@@ -140,9 +140,7 @@ mod tests {
         parse_mcp_refresh_failed_names, redact_mcp_admin_confirmation_input, validate_command_id,
     };
     use haven_common::tools::NetworkAccess;
-    use haven_common::types::{
-        CapabilityScope, NetworkPolicy, PermissionEffect, PermissionScope, RiskLevel, SandboxMode,
-    };
+    use haven_common::types::{CapabilityScope, PermissionEffect, PermissionScope, RiskLevel};
     use haven_tools::{
         AdminRequest, AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt,
         McpOperationArgs, McpRefreshAction, McpRefreshPlan, OperationPolicy, ToolResult,
@@ -197,10 +195,13 @@ mod tests {
         );
         assert_eq!(request.session_id, None);
 
-        let authorization = ToolsFacade::new().share_services().authorization;
-        authorization
-            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
-            .await;
+        let tools = ToolsFacade::new();
+        let mut security = haven_common::config::SecurityConfig::default();
+        security.resource_policy.files.write_mode =
+            haven_common::config::FileWriteMode::Unrestricted;
+        security.resource_policy.network.access = haven_common::config::NetworkAccessBoundary::Open;
+        tools.apply_security(&security).await.unwrap();
+        let authorization = tools.share_services().authorization;
         authorization
             .grant(
                 Some("ui"),

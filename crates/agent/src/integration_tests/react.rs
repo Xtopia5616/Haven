@@ -792,11 +792,6 @@ async fn media_tool_usage_flows_to_event_and_database() {
     )) as ToolHandle;
 
     let tools = Arc::new(ToolsFacade::new());
-    tools
-        .share_services()
-        .authorization
-        .set_execution_mode(haven_common::types::ExecutionMode::Collaborative)
-        .await;
     // `media.describe` delegates to a configured vision provider. The
     // operation has no typed provider destination, so it is approved once.
     // This test exercises usage propagation after that explicit approval.

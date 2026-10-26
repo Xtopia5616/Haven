@@ -724,7 +724,8 @@ impl AuthorizationEngine {
     }
 
     /// Update the policy profile. Clears session grants.
-    pub async fn set_execution_mode(&self, mode: ExecutionMode) {
+    #[cfg(test)]
+    pub(crate) async fn set_execution_mode(&self, mode: ExecutionMode) {
         let mut cfg = self.config.write().await;
         cfg.execution_mode = mode;
         cfg.session_grants.clear();
@@ -734,7 +735,8 @@ impl AuthorizationEngine {
     /// Update the technical boundaries without touching permanent grants.
     /// This is useful for a settings surface that owns the sandbox controls
     /// but must not accidentally replace the independently managed rule list.
-    pub async fn set_boundaries(
+    #[cfg(test)]
+    pub(crate) async fn set_boundaries(
         &self,
         sandbox_mode: SandboxMode,
         writable_roots: Vec<PathBuf>,
@@ -1833,10 +1835,6 @@ impl AuthorizationEngine {
 
 #[async_trait::async_trait]
 impl AuthorizationPort for AuthorizationEngine {
-    async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String> {
-        AuthorizationEngine::apply_security(self, security).await
-    }
-
     async fn execution_workspace_snapshot(
         &self,
         session_id: Option<&str>,
@@ -1865,20 +1863,6 @@ impl AuthorizationPort for AuthorizationEngine {
 
     async fn session_execution_mode(&self, session_id: &str) -> ExecutionMode {
         AuthorizationEngine::session_execution_mode(self, session_id).await
-    }
-
-    async fn set_execution_mode(&self, mode: ExecutionMode) {
-        AuthorizationEngine::set_execution_mode(self, mode).await;
-    }
-
-    async fn set_boundaries(
-        &self,
-        sandbox_mode: SandboxMode,
-        writable_roots: Vec<PathBuf>,
-        network_policy: NetworkPolicy,
-    ) {
-        AuthorizationEngine::set_boundaries(self, sandbox_mode, writable_roots, network_policy)
-            .await;
     }
 
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision {

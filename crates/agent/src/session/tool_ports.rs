@@ -1,10 +1,10 @@
 //! Agent-owned ports for tool observations.
 
 use async_trait::async_trait;
-use haven_common::config::{SecurityConfig, StoredPermission};
+use haven_common::config::StoredPermission;
 use haven_common::types::{
-    CapabilityScope, ExecutionMode, MessageAttachment, NetworkPolicy, PermissionEffect,
-    PermissionResourceScope, PermissionResourceTarget, PermissionScope, RiskLevel, SandboxMode,
+    CapabilityScope, ExecutionMode, MessageAttachment, PermissionEffect, PermissionResourceScope,
+    PermissionResourceTarget, PermissionScope, RiskLevel,
 };
 #[cfg(test)]
 use haven_tools::ToolsFacade;
@@ -169,17 +169,6 @@ pub trait ToolAuthorizationPort: Send + Sync {
         effect: PermissionEffect,
         scope: PermissionScope,
         resource_scope: Vec<PermissionResourceScope>,
-    );
-
-    async fn apply_security(&self, security: &SecurityConfig);
-
-    async fn set_execution_mode(&self, mode: ExecutionMode);
-
-    async fn set_boundaries(
-        &self,
-        sandbox_mode: SandboxMode,
-        writable_roots: Vec<std::path::PathBuf>,
-        network_policy: NetworkPolicy,
     );
 
     async fn list_permanent(&self) -> Vec<StoredPermission>;
@@ -537,27 +526,6 @@ impl ToolAuthorizationPort for ToolsFacadeToolAuthorizationAdapter {
     ) {
         self.authorization
             .grant(session_id, capability, effect, scope, resource_scope)
-            .await;
-    }
-
-    async fn apply_security(&self, security: &SecurityConfig) {
-        if let Err(error) = self.authorization.apply_security(security).await {
-            tracing::error!(%error, "security configuration applied with execution workspace unavailable");
-        }
-    }
-
-    async fn set_execution_mode(&self, mode: ExecutionMode) {
-        self.authorization.set_execution_mode(mode).await;
-    }
-
-    async fn set_boundaries(
-        &self,
-        sandbox_mode: SandboxMode,
-        writable_roots: Vec<std::path::PathBuf>,
-        network_policy: NetworkPolicy,
-    ) {
-        self.authorization
-            .set_boundaries(sandbox_mode, writable_roots, network_policy)
             .await;
     }
 

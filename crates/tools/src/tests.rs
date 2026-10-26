@@ -318,13 +318,9 @@ async fn load_skill_activation_is_in_process_while_skill_execution_stays_host_pr
     facade.rebuild_catalog().await.unwrap();
     let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let authorization = facade.share_services().authorization;
-    authorization
-        .set_boundaries(
-            haven_common::types::SandboxMode::WorkspaceWrite,
-            Vec::new(),
-            haven_common::types::NetworkPolicy::Deny,
-        )
-        .await;
+    let mut security = haven_common::config::SecurityConfig::default();
+    security.resource_policy.network.access = haven_common::config::NetworkAccessBoundary::Deny;
+    facade.apply_security(&security).await.unwrap();
 
     let activation = facade
         .resolve_authorization_request(
@@ -367,13 +363,8 @@ async fn load_skill_activation_is_in_process_while_skill_execution_stays_host_pr
             Arc::new(SkillToolAdapter::new(Arc::new(skill), runner)),
         )
         .await;
-    authorization
-        .set_boundaries(
-            haven_common::types::SandboxMode::WorkspaceWrite,
-            Vec::new(),
-            haven_common::types::NetworkPolicy::Open,
-        )
-        .await;
+    security.resource_policy.network.access = haven_common::config::NetworkAccessBoundary::Open;
+    facade.apply_security(&security).await.unwrap();
     let execution = facade
         .resolve_authorization_request(Some(session_id), &skill_tool_name, &json!({"params": {}}))
         .await
@@ -558,7 +549,6 @@ async fn execute_tool_does_not_inject_idempotency_key_into_strict_tool_args() {
 
 #[tokio::test]
 async fn authorized_execution_rejects_a_revoked_proof_before_calling_the_tool() {
-    use haven_common::types::{NetworkPolicy, SandboxMode};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CounterTool(Arc<AtomicUsize>);
@@ -603,9 +593,10 @@ async fn authorized_execution_rejects_a_revoked_proof_before_calling_the_tool() 
     ));
     let proof = check.execution_proof.unwrap();
 
-    authorization
-        .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
-        .await;
+    let mut security = haven_common::config::SecurityConfig::default();
+    security.resource_policy.files.write_mode = haven_common::config::FileWriteMode::Unrestricted;
+    security.resource_policy.network.access = haven_common::config::NetworkAccessBoundary::Open;
+    tools.apply_security(&security).await.unwrap();
     let result = tools
         .execute_authorized_tool_with_step(
             None,

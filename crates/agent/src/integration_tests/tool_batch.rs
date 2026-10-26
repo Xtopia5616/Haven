@@ -205,11 +205,6 @@ async fn mixed_confirmation_batch_pauses_only_real_gates_and_resumes_all_tools()
         }),
     ]));
     let (agent, executor) = make_test_agent_with(mock, tools.clone());
-    tools
-        .share_services()
-        .authorization
-        .set_execution_mode(haven_common::types::ExecutionMode::Collaborative)
-        .await;
     let gated_authorization = tools
         .resolve_authorization_request(
             Some("ses-9930b20bf67b3ba14286afbbdd24fd6a"),
@@ -650,20 +645,10 @@ async fn run_session_contains_custom_extension_panic() {
 #[tokio::test]
 async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     let tools = Arc::new(ToolsFacade::new());
-    tools
-        .share_services()
-        .authorization
-        .set_execution_mode(haven_common::types::ExecutionMode::Collaborative)
-        .await;
-    tools
-        .share_services()
-        .authorization
-        .set_boundaries(
-            haven_common::types::SandboxMode::FullAccess,
-            Vec::new(),
-            haven_common::types::NetworkPolicy::Open,
-        )
-        .await;
+    let mut security = haven_common::config::SecurityConfig::default();
+    security.resource_policy.files.write_mode = haven_common::config::FileWriteMode::Unrestricted;
+    security.resource_policy.network.access = haven_common::config::NetworkAccessBoundary::Open;
+    tools.apply_security(&security).await.unwrap();
     let mcp_manager = haven_tools::McpManager::new();
     let mcp_adapter = haven_tools::McpToolAdapter::new_panicking_for_test(
         mcp_manager,

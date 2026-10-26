@@ -1,14 +1,13 @@
 use super::engine::{canonical_authorization_hash, execution_proof_expiry};
 use crate::OperationPolicy;
-use haven_common::config::{SecurityConfig, StoredPermission};
+use haven_common::config::StoredPermission;
 pub use haven_common::types::LocalPathAccess;
 use haven_common::types::{
-    CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect, PermissionScope, RiskLevel,
-    SandboxMode,
+    CapabilityScope, ExecutionMode, PermissionEffect, PermissionScope, RiskLevel,
 };
 pub use haven_common::types::{ClipboardAccess, DesktopAccess, RegistryAccess, WindowAccess};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// A one-shot authorization proof bound to the exact request that was shown
 /// to the user.  A receipt is deliberately invalidated by any policy change,
@@ -244,8 +243,6 @@ impl AuthorizationCheck {
 /// access to the mutable policy implementation.
 #[async_trait::async_trait]
 pub trait AuthorizationPort: Send + Sync {
-    async fn apply_security(&self, security: &SecurityConfig) -> Result<(), String>;
-
     async fn execution_workspace_snapshot(
         &self,
         session_id: Option<&str>,
@@ -262,15 +259,6 @@ pub trait AuthorizationPort: Send + Sync {
     async fn bind_session_execution_mode(&self, session_id: &str, mode: ExecutionMode);
 
     async fn session_execution_mode(&self, session_id: &str) -> ExecutionMode;
-
-    async fn set_execution_mode(&self, mode: ExecutionMode);
-
-    async fn set_boundaries(
-        &self,
-        sandbox_mode: SandboxMode,
-        writable_roots: Vec<PathBuf>,
-        network_policy: NetworkPolicy,
-    );
 
     async fn authorize(&self, request: &AuthorizationRequest) -> AuthorizationDecision;
 
