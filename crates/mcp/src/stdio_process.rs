@@ -8,6 +8,7 @@ use crate::McpStdioProcessStartPermit;
 use futures_util::future::BoxFuture;
 use std::fmt;
 use std::io;
+use std::path::PathBuf;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub(crate) type McpStdioReader = Box<dyn AsyncRead + Send + Unpin>;
@@ -84,6 +85,9 @@ impl fmt::Debug for McpStdioLaunchSpec {
 /// stream and process lifecycle. The reader/writer are each taken exactly
 /// once by `McpClient`; `stderr` is optional and is drained independently.
 pub(crate) trait McpStdioProcess: Send {
+    fn scratch_capacity_budget(&self) -> Option<(PathBuf, u64, usize)> {
+        None
+    }
     fn take_stdin(&mut self) -> io::Result<McpStdioWriter>;
     fn take_stdout(&mut self) -> io::Result<McpStdioReader>;
     fn take_stderr(&mut self) -> io::Result<Option<McpStdioReader>>;

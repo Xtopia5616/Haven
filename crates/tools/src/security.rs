@@ -20,3 +20,5 @@ pub(crate) use filesystem::{FileReadPolicy, FileWritePolicy, open_directory_root
 #[cfg(test)]
 pub(crate) use prompt::LOCAL_TOOL_SECURITY_MATRIX;
 pub use prompt::permission_prompt_summary;
+pub(crate) mod consent;
+pub use consent::PermissionInteractionPort;

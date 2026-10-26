@@ -414,6 +414,12 @@ pub(crate) fn run() {
             app.manage(Arc::new(app_state));
             let notifications = Arc::new(DesktopNotifications::new(handle.clone()));
             app.manage(notifications.clone());
+            {
+                let state = handle.state::<Arc<AppState>>();
+                tauri::async_runtime::block_on(state.runtime.tools.set_permission_interaction(
+                    Arc::new(commands::confirmation::RuntimePermissionInteraction(handle.clone())),
+                ));
+            }
 
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {

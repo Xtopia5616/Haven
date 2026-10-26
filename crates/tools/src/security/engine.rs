@@ -7,7 +7,7 @@ use super::contract::{
 use super::execution::execution_policy_denied;
 use super::execution::{
     ExecutionPolicyAuthorization, LifecycleHookProcessStartAuthorization,
-    McpStdioProcessStartAuthorization, opaque_network_is_unrestricted,
+    McpStdioProcessStartAuthorization,
 };
 use super::filesystem::{
     FileReadPolicy, FileWritePolicy, is_unc_or_device_path, open_directory_roots,
@@ -29,9 +29,9 @@ use haven_common::config::{
     StoredPermission, ToolConfig,
 };
 use haven_common::types::{
-    ApprovalPolicy, CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect,
-    PermissionResourceScope, PermissionResourceTarget, PermissionScope, RegistryAccess, RiskLevel,
-    SandboxMode, is_canonical_id,
+    CapabilityScope, ExecutionMode, NetworkPolicy, PermissionEffect, PermissionResourceScope,
+    PermissionResourceTarget, PermissionScope, RegistryAccess, RiskLevel, SandboxMode,
+    is_canonical_id,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -43,6 +43,40 @@ use tokio_util::sync::CancellationToken;
 
 /// Allow and deny grants keyed by capability, each with resource boundaries.
 type ScopedGrantMap = HashMap<CapabilityScope, Vec<PermissionResourceScope>>;
+
+// Long-lived MCP transports must stop when their connection authority is removed.
+fn mcp_connection_grants(grants: &ScopedGrantMap) -> ScopedGrantMap {
+    grants
+        .iter()
+        .filter_map(|(key, scopes)| {
+            let key_text = key.as_str();
+            let is_mcp = key_text == "mcp"
+                || key_text.starts_with("mcp.")
+                || key_text == "mcp_stdio"
+                || key_text.starts_with("mcp_stdio.");
+            let connection_scopes = scopes
+                .iter()
+                .filter(|scope| {
+                    matches!(
+                        scope,
+                        PermissionResourceScope::ProcessNetwork { .. }
+                            | PermissionResourceScope::NetworkDestination { .. }
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            (is_mcp && !connection_scopes.is_empty()).then(|| (key.clone(), connection_scopes))
+        })
+        .collect()
+}
+
+fn mcp_connection_authority_removed(previous: &ScopedGrantMap, current: &ScopedGrantMap) -> bool {
+    mcp_connection_grants(previous).iter().any(|(key, scopes)| {
+        scopes
+            .iter()
+            .any(|scope| !current.get(key).is_some_and(|new| new.contains(scope)))
+    })
+}
 
 /// Per-session allow/deny maps keyed by typed capability scope.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -142,13 +176,17 @@ impl SafetyConfig {
 /// Central authorization engine for every foreground or background tool call.
 ///
 /// The engine owns policy evaluation; callers never decide based on a
-/// frontend-provided `confirmed` flag. Hard safety boundaries run before
-/// grants and deny rules always win. Policy revisions invalidate stale proofs;
+/// frontend-provided `confirmed` flag. Explicit resource grants precede default
+/// scopes and capability refusals; structural boundaries remain mandatory.
+/// Policy revisions invalidate stale proofs;
 /// process revocation follows global, tool-setting or session-trust scope.
 pub struct AuthorizationEngine {
+    pub(super) permission_slots: tokio::sync::Semaphore,
+    pub(super) permission_interaction: RwLock<Option<Arc<dyn super::PermissionInteractionPort>>>,
     pub(super) config: Arc<RwLock<SafetyConfig>>,
     pub(super) process_revocations: tokio::sync::watch::Sender<Arc<()>>,
     pub(super) process_boundary_changes: tokio::sync::watch::Sender<Arc<()>>,
+    mcp_permission_changes: tokio::sync::watch::Sender<Arc<()>>,
     tool_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
     session_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
 }
@@ -163,7 +201,11 @@ impl AuthorizationEngine {
             tokio::sync::watch::channel(Arc::new(()));
         let (process_boundary_changes, _process_boundary_change_receiver) =
             tokio::sync::watch::channel(Arc::new(()));
+        let (mcp_permission_changes, _) = tokio::sync::watch::channel(Arc::new(()));
         Self {
+            mcp_permission_changes,
+            permission_slots: tokio::sync::Semaphore::new(32),
+            permission_interaction: RwLock::new(None),
             config: Arc::new(RwLock::new(SafetyConfig {
                 execution_mode: ExecutionMode::Collaborative,
                 session_execution_modes: HashMap::new(),
@@ -177,7 +219,6 @@ impl AuthorizationEngine {
                 shell_runtime_read_roots: Vec::new(),
                 network: NetworkResourcePolicy {
                     access: NetworkAccessBoundary::Restricted,
-                    allowed_domains: Vec::new(),
                 },
                 network_policy_revision: 0,
                 execution_workspace,
@@ -208,6 +249,10 @@ impl AuthorizationEngine {
     /// Observe only the boundary changes that require manager-owned opaque
     /// MCP processes to stop; ordinary permission and trust changes are
     /// handled by fresh authorization of each MCP tool call.
+    pub(crate) fn subscribe_mcp_permission_changes(&self) -> tokio::sync::watch::Receiver<Arc<()>> {
+        self.mcp_permission_changes.subscribe()
+    }
+
     pub(crate) fn subscribe_stdio_process_changes(&self) -> tokio::sync::watch::Receiver<Arc<()>> {
         self.process_boundary_changes.subscribe()
     }
@@ -296,21 +341,6 @@ impl AuthorizationEngine {
         self: &Arc<Self>,
     ) -> Option<Arc<McpStdioProcessStartAuthorization>> {
         let config = self.config.read().await;
-        let opaque_network_is_open = config.network.network_policy() == NetworkPolicy::Open
-            && config.network.allowed_domains.is_empty()
-            && ["mcp_stdio", "mcp"].into_iter().all(|name| {
-                config.tool_settings.get(name).is_none_or(|setting| {
-                    !matches!(
-                        setting.resource_policy.network.access,
-                        NetworkAccessBoundary::Deny | NetworkAccessBoundary::Restricted
-                    ) && setting.resource_policy.network.allowed_domains.is_empty()
-                })
-            });
-        if !matches!(config.sandbox_mode, SandboxMode::WorkspaceWrite if cfg!(windows))
-            && !(config.sandbox_mode == SandboxMode::FullAccess && opaque_network_is_open)
-        {
-            return None;
-        }
         Some(Arc::new(McpStdioProcessStartAuthorization {
             authorization: Arc::clone(self),
             process_boundary_revision: config.process_boundary_revision,
@@ -328,22 +358,6 @@ impl AuthorizationEngine {
     ) -> Result<LifecycleHookProcessStartAuthorization, String> {
         let config = self.config.read().await;
         let execution_workspace = config.execution_workspace_for(session_id);
-        match config.sandbox_mode {
-            SandboxMode::FullAccess
-                if opaque_network_is_unrestricted(&config, "lifecycle_hook") => {}
-            SandboxMode::FullAccess => {
-                return Err(
-                    "lifecycle hook commands require Open network policy without domain allowlists in Full Access".into(),
-                );
-            }
-            SandboxMode::WorkspaceWrite if cfg!(windows) => {}
-            SandboxMode::WorkspaceWrite => {
-                return Err("Workspace Write lifecycle hooks require Windows MXC isolation".into());
-            }
-            SandboxMode::ReadOnly => {
-                return Err("lifecycle hook commands are blocked by the read-only sandbox".into());
-            }
-        }
         Ok(LifecycleHookProcessStartAuthorization::new(
             Arc::clone(self),
             super::execution::LifecycleHookSessionContext {
@@ -680,6 +694,9 @@ impl AuthorizationEngine {
         cfg.global_denied_paths = global_denied_paths;
         cfg.shell_runtime_read_roots = shell_runtime_read_roots;
         cfg.network = network;
+        if mcp_connection_authority_removed(&cfg.permanent.allow, &permanent.allow) {
+            self.mcp_permission_changes.send_replace(Arc::new(()));
+        }
         cfg.permanent = permanent;
         if network_policy_changed {
             cfg.network_policy_revision = cfg.network_policy_revision.saturating_add(1);
@@ -827,11 +844,6 @@ impl AuthorizationEngine {
         file_read_policy_for_config(&cfg, tool_name)
     }
 
-    pub(crate) async fn network_domain_constraints(&self, tool_name: &str) -> Vec<Vec<String>> {
-        let cfg = self.config.read().await;
-        network_domain_constraints_for_config(&cfg, tool_name, true)
-    }
-
     pub(crate) async fn execution_context_for_proof(
         self: &Arc<Self>,
         request: &AuthorizationRequest,
@@ -854,20 +866,17 @@ impl AuthorizationEngine {
             let mut protection_roots = Vec::new();
             let mut readonly_paths = cfg.global_read_only_roots.clone();
             let mut denied_paths = cfg.global_denied_paths.clone();
-            let resource_boundary_extension = matches!(
-                &proof.authorization,
-                ExecutionAuthorizationKind::Confirmed(receipt)
-                    if receipt.resource_boundary_extension
-            );
+            let resource_boundary_extension = proof_resource_boundary_extension(proof);
             let (extension_roots, extension_targets) = if resource_boundary_extension {
                 resource_extension_write_roots(request, &execution_workspace)?
             } else {
                 (Vec::new(), Vec::new())
             };
             let ambient = match cfg.sandbox_mode {
-                SandboxMode::ReadOnly => {
-                    return Err("read-only sandbox does not grant file mutation access".into());
+                SandboxMode::ReadOnly if !resource_boundary_extension => {
+                    return Err("file mutation requires permission".into());
                 }
+                SandboxMode::ReadOnly => false,
                 SandboxMode::WorkspaceWrite if resource_boundary_extension => false,
                 SandboxMode::WorkspaceWrite if cfg.writable_roots.is_empty() => {
                     let roots = execution_workspace
@@ -893,7 +902,7 @@ impl AuthorizationEngine {
                 }
             };
 
-            if !cfg.global_file_roots.is_empty() {
+            if !resource_boundary_extension && !cfg.global_file_roots.is_empty() {
                 protection_roots.extend(cfg.global_file_roots.iter().cloned());
                 root_constraints.push(open_directory_roots(
                     &cfg.global_file_roots,
@@ -905,8 +914,9 @@ impl AuthorizationEngine {
                 .filter_map(|name| cfg.tool_settings.get(name))
             {
                 match setting.resource_policy.files.write_mode {
+                    _ if resource_boundary_extension => {}
                     FileWriteMode::ReadOnly => {
-                        return Err("tool resource policy is read-only".into());
+                        return Err("file mutation requires permission".into());
                     }
                     FileWriteMode::Workspace => {
                         let root = execution_workspace
@@ -937,7 +947,9 @@ impl AuthorizationEngine {
                     }
                     FileWriteMode::Inherit | FileWriteMode::Unrestricted => {}
                 }
-                if !setting.resource_policy.files.path_roots.is_empty() {
+                if !resource_boundary_extension
+                    && !setting.resource_policy.files.path_roots.is_empty()
+                {
                     let roots = setting
                         .resource_policy
                         .files
@@ -974,11 +986,11 @@ impl AuthorizationEngine {
                     .iter()
                     .map(|directory| directory.root().to_path_buf()),
             );
-            readonly_paths.extend(haven_platform::filesystem::protected_metadata_paths(
-                &protection_roots,
-            ));
-            let readonly_paths =
-                open_filesystem_paths(&readonly_paths, "resource_policy.files.read_only_roots")?;
+            let readonly_paths = if resource_boundary_extension {
+                Vec::new()
+            } else {
+                open_filesystem_paths(&readonly_paths, "resource_policy.files.read_only_roots")?
+            };
             let denied_paths =
                 open_filesystem_paths(&denied_paths, "resource_policy.files.denied_paths")?;
 
@@ -1006,54 +1018,39 @@ impl AuthorizationEngine {
                     }
                 )
             })
-            .then(|| file_read_policy_for_config(&cfg, &request.tool_name));
-        let network_destination_extension = if proof_resource_boundary_extension(proof) {
-            match request.resources.as_slice() {
-                [resource @ super::DeclaredResource::NetworkDestination { .. }]
-                    if request.tool_name == "http"
-                        && request.policy.network_access == NetworkAccess::Public =>
-                {
-                    Some(resource.clone())
-                }
-                resources
-                    if request.tool_name.starts_with("files.")
-                        && resources.iter().any(|resource| {
-                            matches!(
-                                resource,
-                                super::DeclaredResource::LocalPath {
-                                    access: super::LocalPathAccess::Write,
-                                    ..
+            .then(|| {
+                let mut policy = file_read_policy_for_config(&cfg, &request.tool_name);
+                if proof_resource_boundary_extension(proof) {
+                    policy.allowed_roots.clear();
+                    policy.allowed_roots.push(
+                        request
+                            .resources
+                            .iter()
+                            .filter_map(|resource| match resource {
+                                super::DeclaredResource::LocalPath { path, .. } => {
+                                    Some(resolve_relative_sandbox_path(
+                                        path.clone(),
+                                        &execution_workspace,
+                                    ))
                                 }
-                            )
-                        })
-                        && resources.iter().all(|resource| {
-                            matches!(resource, super::DeclaredResource::LocalPath { .. })
-                        }) =>
-                {
-                    None
-                }
-                resources
-                    if request.tool_name == "shell"
-                        && !resources.is_empty()
-                        && resources.iter().all(|resource| {
-                            matches!(resource, super::DeclaredResource::LocalPath { .. })
-                        }) =>
-                {
-                    None
-                }
-                _ => {
-                    return Err(
-                        "temporary resource extension does not match one supported typed resource"
-                            .into(),
+                                _ => None,
+                            })
+                            .collect(),
                     );
                 }
-            }
-        } else {
-            None
-        };
-        let network_domain_constraints = network_destination_extension
-            .as_ref()
-            .map(|_| network_domain_constraints_for_config(&cfg, &request.tool_name, false));
+                policy
+            });
+        let network_destination_extension = request
+            .resources
+            .iter()
+            .find(|resource| matches!(resource, super::DeclaredResource::NetworkDestination { .. }))
+            .cloned();
+        let network_domain_constraints = network_destination_extension.as_ref().map(|resource| {
+            let super::DeclaredResource::NetworkDestination { host, .. } = resource else {
+                unreachable!()
+            };
+            vec![vec![host.clone()]]
+        });
         let tool_settings_cancellation =
             self.register_tool_settings_cancellation(&request.tool_name);
         let session_trust_cancellation =
@@ -1075,6 +1072,10 @@ impl AuthorizationEngine {
                 session_id: proof.binding.session_id.clone(),
                 execution_boundary: request.policy.execution_boundary,
                 resource_boundary_extension: proof_resource_boundary_extension(proof),
+                network_authorized: request.policy.network_access == NetworkAccess::Opaque
+                    && request.resources.iter().any(|resource| {
+                        matches!(resource, super::DeclaredResource::ProcessNetwork { .. })
+                    }),
                 authorized_resources: request.resources.clone(),
                 expires_at: proof.binding.expires_at,
                 process_revocation_signal: self.process_revocations.borrow().clone(),
@@ -1134,99 +1135,44 @@ impl AuthorizationEngine {
             }
         };
 
-        // Plan is a capability boundary, not a prompting preference. It must
-        // run before permanent/session allows so an old Always grant cannot
-        // silently turn Plan back into an execution mode.
         let execution_mode = cfg.execution_mode_for(session_id);
-        if execution_mode.task_intent() == haven_common::types::TaskIntent::Analyze
-            && (resource_boundary_extension || !policy.is_read_only())
-        {
-            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
-                reason: "analyze mode only permits read-only operations".into(),
-                reason_code: AuthorizationReasonCode::AnalyzeMode,
-            })
-            .with_network_policy_decision(network_policy_decision);
-        }
-
-        // Deny always wins over Allow (permanent deny → session deny →
-        // permanent allow → session allow). Session deny can override a
-        // permanent allow for the rest of that session.
-        if scoped_grant_matches(
-            &cfg.permanent.deny,
-            key,
-            &request.resources,
-            &workspace,
-            true,
-        ) {
-            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
-                reason: format!("permanently denied: {key}"),
-                reason_code: AuthorizationReasonCode::PermanentDeny,
-            })
-            .with_network_policy_decision(network_policy_decision);
-        }
-        if let Some(sid) = session_id
-            && let Some(grants) = cfg.session_grants.get(sid)
-            && scoped_grant_matches(&grants.deny, key, &request.resources, &workspace, true)
-        {
-            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
-                reason: format!("denied for this session: {key}"),
-                reason_code: AuthorizationReasonCode::SessionDeny,
-            })
-            .with_network_policy_decision(network_policy_decision);
-        }
-        // Critical operations are a hard confirmation floor. An allow grant
-        // can streamline ordinary work, but it must never turn an
-        // irreversible operation into an unattended one.
+        let granted = request_has_allow(&cfg, request, &workspace);
+        // Explicit authority is resolved before default resource boundaries.
+        // Structural errors and disabled operations were checked above.
         let hard_confirmation =
             risk >= RiskLevel::Critical || policy.confirmation == ConfirmationRequirement::Required;
-        if !hard_confirmation && !resource_boundary_extension {
-            if scoped_grant_matches(
-                &cfg.permanent.allow,
-                key,
-                &request.resources,
-                &workspace,
-                false,
-            ) {
-                return AuthorizationCheck::auto_approved(
-                    request,
-                    cfg.policy_revision,
-                    cfg.execution_mode_revision_for(session_id),
-                    workspace.generation(),
-                )
-                .with_network_policy_decision(network_policy_decision);
-            }
-            if let Some(sid) = session_id
-                && let Some(grants) = cfg.session_grants.get(sid)
-                && scoped_grant_matches(&grants.allow, key, &request.resources, &workspace, false)
-            {
-                return AuthorizationCheck::auto_approved(
-                    request,
-                    cfg.policy_revision,
-                    cfg.execution_mode_revision_for(session_id),
-                    workspace.generation(),
-                )
-                .with_network_policy_decision(network_policy_decision);
-            }
+        if granted && !hard_confirmation {
+            let mut check = AuthorizationCheck::auto_approved(
+                request,
+                cfg.policy_revision,
+                cfg.execution_mode_revision_for(session_id),
+                workspace.generation(),
+            );
+            check
+                .execution_proof
+                .as_mut()
+                .expect("auto approval has proof")
+                .binding
+                .resource_boundary_extension = resource_boundary_extension;
+            return check.with_network_policy_decision(NetworkPolicyDecision::Allowed);
         }
-
+        if let Some((reason, reason_code)) = request_denial(&cfg, request, &workspace) {
+            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
+                reason,
+                reason_code,
+            })
+            .with_network_policy_decision(network_policy_decision);
+        }
+        // Analyze/read-only is the default grant, not a permanent refusal to
+        // request additional rights for this exact operation.
+        let resource_boundary_extension = resource_boundary_extension
+            || (execution_mode == ExecutionMode::Analyze && !policy.is_read_only());
         let needs_prompt = resource_boundary_extension
-            || match execution_mode {
-                ExecutionMode::Analyze => {
-                    hard_confirmation || policy.requires_disclosure_confirmation()
-                }
-                ExecutionMode::Collaborative => {
-                    hard_confirmation
-                        || policy.requires_disclosure_confirmation()
-                        || (!policy.is_read_only()
-                            && (risk > RiskLevel::Safe
-                                || policy.confirmation != ConfirmationRequirement::None))
-                }
-                ExecutionMode::Unattended => {
-                    hard_confirmation
-                        || policy.requires_disclosure_confirmation()
-                        || risk >= RiskLevel::High
-                }
-            };
+            || hard_confirmation
+            || policy.requires_disclosure_confirmation()
+            || (!policy.is_read_only()
+                && (risk > RiskLevel::Safe
+                    || policy.confirmation != ConfirmationRequirement::None));
 
         if needs_prompt
             && policy.network_access != NetworkAccess::None
@@ -1242,15 +1188,6 @@ impl AuthorizationEngine {
                 cfg.execution_mode_revision_for(session_id),
                 workspace.generation(),
             )
-            .with_network_policy_decision(network_policy_decision);
-        }
-
-        if execution_mode.approval_policy() == ApprovalPolicy::DenyIfRequired {
-            return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
-                reason: "approval is required, but unattended mode cannot request confirmation"
-                    .into(),
-                reason_code: AuthorizationReasonCode::ApprovalPolicy,
-            })
             .with_network_policy_decision(network_policy_decision);
         }
 
@@ -1332,9 +1269,6 @@ impl AuthorizationEngine {
         if risk > receipt.effective_risk {
             return Err("the operation risk increased after confirmation".into());
         }
-        if risk >= RiskLevel::Critical {
-            return Err("Critical operations always require a fresh confirmation".into());
-        }
         let mut effective_policy = policy.clone();
         effective_policy.risk_level = risk;
         match check_policy_boundaries(
@@ -1345,7 +1279,11 @@ impl AuthorizationEngine {
             &request.resources,
             &effective_policy,
         ) {
-            Ok(()) if receipt.resource_boundary_extension => {
+            Ok(())
+                if receipt.resource_boundary_extension
+                    && !(cfg.execution_mode_for(session_id) == ExecutionMode::Analyze
+                        && !policy.is_read_only()) =>
+            {
                 return Err(
                     "confirmation receipt requested an unnecessary resource extension".into(),
                 );
@@ -1355,20 +1293,8 @@ impl AuthorizationEngine {
                 if failure.resource_extension_allowed && receipt.resource_boundary_extension => {}
             Err(failure) => return Err(failure.reason),
         }
-        if scoped_grant_matches(
-            &cfg.permanent.deny,
-            key,
-            &request.resources,
-            &workspace,
-            true,
-        ) {
-            return Err(format!("permanently denied: {key}"));
-        }
-        if let Some(sid) = session_id
-            && let Some(grants) = cfg.session_grants.get(sid)
-            && scoped_grant_matches(&grants.deny, key, &request.resources, &workspace, true)
-        {
-            return Err(format!("denied for this session: {key}"));
+        if let Some((reason, _)) = request_denial(&cfg, request, &workspace) {
+            return Err(reason);
         }
         Ok(())
     }
@@ -1385,6 +1311,7 @@ impl AuthorizationEngine {
         let cfg = self.config.read().await;
         Ok(AuthorizationExecutionProof {
             binding: AuthorizationExecutionBinding {
+                resource_boundary_extension: receipt.resource_boundary_extension,
                 session_id: request.session_id.clone(),
                 tool_name: request.tool_name.clone(),
                 capability: request.capability().clone(),
@@ -1459,29 +1386,14 @@ impl AuthorizationEngine {
             key,
             &request.resources,
             &request.policy,
-        ) {
+        ) && (!failure.resource_extension_allowed
+            || !binding.resource_boundary_extension
+            || !request_has_allow(&cfg, request, &workspace))
+        {
             return Err(failure.reason);
         }
-        if cfg.execution_mode_for(session_id).task_intent()
-            == haven_common::types::TaskIntent::Analyze
-            && !request.policy.is_read_only()
-        {
-            return Err("analyze mode only permits read-only operations".into());
-        }
-        if scoped_grant_matches(
-            &cfg.permanent.deny,
-            key,
-            &request.resources,
-            &workspace,
-            true,
-        ) {
-            return Err(format!("permanently denied: {key}"));
-        }
-        if let Some(session_id) = session_id
-            && let Some(grants) = cfg.session_grants.get(session_id)
-            && scoped_grant_matches(&grants.deny, key, &request.resources, &workspace, true)
-        {
-            return Err(format!("denied for this session: {key}"));
+        if let Some((reason, _)) = request_denial(&cfg, request, &workspace) {
+            return Err(reason);
         }
         if risk >= RiskLevel::Critical
             || request.policy.confirmation == ConfirmationRequirement::Required
@@ -1525,6 +1437,15 @@ impl AuthorizationEngine {
                         cfg.permanent.deny.remove(&capability);
                     }
                     PermissionEffect::Deny => {
+                        if cfg.permanent.allow.get(&capability).is_some_and(|scopes| {
+                            !mcp_connection_grants(&HashMap::from([(
+                                capability.clone(),
+                                scopes.clone(),
+                            )]))
+                            .is_empty()
+                        }) {
+                            self.mcp_permission_changes.send_replace(Arc::new(()));
+                        }
                         cfg.permanent.allow.remove(&capability);
                     }
                 }
@@ -1554,7 +1475,19 @@ impl AuthorizationEngine {
             }
             PermissionScope::Once => {}
         }
-        // A grant is the user's decision for the receipt that is currently
+        if effect == PermissionEffect::Deny {
+            match scope {
+                PermissionScope::Always => self.bump_global_policy_revision(&mut cfg),
+                PermissionScope::Session => {
+                    advance_policy_revision(&mut cfg);
+                    if let Some(session_id) = session_id {
+                        self.cancel_session_processes(session_id);
+                    }
+                }
+                PermissionScope::Once => {}
+            }
+        }
+        // An allow is the user's decision for the receipt that is currently
         // being resolved. It must not invalidate that same receipt between
         // the resolver waking the session and the executor's final check.
         // Revocations and policy/config changes still advance the revision.
@@ -1573,6 +1506,11 @@ impl AuthorizationEngine {
         let mut scopes = Vec::with_capacity(request.resources.len());
         for resource in &request.resources {
             let scope = match resource {
+                super::DeclaredResource::ProcessNetwork { target_fingerprint } => {
+                    PermissionResourceScope::ProcessNetwork {
+                        target_fingerprint: target_fingerprint.clone(),
+                    }
+                }
                 super::DeclaredResource::LocalPath { path, access } => {
                     let resolved = resolve_relative_sandbox_path(path.clone(), &workspace);
                     if is_unc_or_device_path(&resolved) {
@@ -1763,6 +1701,12 @@ impl AuthorizationEngine {
             return false;
         };
         let mut cfg = self.config.write().await;
+        if cfg.permanent.allow.get(&capability).is_some_and(|scopes| {
+            !mcp_connection_grants(&HashMap::from([(capability.clone(), scopes.clone())]))
+                .is_empty()
+        }) {
+            self.mcp_permission_changes.send_replace(Arc::new(()));
+        }
         let removed_permanent = cfg.permanent.allow.remove(&capability).is_some()
             | cfg.permanent.deny.remove(&capability).is_some();
         if removed_permanent {
@@ -1801,6 +1745,9 @@ impl AuthorizationEngine {
     pub async fn clear_permanent(&self) -> usize {
         let mut cfg = self.config.write().await;
         let removed = cfg.permanent.allow.len() + cfg.permanent.deny.len();
+        if !mcp_connection_grants(&cfg.permanent.allow).is_empty() {
+            self.mcp_permission_changes.send_replace(Arc::new(()));
+        }
         cfg.permanent = SessionGrants::default();
         if removed > 0 {
             self.bump_global_policy_revision(&mut cfg);
@@ -1969,7 +1916,9 @@ fn effective_risk_from(cfg: &SafetyConfig, tool_name: &str, reported: RiskLevel)
 }
 
 fn tool_setting_names(tool_name: &str) -> impl Iterator<Item = &str> {
-    std::iter::once(tool_name).chain(tool_name.split_once('.').map(|(root, _)| root))
+    std::iter::once(tool_name)
+        .chain(tool_name.split_once('.').map(|(root, _)| root))
+        .chain((tool_name == "mcp_stdio").then_some("mcp"))
 }
 
 fn advance_policy_revision(cfg: &mut SafetyConfig) {
@@ -2075,143 +2024,24 @@ fn resolve_network_policy(
             format!("tool resource policy denies network access for '{tool_name}'"),
         );
     }
-    // A restricted boundary is enforceable only when Haven can inspect the
-    // concrete destination before the executor performs the request.
-    if operation.network_access == NetworkAccess::Opaque
-        && (global_network_policy == NetworkPolicy::Restricted
-            || settings.iter().any(|setting| {
-                setting.resource_policy.network.access == NetworkAccessBoundary::Restricted
-            }))
-    {
-        return NetworkPolicyResolution::blocked(
-            NetworkPolicyDecision::OpaqueTarget,
-            format!(
-                "restricted network policy cannot authorize opaque network access from '{tool_name}'"
-            ),
-        );
-    }
-
-    let mut domain_policies = Vec::new();
-    if !cfg.network.allowed_domains.is_empty() {
-        domain_policies.push(cfg.network.allowed_domains.as_slice());
-    }
-    domain_policies.extend(
-        settings
-            .iter()
-            .map(|setting| setting.resource_policy.network.allowed_domains.as_slice())
-            .filter(|domains| !domains.is_empty()),
-    );
-    if !domain_policies.is_empty() && operation.network_access == NetworkAccess::Opaque {
-        let reason = if tool_name == "shell" {
-            "Shell cannot run with configured network domain restrictions because its current process boundary cannot enforce per-domain network rules".into()
-        } else {
-            format!(
-                "network domain restrictions cannot authorize opaque network access from '{tool_name}'"
-            )
-        };
-        return NetworkPolicyResolution::blocked(NetworkPolicyDecision::OpaqueTarget, reason);
-    }
-
-    let destinations = resources
-        .iter()
-        .filter_map(|resource| match resource {
-            super::DeclaredResource::NetworkDestination { host, .. } => Some(host.as_str()),
-            super::DeclaredResource::LocalPath { .. }
-            | super::DeclaredResource::Clipboard { .. }
-            | super::DeclaredResource::Desktop { .. }
-            | super::DeclaredResource::Window { .. }
-            | super::DeclaredResource::Registry { .. }
-            | super::DeclaredResource::McpRemoteInvocation { .. }
-            | super::DeclaredResource::ManagedAsset { .. } => None,
+    let requires_consent = global_network_policy != NetworkPolicy::Open
+        || settings.iter().any(|setting| {
+            setting.resource_policy.network.access == NetworkAccessBoundary::Restricted
         })
-        .collect::<Vec<_>>();
-    if destinations.is_empty() && !domain_policies.is_empty() {
-        return NetworkPolicyResolution::blocked(
-            NetworkPolicyDecision::OpaqueTarget,
-            format!(
-                "'{tool_name}' did not declare a network destination required by the domain policy"
-            ),
-        );
-    }
-    for host in destinations {
-        if haven_common::network::http_host_is_local_or_special(host) {
-            return NetworkPolicyResolution::blocked(
-                NetworkPolicyDecision::LocalAddress,
-                format!("network destination '{host}' is a blocked local or special-use address"),
-            );
+        || resources.iter().any(|resource| {
+            matches!(resource,
+            super::DeclaredResource::NetworkDestination { host, .. }
+                if haven_common::network::http_host_is_local_or_special(host))
+        });
+    if requires_consent {
+        NetworkPolicyResolution {
+            decision: NetworkPolicyDecision::RequiresConfirmation,
+            reason: Some(format!("network permission is required for '{tool_name}'")),
+            resource_boundary_extension: true,
         }
-        if domain_policies
-            .iter()
-            .any(|domains| !haven_common::network::http_domain_allowed(host, domains))
-        {
-            if network_domain_extension_allowed(cfg, tool_name, resources, operation) {
-                return NetworkPolicyResolution {
-                    decision: NetworkPolicyDecision::RequiresConfirmation,
-                    reason: Some(format!(
-                        "network destination '{host}' is outside the configured resource policy for '{tool_name}'"
-                    )),
-                    resource_boundary_extension: true,
-                };
-            }
-            return NetworkPolicyResolution::blocked(
-                NetworkPolicyDecision::DomainMismatch,
-                format!(
-                    "network destination '{host}' is outside the configured resource policy for '{tool_name}'"
-                ),
-            );
-        }
+    } else {
+        NetworkPolicyResolution::allowed()
     }
-    NetworkPolicyResolution::allowed()
-}
-
-fn network_domain_extension_allowed(
-    cfg: &SafetyConfig,
-    tool_name: &str,
-    resources: &[super::DeclaredResource],
-    operation: &OperationPolicy,
-) -> bool {
-    if tool_name != "http" || operation.network_access != NetworkAccess::Public {
-        return false;
-    }
-    let [super::DeclaredResource::NetworkDestination { host, .. }] = resources else {
-        return false;
-    };
-    if cfg.network.allowed_domains.is_empty()
-        || haven_common::network::http_domain_allowed(host, &cfg.network.allowed_domains)
-    {
-        return false;
-    }
-    if tool_setting_names(tool_name).any(|name| {
-        cfg.tool_settings.get(name).is_some_and(|setting| {
-            setting.resource_policy.network.access == NetworkAccessBoundary::Deny
-                || (!setting.resource_policy.network.allowed_domains.is_empty()
-                    && !haven_common::network::http_domain_allowed(
-                        host,
-                        &setting.resource_policy.network.allowed_domains,
-                    ))
-        })
-    }) {
-        return false;
-    }
-    true
-}
-
-fn network_domain_constraints_for_config(
-    cfg: &SafetyConfig,
-    tool_name: &str,
-    include_global: bool,
-) -> Vec<Vec<String>> {
-    let mut constraints = Vec::new();
-    if include_global && !cfg.network.allowed_domains.is_empty() {
-        constraints.push(cfg.network.allowed_domains.clone());
-    }
-    constraints.extend(
-        tool_setting_names(tool_name)
-            .filter_map(|name| cfg.tool_settings.get(name))
-            .map(|setting| setting.resource_policy.network.allowed_domains.clone())
-            .filter(|domains| !domains.is_empty()),
-    );
-    constraints
 }
 
 fn file_read_policy_for_config(cfg: &SafetyConfig, tool_name: &str) -> FileReadPolicy {
@@ -2259,10 +2089,7 @@ fn validate_denied_paths(paths: &[PathBuf], setting: &str) -> Result<(), String>
 }
 
 fn proof_resource_boundary_extension(proof: &AuthorizationExecutionProof) -> bool {
-    matches!(
-        &proof.authorization,
-        ExecutionAuthorizationKind::Confirmed(receipt) if receipt.resource_boundary_extension
-    )
+    proof.binding.resource_boundary_extension
 }
 
 fn workspace_host_process_block(
@@ -2311,6 +2138,74 @@ fn persisted_local_resource_path(path: PathBuf) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn request_has_allow(
+    cfg: &SafetyConfig,
+    request: &AuthorizationRequest,
+    workspace: &ExecutionWorkspace,
+) -> bool {
+    scoped_grant_matches(
+        &cfg.permanent.allow,
+        request.capability(),
+        &request.resources,
+        workspace,
+        false,
+    ) || request
+        .session_id
+        .as_ref()
+        .and_then(|id| cfg.session_grants.get(id))
+        .is_some_and(|grants| {
+            scoped_grant_matches(
+                &grants.allow,
+                request.capability(),
+                &request.resources,
+                workspace,
+                false,
+            )
+        })
+}
+
+fn request_denial(
+    cfg: &SafetyConfig,
+    request: &AuthorizationRequest,
+    workspace: &ExecutionWorkspace,
+) -> Option<(String, AuthorizationReasonCode)> {
+    if request_has_allow(cfg, request, workspace) {
+        return None;
+    }
+    if scoped_grant_matches(
+        &cfg.permanent.deny,
+        request.capability(),
+        &request.resources,
+        workspace,
+        true,
+    ) {
+        return Some((
+            format!("permanently denied: {}", request.capability()),
+            AuthorizationReasonCode::PermanentDeny,
+        ));
+    }
+    if request
+        .session_id
+        .as_ref()
+        .and_then(|id| cfg.session_grants.get(id))
+        .is_some_and(|grants| {
+            scoped_grant_matches(
+                &grants.deny,
+                request.capability(),
+                &request.resources,
+                workspace,
+                true,
+            )
+        })
+    {
+        return Some((
+            format!("denied for this session: {}", request.capability()),
+            AuthorizationReasonCode::SessionDeny,
+        ));
+    }
+    None
+}
+
 fn scoped_grant_matches(
     grants: &ScopedGrantMap,
     key: &CapabilityScope,
@@ -2340,6 +2235,13 @@ fn permission_resource_scope_matches(
     workspace: &ExecutionWorkspace,
 ) -> bool {
     match (scope, resource) {
+        (
+            PermissionResourceScope::ProcessNetwork {
+                target_fingerprint: granted,
+            },
+            super::DeclaredResource::ProcessNetwork { target_fingerprint },
+        ) => granted == target_fingerprint,
+
         (
             PermissionResourceScope::LocalPath {
                 path: root,
@@ -2540,31 +2442,65 @@ fn check_policy_boundaries(
             resource_extension_allowed: false,
         });
     }
-    if let Some(reason) = workspace_host_process_block(cfg.sandbox_mode, tool_name, policy) {
-        return Err(PolicyBoundaryFailure {
-            reason,
-            reason_code: AuthorizationReasonCode::SandboxBoundary,
-            resource_extension_allowed: false,
-        });
+    let mut denied_paths = cfg.global_denied_paths.clone();
+    for setting in tool_setting_names(tool_name).filter_map(|name| cfg.tool_settings.get(name)) {
+        denied_paths.extend(
+            setting
+                .resource_policy
+                .files
+                .denied_paths
+                .iter()
+                .map(PathBuf::from),
+        );
     }
+    for resource in resources {
+        if let super::DeclaredResource::LocalPath { path, .. } = resource {
+            let path = resolve_relative_sandbox_path(path.clone(), execution_workspace);
+            if filesystem_policy_path_matches(&denied_paths, &path) {
+                return Err(PolicyBoundaryFailure {
+                    reason: "resource is explicitly denied".into(),
+                    reason_code: AuthorizationReasonCode::SandboxBoundary,
+                    resource_extension_allowed: false,
+                });
+            }
+        }
+    }
+    let mut expansion =
+        workspace_host_process_block(cfg.sandbox_mode, tool_name, policy).map(|reason| {
+            PolicyBoundaryFailure {
+                reason,
+                reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
+                resource_extension_allowed: true,
+            }
+        });
     let network = resolve_network_policy(cfg, tool_name, resources, policy);
     if let Some(reason) = network.reason {
-        let resource_extension_allowed = network.resource_boundary_extension;
-        return Err(PolicyBoundaryFailure {
+        let failure = PolicyBoundaryFailure {
             reason,
-            reason_code: if resource_extension_allowed {
+            reason_code: if network.resource_boundary_extension {
                 AuthorizationReasonCode::ResourceBoundaryExtension
             } else {
                 AuthorizationReasonCode::NetworkPolicy
             },
-            resource_extension_allowed,
-        });
+            resource_extension_allowed: network.resource_boundary_extension,
+        };
+        if !failure.resource_extension_allowed {
+            return Err(failure);
+        }
+        expansion = Some(failure);
     }
     if let Some(failure) =
         path_sandbox_block(cfg, execution_workspace, tool_name, resources, policy)
     {
+        if !failure.resource_extension_allowed {
+            return Err(failure);
+        }
+        expansion = Some(failure);
+    }
+    if let Some(failure) = expansion {
         return Err(failure);
     }
+
     Ok(())
 }
 
@@ -2576,12 +2512,13 @@ fn path_sandbox_block(
     policy: &OperationPolicy,
 ) -> Option<PolicyBoundaryFailure> {
     if matches!(cfg.sandbox_mode, SandboxMode::ReadOnly)
-        && matches!(policy.effect, OperationEffect::WorkspaceWrite)
+        && (matches!(policy.effect, OperationEffect::WorkspaceWrite)
+            || policy.execution_boundary != crate::ExecutionBoundary::InProcess)
     {
         return Some(PolicyBoundaryFailure {
             reason: format!("read-only resource policy blocks mutating operation '{tool_name}'"),
             reason_code: AuthorizationReasonCode::SandboxBoundary,
-            resource_extension_allowed: false,
+            resource_extension_allowed: true,
         });
     }
     let paths = resources
@@ -2594,7 +2531,8 @@ fn path_sandbox_block(
             | super::DeclaredResource::Window { .. }
             | super::DeclaredResource::Registry { .. }
             | super::DeclaredResource::McpRemoteInvocation { .. }
-            | super::DeclaredResource::ManagedAsset { .. } => None,
+            | super::DeclaredResource::ManagedAsset { .. }
+            | super::DeclaredResource::ProcessNetwork { .. } => None,
         })
         .collect::<Vec<_>>();
     if matches!(policy.effect, OperationEffect::WorkspaceWrite)
@@ -2647,9 +2585,7 @@ fn path_sandbox_block(
                     .map(PathBuf::from),
             );
         }
-        if filesystem_policy_path_matches(&denied_paths, &path)
-            || (**access == super::LocalPathAccess::Write && is_protected_metadata_path(&path))
-        {
+        if filesystem_policy_path_matches(&denied_paths, &path) {
             return Some(PolicyBoundaryFailure {
                 reason: format!("operation '{tool_name}' is blocked by a denied or protected path"),
                 reason_code: AuthorizationReasonCode::SandboxBoundary,
@@ -2674,7 +2610,7 @@ fn path_sandbox_block(
                 return Some(PolicyBoundaryFailure {
                     reason: format!("operation '{tool_name}' targets a read-only protected path"),
                     reason_code: AuthorizationReasonCode::SandboxBoundary,
-                    resource_extension_allowed: false,
+                    resource_extension_allowed: true,
                 });
             }
         }
@@ -2688,7 +2624,7 @@ fn path_sandbox_block(
                         "operation '{tool_name}' is blocked by the global file resource path policy"
                     ),
                     reason_code: AuthorizationReasonCode::SandboxBoundary,
-                    resource_extension_allowed: false,
+                    resource_extension_allowed: true,
                 });
             }
         }
@@ -2715,7 +2651,7 @@ fn path_sandbox_block(
                         "operation '{tool_name}' is blocked by its tool resource path policy"
                     ),
                     reason_code: AuthorizationReasonCode::SandboxBoundary,
-                    resource_extension_allowed: false,
+                    resource_extension_allowed: true,
                 });
             }
         }
@@ -2738,7 +2674,7 @@ fn path_sandbox_block(
                             "tool resource policy blocks file mutation for '{tool_name}'"
                         ),
                         reason_code: AuthorizationReasonCode::SandboxBoundary,
-                        resource_extension_allowed: false,
+                        resource_extension_allowed: true,
                     });
                 }
                 FileWriteMode::Workspace => {
@@ -2782,7 +2718,7 @@ fn path_sandbox_block(
                 return Some(PolicyBoundaryFailure {
                     reason: format!("operation '{tool_name}' is blocked by its tool write scope"),
                     reason_code: AuthorizationReasonCode::SandboxBoundary,
-                    resource_extension_allowed: false,
+                    resource_extension_allowed: true,
                 });
             }
         }
@@ -2871,17 +2807,6 @@ fn filesystem_policy_path_matches(paths: &[PathBuf], candidate: &Path) -> bool {
         haven_platform::filesystem::FilesystemPathCapability::open(path)
             .map(|scope| scope.contains_path(candidate).unwrap_or(true))
             .unwrap_or(true)
-    })
-}
-
-fn is_protected_metadata_path(path: &Path) -> bool {
-    const METADATA_NAMES: [&str; 5] = [".git", ".hg", ".svn", ".bzr", ".jj"];
-    path.components().any(|component| {
-        component.as_os_str().to_str().is_some_and(|component| {
-            METADATA_NAMES
-                .iter()
-                .any(|name| component.eq_ignore_ascii_case(name))
-        })
     })
 }
 
@@ -3009,10 +2934,29 @@ mod tests {
             idempotency: crate::OperationIdempotency::Unknown,
             scope: crate::ToolOperationScope::Session,
             concurrency: ToolConcurrency::Exclusive,
-            effect: OperationEffect::ExternalEffect,
+            effect: if risk_level == RiskLevel::Safe {
+                OperationEffect::ReadOnly
+            } else {
+                OperationEffect::ExternalEffect
+            },
             data_sensitivity: DataSensitivity::None,
             network_access,
             execution_boundary,
+        }
+    }
+
+    async fn approved_test_proof(
+        engine: &AuthorizationEngine,
+        request: &AuthorizationRequest,
+    ) -> AuthorizationExecutionProof {
+        let check = engine.authorize_for_execution(request).await;
+        match check.decision {
+            AuthorizationDecision::AutoApproved => check.execution_proof.unwrap(),
+            AuthorizationDecision::RequiresConfirmation { receipt, .. } => engine
+                .confirm_for_execution(request, &receipt)
+                .await
+                .unwrap(),
+            decision => panic!("fixture operation cannot be authorized: {decision:?}"),
         }
     }
 
@@ -3029,11 +2973,7 @@ mod tests {
             input.clone(),
             fixture_policy("authorization.test.safe", &input, RiskLevel::Safe),
         );
-        let proof = authorization
-            .authorize_for_execution(&request)
-            .await
-            .execution_proof
-            .expect("the safe ask operation should receive an execution proof");
+        let proof = approved_test_proof(&authorization, &request).await;
         authorization
             .execution_context_for_proof(&request, &proof)
             .await
@@ -3807,11 +3747,7 @@ mod tests {
         let target_request = request
             .clone()
             .with_target_binding(Some("mcp-target:0000000000000001:0000000000000002".into()));
-        let target_proof = engine
-            .authorize_for_execution(&target_request)
-            .await
-            .execution_proof
-            .expect("auto-approved target-bound calls carry a proof");
+        let target_proof = approved_test_proof(&engine, &target_request).await;
         let changed_target = target_request
             .clone()
             .with_target_binding(Some("mcp-target:0000000000000001:0000000000000003".into()));
@@ -3828,6 +3764,11 @@ mod tests {
     async fn execution_context_rejects_a_stale_execution_proof() {
         let engine = Arc::new(AuthorizationEngine::new());
         engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
+        engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         let input = json!({"path": "notes.txt", "content": "safe"});
@@ -3835,10 +3776,7 @@ mod tests {
         policy.effect = OperationEffect::WorkspaceWrite;
         policy.confirmation = ConfirmationRequirement::None;
         let request = fixture_request(None, "files.write", &input, &policy);
-        let check = engine.authorize_for_execution(&request).await;
-        let proof = check
-            .execution_proof
-            .expect("safe test operation should receive an execution proof");
+        let proof = approved_test_proof(&engine, &request).await;
 
         let context = engine
             .execution_context_for_proof(&request, &proof)
@@ -3882,6 +3820,11 @@ mod tests {
     async fn process_spawn_permit_serializes_live_policy_updates() {
         let engine = Arc::new(AuthorizationEngine::new());
         engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
+        engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         let input = json!({"value": "spawn"});
@@ -3891,11 +3834,7 @@ mod tests {
             input.clone(),
             fixture_policy("ask", &input, RiskLevel::Safe),
         );
-        let proof = engine
-            .authorize_for_execution(&request)
-            .await
-            .execution_proof
-            .expect("safe ask request receives an execution proof");
+        let proof = approved_test_proof(&engine, &request).await;
         let context = engine
             .execution_context_for_proof(&request, &proof)
             .await
@@ -3955,6 +3894,11 @@ mod tests {
     #[tokio::test]
     async fn session_trust_revocation_stops_only_processes_for_affected_sessions() {
         let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         let ask_capability = capability_scope!("ask");
         engine
             .grant(
@@ -4067,6 +4011,11 @@ mod tests {
     #[tokio::test]
     async fn tool_settings_update_does_not_publish_global_process_revocation() {
         let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         let mut process_revocations = engine.process_revocations.subscribe();
         let before_revision = engine.config.read().await.policy_revision;
         let unrelated_authorization = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
@@ -4107,6 +4056,11 @@ mod tests {
     #[tokio::test]
     async fn tool_settings_update_revokes_only_affected_tool_processes() {
         let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         let shell_config = ToolConfig::default();
         let skill_config = ToolConfig::default();
         engine
@@ -4213,6 +4167,11 @@ mod tests {
     async fn mcp_stdio_process_authorization_is_bound_to_network_policy() {
         let engine = Arc::new(AuthorizationEngine::new());
         engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
+        engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         let authorization = engine
@@ -4244,8 +4203,8 @@ mod tests {
             engine
                 .capture_mcp_stdio_process_start_authorization()
                 .await
-                .is_none(),
-            "non-open opaque-network policy must not produce a stdio start authorization"
+                .is_some(),
+            "an unknown permission must reach the interactive start gate"
         );
 
         engine
@@ -4287,6 +4246,11 @@ mod tests {
     #[tokio::test]
     async fn mcp_stdio_authorization_survives_unrelated_permission_changes() {
         let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         engine
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
@@ -4414,6 +4378,11 @@ mod tests {
         for tool_name in ["mcp_stdio", "mcp"] {
             let engine = Arc::new(AuthorizationEngine::new());
             engine
+                .set_permission_interaction(Arc::new(
+                    super::super::consent::ApprovingPermissionInteraction,
+                ))
+                .await;
+            engine
                 .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
                 .await;
             let old_authorization = engine
@@ -4427,7 +4396,6 @@ mod tests {
                     resource_policy: ResourcePolicy {
                         network: NetworkResourcePolicy {
                             access: NetworkAccessBoundary::Deny,
-                            allowed_domains: Vec::new(),
                         },
                         ..ResourcePolicy::default()
                     },
@@ -4452,8 +4420,8 @@ mod tests {
                 engine
                     .capture_mcp_stdio_process_start_authorization()
                     .await
-                    .is_none(),
-                "Full Access must not start an opaque process when {tool_name} denies access"
+                    .is_some(),
+                "a snapshot may be captured; the live permission gate still refuses explicit denials"
             );
         }
     }
@@ -4521,11 +4489,7 @@ mod tests {
             input.clone(),
             fixture_policy("ask", &input, RiskLevel::Safe),
         );
-        let proof = engine
-            .authorize_for_execution(&request)
-            .await
-            .execution_proof
-            .expect("safe test operation should receive an execution proof");
+        let proof = approved_test_proof(&engine, &request).await;
         let context = engine
             .execution_context_for_proof(&request, &proof)
             .await
@@ -4635,16 +4599,8 @@ mod tests {
             &second_input,
             &second_policy,
         );
-        let first_proof = engine
-            .authorize_for_execution(&first_request)
-            .await
-            .execution_proof
-            .expect("the first session can write inside its own workspace");
-        let second_proof = engine
-            .authorize_for_execution(&second_request)
-            .await
-            .execution_proof
-            .expect("the second session can write inside its own workspace");
+        let first_proof = approved_test_proof(&engine, &first_request).await;
+        let second_proof = approved_test_proof(&engine, &second_request).await;
         let outside_policy = policy_for();
         let outside_first = fixture_request(
             Some(first_session),
@@ -5054,12 +5010,16 @@ mod tests {
         ) -> ConfirmationResult {
             let policy = fixture_policy(tool_name, params, risk_level);
             let mut request = fixture_request(session_id, tool_name, params, &policy);
-            if request.resources.is_empty() {
-                request.resources = threshold_fixture_resource();
+            if !request
+                .resources
+                .iter()
+                .any(|resource| matches!(resource, DeclaredResource::LocalPath { .. }))
+            {
+                request.resources.extend(threshold_fixture_resource());
             }
             let result = self.engine.authorize(&request).await;
             if risk_level < self.threshold
-                && matches!(result, ConfirmationResult::RequiresConfirmation { .. })
+                && matches!(result, ConfirmationResult::RequiresConfirmation { reason_code, .. } if reason_code != AuthorizationReasonCode::ResourceBoundaryExtension)
             {
                 ConfirmationResult::AutoApproved
             } else {
@@ -5077,6 +5037,15 @@ mod tests {
         ) {
             if effect == PermissionEffect::Allow && resource_scope.is_empty() {
                 resource_scope = threshold_fixture_resource_scope();
+                let request = AuthorizationRequest::new(
+                    session_id,
+                    capability.as_str(),
+                    json!({}),
+                    fixture_policy(capability.as_str(), &json!({}), RiskLevel::High),
+                );
+                resource_scope.push(PermissionResourceScope::ProcessNetwork {
+                    target_fingerprint: canonical_authorization_hash(&request),
+                });
             }
             self.engine
                 .grant(session_id, capability, effect, scope, resource_scope)
@@ -5115,7 +5084,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execution_modes_have_predictable_prompt_boundaries() {
+    async fn execution_modes_request_ungranted_mutations() {
         let gw = ThresholdFixture::new(RiskLevel::Safe);
         gw.set_execution_mode(ExecutionMode::Collaborative).await;
         assert!(matches!(
@@ -5130,7 +5099,7 @@ mod tests {
         gw.set_execution_mode(ExecutionMode::Analyze).await;
         assert!(matches!(
             gw.check(None, "tool", &json!({}), RiskLevel::Safe).await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::AutoApproved
         ));
     }
 
@@ -5146,16 +5115,8 @@ mod tests {
         let ask_policy = fixture_policy("ask", &ask_input, RiskLevel::Safe);
         let first_request = fixture_request(Some(first_session), "ask", &ask_input, &ask_policy);
         let second_request = fixture_request(Some(second_session), "ask", &ask_input, &ask_policy);
-        let first_proof = engine
-            .authorize_for_execution(&first_request)
-            .await
-            .execution_proof
-            .expect("the first session receives an auto-approved proof");
-        let second_proof = engine
-            .authorize_for_execution(&second_request)
-            .await
-            .execution_proof
-            .expect("the second session receives an auto-approved proof");
+        let first_proof = approved_test_proof(&engine, &first_request).await;
+        let second_proof = approved_test_proof(&engine, &second_request).await;
 
         let network_input = json!({ "url": "https://example.com/resource" });
         let network_policy = fixture_policy("http", &network_input, RiskLevel::Medium);
@@ -5212,7 +5173,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn operation_contract_enforces_analyze_and_prompts_in_collaborative_mode() {
+    async fn operation_contract_requests_mutation_authority_in_every_mode() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let read_policy = OperationPolicy {
             risk_level: RiskLevel::Low,
@@ -5246,7 +5207,7 @@ mod tests {
         };
         assert!(matches!(
             authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
 
         gateway
@@ -5260,15 +5221,12 @@ mod tests {
         gateway.set_execution_mode(ExecutionMode::Unattended).await;
         assert!(matches!(
             authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
-            ConfirmationResult::Blocked {
-                reason_code: AuthorizationReasonCode::ApprovalPolicy,
-                ..
-            }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
 
     #[tokio::test]
-    async fn analyze_mode_cannot_be_bypassed_by_permanent_allow() {
+    async fn analyze_mode_requests_additional_authority() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let write_policy = OperationPolicy {
             risk_level: RiskLevel::Medium,
@@ -5294,7 +5252,7 @@ mod tests {
         gateway.set_execution_mode(ExecutionMode::Analyze).await;
         assert!(matches!(
             authorize(&gateway, None, "files.write", &json!({}), &write_policy).await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
 
@@ -5337,7 +5295,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_network_policy_requests_public_network_confirmation() {
+    async fn default_network_policy_requests_network_confirmation() {
         let gateway = AuthorizationEngine::new();
         let default_security = SecurityConfig::default();
         assert_eq!(
@@ -5365,19 +5323,13 @@ mod tests {
                 &opaque_policy,
             )
             .await,
-            ConfirmationResult::Blocked {
-                reason_code: AuthorizationReasonCode::SandboxBoundary,
-                ..
-            }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
 
         let skill_policy = fixture_policy("skill__remote", &json!({}), RiskLevel::High);
         assert!(matches!(
             authorize(&gateway, None, "skill__remote", &json!({}), &skill_policy,).await,
-            ConfirmationResult::Blocked {
-                reason_code: AuthorizationReasonCode::SandboxBoundary,
-                ..
-            }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
 
         gateway
@@ -5395,10 +5347,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn changing_network_access_keeps_domain_restrictions_separate() {
+    async fn changing_network_access_updates_the_single_network_policy() {
         let engine = AuthorizationEngine::new();
-        let mut security = SecurityConfig::default();
-        security.resource_policy.network.allowed_domains = vec!["trusted.example".into()];
+        let security = SecurityConfig::default();
         engine
             .apply_security(&security)
             .await
@@ -5410,7 +5361,6 @@ mod tests {
         {
             let config = engine.config.read().await;
             assert_eq!(config.network.access, NetworkAccessBoundary::Deny);
-            assert_eq!(config.network.allowed_domains, ["trusted.example"]);
         }
 
         engine
@@ -5418,7 +5368,6 @@ mod tests {
             .await;
         let config = engine.config.read().await;
         assert_eq!(config.network.access, NetworkAccessBoundary::Open);
-        assert_eq!(config.network.allowed_domains, ["trusted.example"]);
     }
 
     #[tokio::test]
@@ -5463,7 +5412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_write_separates_process_and_network_boundaries() {
+    async fn workspace_write_requests_process_and_network_authority() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         gateway
             .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
@@ -5483,11 +5432,11 @@ mod tests {
                 .with_execution_boundary(crate::ExecutionBoundary::InProcess);
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
             authorize(&gateway, None, "skill__echo", &json!({}), &skill_policy).await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
             authorize(
@@ -5509,7 +5458,7 @@ mod tests {
             .await;
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         gateway
             .set_boundaries(
@@ -5527,11 +5476,11 @@ mod tests {
                 &http_mcp_policy
             )
             .await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         gateway
             .set_boundaries(
@@ -5542,10 +5491,7 @@ mod tests {
             .await;
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
-            ConfirmationResult::Blocked {
-                reason_code: AuthorizationReasonCode::NetworkPolicy,
-                ..
-            }
+            AuthorizationDecision::RequiresConfirmation { .. }
         ));
         gateway
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
@@ -5557,96 +5503,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shell_with_domain_restrictions_is_blocked_before_network_confirmation() {
-        let shell_policy = OperationPolicy::native(
-            "shell",
-            capability_scope!("shell"),
-            RiskLevel::High,
-            NetworkAccess::Opaque,
-        );
-        let request = fixture_request(None, "shell", &json!({}), &shell_policy);
-        let unrestricted_files = FileResourcePolicy {
-            write_mode: FileWriteMode::Unrestricted,
-            ..FileResourcePolicy::default()
-        };
-        let open_network = NetworkResourcePolicy {
-            access: NetworkAccessBoundary::Open,
-            allowed_domains: Vec::new(),
-        };
-
-        let no_domain_engine = AuthorizationEngine::new();
-        no_domain_engine
-            .apply_security(&SecurityConfig {
-                resource_policy: ResourcePolicy {
-                    files: unrestricted_files.clone(),
-                    network: open_network.clone(),
-                },
-                ..SecurityConfig::default()
-            })
-            .await
-            .expect("open network without a domain list is valid");
-        assert!(matches!(
-            no_domain_engine
-                .authorize_for_execution(&request)
-                .await
-                .decision,
-            AuthorizationDecision::RequiresConfirmation { .. }
-        ));
-
-        let global_domain_engine = AuthorizationEngine::new();
-        global_domain_engine
-            .apply_security(&SecurityConfig {
-                resource_policy: ResourcePolicy {
-                    files: unrestricted_files.clone(),
-                    network: NetworkResourcePolicy {
-                        allowed_domains: vec!["trusted.example".into()],
-                        ..open_network.clone()
-                    },
-                },
-                ..SecurityConfig::default()
-            })
-            .await
-            .expect("global domain restriction is valid");
-
-        let tool_domain_engine = AuthorizationEngine::new();
-        tool_domain_engine
-            .apply_security(&SecurityConfig {
-                resource_policy: ResourcePolicy {
-                    files: unrestricted_files,
-                    network: open_network,
-                },
-                ..SecurityConfig::default()
-            })
-            .await
-            .expect("open global network policy is valid");
-        tool_domain_engine
-            .set_tool_settings(HashMap::from([(
-                "shell".into(),
-                ToolConfig {
-                    resource_policy: ResourcePolicy {
-                        network: NetworkResourcePolicy {
-                            access: NetworkAccessBoundary::Inherit,
-                            allowed_domains: vec!["trusted.example".into()],
-                        },
-                        ..ResourcePolicy::default()
-                    },
-                    ..ToolConfig::default()
-                },
-            )]))
+    async fn opaque_process_network_permission_names_its_real_scope() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        let root = tempfile::tempdir().unwrap();
+        engine
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                vec![root.path().to_path_buf()],
+                NetworkPolicy::Restricted,
+            )
             .await;
-
-        for engine in [&global_domain_engine, &tool_domain_engine] {
-            let AuthorizationDecision::Blocked {
-                reason_code,
-                reason,
-                ..
-            } = engine.authorize_for_execution(&request).await.decision
-            else {
-                panic!("Shell with a domain restriction must be denied before confirmation");
-            };
-            assert_eq!(reason_code, AuthorizationReasonCode::NetworkPolicy);
-            assert!(reason.contains("per-domain network rules"));
-        }
+        let request = AuthorizationEngine::runtime_permission_request(
+            None,
+            "shell",
+            json!({"command":"git status"}),
+            NetworkAccess::Opaque,
+            vec![DeclaredResource::LocalPath {
+                path: root.path().to_path_buf(),
+                access: LocalPathAccess::Write,
+            }],
+        )
+        .unwrap();
+        assert!(
+            request
+                .resources
+                .iter()
+                .any(|resource| matches!(resource, DeclaredResource::ProcessNetwork { .. }))
+        );
+        let proof = approved_test_proof(&engine, &request).await;
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        let permit = context
+            .acquire_execution_policy_permit()
+            .await
+            .unwrap()
+            .unwrap();
+        let network = permit.process_network_policy();
+        assert!(
+            network.allow_public_egress
+                && network.allow_private_network_client_server
+                && network.allow_host_loopback
+        );
     }
 
     #[tokio::test]
@@ -5709,15 +5608,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn global_http_domain_boundary_requests_exact_once_extension() {
+    async fn http_confirmation_binds_exact_origin_without_a_domain_whitelist() {
         let engine = Arc::new(AuthorizationEngine::new());
-        let trusted_domains = vec!["trusted.example".to_owned()];
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         engine
             .apply_security(&SecurityConfig {
                 resource_policy: ResourcePolicy {
                     network: NetworkResourcePolicy {
                         access: NetworkAccessBoundary::Restricted,
-                        allowed_domains: trusted_domains.clone(),
                     },
                     ..ResourcePolicy::default()
                 },
@@ -5732,7 +5634,6 @@ mod tests {
                     resource_policy: ResourcePolicy {
                         network: NetworkResourcePolicy {
                             access: NetworkAccessBoundary::Inherit,
-                            allowed_domains: vec!["api.outside.example".into()],
                         },
                         ..ResourcePolicy::default()
                     },
@@ -5777,7 +5678,7 @@ mod tests {
         assert_eq!(
             context.network_domain_constraints().unwrap(),
             &[vec!["api.outside.example".to_owned()]],
-            "the one-call extension drops only the global list; tool-level lists remain"
+            "the execution context binds the exact approved origin"
         );
 
         let changed_origin = AuthorizationRequest::new(
@@ -5800,7 +5701,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_domain_extension_cannot_override_tool_limits_or_unattended_mode() {
+    async fn network_permission_requests_work_with_tool_defaults_and_unattended_mode() {
         let engine = AuthorizationEngine::new();
         let mut tool_settings = HashMap::new();
         tool_settings.insert(
@@ -5809,7 +5710,6 @@ mod tests {
                 resource_policy: ResourcePolicy {
                     network: NetworkResourcePolicy {
                         access: NetworkAccessBoundary::Inherit,
-                        allowed_domains: vec!["tool.example".into()],
                     },
                     ..ResourcePolicy::default()
                 },
@@ -5821,7 +5721,6 @@ mod tests {
                 resource_policy: ResourcePolicy {
                     network: NetworkResourcePolicy {
                         access: NetworkAccessBoundary::Restricted,
-                        allowed_domains: vec!["global.example".into()],
                     },
                     ..ResourcePolicy::default()
                 },
@@ -5841,10 +5740,7 @@ mod tests {
         ]);
         assert!(matches!(
             engine.authorize(&request).await,
-            AuthorizationDecision::Blocked {
-                reason_code: AuthorizationReasonCode::NetworkPolicy,
-                ..
-            }
+            AuthorizationDecision::RequiresConfirmation { .. }
         ));
 
         let unattended_engine = AuthorizationEngine::new();
@@ -5853,7 +5749,6 @@ mod tests {
                 resource_policy: ResourcePolicy {
                     network: NetworkResourcePolicy {
                         access: NetworkAccessBoundary::Restricted,
-                        allowed_domains: vec!["global.example".into()],
                     },
                     ..ResourcePolicy::default()
                 },
@@ -5867,10 +5762,7 @@ mod tests {
         let check = unattended_engine.authorize(&request).await;
         assert!(matches!(
             check,
-            AuthorizationDecision::Blocked {
-                reason_code: AuthorizationReasonCode::ApprovalPolicy,
-                ..
-            }
+            AuthorizationDecision::RequiresConfirmation { .. }
         ));
 
         let analyze_engine = AuthorizationEngine::new();
@@ -5879,7 +5771,6 @@ mod tests {
                 resource_policy: ResourcePolicy {
                     network: NetworkResourcePolicy {
                         access: NetworkAccessBoundary::Restricted,
-                        allowed_domains: vec!["global.example".into()],
                     },
                     ..ResourcePolicy::default()
                 },
@@ -5892,15 +5783,12 @@ mod tests {
             .await;
         assert!(matches!(
             analyze_engine.authorize(&request).await,
-            AuthorizationDecision::Blocked {
-                reason_code: AuthorizationReasonCode::AnalyzeMode,
-                ..
-            }
+            AuthorizationDecision::RequiresConfirmation { .. }
         ));
     }
 
     #[tokio::test]
-    async fn sandbox_boundaries_block_writes_and_enforce_writable_roots() {
+    async fn sandbox_boundaries_request_write_authority_outside_default_roots() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         let read_only = SecurityConfig {
             resource_policy: ResourcePolicy {
@@ -5929,7 +5817,7 @@ mod tests {
                 &read_only_write_policy,
             )
             .await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
 
         let root = std::env::temp_dir().join("haven-permission-root");
@@ -6906,7 +6794,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn autonomous_mode_still_blocks_workspace_host_processes() {
+    async fn unattended_mode_requests_workspace_host_process_authority() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         let security = SecurityConfig {
             execution_mode: ExecutionMode::Unattended,
@@ -6917,7 +6805,7 @@ mod tests {
             .expect("valid security workspace applies");
         assert!(matches!(
             gw.check(None, "shell", &json!({}), RiskLevel::High).await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
         assert!(matches!(
             gw.check(
@@ -6927,15 +6815,12 @@ mod tests {
                 RiskLevel::Critical
             )
             .await,
-            ConfirmationResult::Blocked {
-                reason_code: AuthorizationReasonCode::ApprovalPolicy,
-                ..
-            }
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
 
     #[tokio::test]
-    async fn test_authorization_session_deny_overrides_permanent_allow() {
+    async fn test_authorization_permanent_allow_precedes_session_deny() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
@@ -6961,12 +6846,12 @@ mod tests {
                 RiskLevel::High
             )
             .await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::AutoApproved
         ));
     }
 
     #[tokio::test]
-    async fn test_authorization_child_allow_cannot_bypass_parent_deny() {
+    async fn test_authorization_child_allow_precedes_parent_deny() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
@@ -6988,12 +6873,12 @@ mod tests {
         assert!(matches!(
             gw.check(None, "files", &json!({"operation": "read"}), RiskLevel::Low)
                 .await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::AutoApproved
         ));
     }
 
     #[tokio::test]
-    async fn test_authorization_child_deny_cannot_be_bypassed_by_parent_allow() {
+    async fn test_authorization_parent_allow_precedes_child_deny() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
@@ -7020,12 +6905,12 @@ mod tests {
                 RiskLevel::High
             )
             .await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::AutoApproved
         ));
     }
 
     #[tokio::test]
-    async fn test_authorization_session_parent_deny_beats_session_child_allow() {
+    async fn test_authorization_session_child_allow_precedes_parent_deny() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-8042867cb780e3dfc14959c1fe8d87e1"),
@@ -7052,12 +6937,12 @@ mod tests {
                 RiskLevel::High,
             )
             .await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::AutoApproved
         ));
     }
 
     #[tokio::test]
-    async fn test_authorization_permanent_deny_beats_session_allow() {
+    async fn test_authorization_session_allow_precedes_permanent_deny() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             None,
@@ -7084,7 +6969,7 @@ mod tests {
                 RiskLevel::High
             )
             .await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::AutoApproved
         ));
     }
 
@@ -7820,7 +7705,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_path_sandbox_checks_source_and_destination_together() {
+    async fn test_path_scope_requests_source_and_destination_authority() {
         let allowed = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let mut settings = HashMap::new();
@@ -7852,11 +7737,14 @@ mod tests {
                 RiskLevel::Medium,
             )
             .await;
-        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
+        assert!(matches!(
+            result,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
     }
 
     #[tokio::test]
-    async fn test_path_sandbox_checks_media_audio_file_path() {
+    async fn test_path_scope_requests_media_audio_file_authority() {
         let allowed = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let mut settings = HashMap::new();
@@ -7887,11 +7775,14 @@ mod tests {
                 RiskLevel::Low,
             )
             .await;
-        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
+        assert!(matches!(
+            result,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
     }
 
     #[tokio::test]
-    async fn test_path_sandbox_rejects_parent_escape() {
+    async fn test_path_scope_requests_parent_access_authority() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         let mut settings = HashMap::new();
         settings.insert(
@@ -7916,7 +7807,10 @@ mod tests {
                 RiskLevel::Low,
             )
             .await;
-        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
+        assert!(matches!(
+            result,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
     }
 
     #[tokio::test]
@@ -7952,7 +7846,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn path_sandbox_enforces_readonly_denied_and_vcs_metadata_paths() {
+    async fn path_defaults_request_consent_and_explicit_denials_still_refuse() {
         let root = tempfile::tempdir().unwrap();
         let readonly = root.path().join("vendor");
         let denied = root.path().join("private");
@@ -7996,7 +7890,11 @@ mod tests {
                 gw.check(None, "files", &input, RiskLevel::Medium).await
             };
             assert!(
-                matches!(result, ConfirmationResult::Blocked { .. }),
+                if operation == "read" {
+                    matches!(result, ConfirmationResult::Blocked { .. })
+                } else {
+                    matches!(result, ConfirmationResult::RequiresConfirmation { .. })
+                },
                 "{operation} to protected policy path should block: {result:?}"
             );
         }
@@ -8075,7 +7973,7 @@ mod tests {
         );
         assert_eq!(
             filesystem_policy.protected_readonly_paths,
-            vec![global_protected, protected, git_metadata]
+            vec![global_protected, protected]
         );
         assert_eq!(filesystem_policy.denied_paths, vec![global_denied, denied]);
     }
@@ -8190,7 +8088,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_shell_runtime_read_roots_obey_global_and_tool_hard_limits() {
+    async fn workspace_shell_runtime_read_grants_survive_default_roots_and_keep_explicit_denials() {
         let temp = tempfile::tempdir().expect("create Shell runtime read-root fixture");
         let allowed = temp.path().join("allowed");
         let workspace = allowed.join("workspace");
@@ -8258,8 +8156,8 @@ mod tests {
                 .iter()
                 .map(|directory| directory.root())
                 .collect::<Vec<_>>(),
-            vec![toolchain.as_path()],
-            "configured SDK roots are readable only inside the global/tool path intersection"
+            vec![toolchain.as_path(), outside_global.as_path()],
+            "configured SDK read grants are independent of default project scopes"
         );
         assert_eq!(
             filesystem_policy.denied_paths,
@@ -8274,7 +8172,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_shell_tool_path_roots_block_unrelated_runtime_read_roots() {
+    async fn workspace_shell_default_path_roots_do_not_remove_existing_runtime_read_grants() {
         let temp = tempfile::tempdir().expect("create Shell runtime restriction fixture");
         let workspace = temp.path().join("workspace");
         let toolchain = temp.path().join("sdk");
@@ -8314,8 +8212,8 @@ mod tests {
             filesystem_policy
                 .readonly_roots
                 .iter()
-                .all(|directory| directory.root() != toolchain),
-            "tool path_roots must prevent the configured SDK root from expanding access"
+                .any(|directory| directory.root() == toolchain),
+            "existing SDK read grants must survive a narrower default project scope"
         );
     }
 
@@ -8371,5 +8269,52 @@ mod tests {
             .workspace_shell_directories(&denied, &[])
             .expect_err("the owner must fail closed when cwd is explicitly denied");
         assert!(error.contains("working directory is explicitly denied"));
+    }
+    #[tokio::test]
+    async fn mcp_connection_grant_revocation_signals_transport_shutdown_only_for_connections() {
+        let engine = AuthorizationEngine::new();
+        let mut changes = engine.subscribe_mcp_permission_changes();
+        let mcp = CapabilityScope::try_new("mcp_stdio.permission").unwrap();
+        engine
+            .grant(
+                None,
+                mcp.clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                vec![PermissionResourceScope::ProcessNetwork {
+                    target_fingerprint: "a".repeat(64),
+                }],
+            )
+            .await;
+        assert!(!changes.has_changed().unwrap());
+        engine
+            .grant(
+                None,
+                CapabilityScope::try_new("mcp.tool.read").unwrap(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                vec![PermissionResourceScope::ManagedAsset {
+                    asset_id: haven_common::types::new_id("asset"),
+                }],
+            )
+            .await;
+        engine.revoke_permanent("mcp.tool.read").await;
+        assert!(!changes.has_changed().unwrap());
+        engine.revoke_permanent(mcp.as_str()).await;
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        engine
+            .grant(
+                None,
+                mcp,
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                vec![PermissionResourceScope::ProcessNetwork {
+                    target_fingerprint: "b".repeat(64),
+                }],
+            )
+            .await;
+        engine.clear_permanent().await;
+        assert!(changes.has_changed().unwrap());
     }
 }

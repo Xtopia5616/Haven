@@ -194,10 +194,6 @@ pub(crate) async fn register_builtin_tools(
         max_retries: limits.network_max_retries,
         backoff_base_secs: limits.network_backoff_base_secs,
         max_body_bytes: limits.network_max_body_bytes,
-        allowed_domains: settings
-            .get("http")
-            .map(|config| config.resource_policy.network.allowed_domains.clone())
-            .unwrap_or_default(),
         authorization: Some(authorization.clone()),
     });
     let mut admin_operations: Option<Arc<admin::AdminOperationSet>> = None;
@@ -1610,7 +1606,7 @@ mod tests {
                 .authorize(&request_for("haven.diagnostics.get_status"))
                 .await,
             crate::AuthorizationDecision::RequiresConfirmation {
-                reason_code: crate::AuthorizationReasonCode::SensitiveData,
+                reason_code: crate::AuthorizationReasonCode::ResourceBoundaryExtension,
                 ..
             }
         ));
@@ -1663,13 +1659,18 @@ mod tests {
                 )
                 .await;
 
-            assert!(matches!(
-                engine.authorize(&request).await,
-                crate::AuthorizationDecision::Blocked {
-                    reason_code: crate::AuthorizationReasonCode::NetworkPolicy,
-                    ..
-                }
-            ));
+            let decision = engine.authorize(&request).await;
+            if network_policy == haven_common::types::NetworkPolicy::Deny {
+                assert!(matches!(
+                    decision,
+                    crate::AuthorizationDecision::Blocked { .. }
+                ));
+            } else {
+                assert!(matches!(
+                    decision,
+                    crate::AuthorizationDecision::RequiresConfirmation { .. }
+                ));
+            }
         }
 
         let native = admin::AdminRequest::Mcp(admin::McpOperationArgs::McpConnect {
@@ -1679,7 +1680,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_mcp_operations_that_can_connect_are_blocked_by_restricted_policy() {
+    async fn model_mcp_operations_that_can_connect_request_permissions_under_restricted_policy() {
         use admin::{AdminRequest, McpOperationArgs};
         use haven_common::{
             mcp::McpServerTransport,
@@ -1795,12 +1796,9 @@ mod tests {
             assert!(
                 matches!(
                     engine.authorize(&request).await,
-                    crate::AuthorizationDecision::Blocked {
-                        reason_code: crate::AuthorizationReasonCode::NetworkPolicy,
-                        ..
-                    }
+                    crate::AuthorizationDecision::RequiresConfirmation { .. }
                 ),
-                "{name} must be blocked before its handler can connect"
+                "{name} must request permission before its handler can connect"
             );
         }
 

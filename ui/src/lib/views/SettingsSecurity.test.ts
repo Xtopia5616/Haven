@@ -16,7 +16,7 @@ function createSecurity(): SecuritySettingsDraft {
 				read_only_roots: [],
 				denied_paths: [],
 			},
-			network: { access: 'restricted', allowed_domains: [] },
+			network: { access: 'restricted' },
 		},
 		execution_root: null,
 		shell_runtime_read_roots: [],
@@ -69,7 +69,10 @@ describe('SettingsSecurity', () => {
 		const security = createSecurity();
 		security.execution_root = 'C:\\Projects\\workspace';
 		security.resource_policy!.files.write_mode = 'roots';
-		security.resource_policy!.files.write_roots = ['C:\\Projects\\write-a', 'D:\\Shared\\write-b'];
+		security.resource_policy!.files.write_roots = [
+			'C:\\Projects\\write-a',
+			'D:\\Shared\\write-b',
+		];
 		render(SettingsSecurity, { security });
 		await openResourceBoundaries();
 
@@ -116,7 +119,7 @@ describe('SettingsSecurity', () => {
 				/匹配“files.delete”本身及所有以“files.delete.”开头的下级操作或工具能力/,
 			),
 		).toBeTruthy();
-		expect(screen.getByText(/拒绝优先于任何匹配的允许规则/)).toBeTruthy();
+		expect(screen.getByText(/明确资源授权优先于匹配的拒绝规则/)).toBeTruthy();
 
 		await fireEvent.click(screen.getByRole('button', { name: '清除 1 条永久规则' }));
 		expect(screen.getByRole('dialog')).toBeTruthy();
@@ -150,7 +153,7 @@ describe('SettingsSecurity', () => {
 		).toBeTruthy();
 		expect(screen.getByText('本会话拒绝')).toBeTruthy();
 		expect(screen.getByText('目标层级：单项操作')).toBeTruthy();
-		expect(screen.getAllByText(/拒绝优先于任何匹配的允许规则/)).toHaveLength(2);
+		expect(screen.getAllByText(/明确资源授权优先于匹配的拒绝规则/)).toHaveLength(2);
 		expect(screen.getByText('测试对话')).toBeTruthy();
 		await fireEvent.click(screen.getAllByRole('button', { name: '撤销' })[1]);
 		expect(onRevokeSessionPermission).toHaveBeenCalledWith(grant);
@@ -190,7 +193,7 @@ describe('SettingsSecurity', () => {
 		const security = createSecurity();
 		render(SettingsSecurity, { security });
 
-		await fireEvent.click(screen.getByRole('radio', { name: /无人值守 需要确认时停止/ }));
+		await fireEvent.click(screen.getByRole('radio', { name: /无人值守 需要权限时询问/ }));
 		expect(security.execution_mode).toBe('unattended');
 	});
 
@@ -216,11 +219,11 @@ describe('SettingsSecurity', () => {
 		{ networkPolicy: 'deny', explanation: /这不是 Windows 防火墙规则/ },
 		{
 			networkPolicy: 'restricted',
-			explanation: /无法按目的地检查的 MCP、技能和命令子进程会被拒绝/,
+			explanation: /无法逐个识别域名的子进程会明确申请其实际网络范围/,
 		},
 		{
 			networkPolicy: 'open',
-			explanation: /Haven 不添加公网目标限制/,
+			explanation: /公网请求无需额外目标授权/,
 		},
 	] as const)(
 		'explains $networkPolicy as a Haven policy rather than an OS firewall rule',
@@ -240,20 +243,15 @@ describe('SettingsSecurity', () => {
 		await openResourceBoundaries();
 
 		expect(security.resource_policy?.network.access).toBe('restricted');
-		expect(screen.getByText(/是否询问由执行方式决定/)).toBeTruthy();
-		expect(screen.getByText(/回环地址、私有网段和元数据地址会被拒绝/)).toBeTruthy();
-		expect(screen.getByText('受限网络')).toBeTruthy();
+		expect(screen.getByText(/访问新目标时申请授权/)).toBeTruthy();
+		expect(screen.getByText(/公网、私网与本机回环使用同一申请流程/)).toBeTruthy();
+		expect(screen.getByText('按需申请')).toBeTruthy();
 	});
 
-	it('explains that the domain list narrows destinations but does not enable networking', async () => {
-		const security = createSecurity();
-		render(SettingsSecurity, { security });
-		await openResourceBoundaries();
-
-		expect(
-			screen.getByText(/名单只增加目标限制，不会开启网络/),
-		).toBeTruthy();
-		expect(screen.getByText(/受限网络会阻止回环地址、私有网段和特殊用途地址/)).toBeTruthy();
+	it('uses destination requests instead of a domain whitelist editor', async () => {
+		render(SettingsSecurity, { security: createSecurity() });
+		expect(screen.queryByLabelText('网络域名范围')).toBeNull();
+		expect(screen.getByText(/访问新目标时申请授权/)).toBeTruthy();
 	});
 
 	it('explains the user-level file access and independent network policy', async () => {
@@ -262,9 +260,7 @@ describe('SettingsSecurity', () => {
 		render(SettingsSecurity, { security });
 		await openResourceBoundaries();
 
-		expect(
-			screen.getByText(/移除 Haven 管理的路径范围限制/),
-		).toBeTruthy();
+		expect(screen.getByText(/移除 Haven 管理的路径范围限制/)).toBeTruthy();
 		expect(screen.getByText(/仍受授权、风险规则和当前 Windows 用户权限约束/)).toBeTruthy();
 	});
 
@@ -273,14 +269,14 @@ describe('SettingsSecurity', () => {
 		await openResourceBoundaries();
 
 		expect(screen.getByText('文件写入范围')).toBeTruthy();
-		expect(screen.getByText(/工具自己的资源限制只会进一步缩小范围/)).toBeTruthy();
+		expect(screen.getByText(/文件和网络使用同一授权流程/)).toBeTruthy();
 		expect(screen.getByText(/工具自己的路径规则还会进一步收窄范围/)).toBeTruthy();
 	});
 
 	it.each([
 		{
 			writeMode: 'read_only',
-			explanation: /拒绝本地文件写入/,
+			explanation: /默认只读。需要写入时申请具体路径权限/,
 		},
 		{
 			writeMode: 'workspace',

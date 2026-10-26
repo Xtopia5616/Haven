@@ -18,7 +18,7 @@ fn converts_one_based_utf16_positions_to_lsp_coordinates() {
 }
 
 #[tokio::test]
-async fn workspace_write_lsp_contract_is_sandboxed_and_offline() {
+async fn workspace_write_lsp_contract_declares_network_consent_and_sandboxing() {
     let authorization = Arc::new(crate::security::AuthorizationEngine::new());
     authorization
         .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Deny)
@@ -29,7 +29,7 @@ async fn workspace_write_lsp_contract_is_sandboxed_and_offline() {
         .await
         .expect("LSP authorization policy resolves");
 
-    assert_eq!(contract.policy.network_access, crate::NetworkAccess::None);
+    assert_eq!(contract.policy.network_access, crate::NetworkAccess::Opaque);
     assert_eq!(
         contract.policy.execution_boundary,
         crate::ExecutionBoundary::SandboxedHost

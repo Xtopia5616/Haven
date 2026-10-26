@@ -89,6 +89,12 @@ impl ToolRuntimeCoordinator {
             .mcp_manager
             .watch_stdio_policy_changes(self.core.authorization.subscribe_stdio_process_changes())
             .await;
+        self.builtins
+            .mcp_manager
+            .watch_connection_permission_changes(
+                self.core.authorization.subscribe_mcp_permission_changes(),
+            )
+            .await;
         self.builtins.mcp_manager.set_limits(&context_limits).await;
         self.builtins
             .skill_registry

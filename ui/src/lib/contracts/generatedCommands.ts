@@ -262,8 +262,8 @@ export const NETWORK_ACCESS_BOUNDARY_INPUT_VALUES = ['inherit', 'deny', 'restric
 export type NetworkAccessBoundaryInput = (typeof NETWORK_ACCESS_BOUNDARY_INPUT_VALUES)[number];
 export const NETWORK_ACCESS_BOUNDARY_VALUES = ['inherit', 'deny', 'restricted', 'open'] as const;
 export type NetworkAccessBoundary = (typeof NETWORK_ACCESS_BOUNDARY_VALUES)[number];
-export interface NetworkResourcePolicyInput { access?: NetworkAccessBoundaryInput; allowed_domains?: string[] }
-export interface NetworkResourcePolicy { access: NetworkAccessBoundary; allowed_domains: string[] }
+export interface NetworkResourcePolicyInput { access?: NetworkAccessBoundaryInput }
+export interface NetworkResourcePolicy { access: NetworkAccessBoundary }
 export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; permission_requested?: NotifyChannelsInput; tool_run_completed?: NotifyChannelsInput }
 export interface NotificationConfig { session_created: NotifyChannels; session_completed: NotifyChannels; session_paused: NotifyChannels; session_resumed: NotifyChannels; session_error: NotifyChannels; permission_requested: NotifyChannels; tool_run_completed: NotifyChannels }
 export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
@@ -416,8 +416,8 @@ export const PERMISSION_EFFECT_INPUT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffectInput = (typeof PERMISSION_EFFECT_INPUT_VALUES)[number];
 export const PERMISSION_EFFECT_VALUES = ['allow', 'deny'] as const;
 export type PermissionEffect = (typeof PERMISSION_EFFECT_VALUES)[number];
-export type PermissionResourceScopeInput = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccessInput } | { kind: 'network_destination'; scheme: string; host: string; port?: number | null } | { kind: 'clipboard'; access: ClipboardAccessInput } | { kind: 'desktop'; access: DesktopAccessInput } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccessInput; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccessInput; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
-export type PermissionResourceScope = { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccess; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
+export type PermissionResourceScopeInput = { kind: 'process_network'; target_fingerprint: string } | { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccessInput } | { kind: 'network_destination'; scheme: string; host: string; port?: number | null } | { kind: 'clipboard'; access: ClipboardAccessInput } | { kind: 'desktop'; access: DesktopAccessInput } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccessInput; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccessInput; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
+export type PermissionResourceScope = { kind: 'process_network'; target_fingerprint: string } | { kind: 'local_path'; path: string; recursive: boolean; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccess; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
 export const PERMISSION_RESOURCE_TARGET_INPUT_VALUES = ['exact', 'directory'] as const;
 export type PermissionResourceTargetInput = (typeof PERMISSION_RESOURCE_TARGET_INPUT_VALUES)[number];
 export const PERMISSION_SCOPE_INPUT_VALUES = ['once', 'session', 'always'] as const;
@@ -512,7 +512,7 @@ export type SessionCreator = (typeof SESSION_CREATOR_VALUES)[number];
 export interface LlmUsageRecord { usage_id: string; session_id: string; step_number: number | null; request_kind: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
-export type DeclaredResource = { kind: 'local_path'; path: string; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccess; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
+export type DeclaredResource = { kind: 'process_network'; target_fingerprint: string } | { kind: 'local_path'; path: string; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccess; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 export const ADD_FACT_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -2394,6 +2394,19 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 								fields: {
 									'kind': {
 										optional: false,
+										shape: { kind: 'literal', value: 'process_network' },
+									},
+									'target_fingerprint': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
 										shape: { kind: 'literal', value: 'local_path' },
 									},
 									'path': {
@@ -2896,10 +2909,6 @@ export const GET_LIFECYCLE_HOOKS_SETTINGS_RESPONSE_SHAPE = {
 								'access': {
 									optional: false,
 									shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
-								},
-								'allowed_domains': {
-									optional: false,
-									shape: { kind: 'array', items: { kind: 'string' } },
 								}
 							}
 						},
@@ -4346,6 +4355,19 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 								fields: {
 									'kind': {
 										optional: false,
+										shape: { kind: 'literal', value: 'process_network' },
+									},
+									'target_fingerprint': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
 										shape: { kind: 'literal', value: 'local_path' },
 									},
 									'path': {
@@ -5494,10 +5516,6 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 											'access': {
 												optional: false,
 												shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
-											},
-											'allowed_domains': {
-												optional: false,
-												shape: { kind: 'array', items: { kind: 'string' } },
 											}
 										}
 									},
@@ -5533,6 +5551,19 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 								'resource_scope': {
 									optional: true,
 									shape: { kind: 'array', items: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'process_network' },
+												},
+												'target_fingerprint': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
 										{
 											kind: 'object',
 											fields: {
@@ -6199,10 +6230,6 @@ export const GET_SETTINGS_RESPONSE_SHAPE = {
 											'access': {
 												optional: false,
 												shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
-											},
-											'allowed_domains': {
-												optional: false,
-												shape: { kind: 'array', items: { kind: 'string' } },
 											}
 										}
 									},
@@ -6360,6 +6387,19 @@ export const INTERACTION_REQUESTED_EVENT_PAYLOAD_SHAPE = {
 		'resources': {
 			optional: true,
 			shape: { kind: 'array', items: { kind: 'union', anyOf: [
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'process_network' },
+						},
+						'target_fingerprint': {
+							optional: false,
+							shape: { kind: 'string' },
+						}
+					}
+				},
 				{
 					kind: 'object',
 					fields: {
@@ -7477,6 +7517,19 @@ export const LIST_SESSION_PERMISSIONS_RESPONSE_SHAPE = { kind: 'array', items: {
 		'resource_scope': {
 			optional: false,
 			shape: { kind: 'array', items: { kind: 'union', anyOf: [
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'process_network' },
+						},
+						'target_fingerprint': {
+							optional: false,
+							shape: { kind: 'string' },
+						}
+					}
+				},
 				{
 					kind: 'object',
 					fields: {
@@ -9267,6 +9320,19 @@ export const SESSION_PERMISSION_GRANT_RESPONSE_SHAPE = {
 					fields: {
 						'kind': {
 							optional: false,
+							shape: { kind: 'literal', value: 'process_network' },
+						},
+						'target_fingerprint': {
+							optional: false,
+							shape: { kind: 'string' },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
 							shape: { kind: 'literal', value: 'local_path' },
 						},
 						'path': {
@@ -10477,6 +10543,19 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 								fields: {
 									'kind': {
 										optional: false,
+										shape: { kind: 'literal', value: 'process_network' },
+									},
+									'target_fingerprint': {
+										optional: false,
+										shape: { kind: 'string' },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
 										shape: { kind: 'literal', value: 'local_path' },
 									},
 									'path': {
@@ -11374,10 +11453,6 @@ export const SETTINGS_RESPONSE_SHAPE = {
 											'access': {
 												optional: false,
 												shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
-											},
-											'allowed_domains': {
-												optional: false,
-												shape: { kind: 'array', items: { kind: 'string' } },
 											}
 										}
 									},
@@ -11413,6 +11488,19 @@ export const SETTINGS_RESPONSE_SHAPE = {
 								'resource_scope': {
 									optional: true,
 									shape: { kind: 'array', items: { kind: 'union', anyOf: [
+										{
+											kind: 'object',
+											fields: {
+												'kind': {
+													optional: false,
+													shape: { kind: 'literal', value: 'process_network' },
+												},
+												'target_fingerprint': {
+													optional: false,
+													shape: { kind: 'string' },
+												}
+											}
+										},
 										{
 											kind: 'object',
 											fields: {
@@ -12079,10 +12167,6 @@ export const SETTINGS_RESPONSE_SHAPE = {
 											'access': {
 												optional: false,
 												shape: { kind: 'enum', values: NETWORK_ACCESS_BOUNDARY_VALUES },
-											},
-											'allowed_domains': {
-												optional: false,
-												shape: { kind: 'array', items: { kind: 'string' } },
 											}
 										}
 									},

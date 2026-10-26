@@ -180,7 +180,9 @@ impl LifecycleHookService {
             }
         };
 
-        let event_deadline = tokio::time::Instant::now() + MAX_HOOK_EVENT_DURATION;
+        // User interaction has its own bounded deadline and does not consume
+        // the five-second budget for actual Hook process execution.
+        let mut remaining_event_budget = MAX_HOOK_EVENT_DURATION;
         if cancel.is_cancelled() {
             return self.failure_decision(payload.event, "cancelled").await;
         }
@@ -203,18 +205,34 @@ impl LifecycleHookService {
             let location = configured_hook.location;
             self.command_attempted(payload.event);
             let process_started = Arc::new(AtomicBool::new(false));
-            let result = tokio::time::timeout_at(
-                event_deadline,
-                run_hook_command(
-                    hook,
-                    &workspace_root,
-                    input.clone(),
-                    hook_authorization.clone(),
-                    cancel.clone(),
-                    Arc::clone(&process_started),
-                ),
-            )
-            .await;
+            let (command, process_request) = prepare_hook_command(hook, &workspace_root);
+            let granted = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => Err(HookFailure::Cancelled),
+                result = hook_authorization.acquire(process_request) => result.map_err(|_| HookFailure::PolicyChanged),
+            };
+            let result = match granted {
+                Ok(permit) => {
+                    let started = tokio::time::Instant::now();
+                    let result = tokio::time::timeout(
+                        remaining_event_budget,
+                        run_prepared_hook_command(
+                            command,
+                            &workspace_root,
+                            input.clone(),
+                            hook_authorization.clone(),
+                            permit,
+                            cancel.clone(),
+                            Arc::clone(&process_started),
+                        ),
+                    )
+                    .await;
+                    remaining_event_budget =
+                        remaining_event_budget.saturating_sub(started.elapsed());
+                    result
+                }
+                Err(error) => Ok(Err(error)),
+            };
             if process_started.load(Ordering::Acquire) {
                 self.command_started(payload.event);
             }
@@ -471,7 +489,9 @@ impl HookFailure {
         match self {
             Self::Cancelled => format!("{event_name} hook was cancelled"),
             Self::PolicyChanged => {
-                format!("{event_name} hook stopped because the security policy changed")
+                format!(
+                    "{event_name} hook permission was declined, expired, or invalidated by a policy change"
+                )
             }
             Self::TimeLimit => format!("{event_name} hook exceeded its time limit"),
             Self::OutputLimit => format!("{event_name} hook exceeded its output limit"),
@@ -489,14 +509,10 @@ struct HookProcessOutput {
     stdout: Vec<u8>,
 }
 
-async fn run_hook_command(
+fn prepare_hook_command(
     hook: &HookCommand,
     cwd: &Path,
-    input: Vec<u8>,
-    authorization: LifecycleHookProcessStartAuthorization,
-    cancel: CancellationToken,
-    process_started: Arc<AtomicBool>,
-) -> Result<HookProcessOutput, HookFailure> {
+) -> (tokio::process::Command, LifecycleHookProcessStartRequest) {
     let mut command = tokio::process::Command::new(&hook.command);
     command
         .args(&hook.args)
@@ -526,15 +542,51 @@ async fn run_hook_command(
     #[cfg(not(windows))]
     let runtime_read_roots = Vec::new();
     let request = LifecycleHookProcessStartRequest {
+        command: hook.command.clone(),
+        arguments: hook.args.clone(),
         working_directory: cwd.to_path_buf(),
         runtime_read_roots,
     };
+    (command, request)
+}
+
+#[cfg(test)]
+async fn run_hook_command(
+    hook: &HookCommand,
+    cwd: &Path,
+    input: Vec<u8>,
+    authorization: LifecycleHookProcessStartAuthorization,
+    cancel: CancellationToken,
+    process_started: Arc<AtomicBool>,
+) -> Result<HookProcessOutput, HookFailure> {
+    let (command, request) = prepare_hook_command(hook, cwd);
     let permit = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(HookFailure::Cancelled),
         permit = authorization.acquire(request) => permit.map_err(|_| HookFailure::PolicyChanged)?,
     };
 
+    run_prepared_hook_command(
+        command,
+        cwd,
+        input,
+        authorization,
+        permit,
+        cancel,
+        process_started,
+    )
+    .await
+}
+
+async fn run_prepared_hook_command(
+    mut command: tokio::process::Command,
+    cwd: &Path,
+    input: Vec<u8>,
+    authorization: LifecycleHookProcessStartAuthorization,
+    permit: crate::security::ExecutionPolicyPermit,
+    cancel: CancellationToken,
+    process_started: Arc<AtomicBool>,
+) -> Result<HookProcessOutput, HookFailure> {
     if let Some(policy) = permit.sandboxed_process_policy() {
         #[cfg(windows)]
         {
@@ -1102,7 +1154,7 @@ mod tests {
         ));
         assert_eq!(
             hooks.diagnostics()[0].last_failure_code.as_deref(),
-            Some("security_policy_denied")
+            Some("policy_changed")
         );
     }
 
@@ -1113,6 +1165,11 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let authorization = Arc::new(AuthorizationEngine::new());
+        authorization
+            .set_permission_interaction(Arc::new(
+                crate::security::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         authorization
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
@@ -1152,6 +1209,11 @@ mod tests {
         let workspace = directory.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         let authorization = Arc::new(AuthorizationEngine::new());
+        authorization
+            .set_permission_interaction(Arc::new(
+                crate::security::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         authorization
             .switch_execution_workspace(&workspace)
             .await

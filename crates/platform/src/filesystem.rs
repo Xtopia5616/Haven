@@ -1,5 +1,8 @@
 //! Shared low-level filesystem metadata checks.
 
+mod runtime_budget;
+pub use runtime_budget::directory_size_exceeds;
+
 use std::ffi::OsString;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io;
@@ -1269,29 +1272,6 @@ impl FilesystemPathCapability {
     }
 }
 
-/// VCS control metadata at the root of a writable directory remains
-/// read-only. Direct-child lookup is bounded and does not traverse a project.
-pub fn protected_metadata_paths(writable_roots: &[PathBuf]) -> Vec<PathBuf> {
-    const METADATA_NAMES: [&str; 5] = [".git", ".hg", ".svn", ".bzr", ".jj"];
-    let mut paths = Vec::new();
-    for root in writable_roots {
-        if METADATA_NAMES.iter().any(|name| {
-            root.file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case(name))
-        }) {
-            paths.push(root.clone());
-        }
-        for name in METADATA_NAMES {
-            let path = root.join(name);
-            if std::fs::symlink_metadata(&path).is_ok() {
-                paths.push(path);
-            }
-        }
-    }
-    paths
-}
-
 fn normalize_absolute_path(path: &Path) -> Option<PathBuf> {
     let path = normalize_windows_extended_path(path.to_path_buf())?;
     let mut normalized = PathBuf::new();
@@ -1428,7 +1408,7 @@ pub fn same_file_identity(left: &File, right: &File) -> io::Result<bool> {
 
 #[cfg(test)]
 mod filesystem_path_capability_tests {
-    use super::{FilesystemPathCapability, protected_metadata_paths};
+    use super::FilesystemPathCapability;
 
     #[test]
     fn filesystem_path_capability_merges_same_object_and_matches_descendants() {
@@ -1464,30 +1444,6 @@ mod filesystem_path_capability_tests {
             !capability
                 .contains_path(&root.path().join("secrets.txt.backup"))
                 .unwrap()
-        );
-    }
-
-    #[test]
-    fn protected_metadata_paths_preserve_vcs_metadata_under_write_roots() {
-        let root = tempfile::tempdir().unwrap();
-        let git = root.path().join(".git");
-        std::fs::create_dir(&git).unwrap();
-
-        assert_eq!(
-            protected_metadata_paths(&[root.path().to_path_buf()]),
-            vec![git]
-        );
-    }
-
-    #[test]
-    fn protected_metadata_root_is_retained_as_its_own_protection() {
-        let root = tempfile::tempdir().unwrap();
-        let metadata = root.path().join(".hg");
-        std::fs::create_dir(&metadata).unwrap();
-
-        assert_eq!(
-            protected_metadata_paths(std::slice::from_ref(&metadata)),
-            vec![metadata]
         );
     }
 }

@@ -15,6 +15,10 @@ use std::pin::Pin;
 /// separate from the per-call MCP remote resource authorization.
 #[derive(Clone, Default)]
 pub struct McpStdioProcessStartRequest {
+    /// Cancellation of the owning connection attempt, including permission waits.
+    pub cancellation: tokio_util::sync::CancellationToken,
+    /// Hash of executable, arguments and environment; never contains secrets.
+    pub command_fingerprint: String,
     pub working_directory: Option<PathBuf>,
     pub runtime_read_roots: Vec<PathBuf>,
 }
@@ -22,6 +26,9 @@ pub struct McpStdioProcessStartRequest {
 /// Opaque short-lived permit held until the selected MCP stdio execution
 /// boundary confirms that the generation has started.
 pub trait McpStdioProcessStartPermit: Send {
+    fn scratch_capacity_budget(&self) -> Option<(PathBuf, u64, usize)> {
+        None
+    }
     /// MXC policy compiled by the authorization owner for this process.
     fn sandboxed_process_policy(
         &self,
@@ -54,6 +61,24 @@ pub type McpStdioProcessStartPermitFuture<'a> =
 
 /// Tools-owned authorization for each MCP stdio generation start.
 pub trait McpStdioProcessStartAuthorization: Send + Sync {
+    /// HTTP connections use the same Tools-owned interaction gateway as
+    /// local service starts. Standalone clients retain public-only access.
+    fn authorize_http_destination<'a>(
+        &'a self,
+        raw_url: &'a str,
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = anyhow::Result<haven_common::network::ResolvedHttpDestination>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(haven_common::network::resolve_http_destination(
+            raw_url,
+            &[],
+        ))
+    }
     fn acquire_process_start_permit(
         &self,
         request: McpStdioProcessStartRequest,

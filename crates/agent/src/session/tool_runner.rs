@@ -541,8 +541,8 @@ mod scheduled_authorization_tests {
             supervisor
                 .authorize_scheduled_tool(Some(session_id), tool_name, &input)
                 .await,
-            AuthorizationDecision::Blocked {
-                reason_code: AuthorizationReasonCode::AnalyzeMode,
+            AuthorizationDecision::RequiresConfirmation {
+                reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
                 ..
             }
         ));

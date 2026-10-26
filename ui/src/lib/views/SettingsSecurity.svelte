@@ -15,7 +15,7 @@
 		MxcIsolationModeInput,
 		NetworkAccessBoundaryInput,
 	} from '$lib/contracts/generatedCommands.ts';
-import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contracts/settings.ts';
+	import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contracts/settings.ts';
 
 	interface Props {
 		security: SecuritySettingsDraft;
@@ -65,7 +65,7 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 			value: 'analyze',
 			label: '只分析',
 			shortLabel: '不修改',
-			detail: '只允许只读分析；需要确认的敏感读取仍会询问。',
+			detail: '默认只读分析；需要修改或敏感读取时申请授权。',
 		},
 		{
 			value: 'collaborative',
@@ -76,8 +76,8 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 		{
 			value: 'unattended',
 			label: '无人值守',
-			shortLabel: '需要确认时停止',
-			detail: '只执行无需追加确认且已获准的操作；遇到需要确认的操作会停止。',
+			shortLabel: '需要权限时询问',
+			detail: '优先使用已有授权；缺少权限时暂停并申请，不将未知权限直接拒绝。',
 		},
 	] as const;
 
@@ -89,14 +89,12 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 		{
 			value: 'strict',
 			label: '严格 MXC',
-			detail:
-				'只使用不需 DACL 补强的 MXC BaseContainer。探测或启动失败时拒绝执行，不自动切换隔离层或收窄网络。',
+			detail: '只使用不需 DACL 补强的 MXC BaseContainer。探测或启动失败时拒绝执行，不自动切换隔离层或收窄网络。',
 		},
 		{
 			value: 'compatibility',
 			label: '兼容隔离',
-			detail:
-				'BaseContainer 无法启动时允许 MXC AppContainer 兼容层，并可能将网络收窄为仅出站或完全断网。DACL 层会临时调整授权目录 ACL，并在子进程结束时恢复。',
+			detail: 'BaseContainer 无法启动时允许 MXC AppContainer 兼容层，并可能将网络收窄为仅出站或完全断网。DACL 层会临时调整授权目录 ACL，并在子进程结束时恢复。',
 		},
 	];
 
@@ -104,7 +102,7 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 		{
 			value: 'read_only',
 			label: '只读文件',
-			detail: '拒绝本地文件写入。网络和其它外部效果继续按同一资源策略中的对应规则处理。',
+			detail: '默认只读。需要写入时申请具体路径权限；已有授权优先。',
 		},
 		{
 			value: 'workspace',
@@ -131,13 +129,13 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 		},
 		{
 			value: 'restricted',
-			label: '受限网络',
-			detail: '只允许 Haven 能验证目的地的公共网络请求；回环地址、私有网段和元数据地址会被拒绝。无法按目的地检查的 MCP、技能和命令子进程会被拒绝。是否询问由执行方式决定。',
+			label: '按需申请',
+			detail: '访问新目标时申请授权；公网、私网与本机回环使用同一申请流程。无法逐个识别域名的子进程会明确申请其实际网络范围。',
 		},
 		{
 			value: 'open',
 			label: '开放网络',
-			detail: 'Haven 不添加公网目标限制；工具自身校验仍会执行。隔离子进程的私网与本机访问单独控制，开放公网不会自动开启它们；操作是否需要确认由执行方式决定。',
+			detail: '公网请求无需额外目标授权；私网和回环仍申请。子进程网络授权会列明公网、私网双向通信与宿主回环范围。',
 		},
 	] as const;
 
@@ -267,11 +265,6 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 			? security.resource_policy.files.denied_paths.filter(Boolean)
 			: [],
 	);
-	let networkAllowedDomains = $derived(
-		Array.isArray(security?.resource_policy?.network?.allowed_domains)
-			? security.resource_policy.network.allowed_domains.filter(Boolean)
-			: [],
-	);
 	let securitySummaryStatus = $derived(
 		securityDirty
 			? '未保存'
@@ -286,12 +279,14 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 			EXECUTION_MODES[1],
 	);
 	let selectedFileWriteMode = $derived(
-		FILE_WRITE_MODES.find((mode) => mode.value === security?.resource_policy?.files?.write_mode) ||
-			FILE_WRITE_MODES[1],
+		FILE_WRITE_MODES.find(
+			(mode) => mode.value === security?.resource_policy?.files?.write_mode,
+		) || FILE_WRITE_MODES[1],
 	);
 	let selectedNetworkPolicy = $derived(
-		NETWORK_POLICIES.find((policy) => policy.value === security?.resource_policy?.network?.access) ||
-			NETWORK_POLICIES[1],
+		NETWORK_POLICIES.find(
+			(policy) => policy.value === security?.resource_policy?.network?.access,
+		) || NETWORK_POLICIES[1],
 	);
 	function isOptionValue<T extends string>(
 		options: readonly { value: T }[],
@@ -415,7 +410,7 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 			<div>
 				<h3>资源策略</h3>
 				<p>
-					文件和网络限制由同一策略描述，工具自己的资源限制只会进一步缩小范围。一次确认可临时扩展到弹窗列出的资源；它不会保存为新的策略。
+					文件和网络使用同一授权流程：已有授权优先，其次使用默认只读范围；缺少权限时申请具体资源，可选择本次、会话或永久授权。
 				</p>
 			</div>
 		</div>
@@ -431,7 +426,8 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 						}))}
 						onChange={withStringValue((value) => {
 							if (isOptionValue(FILE_WRITE_MODES, value))
-								security.resource_policy.files.write_mode = value as FileWriteModeInput;
+								security.resource_policy.files.write_mode =
+									value as FileWriteModeInput;
 						})}
 					/>
 				</SettingsField>
@@ -463,7 +459,8 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 					<h3>新会话默认工作目录</h3>
 					<p>
 						此目录只用于初始化新会话。每个会话随后独立保存工作目录，Files 的相对路径和
-						Shell 默认目录会跟随该会话。工作区范围模式下，未配置写入目录时使用会话工作目录；指定目录模式会完全按目录列表约束写入。
+						Shell
+						默认目录会跟随该会话。工作区范围模式下，未配置写入目录时使用会话工作目录；指定目录模式会完全按目录列表约束写入。
 						已开始的调用继续使用旧工作区；子进程是否隔离由各自的执行边界决定。
 					</p>
 				</div>
@@ -515,10 +512,14 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 							.map((value) => value.trim())
 							.filter(Boolean);
 						security.resource_policy.files.write_roots = roots;
-						if (roots.length > 0 && security.resource_policy.files.write_mode === 'workspace') {
+						if (
+							roots.length > 0 &&
+							security.resource_policy.files.write_mode === 'workspace'
+						) {
 							security.resource_policy.files.write_mode = 'roots';
 						} else if (
-							roots.length === 0 && security.resource_policy.files.write_mode === 'roots'
+							roots.length === 0 &&
+							security.resource_policy.files.write_mode === 'roots'
 						) {
 							security.resource_policy.files.write_mode = 'workspace';
 						}
@@ -565,7 +566,7 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 			<SettingsField
 				label="拒绝访问路径"
 				id="security-denied-paths"
-				description="每行一个已存在的本地绝对文件或目录。文件本身或目录及其子项的读取和写入都会被拒绝；拒绝规则优先于所有读写授权。"
+				description="每行一个已存在的本地绝对文件或目录。文件本身或目录及其子项的读取和写入都会被拒绝；缺少访问权限时申请授权；明确拒绝的权限不会自动执行。"
 				stacked
 			>
 				<textarea
@@ -581,29 +582,10 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 							.filter(Boolean);
 					}}></textarea>
 			</SettingsField>
-			<SettingsField
-				label="网络域名范围"
-				id="security-network-domains"
-				description="可选；每行一个主机名或 *.example.com 通配范围。名单只增加目标限制，不会开启网络；全局和工具级名单同时配置时必须同时匹配。受限网络会阻止回环地址、私有网段和特殊用途地址；该范围也会检查 HTTP 重定向。"
-				stacked
-			>
-				<textarea
-					id="security-network-domains"
-					class="md-textarea md-textarea--code security-roots"
-					rows="3"
-					value={networkAllowedDomains.join('\n')}
-					placeholder="留空表示不增加域名限制"
-					oninput={(event) => {
-						security.resource_policy.network.allowed_domains = inputElementValue(event)
-							.split(/\r?\n/)
-							.map((value) => value.trim())
-							.filter(Boolean);
-					}}></textarea>
-			</SettingsField>
 			<div class="effective-write-scope" aria-live="polite">
 				<strong>当前写入边界</strong>
 				{#if security.resource_policy.files.write_mode === 'read_only'}
-					<p>文件修改会被拒绝；下面列出的目录不会覆盖只读策略。</p>
+					<p>默认只读；需要修改时申请资源授权，获批后执行。</p>
 				{:else if security.resource_policy.files.write_mode === 'unrestricted'}
 					<p>当前不附加路径范围限制，仍受授权和 Windows 用户权限约束。</p>
 				{:else if security.resource_policy.files.write_mode === 'roots'}
@@ -630,7 +612,10 @@ import type { SecuritySettingsDraft, SessionPermissionGrant } from '$lib/contrac
 		<div class="subsection-heading">
 			<div>
 				<h3>WorkspaceWrite Shell 的 MXC 隔离</h3>
-				<p>只影响 Windows 上 WorkspaceWrite 模式的 Shell 进程；FullAccess 与其它进程入口不使用 MXC。</p>
+				<p>
+					只影响 Windows 上 WorkspaceWrite 模式的 Shell 进程；FullAccess
+					与其它进程入口不使用 MXC。
+				</p>
 			</div>
 		</div>
 		<SettingsField

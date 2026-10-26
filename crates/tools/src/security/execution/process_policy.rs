@@ -22,7 +22,7 @@ impl ExecutionPolicyPermit {
         scratch_directory: &Path,
         allow_public_egress: bool,
     ) -> Result<(SandboxedProcessPolicy, PathBuf), String> {
-        if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
+        if self.sandbox_mode() != SandboxMode::WorkspaceWrite {
             return Err("MXC MCP roots require the Workspace Write sandbox".into());
         }
         let workspace_roots = self._config.workspace_write_directories(None)?;
@@ -33,7 +33,9 @@ impl ExecutionPolicyPermit {
             .ok_or_else(|| "MCP server has no authorized working directory".to_owned())?;
         let working_directory = DirectoryCapability::open(configured_cwd)
             .map_err(|_| "MCP server working directory is unavailable or unsafe".to_owned())?;
-        if !super::roots_contain_directory(&workspace_roots, &working_directory) {
+        if !super::roots_contain_directory(&workspace_roots, &working_directory)
+            && !self.resource_boundary_extension
+        {
             return Err(
                 "Workspace Write MCP working directory must stay inside the workspace".into(),
             );
@@ -68,9 +70,10 @@ impl ExecutionPolicyPermit {
             denied_paths.extend(files.denied_paths.iter().map(PathBuf::from));
             protected_paths.extend(files.read_only_roots.iter().map(PathBuf::from));
         }
-        if path_constraints
-            .iter()
-            .any(|constraint| !super::roots_contain_directory(constraint, &working_directory))
+        if !self.resource_boundary_extension
+            && path_constraints
+                .iter()
+                .any(|constraint| !super::roots_contain_directory(constraint, &working_directory))
         {
             return Err("MCP server working directory is outside the configured file scope".into());
         }
@@ -111,9 +114,6 @@ impl ExecutionPolicyPermit {
         let mut runtime_paths = request.runtime_read_roots.clone();
         runtime_paths.extend(self._config.shell_runtime_read_roots.iter().cloned());
         let mut runtime = open_directory_roots(&runtime_paths, "MCP runtime roots")?;
-        for constraint in &path_constraints {
-            runtime = super::intersect_directory_roots(&runtime, constraint);
-        }
         runtime.retain(|root| {
             !denied
                 .iter()
@@ -161,8 +161,8 @@ impl ExecutionPolicyPermit {
                 denied_paths,
                 network_policy: SandboxedProcessNetworkPolicy {
                     allow_public_egress,
-                    allow_private_network_client_server: false,
-                    allow_host_loopback: false,
+                    allow_private_network_client_server: self.network_authorized,
+                    allow_host_loopback: self.network_authorized,
                 },
             },
             working_directory.root().to_path_buf(),
@@ -176,7 +176,10 @@ impl ExecutionPolicyPermit {
         &self,
         request: &super::EverythingProcessStartRequest,
     ) -> Result<SandboxedProcessPolicy, String> {
-        if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
+        if !matches!(
+            self.sandbox_mode(),
+            SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly
+        ) {
             return Err("MXC Everything roots require the Workspace Write sandbox".into());
         }
         let workspace_roots = self
@@ -184,8 +187,13 @@ impl ExecutionPolicyPermit {
             .workspace_write_directories(self.session_id.as_deref())?;
         let search_root = DirectoryCapability::open(&request.search_root)
             .map_err(|_| "Everything search root is unavailable or unsafe".to_owned())?;
-        if !super::roots_contain_directory(&workspace_roots, &search_root) {
-            return Err("Workspace Write Everything search must stay inside the workspace".into());
+        if !super::roots_contain_directory(&workspace_roots, &search_root)
+            && !self.authorized_resources.iter().any(|resource| {
+                matches!(resource,
+                crate::DeclaredResource::LocalPath { path, .. } if path == &request.search_root)
+            })
+        {
+            return Err("Everything search root has no declared read grant".into());
         }
 
         let settings = self
@@ -234,9 +242,10 @@ impl ExecutionPolicyPermit {
                     .map(PathBuf::from),
             );
         }
-        if path_constraints
-            .iter()
-            .any(|constraint| !super::roots_contain_directory(constraint, &search_root))
+        if !self.resource_boundary_extension
+            && path_constraints
+                .iter()
+                .any(|constraint| !super::roots_contain_directory(constraint, &search_root))
         {
             return Err("Everything search root is outside the configured file scope".into());
         }
@@ -278,9 +287,6 @@ impl ExecutionPolicyPermit {
         let mut runtime_roots = request.runtime_read_roots.clone();
         runtime_roots.extend(self._config.shell_runtime_read_roots.iter().cloned());
         let mut runtime = open_directory_roots(&runtime_roots, "Everything runtime roots")?;
-        for constraint in &path_constraints {
-            runtime = super::intersect_directory_roots(&runtime, constraint);
-        }
         runtime.retain(|root| {
             !denied
                 .iter()
@@ -320,7 +326,7 @@ impl ExecutionPolicyPermit {
                 .map(|path| path.path().to_path_buf())
                 .collect(),
             denied_paths,
-            network_policy: SandboxedProcessNetworkPolicy::default(),
+            network_policy: self.process_network_policy(),
         })
     }
 
@@ -331,7 +337,7 @@ impl ExecutionPolicyPermit {
         request: &haven_skills::SkillProcessRequest,
         allow_public_egress: bool,
     ) -> Result<SandboxedProcessPolicy, String> {
-        if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
+        if self.sandbox_mode() != SandboxMode::WorkspaceWrite {
             return Err("MXC Skill setup roots require the Workspace Write sandbox".into());
         }
 
@@ -394,38 +400,12 @@ impl ExecutionPolicyPermit {
                 })?;
         }
 
-        let mut path_constraints = Vec::new();
-        if !self._config.global_file_roots.is_empty() {
-            path_constraints.push(open_directory_roots(
-                &self._config.global_file_roots,
-                "security.resource_policy.files.path_roots",
-            )?);
-        }
-        for setting in &settings {
-            if !setting.resource_policy.files.path_roots.is_empty() {
-                let roots = setting
-                    .resource_policy
-                    .files
-                    .path_roots
-                    .iter()
-                    .map(PathBuf::from)
-                    .collect::<Vec<_>>();
-                path_constraints.push(open_directory_roots(
-                    &roots,
-                    "tool resource_policy.files.path_roots",
-                )?);
-            }
-        }
-
         let mut runtime_paths = request.runtime_read_roots.clone();
         if request.purpose == Some(haven_skills::SkillProcessPurpose::InstallRequirements) {
             runtime_paths.push(request.skill_root.clone());
         }
         runtime_paths.extend(self._config.shell_runtime_read_roots.iter().cloned());
         let mut readonly_roots = open_directory_roots(&runtime_paths, "Skill setup runtime roots")?;
-        for constraint in &path_constraints {
-            readonly_roots = super::intersect_directory_roots(&readonly_roots, constraint);
-        }
         readonly_roots.retain(|root| {
             !denied
                 .iter()
@@ -438,7 +418,7 @@ impl ExecutionPolicyPermit {
                 .any(|writable| super::directory_root_contains(writable, readable))
         });
 
-        let mut protected_readonly_paths = protected
+        let protected_readonly_paths = protected
             .iter()
             .filter(|path| {
                 !denied
@@ -451,13 +431,6 @@ impl ExecutionPolicyPermit {
             })
             .map(|path| path.path().to_path_buf())
             .collect::<Vec<_>>();
-        let metadata_paths = haven_platform::filesystem::protected_metadata_paths(
-            &readwrite_roots
-                .iter()
-                .map(|root| root.root().to_path_buf())
-                .collect::<Vec<_>>(),
-        );
-        protected_readonly_paths.extend(metadata_paths);
         let denied_paths = denied
             .iter()
             .filter(|deny| {
@@ -488,8 +461,8 @@ impl ExecutionPolicyPermit {
             denied_paths,
             network_policy: SandboxedProcessNetworkPolicy {
                 allow_public_egress,
-                allow_private_network_client_server: false,
-                allow_host_loopback: false,
+                allow_private_network_client_server: self.network_authorized,
+                allow_host_loopback: self.network_authorized,
             },
         })
     }
@@ -522,7 +495,7 @@ impl ExecutionPolicyPermit {
                 .collect(),
             protected_readonly_paths: filesystem.protected_readonly_paths,
             denied_paths: filesystem.denied_paths,
-            network_policy: SandboxedProcessNetworkPolicy::default(),
+            network_policy: self.process_network_policy(),
         })
     }
 
@@ -534,7 +507,7 @@ impl ExecutionPolicyPermit {
         runtime_read_roots: &[PathBuf],
         scratch_directory: &Path,
     ) -> Result<WorkspaceProcessFilesystemPolicy, String> {
-        if self._config.sandbox_mode != haven_common::types::SandboxMode::WorkspaceWrite {
+        if self.sandbox_mode() != haven_common::types::SandboxMode::WorkspaceWrite {
             return Err("MXC LSP roots require the Workspace Write sandbox".into());
         }
 
@@ -594,9 +567,6 @@ impl ExecutionPolicyPermit {
         }
 
         let mut runtime_read = open_directory_roots(runtime_read_roots, "LSP runtime read roots")?;
-        for constraint in &path_constraints {
-            runtime_read = super::intersect_directory_roots(&runtime_read, constraint);
-        }
         runtime_read.retain(|root| {
             !denied
                 .iter()

@@ -11,7 +11,8 @@ use std::path::Path;
 
 /// A one-shot authorization proof bound to the exact request that was shown
 /// to the user.  A receipt is deliberately invalidated by any policy change,
-/// input change, risk increase, expiry, or Critical classification.
+/// input change, risk increase, or expiry. Critical operations still require
+/// a fresh interaction for each invocation; an accepted receipt is executable.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct ConfirmationReceipt {
     pub confirmation_id: haven_common::types::ConfirmId,
@@ -114,6 +115,9 @@ pub struct AuthorizationRequest {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum DeclaredResource {
+    ProcessNetwork {
+        target_fingerprint: String,
+    },
     LocalPath {
         path: std::path::PathBuf,
         access: LocalPathAccess,
@@ -154,6 +158,7 @@ pub enum DeclaredResource {
 
 #[derive(Debug)]
 pub(super) struct AuthorizationExecutionBinding {
+    pub(super) resource_boundary_extension: bool,
     pub(super) session_id: Option<String>,
     pub(super) tool_name: String,
     pub(super) capability: CapabilityScope,
@@ -211,6 +216,7 @@ impl AuthorizationCheck {
             network_policy_decision: NetworkPolicyDecision::Allowed,
             execution_proof: Some(AuthorizationExecutionProof {
                 binding: AuthorizationExecutionBinding {
+                    resource_boundary_extension: false,
                     session_id: request.session_id.clone(),
                     tool_name: request.tool_name.clone(),
                     capability: request.capability().clone(),
@@ -337,6 +343,13 @@ impl AuthorizationRequest {
 
     pub(crate) fn with_resources(mut self, resources: Vec<DeclaredResource>) -> Self {
         self.resources = resources;
+        if self.policy.network_access == crate::NetworkAccess::Opaque
+            && self.policy.execution_boundary != crate::ExecutionBoundary::InProcess
+        {
+            self.resources.push(DeclaredResource::ProcessNetwork {
+                target_fingerprint: super::engine::canonical_authorization_hash(&self),
+            });
+        }
         self
     }
 

@@ -579,8 +579,8 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
             text: Some("keep working".into()),
             tool_calls: vec![CanonicalToolCall {
                 tool_call_id: "c1".into(),
-                name: "read_file".into(),
-                arguments: serde_json::json!({"path": "x"}),
+                name: "echo".into(),
+                arguments: serde_json::json!({"text": "x"}),
             }],
             finish_reason: Some(FinishReason::ToolCalls),
             usage: None,
@@ -591,7 +591,14 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
             thinking_blocks: Vec::new(),
         },
     )]));
-    let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsFacade::new()));
+    let tools = Arc::new(ToolsFacade::new());
+    tools
+        .share_services()
+        .tool_catalog_test_support
+        .register_installed_tool(Arc::new(EchoTool) as ToolHandle)
+        .await
+        .unwrap();
+    let (agent, executor) = make_test_agent_with(client, tools);
     agent.set_max_steps_per_run(1).unwrap();
     let recorder = make_recording_emitter();
     agent.set_emitter(recorder.clone());

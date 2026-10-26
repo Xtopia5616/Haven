@@ -1,7 +1,7 @@
 # Haven 架构降复杂度重构路线图
 
 > 状态：阶段 0–8、§5.8、第二轮 Slice 1–9 与 ADR 1324 均已完成。Session 创建来源/关系、统一 SessionCreation、独立 Schedule owner、`session` / `toolrun` 工具边界已完成。会话执行上下文 Slice 1–5 的实现及 Slice 3/4 验收已完成（ADR 1373–1383）；Slice 2 的执行预设、typed 资源合同、规范 `ResourcePolicy` 与精确边界扩展已完成（ADR 1374、1376–1381）。Shell 系统与工具链读取根配置已完成（ADR 1408）。AppCommand confirmation/admin adapter 已完成（ADR 1302），SessionStore 已完成（ADR 1303–1306），Tools `security.rs` 私有职责拆分已完成（ADR 1307–1311），Agent `tool_runner.rs` 私有职责拆分已完成（ADR 1312），PDF/OpenXML parser 与 App command DTO/process helper 已完成（ADR 1313–1314）。Windows 发布验收仍按 §5.1 跟踪。
-> 更新日期：2026-10-25
+> 更新日期：2026-10-26
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
 本文件只记录当前阶段、仍未完成的工作和验收条件。历史实现切片与决定见对应 ADR；提交历史用于追踪实现过程。
@@ -203,29 +203,15 @@ Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request 
 
 CodeMode 与 MCP exposure 的目标契约见 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。周期新会话计划已按 ADR 1323 建立；ADR 1324 已将 Schedule 计划与 occurrence 移入独立 owner，Schedule 触发不再创建 ToolRun occurrence。
 
-**Files/Shell 文件路径保护（ADR 1404）：**两条入口共用 `denied > read-only > read-write` 优先级；路径别名按打开的文件系统对象身份归并，嵌套的只读/拒绝路径单独保留。写入根中的 `.git` 等版本控制元数据自动只读保护；MXC 不具备原生重叠策略能力时拒绝启动。
+**统一资源授权（ADR 1428）：**明确资源允许优先于 capability 拒绝，默认只读读取继续执行，额外文件/网络/外部效果进入统一确认；Analyze 与 Unattended 均可申请。取消普通 Shell/Files 的 VCS 自动只读保护，保留显式路径拒绝、句柄安全与撤权校验。删除域名名单，HTTP/MCP HTTP 按 origin 申请，私网与 loopback 同样申请并固定 DNS 地址。Shell、Git remote、LSP、Skill、Lifecycle Hook、Everything 与 MCP stdio 共用授权 owner 和交互端口；无法逐域名约束的进程明确申请 `ProcessNetwork` 实际范围，不宣称已有透明代理。Hook 用户等待不消耗进程执行预算。
 
-**Shell 系统与工具链读取根（ADR 1408）：**Windows 运行时和实际 `PATH` 目录仍作为只读启动依赖；设置页允许持久补充最多 64 个 SDK/解释器库目录。授权 owner 将全部候选读取根与全局及 Shell 工具 `path_roots` 求交，并应用全局/工具 deny；MXC 拒绝记录只提供一次性确认，不能改写这些硬限制或自动保存新权限。
+**运行时容量与清理：**Shell scratch 256 MiB、npm 512 MiB、Cargo home 2 GiB、最多八个并发 scratch；LSP/Git/MCP scratch 256 MiB，Everything 64 MiB，每目录 100,000 条目，managed process scratch 合计最多 16 个。运行中监控并终止超限进程，退出清理；重启回收残留时跳过活跃 owner 锁。共享缓存只在 Shell 空闲时重置。真实 Skill Python runtime、Everything 服务 IPC、MCP server 与第三方 LSP 的 Windows 端到端验收仍按各发布 Gate 跟踪。
 
-**Git 元数据受控写入（ADR 1419）：**普通 Shell 对 `.git` 的自动只读保护不变；新增固定内建子命令的直接 Git 入口。WorkspaceWrite 下 Windows MXC 仅为有效写入根内的当前仓库 metadata 提供受控写入，hooks、filters 与 remote helpers 继承同一进程隔离。linked worktree 暂不支持；真实 Git/MXC commit 验收仍待 Windows 发布 Gate。
-
-**Skill 子进程隔离（ADR 1420）：**WorkspaceWrite 下 Windows MXC 分别隔离 venv 创建、pip requirements 安装和 Skill 脚本。setup 仅写 app-owned venv 与调用 scratch；pip 仅在 Open 且无全局/工具域名范围时允许公网出站；脚本沿用执行工作区写策略并默认离线。FullAccess 保留宿主进程，ReadOnly 与非 Windows WorkspaceWrite 拒绝。真实 Skill/MXC 端到端用例仍待 Windows 发布 Gate。
-
-**Lifecycle Hooks 隔离（ADR 1421）：**WorkspaceWrite 下 Windows MXC 按 Hook 文件策略和运行时只读根运行，网络离线；Hook cwd 不会单独扩大写入根。FullAccess 仅在 Open 且无域名白名单时运行，ReadOnly 与非 Windows WorkspaceWrite 拒绝。策略覆盖与当前 Windows MXC 命令端到端用例通过；完整发布签核仍按 §5.1 跟踪。
-
-**Everything 隔离（ADR 1422）：**WorkspaceWrite 下 Windows MXC 只读访问工作区内的搜索目录和运行时根，可写独立 app-owned scratch，网络离线；文件根、工作区外搜索和 MXC 失败均拒绝。Everything 服务 IPC 未在当前环境完成真实端到端验证。
-
-**MCP stdio 隔离（ADR 1423）：**WorkspaceWrite 下 Windows MXC 把配置的 cwd 限定为工作区只读目录，每个 server generation 有独立 scratch；只有全局 Open 且无域名限制时开放公网出口，私网和宿主 loopback 始终关闭，受限/带白名单时 server 仍可离线启动。每次 MCP 调用的 target/参数授权保持独立。MXC 服务进程端到端尚待验收。
-
-**全局安全策略写入口（ADR 1427）：**新会话默认执行方式、全局文件/网络资源策略与隔离偏好通过完整 `SecurityConfig` 经 `ToolsFacade::apply_security` 应用；跨层授权 ports 不再提供单独修改全局执行模式、网络或工作区边界的 API。永久权限规则由同一授权 owner 通过 typed grant 操作管理并从 `SecurityConfig` 恢复。Agent 仍通过 session event 绑定单会话执行方式。执行器继续按资源类型各自落实边界。
+**全局安全策略写入口（ADR 1427）：**新会话默认执行方式、全局文件/网络资源策略与隔离偏好通过完整 `SecurityConfig` 经 `ToolsFacade::apply_security` 应用；永久权限规则仍由同一 owner 经 typed grant 管理。Agent 通过 session event 绑定单会话执行方式。
 
 - **工具暴露与执行模式：**MCP tool 按工具配置 `availability`、`catalog` 和 `invocation`；原生与 Code Mode adapter 可分别或同时启用。`direct` 将启用的 native adapter 放进 provider surface，`deferred` 要求先发现和显式加载，`hidden` 只从通用目录隐藏；只有 `availability=disabled` 或无对应 adapter 会阻止相应调用路径。Code Mode 使用无宿主 API 的 QuickJS 与有界子调用；每个子调用仍经 Tools 的实时授权、target、sandbox/network 和 durable journal 校验。旧 exposure 配置由 ConfigLoader 保守转换，见 ADR 1383；旧契约背景见 [ADR 1183](adr/1183-add-mcp-model-only-exposure.md) 与 [ADR 1163](adr/1163-tool-exposure-codemode-workflows-and-execution-boundaries.md)。
 - **MCP resources/prompts 与周期新会话：**资源、模板、选定 URI 的更新订阅和 prompt 由用户浏览、预览和选择；Resources/Prompts 的 `input_required` 只在 feature dialog 中使用 bounded form-mode MRTR，全部能力都不进入模型可调用工具面。后台工具调用由 ToolRun 管理；Schedule 单独拥有单次触发、周期新会话计划与 occurrence。计划按 UTC 固定间隔触发，不重叠执行，错过的 tick 跳过；新会话由统一 SessionCreation owner 建立。见 [ADR 1164](adr/1164-mcp-resources-and-user-selected-prompts.md)、[ADR 1323](adr/1323-recurring-session-schedules-on-toolruns.md) 与 [ADR 1324](adr/1324-session-creation-and-background-toolrun-boundaries.md)。
-**权限与进程边界：**文件操作通过 Tools 授权和工作区范围检查。`WorkspaceWrite` 下 Shell 的全局与工具级写根及 `path_roots` 由授权 owner 编译成交集，工具只读配置不给项目写根，MXC 不隐式添加 cwd（ADR 1404）；MXC 目录根不能区分指向根外对象的 NTFS hardlink，因此 Shell 在 spawn 前用目录句柄有界扫描最终写根，发现多链接文件、扫描错误或超过每根 1,000,000 个条目即 fail closed（ADR 1409）；MXC 拒绝单个文件后发起的 Shell 一次性重试会在确认框明确显示实际扩展为整个父目录及其子项，并说明读取/写入权限与整条命令重跑（ADR 1410）。每次调用的 `TEMP`、`TMP`、`TMPDIR` 及无工作区时的默认 cwd 使用专用 scratch；MXC 单独授予该 scratch 与 npm/Cargo 缓存目录，显式 deny 和 protected-read-only 仍优先，Shell 工具只读配置不授予缓存写入。scratch 上限为 256 MiB，npm 缓存 512 MiB，Cargo home 2 GiB，最多 8 个并发 scratch；超限会终止 Shell，退出时清理 scratch；超限后在没有其它活动 Shell 时重置缓存，否则由重启恢复清理（ADR 1407）；进程默认只接受无需 DACL 补强的 MXC BaseContainer；probe 或 spawn 失败即拒绝执行，不切换隔离层或收窄网络。只有 `mxc_isolation_mode=compatibility` 时才尝试 AppContainer 兼容层及出站、断网降级；AppContainer+DACL 会对有效可写根临时调整 ACL 并在进程结束后恢复。Shell 分别记录实际隔离 tier、网络 profile、DACL 补强要求与 wait 后的恢复状态；清理 warning 与 wait 失败会显示为 warning/unknown，兼容层真机验收比较目录 ACL 前后快照（ADR 1411）。详细决定见 [ADR 1405](adr/1405-explicit-mxc-compatibility-isolation.md)，其替代 ADR 1391 的默认重试行为。所有隔离策略都失败时拒绝启动，不回退宿主权限。全局或 Shell 工具级网络域名列表存在时，MXC 的公网出站、私网双向和宿主回环开关仍无法执行域名约束，因此 Shell 会在授权阶段明确拒绝联网（见 ADR 1402、1417）；只有受控代理或等效的直接出站目标规则通过 probe 后，才可重新开放。LSP 已按 ADR 1418 接入 Windows MXC：WorkspaceWrite 下工作区和运行时只读、单次 scratch 可写且网络关闭；FullAccess 保留 host/opaque 边界并要求 Open 网络。受控 Git 按 ADR 1419 仅对当前仓库 `.git` 提供受控写入口；WorkspaceWrite 的 hooks/filters 继承 MXC。Skill、Hooks、Everything 和 MCP stdio 均已按 ADR 1420–1423 接入 WorkspaceWrite 的 Windows MXC 路径；其中 Skill Python runtime、Everything service IPC 与 MCP server 的真实端到端限制仍需按各 ADR 验收，不将策略单测当成端到端通过。后台 ToolRun 沿目标工具自己的授权和隔离路径执行。`ProcessContainment` 的 Windows Job Object 管理进程树与生命周期，不限制文件/网络访问。Windows 支持基线为 Windows 11 24H2 或更新版本及 MXC 所需累积更新。细节与验收见 [ADR 1368](adr/1368-mxc-processcontainer-for-workspace-shell.md)、[ADR 1391](adr/1391-workspace-write-mxc-compatibility-tier.md) 及[Slice 3 capability 报告](execution-path-capability-audit-2026-10-23.md)，历史边界见 [ADR 1190](adr/1190-clarify-sandbox-authorization-scope.md)、[ADR 1199](adr/1199-revalidate-live-policy-at-process-spawn.md)、[ADR 1211](adr/1211-revoke-running-shells-on-policy-change.md)、[ADR 1212](adr/1212-revoke-running-skills-on-policy-change.md)、[ADR 1213](adr/1213-revoke-mcp-stdio-on-policy-change.md)、[ADR 1262](adr/1262-separate-process-and-network-sandbox-boundaries.md) 与 [ADR 1264](adr/1264-separate-skill-activation-from-host-execution.md)。
-
-- **网络决议与 MCP 快照（ADR 1416）：**授权 owner 返回拒绝联网、opaque 目标、域名不符、本地地址、需要确认或允许的 typed 结论；MCP manager 消费带 revision 的同一份 `NetworkResourcePolicy`，HTTP 遵守域名范围，stdio 在范围不可执行时拒绝。Tools 与 MCP 的连接、审批和执行器仍各自独立。
-- **MXC 网络范围（ADR 1417）：**隔离进程请求分开表达公网出站、私网双向访问和宿主回环；Shell 的 Open 只允许公网出站，私网和 loopback 仍拒绝。LSP WorkspaceWrite 仅请求离线策略。MXC 原生规则不支持域名/端口级约束，因此全局或工具域名列表下仍由授权 owner 拒绝 Shell 联网，不宣称已完成受控代理策略。
-- **受控 Git 网络策略（ADR 1419）：**WorkspaceWrite 的本地 Git 命令离线；remote 子命令按 opaque network 处理，只在 Open 且没有域名约束时开放公网出站。FullAccess 的全部 Git 子命令都视为 opaque，因为本地 hook/filter 也可能联网。
+**权限与进程边界：**文件、进程与网络在副作用前复核同一证明。MCP/LSP 项目目录只读，Skill setup 只写私有目录，Everything ReadOnly 使用私有 scratch；受管 MXC 进程不因默认权限不足直接拒绝，也不在未获批时回退宿主。显式禁用/拒绝、无效资源或不能安全执行的操作返回明确失败。Windows MXC 与第三方程序的实际兼容性继续列入 §5.1，不将策略测试当成端到端验收。历史隔离背景见 ADR 1368、1405、1418–1423，当前授权语义见 ADR 1428。
 
 ### 5.9 Memory recall 的图谱扩展（已完成）
 

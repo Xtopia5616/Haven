@@ -57,7 +57,8 @@ impl ToolsListChangedSignal {
 /// stdio transport: a spawned child process speaking JSON-RPC over its stdin
 /// and stdout pipes.
 pub(crate) struct StdioInner {
-    process: AsyncMutex<Box<dyn McpStdioProcess>>,
+    process: Arc<AsyncMutex<Box<dyn McpStdioProcess>>>,
+    capacity_task: Option<JoinHandle<()>>,
     pub(crate) io: Arc<StdioIo>,
     reader_task: JoinHandle<()>,
     stderr_task: Option<JoinHandle<()>>,
@@ -118,8 +119,40 @@ impl StdioInner {
             cancel,
         });
         let reader_task = tokio::spawn(read_stdio_messages(BufReader::new(stdout), io.clone()));
+        let budget = process.scratch_capacity_budget();
+        let process = Arc::new(AsyncMutex::new(process));
+        let capacity_task = budget.map(|(path, bytes, entries)| {
+            let process = process.clone();
+            let io = io.clone();
+            tokio::spawn(async move {
+                loop {
+                    let directory = path.clone();
+                    let exceeded = tokio::task::spawn_blocking(move || {
+                        haven_platform::filesystem::directory_size_exceeds(
+                            &directory, bytes, entries,
+                        )
+                    })
+                    .await
+                    .map_or(true, |result| result.unwrap_or(true));
+                    if exceeded {
+                        tracing::warn!(
+                            limit_bytes = bytes,
+                            "MCP scratch capacity exceeded or could not be inspected"
+                        );
+                        let _ = process.lock().await.start_kill();
+                        io.reader_failed.store(true, Ordering::Release);
+                        return;
+                    }
+                    tokio::select! {
+                        _ = io.cancel.cancelled() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    }
+                }
+            })
+        });
         Ok(Self {
-            process: AsyncMutex::new(process),
+            process,
+            capacity_task,
             io,
             reader_task,
             stderr_task,
@@ -198,10 +231,15 @@ impl StdioInner {
 impl Drop for StdioInner {
     fn drop(&mut self) {
         self.reader_task.abort();
+        if let Some(task) = &self.capacity_task {
+            task.abort();
+        }
         if let Some(stderr_task) = &self.stderr_task {
             stderr_task.abort();
         }
-        if self.process.get_mut().start_kill().is_err() {
+        if let Ok(mut process) = self.process.try_lock()
+            && process.start_kill().is_err()
+        {
             tracing::debug!("MCP stdio child cleanup failed");
         }
     }
@@ -1136,6 +1174,7 @@ mod tests {
     use tokio::process::Command;
 
     struct PipeProcess {
+        budget: Option<(std::path::PathBuf, u64, usize)>,
         stdin: Option<crate::McpStdioWriter>,
         stdout: Option<crate::McpStdioReader>,
         stderr: Option<crate::McpStdioReader>,
@@ -1144,6 +1183,9 @@ mod tests {
     }
 
     impl McpStdioProcess for PipeProcess {
+        fn scratch_capacity_budget(&self) -> Option<(std::path::PathBuf, u64, usize)> {
+            self.budget.clone()
+        }
         fn take_stdin(&mut self) -> std::io::Result<crate::McpStdioWriter> {
             self.stdin
                 .take()
@@ -1183,6 +1225,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stdio_capacity_monitor_stops_a_generation_before_it_can_keep_growing() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("payload"), b"oversized").unwrap();
+        let (client_stream, _peer_stream) = tokio::io::duplex(64);
+        let (stdout, stdin) = tokio::io::split(client_stream);
+        let alive = Arc::new(AtomicBool::new(true));
+        let kill_count = Arc::new(AtomicUsize::new(0));
+        let process = Box::new(PipeProcess {
+            budget: Some((root.path().to_path_buf(), 1, 10)),
+            stdin: Some(Box::new(stdin)),
+            stdout: Some(Box::new(stdout)),
+            stderr: None,
+            alive: alive.clone(),
+            kill_count: kill_count.clone(),
+        });
+        let (notification_tx, _notification_rx) =
+            tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
+        let inner = StdioInner::new(
+            process,
+            notification_tx,
+            Arc::new(ToolsListChangedSignal::new()),
+            CancellationToken::new(),
+        )
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while kill_count.load(Ordering::Acquire) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!alive.load(Ordering::Acquire));
+        assert!(inner.poisoned());
+    }
+
+    #[tokio::test]
     async fn stdio_inner_drains_diagnostic_stderr_with_bounded_memory() {
         let (client_stream, _peer_stream) = tokio::io::duplex(64);
         let (stdout, stdin) = tokio::io::split(client_stream);
@@ -1190,6 +1268,7 @@ mod tests {
         let alive = Arc::new(AtomicBool::new(true));
         let kill_count = Arc::new(AtomicUsize::new(0));
         let process = Box::new(PipeProcess {
+            budget: None,
             stdin: Some(Box::new(stdin)),
             stdout: Some(Box::new(stdout)),
             stderr: Some(Box::new(stderr_reader)),
@@ -1227,6 +1306,7 @@ mod tests {
         let alive = Arc::new(AtomicBool::new(true));
         let kill_count = Arc::new(AtomicUsize::new(0));
         let process = Box::new(PipeProcess {
+            budget: None,
             stdin: Some(Box::new(stdin)),
             stdout: None,
             stderr: None,
@@ -1254,6 +1334,7 @@ mod tests {
         let alive = Arc::new(AtomicBool::new(true));
         let kill_count = Arc::new(AtomicUsize::new(0));
         let process = Box::new(PipeProcess {
+            budget: None,
             stdin: Some(Box::new(stdin)),
             stdout: Some(Box::new(stdout)),
             stderr: None,

@@ -1330,3 +1330,5 @@
 - [1425：增加 PermissionRequest 与 ToolRun 生命周期 Hook](1425-add-permission-and-toolrun-lifecycle-hooks.md)
 - [1426：为 RunStart Hook 增加运行来源](1426-add-run-source-to-run-start-hook.md)
 - [1427：全局安全策略仅通过完整 SecurityConfig 应用](1427-keep-global-security-policy-writes-behind-security-config.md)
+
+- [1428：以资源授权和统一申请替代默认拒绝](1428-permission-first-resource-consent.md)

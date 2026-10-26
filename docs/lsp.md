@@ -39,8 +39,8 @@ LSP 操作通过 `discover_tools` 按需发现和加载。Agent 可以先按 `ls
 
 ## 授权与限制
 
-语言服务器是本机可执行程序，运行时具有 Haven 用户的操作系统权限。LSP 操作属于高风险本机进程操作，受统一授权和确认策略管理，并要求 Full Access sandbox；Workspace Write、Restricted Network 和 Deny Network 下不会启动服务器。Host-process containment 会回收进程树，但不会限制服务器自身的文件或网络访问。
+语言服务器是本机可执行程序，属于高风险进程操作，受统一授权和确认策略管理。Windows 的 Workspace Write（或经确认扩展的 ReadOnly）使用 MXC，项目与运行时依赖只读，写入限于受管 scratch。Restricted 网络按需申请；任意语言服务器无法逐域名约束，因此申请界面明确显示实际子进程网络范围，包括私网与宿主 loopback。Full Access 使用宿主进程权限；显式 Deny Network 仍禁止联网。用户拒绝、取消、授权过期或隔离不可用时不启动服务器。
 
-每次操作都会启动并退出一次服务器，不复用后台进程或索引。单次工具调用默认最多等待 60 秒，单文档限制为 1 MiB，结果限制为 2 MiB。大项目或启动较慢的服务器可能超时；同一轮需要多次查询时，当前实现会重复启动服务器。
+每次操作都会启动并退出一次服务器，不复用后台进程或索引。单次工具调用默认最多等待 60 秒，单文档限制为 1 MiB，结果限制为 2 MiB。受管 scratch 为 256 MiB、最多 100,000 条目，运行中检查容量并在退出后清理。大项目或启动较慢的服务器可能超时；同一轮需要多次查询时，当前实现会重复启动服务器。
 
-配置和安全边界的架构决定见 [ADR 1340](adr/1340-authorize-local-language-servers.md) 与 [ADR 1341](adr/1341-expand-lsp-navigation.md)。
+配置和安全边界的架构决定见 [ADR 1340](adr/1340-authorize-local-language-servers.md) 、[ADR 1341](adr/1341-expand-lsp-navigation.md) 与 [ADR 1428](adr/1428-permission-first-resource-consent.md)。

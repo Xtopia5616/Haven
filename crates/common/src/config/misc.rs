@@ -56,23 +56,19 @@ impl Default for FileResourcePolicy {
 pub struct NetworkResourcePolicy {
     /// Tool-level policy inherits the global setting.
     pub access: NetworkAccessBoundary,
-    /// Optional host allowlist. An empty list adds no host restriction.
-    pub allowed_domains: Vec<String>,
 }
 
 impl Default for NetworkResourcePolicy {
     fn default() -> Self {
         Self {
             access: NetworkAccessBoundary::Inherit,
-            allowed_domains: Vec::new(),
         }
     }
 }
 
 impl NetworkResourcePolicy {
-    /// Convert the access boundary to the technical policy used by network
-    /// transports. Domain restrictions remain part of this policy object and
-    /// are evaluated independently by destinations that support them.
+    /// Convert the default network decision used by transports. Exact origins
+    /// are authorized through typed permission resources, not a domain list.
     pub fn network_policy(&self) -> NetworkPolicy {
         match self.access {
             NetworkAccessBoundary::Deny => NetworkPolicy::Deny,
@@ -86,8 +82,7 @@ impl NetworkResourcePolicy {
 
 /// Process-local snapshot of the authoritative network resource policy.
 ///
-/// `revision` advances only when the global network access mode or domain
-/// scope changes. Consumers may reject stale snapshots without maintaining a
+/// `revision` advances only when the global network access mode changes. Consumers may reject stale snapshots without maintaining a
 /// second policy revision of their own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkResourcePolicySnapshot {
@@ -149,7 +144,6 @@ impl ResourcePolicy {
             },
             network: NetworkResourcePolicy {
                 access: NetworkAccessBoundary::Restricted,
-                allowed_domains: Vec::new(),
             },
         }
     }
@@ -984,7 +978,6 @@ struct ToolConfigInput {
     retry_backoff_secs: Option<u64>,
     resource_policy: Option<ResourcePolicy>,
     allowed_paths: Option<Vec<String>>,
-    allowed_domains: Option<Vec<String>>,
     disabled_operations: Vec<String>,
     risk_override: Option<RiskLevel>,
 }
@@ -999,7 +992,6 @@ impl Default for ToolConfigInput {
             retry_backoff_secs: None,
             resource_policy: None,
             allowed_paths: None,
-            allowed_domains: None,
             disabled_operations: Vec::new(),
             risk_override: None,
         }
@@ -1010,9 +1002,7 @@ impl TryFrom<ToolConfigInput> for ToolConfig {
     type Error = String;
 
     fn try_from(input: ToolConfigInput) -> Result<Self, Self::Error> {
-        if input.resource_policy.is_some()
-            && (input.allowed_paths.is_some() || input.allowed_domains.is_some())
-        {
+        if input.resource_policy.is_some() && input.allowed_paths.is_some() {
             return Err(
                 "resource_policy cannot be combined with legacy tool resource fields".into(),
             );
@@ -1023,9 +1013,6 @@ impl TryFrom<ToolConfigInput> for ToolConfig {
             let mut policy = ResourcePolicy::default();
             if let Some(paths) = input.allowed_paths {
                 policy.files.path_roots = paths;
-            }
-            if let Some(domains) = input.allowed_domains {
-                policy.network.allowed_domains = domains;
             }
             policy
         };

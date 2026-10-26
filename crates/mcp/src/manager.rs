@@ -186,6 +186,7 @@ pub struct McpManager {
         Arc<RwLock<Option<Arc<dyn crate::McpStdioProcessStartAuthorization>>>>,
     /// Owner for the policy-revocation subscription installed by Tools.
     stdio_policy_watcher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    permission_policy_watcher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Changes whenever the configured server set or a server's tools/list
     /// cache changes. Consumers use this as a cheap catalog invalidation
     /// clock; it is not a durable protocol version.
@@ -214,6 +215,7 @@ impl Clone for McpManager {
             network_policy: self.network_policy.clone(),
             stdio_process_authorization: self.stdio_process_authorization.clone(),
             stdio_policy_watcher: self.stdio_policy_watcher.clone(),
+            permission_policy_watcher: self.permission_policy_watcher.clone(),
             catalog_version: self.catalog_version.clone(),
         }
     }
@@ -225,7 +227,6 @@ impl McpManager {
             0,
             NetworkResourcePolicy {
                 access: NetworkAccessBoundary::Restricted,
-                allowed_domains: Vec::new(),
             },
         ))
     }
@@ -259,6 +260,7 @@ impl McpManager {
             network_policy: Arc::new(tokio::sync::RwLock::new(network_policy)),
             stdio_process_authorization: Arc::new(RwLock::new(None)),
             stdio_policy_watcher: Arc::new(Mutex::new(None)),
+            permission_policy_watcher: Arc::new(Mutex::new(None)),
             catalog_version: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -269,7 +271,6 @@ impl McpManager {
             0,
             NetworkResourcePolicy {
                 access: network_policy.into(),
-                allowed_domains: Vec::new(),
             },
         ))
     }
@@ -355,16 +356,6 @@ impl McpManager {
             anyhow::bail!("MCP manager is shutting down");
         }
         let network_policy = self.network_policy.read().await.clone();
-        if matches!(
-            config.transport,
-            haven_common::mcp::McpServerTransport::Http
-        ) && matches!(
-            network_policy.network_policy(),
-            haven_common::types::NetworkPolicy::Deny
-        ) {
-            anyhow::bail!("MCP connection blocked by network policy");
-        }
-
         let stdio_process_authorization = self.stdio_process_authorization.read().await.clone();
         let client = Arc::new(McpClient::new_managed_with_launcher(
             config,
@@ -860,6 +851,34 @@ impl McpManager {
             }
         });
         *self.stdio_policy_watcher.lock().await = Some(task);
+    }
+
+    /// Remove live generations when their saved connection authority is revoked.
+    /// Per-call tool grants do not emit this signal.
+    pub async fn watch_connection_permission_changes(
+        &self,
+        mut changes: tokio::sync::watch::Receiver<Arc<()>>,
+    ) {
+        if let Some(previous) = self.permission_policy_watcher.lock().await.take() {
+            previous.abort();
+            let _ = previous.await;
+        }
+        let manager = self.clone();
+        let task = tokio::spawn(async move {
+            while changes.changed().await.is_ok() {
+                let clients = manager
+                    .clients
+                    .lock()
+                    .await
+                    .iter()
+                    .map(|(name, client)| (name.clone(), client.clone()))
+                    .collect::<Vec<_>>();
+                for (name, client) in clients {
+                    manager.remove_client_generation(&name, Some(&client)).await;
+                }
+            }
+        });
+        *self.permission_policy_watcher.lock().await = Some(task);
     }
 
     async fn disconnect_stdio_clients(&self) {
@@ -1430,6 +1449,10 @@ impl McpManager {
 
     /// Shut down all clients and cancel their monitor sessions.
     pub async fn shutdown_all(&self) {
+        if let Some(watcher) = self.permission_policy_watcher.lock().await.take() {
+            watcher.abort();
+            let _ = watcher.await;
+        }
         let policy_watcher = self.stdio_policy_watcher.lock().await.take();
         if let Some(policy_watcher) = policy_watcher {
             policy_watcher.abort();
@@ -1825,7 +1848,6 @@ mod manager_lifecycle_tests {
             1,
             haven_common::config::NetworkResourcePolicy {
                 access: haven_common::config::NetworkAccessBoundary::Restricted,
-                allowed_domains: vec!["example.com".into()],
             },
         );
         for policy in [
@@ -1833,7 +1855,6 @@ mod manager_lifecycle_tests {
                 1,
                 haven_common::config::NetworkResourcePolicy {
                     access: haven_common::config::NetworkAccessBoundary::Deny,
-                    allowed_domains: Vec::new(),
                 },
             ),
             restricted,
@@ -2736,6 +2757,36 @@ mod manager_lifecycle_tests {
         .await
         .expect("policy change must drain stale stdio clients");
         assert!(manager.has_client("retained-http").await);
+        manager.shutdown_all().await;
+    }
+    #[tokio::test]
+    async fn connection_permission_revocation_removes_http_and_stdio_generations() {
+        let manager = McpManager::new();
+        for config in [
+            unreachable_http_server("revoked-http"),
+            McpServerConfig {
+                name: "revoked-stdio".into(),
+                transport: McpServerTransport::Stdio,
+                command: "unused-test-command".into(),
+                ..McpServerConfig::default()
+            },
+        ] {
+            manager
+                .add_client(Arc::new(McpClient::new(&config, 1024, 1024)))
+                .await;
+        }
+        let (signal, receiver) = tokio::sync::watch::channel(Arc::new(()));
+        manager.watch_connection_permission_changes(receiver).await;
+        signal.send_replace(Arc::new(()));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while manager.has_client("revoked-http").await
+                || manager.has_client("revoked-stdio").await
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("revoked connection authority must drain live generations");
         manager.shutdown_all().await;
     }
 }

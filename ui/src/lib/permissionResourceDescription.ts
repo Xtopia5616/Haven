@@ -8,6 +8,8 @@ function origin(scheme: string, host: string, port: number | null | undefined): 
 }
 
 export function declaredResourceDescription(resource: DeclaredResource): string {
+	if (resource.kind === 'process_network')
+		return '子进程网络 · 公网、私网双向通信与宿主回环（目标域名无法逐个约束）';
 	if (resource.kind === 'local_path') {
 		return `${resource.access === 'read' ? '读取' : '写入'} · ${resource.path}`;
 	}
@@ -42,6 +44,8 @@ export function declaredResourceDescription(resource: DeclaredResource): string 
 }
 
 export function permissionResourceScopeDescription(scope: PermissionResourceScope): string {
+	if (scope.kind === 'process_network')
+		return '指定子进程调用的网络 · 公网、私网双向通信与宿主回环';
 	if (scope.kind === 'local_path') {
 		const extent = scope.recursive ? '目录及其子项' : '精确路径';
 		const access = scope.access === 'read' ? '读取' : '写入';

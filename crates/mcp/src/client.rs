@@ -643,6 +643,7 @@ pub(crate) fn local_stdio_process_launcher() -> Arc<dyn McpStdioProcessLauncher>
 struct LocalMcpStdioProcessLauncher;
 
 struct LocalMcpStdioProcess {
+    scratch_capacity_budget: Option<(std::path::PathBuf, u64, usize)>,
     process: LocalMcpChild,
     stdin: Option<crate::McpStdioWriter>,
     stdout: Option<crate::McpStdioReader>,
@@ -659,6 +660,9 @@ enum LocalMcpChild {
 }
 
 impl McpStdioProcess for LocalMcpStdioProcess {
+    fn scratch_capacity_budget(&self) -> Option<(std::path::PathBuf, u64, usize)> {
+        self.scratch_capacity_budget.clone()
+    }
     fn take_stdin(&mut self) -> std::io::Result<crate::McpStdioWriter> {
         self.stdin
             .take()
@@ -798,9 +802,11 @@ impl McpStdioProcessLauncher for LocalMcpStdioProcessLauncher {
 
             // Keep an isolated generation's scratch alive until process
             // teardown; the policy read guard can end once MXC is attached.
+            let scratch_capacity_budget = permit.scratch_capacity_budget();
             let lifetime_resource = permit.take_lifetime_resource();
             drop(permit);
             let mut process = LocalMcpStdioProcess {
+                scratch_capacity_budget,
                 process: child,
                 stdin: None,
                 stdout: None,
@@ -886,6 +892,22 @@ struct TestMcpStdioProcessStartAuthorization;
 
 #[cfg(any(test, feature = "test-support"))]
 impl crate::McpStdioProcessStartAuthorization for TestMcpStdioProcessStartAuthorization {
+    fn authorize_http_destination<'a>(
+        &'a self,
+        raw_url: &'a str,
+        _cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = anyhow::Result<haven_common::network::ResolvedHttpDestination>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(haven_common::network::resolve_authorized_http_destination(
+            raw_url,
+        ))
+    }
     fn acquire_process_start_permit(
         &self,
         _request: crate::McpStdioProcessStartRequest,
@@ -977,7 +999,6 @@ impl McpClient {
                 0,
                 NetworkResourcePolicy {
                     access: NetworkAccessBoundary::Restricted,
-                    allowed_domains: Vec::new(),
                 },
             ))),
             stdio_process_authorization,
@@ -1198,7 +1219,10 @@ impl McpClient {
         {
             runtime_read_roots.push(parent.to_path_buf());
         }
+        let cancellation = self.cancel_token.lock().await.clone();
         let request = crate::McpStdioProcessStartRequest {
+            cancellation: cancellation.clone(),
+            command_fingerprint: self.authorization_config_fingerprint.clone(),
             working_directory: self
                 .stdio_launch_spec
                 .working_directory()
@@ -1215,6 +1239,9 @@ impl McpClient {
                     haven_common::error::sanitize_error_text(&error.to_string())
                 )
             })?;
+        if cancellation.is_cancelled() {
+            anyhow::bail!("MCP stdio connection attempt was cancelled before process start");
+        }
         let process = self
             .stdio_process_launcher
             .launch(&self.stdio_launch_spec, spawn_permit)
@@ -1270,7 +1297,17 @@ impl McpClient {
         // redirects. Following a redirect would leak those to an unverified
         // host, so refuse to follow any.
         let policy = self.network_policy.read().await.clone();
-        let built_client = crate::network::build_http_client(&self.url, &policy).await?;
+        if policy.network_policy() == haven_common::types::NetworkPolicy::Deny {
+            anyhow::bail!("MCP HTTP connection denied by network policy");
+        }
+        let built_client = if let Some(authorization) = &self.stdio_process_authorization {
+            let destination = authorization
+                .authorize_http_destination(&self.url, self.cancel_token.lock().await.clone())
+                .await?;
+            crate::network::build_authorized_http_client(destination)?
+        } else {
+            crate::network::build_http_client(&self.url, &policy).await?
+        };
         let shared = Arc::new(HttpShared {
             http: built_client.client,
             url: built_client.endpoint.to_string(),

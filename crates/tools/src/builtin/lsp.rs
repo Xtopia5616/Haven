@@ -480,9 +480,10 @@ impl Tool for LspTool {
     ) -> Result<crate::ToolAuthorizationContract, String> {
         let mut policy = self.try_operation_policy(input)?;
         match self.authorization.sandbox_mode().await {
-            haven_common::types::SandboxMode::WorkspaceWrite => {
+            haven_common::types::SandboxMode::WorkspaceWrite
+            | haven_common::types::SandboxMode::ReadOnly => {
                 policy.execution_boundary = crate::ExecutionBoundary::SandboxedHost;
-                policy.network_access = crate::NetworkAccess::None;
+                policy.network_access = crate::NetworkAccess::Opaque;
             }
             _ => {
                 policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
@@ -817,8 +818,6 @@ async fn spawn_lsp_server(
         haven_common::types::SandboxMode::WorkspaceWrite => {
             #[cfg(windows)]
             {
-                use haven_platform::sandboxed_process::SandboxedProcessNetworkPolicy;
-
                 let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp()?;
                 scratch.ensure_within_capacity().await?;
                 let mut command = std::process::Command::new(&server.command);
@@ -862,7 +861,7 @@ async fn spawn_lsp_server(
                         .collect(),
                     filesystem.protected_readonly_paths,
                     filesystem.denied_paths,
-                    SandboxedProcessNetworkPolicy::default(),
+                    permit.process_network_policy(),
                     false,
                 )?;
                 let mut child = haven_platform::sandboxed_process::SandboxedProcess::spawn(

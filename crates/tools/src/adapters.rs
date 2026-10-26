@@ -80,11 +80,11 @@ fn mcp_operation_spec(
         RiskLevel::High,
     );
     match (transport, sandbox_mode) {
-        (McpServerTransport::Stdio, SandboxMode::WorkspaceWrite) => {
+        (McpServerTransport::Stdio, SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly) => {
             policy.execution_boundary = crate::ExecutionBoundary::SandboxedHost;
-            policy.network_access = crate::NetworkAccess::None;
+            policy.network_access = crate::NetworkAccess::Opaque;
         }
-        (McpServerTransport::Stdio, SandboxMode::FullAccess | SandboxMode::ReadOnly) => {
+        (McpServerTransport::Stdio, SandboxMode::FullAccess) => {
             policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
         }
         (McpServerTransport::Http, _) => {
@@ -184,12 +184,12 @@ fn skill_execution_policy_for_sandbox(
     sandbox_mode: haven_common::types::SandboxMode,
 ) -> OperationPolicy {
     match sandbox_mode {
-        haven_common::types::SandboxMode::WorkspaceWrite => {
-            policy.execution_boundary = crate::ExecutionBoundary::SandboxedHost;
-            policy.network_access = crate::NetworkAccess::None;
-        }
-        haven_common::types::SandboxMode::FullAccess
+        haven_common::types::SandboxMode::WorkspaceWrite
         | haven_common::types::SandboxMode::ReadOnly => {
+            policy.execution_boundary = crate::ExecutionBoundary::SandboxedHost;
+            policy.network_access = crate::NetworkAccess::Opaque;
+        }
+        haven_common::types::SandboxMode::FullAccess => {
             policy.execution_boundary = crate::ExecutionBoundary::HostProcess;
             policy.network_access = crate::NetworkAccess::Opaque;
         }
@@ -701,7 +701,7 @@ mod tests {
             workspace_write.execution_boundary,
             crate::ExecutionBoundary::SandboxedHost
         );
-        assert_eq!(workspace_write.network_access, crate::NetworkAccess::None);
+        assert_eq!(workspace_write.network_access, crate::NetworkAccess::Opaque);
         assert_eq!(
             workspace_write.effect,
             crate::OperationEffect::ExternalEffect
@@ -743,7 +743,7 @@ mod tests {
                 contract.policy.execution_boundary,
                 crate::ExecutionBoundary::SandboxedHost
             );
-            assert_eq!(contract.policy.network_access, crate::NetworkAccess::None);
+            assert_eq!(contract.policy.network_access, crate::NetworkAccess::Opaque);
         } else {
             assert!(
                 contract
@@ -805,7 +805,7 @@ mod tests {
         );
         assert_eq!(
             isolated_stdio_policy.network_access,
-            crate::NetworkAccess::None
+            crate::NetworkAccess::Opaque
         );
         let http_policy = http.operation_policy(&Value::Null);
         assert_eq!(

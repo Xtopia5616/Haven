@@ -28,6 +28,7 @@ pub(crate) struct ExecutionPolicyAuthorization {
     pub(super) session_id: Option<String>,
     pub(super) execution_boundary: crate::ExecutionBoundary,
     pub(super) resource_boundary_extension: bool,
+    pub(super) network_authorized: bool,
     pub(super) authorized_resources: Vec<crate::security::DeclaredResource>,
     pub(super) expires_at: u64,
     pub(super) process_revocation_signal: Arc<()>,
@@ -52,6 +53,8 @@ pub(crate) struct LifecycleHookProcessStartAuthorization {
 }
 
 pub(crate) struct LifecycleHookProcessStartRequest {
+    pub(crate) command: String,
+    pub(crate) arguments: Vec<String>,
     pub(crate) working_directory: std::path::PathBuf,
     pub(crate) runtime_read_roots: Vec<std::path::PathBuf>,
 }
@@ -71,10 +74,16 @@ pub(crate) struct McpStdioProcessStartPermit {
     _permit: ExecutionPolicyPermit,
     policy: Option<haven_platform::sandboxed_process::SandboxedProcessPolicy>,
     working_directory: Option<std::path::PathBuf>,
-    scratch: Option<tempfile::TempDir>,
+    scratch: Option<crate::shell_runtime::ProcessScratchDirectory>,
 }
 
 impl haven_mcp::McpStdioProcessStartPermit for McpStdioProcessStartPermit {
+    fn scratch_capacity_budget(&self) -> Option<(std::path::PathBuf, u64, usize)> {
+        self.scratch.as_ref().map(|scratch| {
+            let (bytes, entries) = scratch.capacity_limits();
+            (scratch.path().to_path_buf(), bytes, entries)
+        })
+    }
     fn sandboxed_process_policy(
         &self,
     ) -> Option<haven_platform::sandboxed_process::SandboxedProcessPolicy> {
@@ -86,7 +95,9 @@ impl haven_mcp::McpStdioProcessStartPermit for McpStdioProcessStartPermit {
     }
 
     fn sandboxed_temp_directory(&self) -> Option<&std::path::Path> {
-        self.scratch.as_ref().map(tempfile::TempDir::path)
+        self.scratch
+            .as_ref()
+            .map(crate::shell_runtime::ProcessScratchDirectory::path)
     }
 
     fn take_lifetime_resource(&mut self) -> Option<Box<dyn Send>> {
@@ -126,6 +137,42 @@ impl LifecycleHookProcessStartAuthorization {
         &self,
         request: LifecycleHookProcessStartRequest,
     ) -> Result<ExecutionPolicyPermit, String> {
+        {
+            let config = self.authorization.config.read().await;
+            if config.policy_revision != self.policy_revision
+                || config.process_boundary_revision != self.process_boundary_revision
+                || config
+                    .execution_workspace_for(self.session_id.as_deref())
+                    .generation()
+                    != self.execution_workspace_generation
+            {
+                return Err("execution policy changed before lifecycle hook process start".into());
+            }
+        }
+        let permission_request = AuthorizationEngine::runtime_permission_request(
+            self.session_id.as_deref(),
+            "lifecycle_hook",
+            serde_json::json!({"command":request.command, "args":request.arguments, "cwd":request.working_directory}),
+            crate::NetworkAccess::Opaque,
+            vec![crate::DeclaredResource::LocalPath {
+                path: request.working_directory.clone(),
+                access: haven_common::types::LocalPathAccess::Write,
+            }],
+        )?;
+        let proof = self
+            .authorization
+            .request_execution_permission(
+                &permission_request,
+                self.session_trust_cancellation.as_ref().clone(),
+            )
+            .await?;
+        let context = self
+            .authorization
+            .execution_context_for_proof(&permission_request, &proof)
+            .await?;
+        let granted = context
+            .clone_execution_authorization()
+            .ok_or_else(|| "hook permission has no execution authority".to_owned())?;
         let config = Arc::clone(&self.authorization.config).read_owned().await;
         if config.policy_revision != self.policy_revision
             || config.process_boundary_revision != self.process_boundary_revision
@@ -136,19 +183,12 @@ impl LifecycleHookProcessStartAuthorization {
         {
             return Err("execution policy changed before lifecycle hook process start".into());
         }
-        let sandbox_mode = config.sandbox_mode;
-        let mut permit = ExecutionPolicyPermit {
-            _config: config,
-            session_id: self.session_id.clone(),
-            tool_name: "lifecycle_hook".into(),
-            resource_boundary_extension: false,
-            authorized_resources: Vec::new(),
-            sandboxed_process_policy: None,
-        };
-        match sandbox_mode {
+        drop(config);
+        let mut permit = granted.acquire().await?;
+        match permit.sandbox_mode() {
             SandboxMode::FullAccess if permit.opaque_network_is_unrestricted() => Ok(permit),
             SandboxMode::FullAccess => {
-                Err("lifecycle hook commands require Open network policy without domain allowlists in Full Access".into())
+                Err("lifecycle hook commands require Open network policy after process-network authorization in Full Access".into())
             }
             SandboxMode::WorkspaceWrite if cfg!(windows) => {
                 let filesystem = permit.workspace_process_directories_for_tool(
@@ -169,7 +209,7 @@ impl LifecycleHookProcessStartAuthorization {
                             .collect(),
                         protected_readonly_paths: filesystem.protected_readonly_paths,
                         denied_paths: filesystem.denied_paths,
-                        network_policy: Default::default(),
+                        network_policy: permit.process_network_policy(),
                     });
                 Ok(permit)
             }
@@ -229,14 +269,13 @@ pub(crate) struct ExecutionPolicyPermit {
     session_id: Option<String>,
     tool_name: String,
     resource_boundary_extension: bool,
+    network_authorized: bool,
     authorized_resources: Vec<crate::security::DeclaredResource>,
     sandboxed_process_policy: Option<haven_platform::sandboxed_process::SandboxedProcessPolicy>,
 }
 
 pub(super) fn opaque_network_is_unrestricted(config: &SafetyConfig, tool_name: &str) -> bool {
-    if config.network.network_policy() != NetworkPolicy::Open
-        || !config.network.allowed_domains.is_empty()
-    {
+    if config.network.network_policy() != NetworkPolicy::Open {
         return false;
     }
     let settings = if tool_name == "mcp_stdio" {
@@ -249,7 +288,7 @@ pub(super) fn opaque_network_is_unrestricted(config: &SafetyConfig, tool_name: &
             !matches!(
                 setting.resource_policy.network.access,
                 NetworkAccessBoundary::Deny | NetworkAccessBoundary::Restricted
-            ) && setting.resource_policy.network.allowed_domains.is_empty()
+            )
         })
     })
 }
@@ -264,15 +303,33 @@ pub(crate) struct WorkspaceProcessFilesystemPolicy {
 
 impl ExecutionPolicyPermit {
     pub(crate) fn sandbox_mode(&self) -> SandboxMode {
-        self._config.sandbox_mode
+        if self.resource_boundary_extension && self._config.sandbox_mode == SandboxMode::ReadOnly {
+            SandboxMode::WorkspaceWrite
+        } else {
+            self._config.sandbox_mode
+        }
     }
 
     pub(crate) fn network_policy(&self) -> NetworkPolicy {
-        self._config.network.network_policy()
+        if self.network_authorized {
+            NetworkPolicy::Open
+        } else {
+            self._config.network.network_policy()
+        }
+    }
+
+    pub(crate) fn process_network_policy(
+        &self,
+    ) -> haven_platform::sandboxed_process::SandboxedProcessNetworkPolicy {
+        haven_platform::sandboxed_process::SandboxedProcessNetworkPolicy {
+            allow_public_egress: self.network_authorized,
+            allow_private_network_client_server: self.network_authorized,
+            allow_host_loopback: self.network_authorized,
+        }
     }
 
     fn opaque_network_is_unrestricted(&self) -> bool {
-        opaque_network_is_unrestricted(&self._config, &self.tool_name)
+        self.network_authorized || opaque_network_is_unrestricted(&self._config, &self.tool_name)
     }
 
     pub(crate) fn mxc_isolation_mode(&self) -> MxcIsolationMode {
@@ -381,7 +438,7 @@ impl ExecutionPolicyPermit {
         cache_directories: &[std::path::PathBuf],
         git_metadata_write: Option<&std::path::Path>,
     ) -> Result<WorkspaceProcessFilesystemPolicy, String> {
-        if self._config.sandbox_mode != SandboxMode::WorkspaceWrite {
+        if self.sandbox_mode() != SandboxMode::WorkspaceWrite {
             return Err("MXC process roots require the Workspace Write sandbox".into());
         }
         let workspace_writable = self
@@ -490,7 +547,11 @@ impl ExecutionPolicyPermit {
         });
 
         let mut read_scope = workspace_writable.clone();
-        let mut write_scope = workspace_writable;
+        let mut write_scope = if self._config.sandbox_mode == SandboxMode::ReadOnly {
+            Vec::new()
+        } else {
+            workspace_writable
+        };
         let tool_write_constraint = tool_write_constraint.transpose()?;
         if let Some(tool_write_constraint) = &tool_write_constraint {
             write_scope = intersect_directory_roots(&write_scope, tool_write_constraint);
@@ -510,9 +571,6 @@ impl ExecutionPolicyPermit {
             &runtime_roots,
             "security.shell_runtime_read_roots",
         )?;
-        for constraint in &path_constraints {
-            runtime_read = intersect_directory_roots(&runtime_read, constraint);
-        }
         runtime_read.retain(|scope| {
             !denied
                 .iter()
@@ -528,14 +586,9 @@ impl ExecutionPolicyPermit {
         let mut extension_writable = Vec::new();
         let mut extension_readonly = Vec::new();
         if self.resource_boundary_extension {
-            if self.authorized_resources.is_empty() {
-                return Err("process resource extension has no bound local paths".into());
-            }
             for resource in &self.authorized_resources {
                 let crate::security::DeclaredResource::LocalPath { path, access } = resource else {
-                    return Err(
-                        "process resource extension contains an unsupported resource type".into(),
-                    );
+                    continue;
                 };
                 let path = if path.is_absolute() {
                     path.clone()
@@ -559,23 +612,14 @@ impl ExecutionPolicyPermit {
                     haven_common::types::LocalPathAccess::Read => {
                         extension_readonly.push(directory)
                     }
-                    haven_common::types::LocalPathAccess::Write if !tool_is_read_only => {
-                        extension_writable.push(directory)
-                    }
                     haven_common::types::LocalPathAccess::Write => {
-                        return Err("tool resource policy is read-only".into());
+                        extension_writable.push(directory)
                     }
                 }
             }
-            for constraint in &path_constraints {
-                extension_writable = intersect_directory_roots(&extension_writable, constraint);
-                extension_readonly = intersect_directory_roots(&extension_readonly, constraint);
+            if !extension_writable.is_empty() {
+                write_scope = extension_writable;
             }
-            if let Some(tool_write_constraint) = &tool_write_constraint {
-                extension_writable =
-                    intersect_directory_roots(&extension_writable, tool_write_constraint);
-            }
-            write_scope.extend(extension_writable);
             readonly.extend(extension_readonly);
         }
 
@@ -602,12 +646,14 @@ impl ExecutionPolicyPermit {
         // policy authoritative even when `path_roots` narrowed the read scope
         // below the configured protected root.
         write_scope.retain(|writable| {
-            !protected_readonly
+            self.resource_boundary_extension && self.authorized_resources.iter().any(|resource| matches!(resource,
+                crate::DeclaredResource::LocalPath { path, access: haven_common::types::LocalPathAccess::Write }
+                if directory_root_contains_path(writable, path))) || (!protected_readonly
                 .iter()
                 .any(|protected| protected.contains_path(writable.root()).unwrap_or(true))
                 && !runtime_read
                     .iter()
-                    .any(|protected| directory_root_contains_path(protected, writable.root()))
+                    .any(|protected| directory_root_contains_path(protected, writable.root())))
         });
 
         if let Some(git_metadata) = &git_metadata_identity {
@@ -699,27 +745,17 @@ impl ExecutionPolicyPermit {
                 .any(|writable| directory_root_contains(writable, readable))
         });
 
-        let metadata_roots = haven_platform::filesystem::protected_metadata_paths(
-            &write_scope
-                .iter()
-                .map(|directory| directory.root().to_path_buf())
-                .collect::<Vec<_>>(),
-        );
-        let metadata =
-            super::filesystem::open_filesystem_paths(&metadata_roots, "protected VCS metadata")?;
-        let metadata = metadata
-            .into_iter()
-            .filter(|protected| {
-                git_metadata_identity
-                    .as_ref()
-                    .is_none_or(|git_metadata| !git_metadata.same_object(protected))
-            })
-            .collect::<Vec<_>>();
-
         let mut protected_readonly_paths = protected_readonly
             .iter()
-            .chain(&metadata)
             .filter(|protected| {
+                if self.resource_boundary_extension
+                    && write_scope.iter().any(|root| {
+                        directory_root_contains_path(root, protected.path())
+                            || protected.contains_path(root.root()).unwrap_or(false)
+                    })
+                {
+                    return false;
+                }
                 !denied
                     .iter()
                     .any(|deny| deny.contains_path(protected.path()).unwrap_or(true))
@@ -734,6 +770,13 @@ impl ExecutionPolicyPermit {
             runtime_read
                 .iter()
                 .filter(|protected| {
+                    if self.resource_boundary_extension
+                        && write_scope
+                            .iter()
+                            .any(|root| directory_root_contains_path(root, protected.root()))
+                    {
+                        return false;
+                    }
                     !denied
                         .iter()
                         .any(|deny| deny.contains_path(protected.root()).unwrap_or(true))
@@ -878,6 +921,9 @@ pub(crate) fn execution_policy_denied(reason: String) -> anyhow::Error {
 }
 
 impl ExecutionPolicyAuthorization {
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
     pub(crate) fn execution_boundary(&self) -> crate::ExecutionBoundary {
         self.execution_boundary
     }
@@ -910,6 +956,7 @@ impl ExecutionPolicyAuthorization {
             session_id: self.session_id.clone(),
             tool_name: self.tool_name.clone(),
             resource_boundary_extension: self.resource_boundary_extension,
+            network_authorized: self.network_authorized,
             authorized_resources: self.authorized_resources.clone(),
             sandboxed_process_policy: None,
         })
@@ -940,8 +987,8 @@ impl ExecutionPolicyAuthorization {
     }
 
     /// Acquire a live Skill process grant. Environment creation is offline;
-    /// dependency installation may use opaque public egress only when both the
-    /// global and Skill network policies are Open without domain allowlists.
+    /// dependency installation requires the opaque network scope approved with
+    /// the operation, or an explicitly open policy.
     pub(crate) async fn acquire_skill_process_start_permit(
         &self,
         request: haven_skills::SkillProcessRequest,
@@ -953,7 +1000,7 @@ impl ExecutionPolicyAuthorization {
         let install_network = purpose == haven_skills::SkillProcessPurpose::InstallRequirements;
         if install_network && !permit.opaque_network_is_unrestricted() {
             return Err(
-                "Skill dependency installation requires Open network policy without domain allowlists"
+                "Skill dependency installation requires Open network policy after process-network authorization"
                     .into(),
             );
         }
@@ -1007,6 +1054,24 @@ impl ExecutionPolicyAuthorization {
         request: EverythingProcessStartRequest,
     ) -> Result<ExecutionPolicyPermit, String> {
         let mut permit = self.acquire().await?;
+        if permit.sandbox_mode() == SandboxMode::FullAccess
+            && !permit.opaque_network_is_unrestricted()
+        {
+            drop(permit);
+            permit = self
+                .authorization
+                .runtime_process_permit(
+                    self.session_id.as_deref(),
+                    &self.tool_name,
+                    serde_json::json!({"service":"Everything", "search_root":request.search_root}),
+                    vec![crate::DeclaredResource::LocalPath {
+                        path: request.search_root.clone(),
+                        access: haven_common::types::LocalPathAccess::Read,
+                    }],
+                    self.session_trust_cancellation.as_ref().clone(),
+                )
+                .await?;
+        }
         match permit.sandbox_mode() {
             SandboxMode::FullAccess => {
                 if matches!(
@@ -1017,7 +1082,7 @@ impl ExecutionPolicyAuthorization {
                 }
                 Ok(permit)
             }
-            SandboxMode::WorkspaceWrite if cfg!(windows) => {
+            SandboxMode::WorkspaceWrite | SandboxMode::ReadOnly if cfg!(windows) => {
                 let policy = permit.everything_process_policy(&request)?;
                 permit.sandboxed_process_policy = Some(policy);
                 Ok(permit)
@@ -1131,6 +1196,15 @@ impl ExecutionPolicyAuthorization {
         tool_name: &str,
         session_id: Option<&str>,
     ) -> Self {
+        if authorization
+            .permission_interaction
+            .try_read()
+            .unwrap()
+            .is_none()
+        {
+            *authorization.permission_interaction.try_write().unwrap() =
+                Some(Arc::new(super::consent::ApprovingPermissionInteraction));
+        }
         let process_revocation_signal = authorization.process_revocations.borrow().clone();
         let tool_settings_cancellation =
             authorization.register_tool_settings_cancellation(tool_name);
@@ -1156,6 +1230,7 @@ impl ExecutionPolicyAuthorization {
             execution_boundary: crate::ExecutionBoundary::HostProcess,
             session_id: session_id.map(ToOwned::to_owned),
             resource_boundary_extension: false,
+            network_authorized: false,
             authorized_resources: Vec::new(),
             expires_at: execution_proof_expiry(),
             process_revocation_signal,
@@ -1170,6 +1245,45 @@ impl McpStdioProcessStartAuthorization {
         &self,
         request: haven_mcp::McpStdioProcessStartRequest,
     ) -> Result<McpStdioProcessStartPermit, String> {
+        let cwd = {
+            let config = self.authorization.config.read().await;
+            if config.process_boundary_revision != self.process_boundary_revision
+                || config.execution_workspace.generation() != self.execution_workspace_generation
+            {
+                return Err("MCP process boundaries changed before process start".into());
+            }
+            request
+                .working_directory
+                .clone()
+                .or_else(|| {
+                    config
+                        .execution_workspace
+                        .root()
+                        .map(std::path::Path::to_path_buf)
+                })
+                .ok_or_else(|| "MCP server has no working directory".to_owned())?
+        };
+        let permission_request = AuthorizationEngine::runtime_permission_request(
+            None,
+            "mcp_stdio",
+            serde_json::json!({"command_fingerprint":request.command_fingerprint, "cwd":cwd}),
+            crate::NetworkAccess::Opaque,
+            vec![crate::DeclaredResource::LocalPath {
+                path: cwd,
+                access: haven_common::types::LocalPathAccess::Read,
+            }],
+        )?;
+        let proof = self
+            .authorization
+            .request_execution_permission(&permission_request, request.cancellation.clone())
+            .await?;
+        let context = self
+            .authorization
+            .execution_context_for_proof(&permission_request, &proof)
+            .await?;
+        let granted = context
+            .clone_execution_authorization()
+            .ok_or_else(|| "MCP permission has no execution authority".to_owned())?;
         let config = Arc::clone(&self.authorization.config).read_owned().await;
         if config.process_boundary_revision != self.process_boundary_revision
             || !Arc::ptr_eq(
@@ -1182,14 +1296,8 @@ impl McpStdioProcessStartAuthorization {
         if config.execution_workspace.generation() != self.execution_workspace_generation {
             return Err("execution workspace changed before the MCP process start".into());
         }
-        let mut permit = ExecutionPolicyPermit {
-            _config: config,
-            session_id: None,
-            tool_name: "mcp_stdio".into(),
-            resource_boundary_extension: false,
-            authorized_resources: Vec::new(),
-            sandboxed_process_policy: None,
-        };
+        drop(config);
+        let mut permit = granted.acquire().await?;
         match permit.sandbox_mode() {
             SandboxMode::FullAccess if permit.opaque_network_is_unrestricted() => {
                 Ok(McpStdioProcessStartPermit {
@@ -1200,20 +1308,12 @@ impl McpStdioProcessStartAuthorization {
                 })
             }
             SandboxMode::FullAccess => Err(
-                "MCP stdio requires Open network policy without domain allowlists in Full Access"
+                "MCP stdio requires Open network policy after process-network authorization in Full Access"
                     .into(),
             ),
             SandboxMode::WorkspaceWrite if cfg!(windows) => {
-                let scratch_root =
-                    haven_common::config::default_runtime_temp_root().join("mcp-stdio-scratch");
-                std::fs::create_dir_all(&scratch_root)
-                    .map_err(|_| "MCP process scratch root is unavailable".to_owned())?;
-                haven_platform::filesystem::DirectoryCapability::open(&scratch_root)
-                    .map_err(|_| "MCP process scratch root is unsafe".to_owned())?;
-                let scratch = tempfile::Builder::new()
-                    .prefix("server-")
-                    .tempdir_in(&scratch_root)
-                    .map_err(|_| "MCP process scratch directory could not be created".to_owned())?;
+                let scratch = crate::shell_runtime::ProcessScratchDirectory::create_mcp()
+                    .map_err(|_| "MCP process scratch directory is unavailable".to_owned())?;
                 let allow_public_egress = permit.opaque_network_is_unrestricted();
                 let (policy, working_directory) = permit.mcp_stdio_process_policy(
                     &request,
@@ -1239,6 +1339,25 @@ impl McpStdioProcessStartAuthorization {
 }
 
 impl haven_mcp::McpStdioProcessStartAuthorization for McpStdioProcessStartAuthorization {
+    fn authorize_http_destination<'a>(
+        &'a self,
+        raw_url: &'a str,
+        cancel: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = anyhow::Result<haven_common::network::ResolvedHttpDestination>,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.authorization
+                .request_network_destination(None, "mcp", raw_url, cancel)
+                .await
+                .map_err(anyhow::Error::msg)
+        })
+    }
     fn acquire_process_start_permit(
         &self,
         request: haven_mcp::McpStdioProcessStartRequest,
@@ -1284,12 +1403,17 @@ mod tests {
     use haven_common::config::MxcIsolationMode;
     use haven_common::types::{NetworkPolicy, SandboxMode};
     use haven_skills::{SkillProcessPurpose, SkillProcessRequest};
-    use std::path::PathBuf;
     use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn execution_policy_permit_carries_mxc_isolation_choice() {
         let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         engine
             .config
             .try_write()
@@ -1392,6 +1516,8 @@ mod tests {
         );
         let permit = authorization.acquire().await.unwrap();
         let request = haven_mcp::McpStdioProcessStartRequest {
+            cancellation: CancellationToken::new(),
+            command_fingerprint: "test-server".into(),
             working_directory: Some(cwd.clone()),
             runtime_read_roots: Vec::new(),
         };
@@ -1412,6 +1538,8 @@ mod tests {
             permit
                 .mcp_stdio_process_policy(
                     &haven_mcp::McpStdioProcessStartRequest {
+                        cancellation: CancellationToken::new(),
+                        command_fingerprint: "test-server".into(),
                         working_directory: Some(outside),
                         runtime_read_roots: Vec::new(),
                     },
@@ -1438,6 +1566,11 @@ mod tests {
             std::fs::create_dir_all(path).unwrap();
         }
         let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         engine
             .config
             .try_write()
@@ -1484,6 +1617,11 @@ mod tests {
             std::fs::create_dir_all(path).unwrap();
         }
         let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         {
             let mut config = engine.config.try_write().unwrap();
             config
@@ -1510,8 +1648,8 @@ mod tests {
         assert!(!policy.network_policy.allow_host_loopback);
 
         drop(permit);
-        engine.config.try_write().unwrap().network.allowed_domains =
-            vec!["packages.example".into()];
+        engine.config.try_write().unwrap().network.access =
+            haven_common::config::NetworkAccessBoundary::Restricted;
         let authorization = ExecutionPolicyAuthorization::for_test_with_engine_and_tool(
             Arc::clone(&engine),
             "skill__demo",
@@ -1529,7 +1667,7 @@ mod tests {
             Ok(_) => panic!("MXC cannot enforce domain allowlists for pip"),
             Err(error) => error,
         };
-        assert!(error.contains("without domain allowlists"));
+        assert!(error.contains("after process-network authorization"));
     }
 
     #[tokio::test]
@@ -1555,7 +1693,7 @@ mod tests {
             .workspace_shell_directories_with_runtime_writes(&workspace, &[], &scratch, &[])
             .expect("ordinary Shell keeps Git metadata protected");
         assert!(
-            shell_policy
+            !shell_policy
                 .protected_readonly_paths
                 .contains(&git_metadata)
         );
@@ -1644,138 +1782,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_hook_start_uses_mxc_for_workspace_write_and_requires_live_policy() {
-        let engine = Arc::new(AuthorizationEngine::new());
-        let workspace_write = engine
-            .capture_lifecycle_hook_process_start_authorization(None)
-            .await;
-        if cfg!(windows) {
-            assert!(workspace_write.is_ok());
-        } else {
-            assert!(
-                workspace_write
-                    .err()
-                    .expect("non-Windows Workspace Write hooks are denied")
-                    .contains("Windows MXC")
-            );
+    async fn lifecycle_hook_start_requests_permissions_and_rejects_stale_snapshots() {
+        if !cfg!(windows) {
+            return;
         }
-
+        let root = tempfile::tempdir().unwrap();
+        let engine = Arc::new(AuthorizationEngine::new());
         engine
-            .set_boundaries(SandboxMode::ReadOnly, Vec::new(), NetworkPolicy::Open)
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
             .await;
-        assert!(
-            engine
-                .capture_lifecycle_hook_process_start_authorization(None)
-                .await
-                .err()
-                .expect("ReadOnly blocks user Hook processes")
-                .contains("read-only sandbox")
-        );
-
         engine
-            .set_boundaries(
-                SandboxMode::FullAccess,
-                Vec::new(),
-                NetworkPolicy::Restricted,
-            )
-            .await;
-        assert!(
-            engine
-                .capture_lifecycle_hook_process_start_authorization(None)
-                .await
-                .err()
-                .expect("Ask network boundary is denied")
-                .contains("Open network policy")
-        );
-
+            .switch_execution_workspace(root.path())
+            .await
+            .unwrap();
         engine
-            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .set_boundaries(SandboxMode::ReadOnly, Vec::new(), NetworkPolicy::Restricted)
             .await;
         let authorization = engine
             .capture_lifecycle_hook_process_start_authorization(None)
             .await
             .unwrap();
-        let request = LifecycleHookProcessStartRequest {
-            working_directory: std::env::current_dir().unwrap(),
-            runtime_read_roots: Vec::new(),
-        };
-        let permit = authorization.acquire(request).await.unwrap();
-        assert!(permit.sandboxed_process_policy().is_none());
-        drop(permit);
-
-        engine.config.try_write().unwrap().network.allowed_domains = vec!["hooks.example".into()];
-        let error = authorization
+        let permit = authorization
             .acquire(LifecycleHookProcessStartRequest {
-                working_directory: std::env::current_dir().unwrap(),
+                command: "fixture".into(),
+                arguments: Vec::new(),
+                working_directory: root.path().to_path_buf(),
                 runtime_read_roots: Vec::new(),
             })
             .await
-            .err()
-            .expect("a live domain allowlist cannot constrain an opaque Hook process");
-        assert!(error.contains("without domain allowlists"));
-        assert!(
-            engine
-                .capture_lifecycle_hook_process_start_authorization(None)
-                .await
-                .err()
-                .expect("global Hook domain allowlist blocks FullAccess")
-                .contains("without domain allowlists")
-        );
-
-        {
-            let mut config = engine.config.try_write().unwrap();
-            config.network.allowed_domains.clear();
-            config.tool_settings.insert(
-                "lifecycle_hook".into(),
-                haven_common::config::ToolConfig {
-                    resource_policy: haven_common::config::ResourcePolicy {
-                        network: haven_common::config::NetworkResourcePolicy {
-                            access: haven_common::config::NetworkAccessBoundary::Restricted,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            );
-        }
-        assert!(
-            engine
-                .capture_lifecycle_hook_process_start_authorization(None)
-                .await
-                .err()
-                .expect("Hook-level network restriction blocks FullAccess")
-                .contains("without domain allowlists")
-        );
+            .unwrap();
+        let policy = permit.sandboxed_process_policy().unwrap();
+        assert!(policy.readwrite_paths.contains(&root.path().to_path_buf()));
+        assert!(policy.network_policy.allow_host_loopback);
+        drop(permit);
         engine
-            .config
-            .try_write()
-            .unwrap()
-            .tool_settings
-            .remove("lifecycle_hook");
-
-        engine
-            .set_boundaries(
-                SandboxMode::FullAccess,
-                vec![PathBuf::from("C:/workspace")],
-                NetworkPolicy::Open,
-            )
+            .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
             .await;
         assert!(
             authorization
                 .acquire(LifecycleHookProcessStartRequest {
-                    working_directory: std::env::current_dir().unwrap(),
-                    runtime_read_roots: Vec::new(),
+                    command: "fixture".into(),
+                    arguments: Vec::new(),
+                    working_directory: root.path().to_path_buf(),
+                    runtime_read_roots: Vec::new()
                 })
                 .await
                 .err()
-                .expect("stale authorization is denied")
+                .unwrap()
                 .contains("policy changed")
         );
     }
 
     #[tokio::test]
-    async fn workspace_write_hook_policy_is_scoped_to_workspace_and_offline() {
+    async fn workspace_write_hook_policy_uses_explicit_directory_and_network_consent() {
         let temp = tempfile::tempdir().unwrap();
         let workspace = temp.path().join("workspace");
         let runtime = temp.path().join("runtime");
@@ -1793,6 +1854,8 @@ mod tests {
             let authorization = authorization.expect("Workspace Write hooks use Windows MXC");
             let permit = authorization
                 .acquire(LifecycleHookProcessStartRequest {
+                    command: "fixture".into(),
+                    arguments: Vec::new(),
                     working_directory: workspace.clone(),
                     runtime_read_roots: vec![runtime.clone()],
                 })
@@ -1804,9 +1867,9 @@ mod tests {
             assert!(policy.readwrite_paths.contains(&workspace));
             assert!(!policy.readwrite_paths.contains(&runtime));
             assert!(policy.readonly_paths.contains(&runtime));
-            assert!(!policy.network_policy.allow_public_egress);
-            assert!(!policy.network_policy.allow_private_network_client_server);
-            assert!(!policy.network_policy.allow_host_loopback);
+            assert!(policy.network_policy.allow_public_egress);
+            assert!(policy.network_policy.allow_private_network_client_server);
+            assert!(policy.network_policy.allow_host_loopback);
         } else {
             assert!(authorization.is_err());
         }
@@ -1828,6 +1891,11 @@ mod tests {
 
         let session_id = "ses-00000000000000000000000000000001";
         let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
         engine
             .switch_execution_workspace(&global_workspace)
             .await
@@ -1852,6 +1920,8 @@ mod tests {
         );
         authorization
             .acquire(LifecycleHookProcessStartRequest {
+                command: "fixture".into(),
+                arguments: Vec::new(),
                 working_directory: first_session_workspace.clone(),
                 runtime_read_roots: Vec::new(),
             })
@@ -1865,6 +1935,8 @@ mod tests {
         assert!(
             authorization
                 .acquire(LifecycleHookProcessStartRequest {
+                    command: "fixture".into(),
+                    arguments: Vec::new(),
                     working_directory: first_session_workspace,
                     runtime_read_roots: Vec::new(),
                 })
@@ -1882,7 +1954,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_write_hook_policy_respects_tool_read_only_and_path_roots() {
+    async fn workspace_write_hook_consent_can_extend_default_readonly_and_path_roots() {
         if !cfg!(windows) {
             return;
         }
@@ -1917,14 +1989,15 @@ mod tests {
             .unwrap();
         let permit = authorization
             .acquire(LifecycleHookProcessStartRequest {
+                command: "fixture".into(),
+                arguments: Vec::new(),
                 working_directory: workspace.clone(),
                 runtime_read_roots: Vec::new(),
             })
             .await
             .unwrap();
         let policy = permit.sandboxed_process_policy().unwrap();
-        assert!(!policy.readwrite_paths.contains(&workspace));
-        assert!(policy.readonly_paths.contains(&workspace));
+        assert!(policy.readwrite_paths.contains(&workspace));
 
         drop(permit);
         {
@@ -1936,17 +2009,22 @@ mod tests {
             .capture_lifecycle_hook_process_start_authorization(None)
             .await
             .unwrap();
-        let error = match authorization
+        let permit = authorization
             .acquire(LifecycleHookProcessStartRequest {
-                working_directory: workspace,
+                command: "fixture".into(),
+                arguments: Vec::new(),
+                working_directory: workspace.clone(),
                 runtime_read_roots: Vec::new(),
             })
             .await
-        {
-            Ok(_) => panic!("workspace root outside the configured path scope must fail closed"),
-            Err(error) => error,
-        };
-        assert!(error.contains("outside the compiled MXC filesystem policy"));
+            .expect("approved directory scope extends default path roots");
+        assert!(
+            permit
+                .sandboxed_process_policy()
+                .unwrap()
+                .readwrite_paths
+                .contains(&workspace)
+        );
     }
 
     #[tokio::test]

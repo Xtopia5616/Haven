@@ -96,9 +96,9 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionToolOver
 并把经幂等性与 retryability 筛选的工具失败交给 `haven-common::retry::RecoveryPolicy` 决定退避与 attempt budget（ADR 0447）。
 crate-private `ToolAuthorizationRequestResolver` 负责从 live session lookup 或 turn snapshot 生成同一 typed
 `AuthorizationRequest`；未命中工具的保守 fallback 也只有一份。它不作 allow/deny/confirm 决定，
-该决定仍由调用方在 `execute_tool` 之前交给唯一的授权 owner，不在工具 future 里阻塞；跨 crate 调用只依赖 `AuthorizationPort`，具体 `AuthorizationEngine` 不进入默认生产 API（ADR 0893）。
+原始决定由调用方在 `execute_tool` 之前交给唯一授权 owner；执行中新发现的权限通过受限的统一交互 port 等待用户，跨 crate 调用只依赖 `AuthorizationPort`，具体 `AuthorizationEngine` 不进入默认生产 API（ADR 0893）。
 生产工具执行必须携带 `AuthorizationPort` 为该请求签发的 opaque execution proof：auto-approval proof 绑定 session、tool、capability、canonical input、opaque target binding、operation policy、policy revision 与短期限；确认 receipt 经受信交互 owner 校验后才可换成执行 proof，receipt 本身不可直接执行。`AuthorizedExecutor` 在每次真实尝试（包括 retry）前由 AuthorizationEngine 复核 proof 与当前禁用项、deny、sandbox、network 边界。无 proof 的原始执行入口仅存在于测试/test-support 构建，不进入默认生产 API。MCP target binding 由 manager 实例和 live client 生命周期生成，不包含 server URL 或凭据；MCP manager 在路由前再次比较并固定所选 client，server/client 替换后旧 proof 不会被重定向。
-`ExecutionWorkspace` 是 Tools 授权 owner 持有的进程级执行根快照，不是 renderer 的导航 workspace。`SecurityConfig.execution_root` 是新会话默认工作目录；会话首次加载时将其值追加为 `session_context.execution_workspace_bound`，此后会话绑定由 append-only `session_events` 拥有，并在 rollback/compaction replay 时保留（ADR 1373）。会话选择的目录由 AuthorizationEngine 规范化并打开 capability；会话 proof 绑定该目录 generation，切换目录会使旧 proof 失效并撤销该会话的受管进程，不会影响其它会话或默认值。Files 相对路径解析、默认 Shell `cwd`/MXC 写根和 Agent prompt 均读取同一会话绑定；没有 session 的调用使用全局默认值。路径在启动时已失效会保留为 unavailable，不悄悄回退到另一目录。`WorkspaceWrite` 未配置 `writable_roots` 时，以该会话执行根作为写入范围；根不可用时，相对文件路径失败，带路径的写操作失败关闭。显式 `writable_roots` 非空时继续作为写入范围；工具 `allowed_paths` 仍是独立限制。Files 的变更操作使用与授权 proof/policy revision 绑定的 `DirectoryCapability`，并以打开的目录句柄执行相对路径操作（ADR 1169）。Shell 在 `WorkspaceWrite` 下由授权 owner 将全局工作区写根与工具级 `write_mode` / `write_roots` 及全局、工具 `path_roots` 编译成交集；工具级只读策略输出空写根，MXC 不隐式扩展 cwd。Files 与 Shell 共用 `denied > read-only > read-write` 优先级，按文件系统对象身份合并别名并保留嵌套路径；`.git` 等版本控制元数据在可写根内自动只读保护，无法由 MXC 原生执行重叠策略时拒绝启动（ADR 1404）。进程通过 MXC ProcessContainer 启动：优先按请求探测 BaseContainer，只将最终有效写根授予读写，Windows 运行时与命令搜索目录设为只读，并按 NetworkPolicy 设置网络。`SecurityConfig.mxc_isolation_mode` 默认 `strict`，只接受无需 DACL 补强的 BaseContainer；probe 或 spawn 失败即拒绝，不切换隔离层或收窄网络。用户可显式选择 `compatibility`，此时才尝试兼容层及逐步收窄网络；AppContainer+DACL 会临时调整授权根 ACL 并在进程结束时恢复。每次成功的 Shell 结果都会列出实际隔离层、网络能力与 ACL 行为。任何模式失败后都不回退宿主进程（ADR 1405，替代 ADR 1391 的默认重试行为）。Skill 与 MCP stdio 仍在 `WorkspaceWrite` 下拒绝。切到 `FullAccess` 后，获准的子进程以当前 Windows 用户权限运行，cwd 只确定启动目录；MCP server 的远端数据操作也不属于本机 workspace（ADR 1181、1368）。
+`ExecutionWorkspace` 是 Tools 授权 owner 持有的进程级执行根快照，不是 renderer 的导航 workspace。`SecurityConfig.execution_root` 是新会话默认工作目录；会话首次加载时将其值追加为 `session_context.execution_workspace_bound`，此后会话绑定由 append-only `session_events` 拥有，并在 rollback/compaction replay 时保留（ADR 1373）。会话选择的目录由 AuthorizationEngine 规范化并打开 capability；会话 proof 绑定该目录 generation，切换目录会使旧 proof 失效并撤销该会话的受管进程，不会影响其它会话或默认值。Files 相对路径解析、默认 Shell `cwd`/MXC 写根和 Agent prompt 均读取同一会话绑定；没有 session 的调用使用全局默认值。路径在启动时已失效会保留为 unavailable，不悄悄回退到另一目录。`WorkspaceWrite` 未配置 `writable_roots` 时，以该会话执行根作为写入范围；根不可用时，相对文件路径失败，带路径的写操作失败关闭。显式 `writable_roots` 非空时继续作为写入范围；工具路径根是可申请扩展的默认范围。Files 的变更操作使用与授权 proof/policy revision 绑定的 `DirectoryCapability`，并以打开的目录句柄执行相对路径操作（ADR 1169）。Shell 在 `WorkspaceWrite` 下由授权 owner 将全局工作区写根与工具级 `write_mode` / `write_roots` 及全局、工具 `path_roots` 编译成交集；工具级只读策略输出空写根，MXC 不隐式扩展 cwd。Files 与 Shell 共享明确资源授权、默认只读与按需申请；保留路径对象身份和重解析点校验，`.git` 不再自动只读（ADR 1428）。进程通过 MXC ProcessContainer 启动：优先按请求探测 BaseContainer，只将最终有效写根授予读写，Windows 运行时与命令搜索目录设为只读，并按 NetworkPolicy 设置网络。`SecurityConfig.mxc_isolation_mode` 默认 `strict`，只接受无需 DACL 补强的 BaseContainer；probe 或 spawn 失败即拒绝，不切换隔离层或收窄网络。用户可显式选择 `compatibility`，此时才尝试兼容层及逐步收窄网络；AppContainer+DACL 会临时调整授权根 ACL 并在进程结束时恢复。每次成功的 Shell 结果都会列出实际隔离层、网络能力与 ACL 行为。任何模式失败后都不回退宿主进程（ADR 1405，替代 ADR 1391 的默认重试行为）。Skill 与 MCP stdio 在 `WorkspaceWrite` 下经统一授权后使用 MXC。切到 `FullAccess` 后，获准的子进程以当前 Windows 用户权限运行，cwd 只确定启动目录；MCP server 的远端数据操作也不属于本机 workspace（ADR 1181、1368）。
 Skill venv/pip 准备进程与 MCP stdio server 在 spawn 时清空父进程环境，仅保留 `PATH`、`SYSTEMROOT`、`TEMP`、`TMP`（Windows 另有 `COMSPEC`、`PATHEXT`）；MCP profile 显式配置的运行时变量与凭据引用在此基线上追加。Shell 也先清空环境，仅保留运行基线、用户目录/终端/区域设置和显式代理变量，过滤其它应用凭据与运行时覆盖（ADR 1188）。这些环境 allowlist 减少无关凭据的直接传递，不改变子进程同用户身份的文件和网络权限，也不构成 OS sandbox（ADR 1175、1182、1188）。
 `OperationSpec` 是运行时
 策略和 manifest 的唯一定义，覆盖 builtin operation view、root tool，以及 MCP/Skill adapter；spec 没有
@@ -179,8 +179,7 @@ notice，避免模型重复派生或猜测资产是否已经进入上下文（AD
 配置，按最长文件扩展名后缀选择文档服务器；工作区符号搜索按配置名称选择服务器，不要求调用方提供源码坐标。工具只向服务器打开工作区内的 UTF-8 文档，配置更新后需重启 Haven。服务以受管本机子进程
 启动，每次调用创建一次短期 LSP 会话，限制为两个并发服务、单文档 1 MiB、消息 16 MiB、结果
 2 MiB。由于服务器是用户配置的可执行程序且可能自行读取文件或联网，操作属于 High risk，
-需要工具授权与确认，只允许 Full Access sandbox；Workspace Write、Restricted Network 与
-Deny Network 下不会启动进程。Host-process containment 回收进程树，但不被视为文件或网络
+需要统一工具与网络授权；WorkspaceWrite/ReadOnly 下使用 Windows MXC，缺少权限时申请；明确 Deny Network 仍阻止联网。Host-process containment 回收进程树，但不被视为文件或网络
 sandbox。可执行配置不进入 Settings IPC snapshot（ADR 1340、1341）；Agent 使用和配置示例见
 [LSP 使用指南](lsp.md)。
 
@@ -634,30 +633,22 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 Shell/MXC、MCP 等执行器仍由各自 adapter 落实 owner 编译出的具体边界，并在副作用前重新验证 proof。
 详见 [ADR 1427](adr/1427-keep-global-security-policy-writes-behind-security-config.md)。
 
-决策顺序（fail-closed）：
+当前授权语义由 [ADR 1428](adr/1428-permission-first-resource-consent.md) 定义：
 
-1. `NetworkPolicy` / `SandboxMode` / `tool_settings.disabled_operations` / typed resource declarations → **Blocked** on hard-boundary failure
-2. 会话 `ExecutionMode::Analyze` → 非只读操作 **Blocked**，早于任何 allow
-3. 永久拒绝 → **Blocked**
-4. 会话拒绝 → **Blocked**
-5. 操作契约的 `Required` / `Critical` → 每次调用都要求新确认，不可由 allow 绕过；MCP 与 Skill 外部能力默认使用 `Required`
-6. 永久允许 / 会话允许 → **AutoApproved**（仅对不触发强制确认的操作）
-7. 其余按 `ExecutionMode` 处理：`Collaborative` 可请求确认，`Unattended` 对需要确认的操作返回 **Blocked**
+1. 校验可信 typed 资源、禁用能力、无效请求与用户明确设置的文件/网络硬拒绝。
+2. 精确匹配的永久/会话资源允许优先；Critical 或 `Required` 仍每次询问，批准的本次收据可以执行。
+3. 没有允许时，匹配的永久/会话 capability 拒绝生效。
+4. 默认只读范围内的非敏感读取与合同明确 Safe/None 的内部交互可执行；其它缺少的资源权限进入统一确认。Analyze 与 Unattended 均可申请，未知权限不直接转为拒绝。
 
-决策细化：永久拒绝 → 会话拒绝 → 永久允许 → 会话允许。拒绝授权写工具根键（覆盖同工具全部子操作）；允许写精确键。
+允许规则必须绑定路径读写、origin、窗口、剪贴板、注册表、媒体或精确扩展调用等 typed 资源。文件默认根、工具默认根和只读路径可通过资源授权扩展；明确拒绝路径、禁用操作与无法落实的隔离条件仍在副作用前阻止执行。普通 Shell 与 Files 不再自动保护 `.git` 等 VCS 元数据；需要保护时明确配置路径。SDK/运行时只读根是已有读取授权，不被默认项目根清空。
 
-能力标识：`permission_key(tool, params)` → `tool` / `tool.operation` / `system.power.lock`；授予父键可覆盖子操作。冒号 operation key 不再参与运行时匹配，配置加载发现这类 key 时备份并按重置策略处理。
-操作 view 的 `OperationPolicy.capability` 是权威身份；授权请求另外携带工具合同声明的 `LocalPath` 读/写资源或 HTTP destination origin，并将它们绑定到确认收据和执行 proof。`effect`、`data_sensitivity`、
-`network_access` 和执行并发不能由风险等级、并发属性或前端字段推断。`SecurityConfig` 保存新会话默认 `execution_mode`（`analyze` / `collaborative` / `unattended`）、`sandbox_mode`（`read_only` / `workspace_write` / `full_access`，可选 `writable_roots`）与
-`network_policy`（`deny` / `restricted` / `open`，默认为 `restricted`）。旧 `permission_mode` 和 `network_policy=ask` 只在配置读取边界按 ADR 1374 保守映射；会话自己的执行方式由 `session_context.execution_mode_bound` 事件持久化。ReadOnly 和 WorkspaceWrite
-的文件路径边界只作用于声明为 `OperationEffect::WorkspaceWrite` 的本地文件写操作；其它
-`ExternalEffect` 不会仅因只读模式或目标位于可写根之外而被拒绝，而是继续按执行边界、网络策略、
-操作风险、权限规则和执行方式处理；无法保证只读效果的工具仍可按各自执行边界被拒绝。
-MCP/Skill 外部调用具有无法由本地授权器观察的远端或脚本副作用，因此每次都走新确认；永久或会话 Allow 不能跳过该确认。`disabled_operations`、永久/会话 Deny、显式拒绝路径及不可满足的网络/进程边界仍在确认前硬拒绝。操作合同的 `ConfirmationRequirement::Required` 是逐次询问语义；当前配置没有按 Shell 命令文本匹配 `prompt` / `forbidden` 的独立规则。
-WorkspaceWrite 仍会单独拒绝无法约束文件访问的宿主子进程；Shell 的全局与工具级文件根交集由授权 owner 编译，MXC 不补加 cwd（ADR 1404）；Shell 默认要求 MXC BaseContainer 且不做 DACL 补强，探测或启动失败即停止。只有 `mxc_isolation_mode=compatibility` 时才会尝试 MXC AppContainer 兼容 tier，并按需收窄网络；DACL 层会临时调整授权根 ACL 并在进程结束后恢复。每次 Shell 结果显示本次实际隔离层、网络能力和 ACL 行为；任何失败都不回退宿主权限（ADR 1405）。受管隔离执行由各自边界控制。`deny` / 不可验证
-目的地的 `restricted` 仍直接拒绝对应网络能力；是否需要确认由会话执行方式、操作合同和授权规则决定，
-`open` 不添加全局网络限制。Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过
-SSRF/DNS 校验并固定地址的 HTTP/MCP 目的地，禁止跨源重定向。`Restricted` 表示目的地必须能由工具验证；是否询问由会话执行方式和操作授权决定。
+网络配置只保留 `access=deny|restricted|open`；删除域名名单及编辑器。`restricted` 表示按需申请，HTTP/MCP HTTP 按协议、主机与端口申请，私网及 loopback 采用同一流程。DNS 元数据解析后把额外私网地址纳入同一次申请，连接固定地址并禁用系统代理。HTTP 跳转遇到新 origin 再申请，不向新 origin 转发原请求头；保留的 POST 正文需要额外披露确认。无效 URL、凭据 URL 与不可路由地址仍拒绝。
+
+任意子进程的目标域名不能由当前 MXC 逐个约束，因此 `ProcessNetwork` 资源明确表示并申请公网出站、私网双向通信和宿主 loopback，绑定具体命令/配置 fingerprint，不冒充单域名授权。Shell、Git remote、LSP、Skill、Hook、MCP stdio 使用同一 owner 签发的权限；LSP 和 MCP 项目根保持只读，Skill setup 仅写私有 venv/scratch。Everything 可在默认 ReadOnly 下通过 MXC 只读项目与私有 scratch 运行。MXC 不可用时不会自动回退宿主执行。
+
+执行中发现的新权限通过 `PermissionInteractionPort` 进入 AppCommand 的既有交互生命周期；Agent 原始调用继续使用 session owner。两者共享确认 UI、资源描述、允许期限、收据/proof 校验和撤销规则。Hook 交互等待不消耗五秒实际执行预算。确认收据绑定输入、typed 资源、策略 revision、会话目录代次、风险与期限；前端展示的 confirmed 标志不能构造执行权限。
+
+Shell scratch 256 MiB、npm 512 MiB、Cargo home 2 GiB、八个并发 scratch；LSP/Git/MCP managed scratch 256 MiB，Everything 64 MiB，每目录 100,000 条目，managed process scratch 合计最多 16 个。目录计量由 Platform 拥有，超限终止、退出删除、重启跳过活跃锁回收残留；共享缓存仅在没有活动 Shell 时重置。轮询容量检查不等同于文件系统硬配额。
 
 独立 `web_search_api` 可按调用设置结果数、时效、国家、语言和域名；provider 不支持的筛选在结果中列为 ignored。默认只返回搜索结果，显式设置 `fetch_top_results` 后最多读取 3 个来源页，并继续复用 HTTP 的 SSRF/DNS 固定、同源重定向、响应体限额与取消约束。HTML、JSON、RSS/Atom 和可解析 PDF 会转换为有界文本，抓取正文按不可信网页内容处理（ADR 1350）。
 
@@ -685,7 +676,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
 （ADR 0306）。
 高风险、网络、媒体、文件和跨 session 协作仍保留独立的内部实现边界，以维持各自的确认、
 路径、provider 和生命周期边界；模型看到的名称仍遵循点号 view 契约。
-`haven.mcp.connect` 每次都会尝试连接，因此其 `Opaque` 网络分类由 `OperationContract` 同时供模型 operation view 与 native typed request 使用；`deny` 与 `restricted` 均在连接执行前拒绝该边界（ADR 0495）。其它 MCP 管理操作不继承该分类，按各自参数或运行状态定义。
+`haven.mcp.connect` 每次都会尝试连接，因此其 `Opaque` 网络分类由 `OperationContract` 同时供模型 operation view 与 native typed request 使用；`deny` 明确阻止该边界，`restricted` 进入统一申请（ADR 1428，替代 ADR 0495 的默认拒绝语义）。其它 MCP 管理操作不继承该分类，按各自参数或运行状态定义。
 
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 

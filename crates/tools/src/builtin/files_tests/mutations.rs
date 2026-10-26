@@ -198,11 +198,10 @@ async fn file_mutation_rejects_a_policy_change_after_proof_capture() {
         .await;
     engine.set_execution_mode(ExecutionMode::Unattended).await;
     let check = engine.authorize_for_execution(&request).await;
-    assert!(matches!(
-        check.decision,
-        AuthorizationDecision::AutoApproved
-    ));
-    let proof = check.execution_proof.unwrap();
+    let AuthorizationDecision::RequiresConfirmation { receipt, .. } = check.decision else {
+        panic!("Unattended mutations must request authority");
+    };
+    let proof = engine.confirm_for_execution(&request, &receipt).await.unwrap();
     let context = engine
         .execution_context_for_proof(&request, &proof)
         .await

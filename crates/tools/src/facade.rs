@@ -769,6 +769,18 @@ pub struct ToolsFacade {
 }
 
 impl ToolsFacade {
+    /// Connect runtime permission requests to the application's canonical
+    /// confirmation lifecycle, including services without an active turn.
+    pub async fn set_permission_interaction(
+        &self,
+        interaction: Arc<dyn crate::PermissionInteractionPort>,
+    ) {
+        self.coordinator
+            .core
+            .authorization
+            .set_permission_interaction(interaction)
+            .await;
+    }
     pub fn new() -> Self {
         Self::new_with_exec_config(SkillsExecConfig::default())
     }

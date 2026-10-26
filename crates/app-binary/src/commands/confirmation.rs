@@ -9,6 +9,70 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
+pub(crate) struct RuntimePermissionInteraction(pub(crate) AppHandle);
+
+#[async_trait::async_trait]
+impl haven_tools::PermissionInteractionPort for RuntimePermissionInteraction {
+    async fn request_permission(
+        &self,
+        request: haven_tools::AuthorizationRequest,
+        receipt: haven_tools::ConfirmationReceipt,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<haven_tools::ConfirmationReceipt, String> {
+        let state = self.0.state::<Arc<AppState>>();
+        let request_id = receipt.confirmation_id.to_string();
+        // App-owned interactions do not impersonate an Agent turn. The
+        // authorization request retains its actual session for validation.
+        let (reply, response) = tokio::sync::oneshot::channel();
+        queue_ui_confirmation(
+            &state,
+            &self.0,
+            request,
+            receipt,
+            UiConfirmationAction::Permission { reply },
+        )
+        .await?;
+        let watcher_app = self.0.clone();
+        let watcher_id = request_id.clone();
+        let watcher_cancel = cancel.clone();
+        if !state
+            .runtime
+            .spawn("runtime-permission-cancellation", async move {
+                watcher_cancel.cancelled().await;
+                let state = watcher_app.state::<Arc<AppState>>();
+                let pending = state
+                    .app_confirmations
+                    .pending
+                    .lock()
+                    .await
+                    .remove(&watcher_id);
+                if let Some(mut pending) = pending {
+                    pending.request.cancel();
+                    emit_event_logged(
+                        &watcher_app,
+                        INTERACTION_REQUESTED_EVENT,
+                        crate::bootstrap::project_interaction(
+                            &pending.request,
+                            haven_agent::InteractionOwner::AppCommand,
+                        ),
+                        "runtime_permission_cancelled",
+                    );
+                }
+            })
+        {
+            state.app_confirmations.discard(&request_id).await;
+            return Err("application is shutting down".into());
+        }
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                Err("permission request cancelled".into())
+            }
+            result = response => result.map_err(|_| "permission was declined, expired, or cancelled".into()),
+        }
+    }
+}
+
 /// AppCommand confirmation requests belong to one private lifecycle owner.
 /// The typed operation and authorization receipt stay backend-only until the
 /// accepted request is continued.
@@ -25,8 +89,17 @@ impl Default for AppConfirmationOwner {
 }
 
 impl AppConfirmationOwner {
-    async fn insert(&self, request_id: String, pending: UiConfirmationPending) {
-        self.pending.lock().await.insert(request_id, pending);
+    async fn insert(
+        &self,
+        request_id: String,
+        pending: UiConfirmationPending,
+    ) -> Result<(), String> {
+        let mut registry = self.pending.lock().await;
+        if registry.len() >= 128 {
+            return Err("permission queue is full; resolve an existing request first".into());
+        }
+        registry.insert(request_id, pending);
+        Ok(())
     }
 
     async fn discard(&self, request_id: &str) {
@@ -40,7 +113,9 @@ impl AppConfirmationOwner {
 
     #[cfg(test)]
     pub(super) async fn insert_for_test(&self, request_id: String, pending: UiConfirmationPending) {
-        self.insert(request_id, pending).await;
+        self.insert(request_id, pending)
+            .await
+            .expect("fixture permission queue has capacity");
     }
 
     #[cfg(test)]
@@ -61,6 +136,11 @@ impl AppConfirmationOwner {
 /// A renderer-triggered Skill invocation waiting in the AppCommand owner.
 /// Raw arguments never cross the Tauri projection.
 pub(crate) enum UiConfirmationAction {
+    /// A running service waits on the same confirmation lifecycle as UI and
+    /// agent operations. Dropping an expired/cancelled action closes its reply.
+    Permission {
+        reply: tokio::sync::oneshot::Sender<haven_tools::ConfirmationReceipt>,
+    },
     Skill {
         name: String,
         params: serde_json::Value,
@@ -132,7 +212,7 @@ pub(crate) async fn queue_ui_confirmation(
                 action,
             },
         )
-        .await;
+        .await?;
     let mut projected =
         crate::bootstrap::project_interaction(&request, haven_agent::InteractionOwner::AppCommand);
     projected.tool_input = Some(invocation_input);
@@ -307,6 +387,10 @@ pub(super) async fn resolve_app_confirmation(
         "renderer permission decision accepted"
     );
     if confirmed {
+        if let UiConfirmationAction::Permission { reply } = pending.action {
+            let _ = reply.send(pending.receipt);
+            return Ok(ConfirmationResolutionResult::Resolved);
+        }
         let task_app = (*app).clone();
         let task_state = state.clone();
         let spawn_state = task_state.clone();
@@ -463,15 +547,6 @@ pub(super) async fn accept_ui_confirmation(
         "resolving renderer-triggered confirmation"
     );
     let allowed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
-    if allowed
-        && pending.receipt.resource_boundary_extension
-        && !matches!(perm_scope, haven_common::types::PermissionScope::Once)
-    {
-        return Err(log_err(
-            "resolve_ui_confirmation",
-            "resource-boundary extensions only authorize the current operation; save a broader resource policy in Settings for reusable access",
-        ));
-    }
     if allowed {
         let authorization_request = &pending.authorization_request;
         state
@@ -540,6 +615,11 @@ async fn execute_ui_confirmation_action(
     pending: UiConfirmationPending,
 ) -> Result<(), String> {
     match &pending.action {
+        UiConfirmationAction::Permission { .. } => {
+            return Err(
+                "runtime permission continuations are resolved by their waiting owner".into(),
+            );
+        }
         UiConfirmationAction::Skill { name, params } => {
             let proof = state
                 .runtime

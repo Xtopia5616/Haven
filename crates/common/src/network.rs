@@ -28,7 +28,16 @@ pub async fn resolve_http_destination(
     raw_url: &str,
     allowed_domains: &[String],
 ) -> anyhow::Result<ResolvedHttpDestination> {
-    resolve_http_destination_inner(raw_url, allowed_domains, false).await
+    resolve_http_destination_inner(raw_url, allowed_domains, false, false).await
+}
+
+/// Resolve metadata for an authorizable origin, including local addresses.
+/// This never connects to the target or grants access. The caller must obtain
+/// resource authorization before using the returned URL and pinned address.
+pub async fn resolve_authorized_http_destination(
+    raw_url: &str,
+) -> anyhow::Result<ResolvedHttpDestination> {
+    resolve_http_destination_inner(raw_url, &[], true, true).await
 }
 
 /// Test-only loopback access for local HTTP fixtures. This is compiled only
@@ -38,13 +47,14 @@ pub async fn resolve_http_destination_for_test(
     raw_url: &str,
     allowed_domains: &[String],
 ) -> anyhow::Result<ResolvedHttpDestination> {
-    resolve_http_destination_inner(raw_url, allowed_domains, true).await
+    resolve_http_destination_inner(raw_url, allowed_domains, true, false).await
 }
 
 async fn resolve_http_destination_inner(
     raw_url: &str,
     allowed_domains: &[String],
     allow_loopback: bool,
+    allow_private: bool,
 ) -> anyhow::Result<ResolvedHttpDestination> {
     if raw_url.len() > MAX_HTTP_URL_BYTES {
         anyhow::bail!("HTTP destination exceeds the {MAX_HTTP_URL_BYTES} byte limit");
@@ -60,11 +70,9 @@ async fn resolve_http_destination_inner(
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("HTTP destination must include a host"))?;
     let host = normalize_http_host(host);
-    let test_loopback = allow_loopback
-        && (host == "localhost"
-            || host
-                .parse::<IpAddr>()
-                .is_ok_and(|address| address.is_loopback()));
+    let test_loopback = allow_private
+        || (allow_loopback
+            && (host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())));
     if http_host_is_local_or_special(&host) && !test_loopback {
         anyhow::bail!("HTTP destination is a blocked local or metadata host");
     }
@@ -89,10 +97,10 @@ async fn resolve_http_destination_inner(
     if addresses.is_empty() {
         anyhow::bail!("HTTP destination did not resolve to an address");
     }
-    if addresses
-        .iter()
-        .any(|address| is_blocked_ip(address.ip(), allow_loopback))
-    {
+    if addresses.iter().any(|address| {
+        is_blocked_ip(address.ip(), allow_loopback)
+            && !(allow_private && is_authorizable_local_ip(address.ip()))
+    }) {
         anyhow::bail!("HTTP destination resolves to a blocked local or private address");
     }
 
@@ -103,7 +111,9 @@ async fn resolve_http_destination_inner(
 }
 
 pub fn normalize_http_host(host: &str) -> String {
-    host.trim_end_matches('.').to_ascii_lowercase()
+    host.trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
 }
 
 /// Whether a literal or well-known metadata host is local or special-use.
@@ -142,6 +152,25 @@ fn is_blocked_metadata_host(host: &str) -> bool {
             | "instance-data"
             | "instance-data.ec2.internal"
     )
+}
+
+fn is_authorizable_local_ip(ip: IpAddr) -> bool {
+    ip.is_loopback()
+        || match ip {
+            IpAddr::V4(ip) => {
+                ip.is_private()
+                    || ip.is_link_local()
+                    || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1]))
+            }
+            IpAddr::V6(ip) => {
+                ip.is_unique_local()
+                    || ip.is_unicast_link_local()
+                    || ip.to_ipv4_mapped().is_some_and(|mapped| {
+                        is_authorizable_local_ip(IpAddr::V4(mapped))
+                            || !is_blocked_ip(IpAddr::V4(mapped), false)
+                    })
+            }
+        }
 }
 
 fn is_blocked_ip(ip: IpAddr, allow_loopback: bool) -> bool {

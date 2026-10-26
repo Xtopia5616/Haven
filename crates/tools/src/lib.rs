@@ -463,3 +463,4 @@ fn retryable_result(result: &ToolResult) -> bool {
 }
 
 pub use facade::{LiveOutputSinkPort, SkillExecutionPort, ToolServices, ToolsFacade};
+pub use security::PermissionInteractionPort;

@@ -597,7 +597,7 @@ describe('SettingsView diagnostics export', () => {
 				read_only_roots: [],
 				denied_paths: [],
 			},
-			network: { access: 'restricted', allowed_domains: [] },
+			network: { access: 'restricted' },
 		};
 		settings.security.execution_root = 'C:\\Haven\\Projects\\demo';
 		settings.media.stt.provider_name = 'deepgram-voice';

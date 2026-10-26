@@ -23,3 +23,4 @@ sha2.workspace = true
 haven-platform = { path = "../platform" }
 
 [dev-dependencies]
+tempfile.workspace = true

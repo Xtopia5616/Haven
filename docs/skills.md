@@ -54,3 +54,7 @@ Skill 根目录最多扫描 1024 个条目；超限时刷新失败并保留上�
 创建 Skill 时可以省略 `script`，Haven 会生成 `scripts/main.py` 入门模板，并写出符合 Agent Skills 格式的 `SKILL.md`。模板通过 `sys.stdin.buffer.read()` 读取输入，并用 `utf-8-sig` 解码后解析 JSON object；`run(params)` 应返回结构化字典，推荐把机器可用结果放在 `hashes`、`detected` 等字段，把人读说明放在 `report`。
 
 入口会将 `run(params)` 的标准输出重定向到内存缓冲区，避免调试 `print()` 污染协议；进程最终只向 stdout 输出一行 JSON envelope，成功包含 `ok: true`，异常包含 `ok: false` 与 `error: {type, message}`。不要向 stderr 写日志：skill runner 将非空 stderr 或非零退出视为执行失败。模板保证正常 Python 异常也走 JSON 错误 envelope；语法错误、解释器启动失败等发生在脚本入口执行前的错误仍由 runner 报告。
+
+## 进程权限
+
+Skill 脚本及 venv/pip 准备进程共用后端授权 owner。Windows Workspace Write 与经确认扩展的 ReadOnly 使用 MXC；Restricted 网络不足时申请实际子进程网络范围，不再默认拒绝。任意 Python 进程无法逐域名约束，申请会明确包含公网出站、私网与宿主 loopback。用户拒绝、取消或执行证明失效时不启动。Skills 的启用开关只决定是否加载能力，不授予文件或网络访问权。详见 [ADR 1428](adr/1428-permission-first-resource-consent.md)。

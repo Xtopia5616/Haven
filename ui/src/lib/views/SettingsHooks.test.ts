@@ -35,7 +35,7 @@ function fixture(): TauriCommandResponse<'get_lifecycle_hooks_settings'> {
 				read_only_roots: [],
 				denied_paths: [],
 			},
-			network: { access: 'open', allowed_domains: [] },
+			network: { access: 'open' },
 		},
 		config_version: 1,
 		diagnostics: [],
@@ -67,7 +67,7 @@ describe('SettingsHooks', () => {
 		expect(saveHooks.mock.calls[1][0].pre_tool_use[0].command).toBe('changed.exe');
 	});
 
-	it('explains offline MXC execution for WorkspaceWrite hooks', async () => {
+	it('explains consent-scoped MXC execution for WorkspaceWrite hooks', async () => {
 		const settings = fixture();
 		settings.resource_policy.files.write_mode = 'workspace';
 		settings.resource_policy.network.access = 'restricted';
@@ -75,18 +75,18 @@ describe('SettingsHooks', () => {
 		render(SettingsHooks, { active: false, onDraftState: vi.fn() });
 		await screen.findByLabelText('可执行文件');
 		expect(screen.getByText('WorkspaceWrite 使用 MXC 启动 Hook')).toBeTruthy();
-		expect(screen.getByText(/禁用网络/)).toBeTruthy();
-		expect(screen.getByText(/非 Windows 或 MXC 无法启动时/)).toBeTruthy();
+		expect(screen.getByText(/公网、私网双向通信与宿主回环/)).toBeTruthy();
+		expect(screen.getByText(/隔离器不可用时/)).toBeTruthy();
 	});
 
-	it('blocks FullAccess hooks when the network has a domain allowlist', async () => {
+	it('requests missing permissions without a domain whitelist', async () => {
 		const settings = fixture();
-		settings.resource_policy.network.allowed_domains = ['hooks.example'];
+		settings.resource_policy.files.write_mode = 'read_only';
 		getSettings.mockResolvedValue(settings);
 		render(SettingsHooks, { active: false, onDraftState: vi.fn() });
 		await screen.findByLabelText('可执行文件');
-		expect(screen.getByText('当前策略会阻止 Hook 运行')).toBeTruthy();
-		expect(screen.getByText(/没有域名白名单/)).toBeTruthy();
+		expect(screen.getByText('额外权限需要申请')).toBeTruthy();
+		expect(screen.getByText(/Hook 会先申请所需的目录写入与网络权限/)).toBeTruthy();
 	});
 
 	it('disables without deleting, saves a plain snapshot, and restores discarded state', async () => {

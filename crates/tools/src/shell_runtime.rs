@@ -16,6 +16,9 @@ const SHELL_OUTPUT_LOG_MAX_FILE_BYTES: usize = 1024 * 1024;
 const SHELL_OUTPUT_LOG_TRUNCATION_MARKER: &str = "[earlier shell output truncated]\n";
 const SHELL_SCRATCH_DIRECTORY: &str = "shell-scratch";
 const SHELL_CACHE_DIRECTORY: &str = "shell-cache";
+const SCRATCH_OWNER_LOCK: &str = ".haven-owner.lock";
+const MAX_PROCESS_SCRATCH_DIRECTORIES: usize = 16;
+static PROCESS_SCRATCH_SLOTS: OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = OnceLock::new();
 const SHELL_SCRATCH_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const SHELL_NPM_CACHE_MAX_BYTES: u64 = 512 * 1024 * 1024;
 const SHELL_CARGO_HOME_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -29,6 +32,8 @@ const SHELL_CACHE_CAPACITY_MAX_ENTRIES: usize = 1_000_000;
 const LSP_SCRATCH_DIRECTORY: &str = "lsp-scratch";
 pub(crate) const LSP_SCRATCH_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) const LSP_SCRATCH_MAX_ENTRIES: usize = 100_000;
+const MCP_SCRATCH_DIRECTORY: &str = "mcp-stdio-scratch";
+const EVERYTHING_SCRATCH_DIRECTORY: &str = "everything-scratch";
 const GIT_SCRATCH_DIRECTORY: &str = "git-scratch";
 pub(crate) const GIT_SCRATCH_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) const GIT_SCRATCH_MAX_ENTRIES: usize = 100_000;
@@ -39,6 +44,8 @@ static SHELL_SCRATCH_SLOTS: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(SHELL_SCRATCH_MAX_CONCURRENT);
 
 pub(crate) struct ProcessScratchDirectory {
+    _owner_lock: std::fs::File,
+    _slot: tokio::sync::OwnedSemaphorePermit,
     scratch: tempfile::TempDir,
     max_bytes: u64,
     max_entries: usize,
@@ -51,6 +58,19 @@ impl ProcessScratchDirectory {
             "lsp-",
             LSP_SCRATCH_MAX_BYTES,
             LSP_SCRATCH_MAX_ENTRIES,
+        )
+    }
+
+    pub(crate) fn create_mcp() -> anyhow::Result<Self> {
+        Self::create(MCP_SCRATCH_DIRECTORY, "server-", 256 * 1024 * 1024, 100_000)
+    }
+
+    pub(crate) fn create_everything() -> anyhow::Result<Self> {
+        Self::create(
+            EVERYTHING_SCRATCH_DIRECTORY,
+            "search-",
+            64 * 1024 * 1024,
+            100_000,
         )
     }
 
@@ -70,10 +90,31 @@ impl ProcessScratchDirectory {
         max_entries: usize,
     ) -> anyhow::Result<Self> {
         let root = haven_common::config::default_runtime_temp_root().join(directory);
-        std::fs::create_dir_all(&root)?;
-        DirectoryCapability::open(&root)?;
-        let scratch = tempfile::Builder::new().prefix(prefix).tempdir_in(&root)?;
+        Self::create_at(&root, prefix, max_bytes, max_entries)
+    }
+
+    fn create_at(
+        root: &Path,
+        prefix: &str,
+        max_bytes: u64,
+        max_entries: usize,
+    ) -> anyhow::Result<Self> {
+        let slot = PROCESS_SCRATCH_SLOTS
+            .get_or_init(|| {
+                std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PROCESS_SCRATCH_DIRECTORIES))
+            })
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| anyhow::anyhow!("managed process scratch capacity is full"))?;
+        std::fs::create_dir_all(root)?;
+        DirectoryCapability::open(root)?;
+        let scratch = tempfile::Builder::new().prefix(prefix).tempdir_in(root)?;
+        let owner_lock = DirectoryCapability::open(scratch.path())?
+            .create_new_file(Path::new(SCRATCH_OWNER_LOCK))?;
+        owner_lock.try_lock()?;
         Ok(Self {
+            _owner_lock: owner_lock,
+            _slot: slot,
             scratch,
             max_bytes,
             max_entries,
@@ -104,6 +145,7 @@ impl ProcessScratchDirectory {
 }
 
 pub(crate) struct ShellRuntimeDirectories {
+    _owner_lock: std::fs::File,
     scratch: tempfile::TempDir,
     scratch_root: PathBuf,
     npm_cache: PathBuf,
@@ -128,7 +170,11 @@ impl ShellRuntimeDirectories {
         let scratch = tempfile::Builder::new()
             .prefix("scratch-")
             .tempdir_in(&scratch_root)?;
+        let owner_lock = DirectoryCapability::open(scratch.path())?
+            .create_new_file(Path::new(SCRATCH_OWNER_LOCK))?;
+        owner_lock.try_lock()?;
         Ok(Self {
+            _owner_lock: owner_lock,
             scratch,
             scratch_root,
             npm_cache,
@@ -573,6 +619,16 @@ pub(crate) fn cleanup_shell_runtime_directories_after_restart() {
         ),
     }
 
+    for (directory, prefix) in [
+        (MCP_SCRATCH_DIRECTORY, "server-"),
+        (EVERYTHING_SCRATCH_DIRECTORY, "search-"),
+    ] {
+        if let Err(error) = cleanup_owned_scratch_directories(&runtime_root.join(directory), prefix)
+        {
+            tracing::warn!(error = %haven_common::error::sanitize_error_text(&error.to_string()), "failed to clean stale service scratch directories");
+        }
+    }
+
     let cache_root = runtime_root.join(SHELL_CACHE_DIRECTORY);
     for (name, path, limit) in [
         ("npm", cache_root.join("npm"), SHELL_NPM_CACHE_MAX_BYTES),
@@ -611,68 +667,8 @@ pub(crate) fn cleanup_shell_runtime_directories_after_restart() {
     }
 }
 
-pub(crate) fn directory_size_exceeds(
-    root: &Path,
-    limit: u64,
-    max_entries: usize,
-) -> Result<bool, String> {
-    let root_metadata = match std::fs::symlink_metadata(root) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error.to_string()),
-    };
-    if haven_platform::filesystem::is_link_or_reparse_point(&root_metadata)
-        || !root_metadata.is_dir()
-    {
-        return Err("runtime directory is not a safe local directory".into());
-    }
-    DirectoryCapability::open(root)
-        .map_err(|_| "runtime directory could not be safely opened".to_owned())?;
+pub(crate) use haven_platform::filesystem::directory_size_exceeds;
 
-    let mut pending = vec![root.to_path_buf()];
-    let mut total_bytes = 0u64;
-    let mut entry_count = 0usize;
-    while let Some(directory) = pending.pop() {
-        let entries = match std::fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => {
-                return Err("runtime directory could not be inspected safely".into());
-            }
-        };
-        for entry in entries {
-            let entry = entry.map_err(|_| "runtime directory could not be inspected safely")?;
-            entry_count = entry_count.saturating_add(1);
-            if entry_count > max_entries {
-                return Ok(true);
-            }
-            let metadata = match std::fs::symlink_metadata(entry.path()) {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => {
-                    return Err("runtime directory could not be inspected safely".into());
-                }
-            };
-            let file_type = metadata.file_type();
-            if file_type.is_symlink()
-                || haven_platform::filesystem::is_link_or_reparse_point(&metadata)
-            {
-                continue;
-            }
-            if metadata.is_dir() {
-                pending.push(entry.path());
-            } else if metadata.is_file() {
-                total_bytes = total_bytes.saturating_add(metadata.len());
-                if total_bytes > limit {
-                    return Ok(true);
-                }
-            }
-        }
-    }
-    Ok(false)
-}
-
-#[cfg(not(test))]
 fn cleanup_owned_scratch_directories(root: &Path, prefix: &str) -> std::io::Result<usize> {
     let root = match DirectoryCapability::open(root) {
         Ok(root) => root,
@@ -688,7 +684,18 @@ fn cleanup_owned_scratch_directories(root: &Path, prefix: &str) -> std::io::Resu
         if entry.kind != DirectoryEntryKind::Directory || !name.starts_with(prefix) {
             continue;
         }
+        let owner_lock = match root.open_read_write(&Path::new(name).join(SCRATCH_OWNER_LOCK)) {
+            Ok(lock) => {
+                if lock.try_lock().is_err() {
+                    continue;
+                }
+                Some(lock)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(_) => continue,
+        };
         root.remove_dir_all(Path::new(name))?;
+        drop(owner_lock);
         removed += 1;
     }
     Ok(removed)

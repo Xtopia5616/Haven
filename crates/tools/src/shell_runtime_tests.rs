@@ -1,5 +1,27 @@
 use super::*;
 
+#[tokio::test]
+async fn managed_scratch_enforces_capacity_preserves_live_owners_and_cleans_after_drop() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = ProcessScratchDirectory::create_at(root.path(), "server-", 8, 10).unwrap();
+    let path = scratch.path().to_path_buf();
+    assert_eq!(
+        cleanup_owned_scratch_directories(root.path(), "server-").unwrap(),
+        0
+    );
+    std::fs::write(path.join("payload"), b"123456789").unwrap();
+    assert!(scratch.ensure_within_capacity().await.is_err());
+    drop(scratch);
+    assert!(!path.exists());
+    let orphan = root.path().join("server-orphan");
+    std::fs::create_dir(&orphan).unwrap();
+    assert_eq!(
+        cleanup_owned_scratch_directories(root.path(), "server-").unwrap(),
+        1
+    );
+    assert!(!orphan.exists());
+}
+
 #[test]
 fn tool_run_log_cleanup_removes_only_orphaned_canonical_logs() {
     let root = tempfile::tempdir().unwrap();

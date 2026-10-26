@@ -77,18 +77,14 @@
 		const policy = settings?.resource_policy;
 		if (!policy) return 'unknown';
 		if (policy.files.write_mode === 'unrestricted') {
-			return policy.network.access === 'open' && policy.network.allowed_domains.length === 0
-				? 'full_access'
-				: 'blocked';
+			return 'full_access';
 		}
 		if (policy.files.write_mode === 'workspace' || policy.files.write_mode === 'roots') {
 			return 'workspace_write';
 		}
-		return 'blocked';
+		return 'permission';
 	});
-	const hookExecutionAllowed = $derived(
-		hookExecutionMode === 'full_access' || hookExecutionMode === 'workspace_write',
-	);
+	const hookExecutionAllowed = $derived(hookExecutionMode !== 'unknown');
 
 	async function reload() {
 		loading = true;
@@ -228,8 +224,7 @@
 		return {
 			no_hooks: '没有匹配的 Hook',
 			succeeded: '成功',
-			denied:
-				item.event === 'permission_request' ? '已阻止确认请求' : '已拒绝工具',
+			denied: item.event === 'permission_request' ? '已阻止确认请求' : '已拒绝工具',
 			failed_open:
 				item.event === 'pre_tool_use' || item.event === 'permission_request'
 					? '失败，已阻止操作'
@@ -253,7 +248,7 @@
 <div class="settings-hooks">
 	<SettingsSection
 		title="执行边界"
-		description="FullAccess 下需要开放网络且没有域名白名单；WorkspaceWrite 下仅在 Windows 通过 MXC 启动并关闭网络；ReadOnly 下不会启动 Hook。"
+		description="Hook 启动前使用统一授权流程；缺少目录或网络权限时申请，批准后在对应执行边界中运行。"
 	>
 		<div class:allowed={hookExecutionAllowed} class="hook-policy" role="status">
 			<strong
@@ -263,15 +258,16 @@
 						? 'FullAccess 允许 Hook 运行'
 						: hookExecutionMode === 'workspace_write'
 							? 'WorkspaceWrite 使用 MXC 启动 Hook'
-							: '当前策略会阻止 Hook 运行'}</strong
+							: '额外权限需要申请'}</strong
 			>
 			<span>
 				{#if hookExecutionMode === 'full_access'}
 					命令在宿主用户权限下运行，并受 Haven 的进程授权与进程树清理约束。
 				{:else if hookExecutionMode === 'workspace_write'}
-					Windows MXC 按当前 Hook 文件范围限制读写且禁用网络。非 Windows 或 MXC 无法启动时，Hook 会被拒绝。
+					Windows MXC
+					按获批目录和网络范围运行；联网申请会列明公网、私网双向通信与宿主回环。隔离器不可用时会报告执行条件不足。
 				{:else}
-					匹配到的启用 PreToolUse 或 PermissionRequest 无法启动时会阻止操作；通知型事件会跳过 Hook 并记录诊断。
+					默认只读时，Hook 会先申请所需的目录写入与网络权限；拒绝或过期后不会执行。
 				{/if}
 			</span>
 		</div>
@@ -312,7 +308,8 @@
 				>
 			</div>
 			{#if template !== 'blank'}<p class="hooks-note motion-surface-enter">
-					模板只填充启动参数。优先将脚本放在执行工作区；WorkspaceWrite 下，工作区外的脚本目录必须位于安全设置的系统与工具链只读目录范围内。
+					模板只填充启动参数。优先将脚本放在执行工作区；WorkspaceWrite
+					下，工作区外的脚本目录必须位于安全设置的系统与工具链只读目录范围内。
 				</p>{/if}
 			{#each EVENTS.filter((event) => eventFilter === 'all' || event.key === eventFilter) as event (event.key)}
 				<section class="hook-event" aria-labelledby={`hook-event-${event.key}`}>
@@ -343,11 +340,11 @@
 									count={hooks[event.key].length}
 									eventLabel={event.label}
 									veto={event.veto}
-					toolEvent={event.key === 'pre_tool_use' ||
-						event.key === 'permission_request' ||
-						event.key === 'post_tool_use' ||
-						event.key === 'toolrun_start' ||
-						event.key === 'toolrun_end'}
+									toolEvent={event.key === 'pre_tool_use' ||
+										event.key === 'permission_request' ||
+										event.key === 'post_tool_use' ||
+										event.key === 'toolrun_start' ||
+										event.key === 'toolrun_end'}
 									disabled={saving}
 									onPatch={(patch) => patchHook(event.key, index, patch)}
 									onMove={(offset) => moveHook(event.key, index, offset)}
@@ -455,8 +452,8 @@
 						{#if item.failures || item.denials}
 							<small
 								>失败 {item.failures} · 脚本拒绝 {item.denials} · {item.last_failure_code ??
-									''}{#if item.last_problem_command} · 最近问题命令：{item.last_problem_command.source ===
-										'user'
+									''}{#if item.last_problem_command}
+									· 最近问题命令：{item.last_problem_command.source === 'user'
 										? '用户级'
 										: '项目级'}第 {item.last_problem_command.index + 1} 条{/if}</small
 							>

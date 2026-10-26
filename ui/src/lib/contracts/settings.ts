@@ -43,7 +43,6 @@ export type SecuritySettingsDraft = Omit<
 		};
 		network: {
 			access: GeneratedNetworkAccessBoundaryInput;
-			allowed_domains: string[];
 		};
 	};
 	permissions: Array<StoredPermission & { resource_scope?: PermissionResourceScope[] }>;

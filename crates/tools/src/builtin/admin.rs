@@ -2172,10 +2172,7 @@ mod tests {
             let engine = crate::AuthorizationEngine::new();
             assert!(matches!(
                 engine.authorize(&authorization_request).await,
-                crate::AuthorizationDecision::Blocked {
-                    reason_code: crate::AuthorizationReasonCode::SandboxBoundary,
-                    ..
-                }
+                crate::AuthorizationDecision::RequiresConfirmation { .. }
             ));
 
             engine

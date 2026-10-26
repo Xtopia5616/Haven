@@ -5,6 +5,21 @@ pub(crate) struct BuiltMcpHttpClient {
     pub(crate) endpoint: reqwest::Url,
 }
 
+pub(crate) fn build_authorized_http_client(
+    destination: haven_common::network::ResolvedHttpDestination,
+) -> anyhow::Result<BuiltMcpHttpClient> {
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none());
+    if let (Some(host), Some(address)) = (destination.url.host_str(), destination.pinned_address) {
+        builder = builder.resolve(host, address);
+    }
+    Ok(BuiltMcpHttpClient {
+        client: builder.build()?,
+        endpoint: destination.url,
+    })
+}
+
 /// Validate and resolve an MCP HTTP endpoint before a client is created.
 /// Restricted mode pins the first validated public address in reqwest so a
 /// later DNS answer cannot silently redirect the connection to a private host.
@@ -15,24 +30,15 @@ pub(crate) async fn build_http_client(
     snapshot: &NetworkResourcePolicySnapshot,
 ) -> anyhow::Result<BuiltMcpHttpClient> {
     let policy = snapshot.network_policy();
-    let has_domain_scope = !snapshot.policy.allowed_domains.is_empty();
-    let restricted_destination = matches!(policy, NetworkPolicy::Restricted) || has_domain_scope;
+    let restricted_destination = matches!(policy, NetworkPolicy::Restricted);
     let (url, pinned_address) = match policy {
         NetworkPolicy::Deny => anyhow::bail!("MCP HTTP connection denied by network policy"),
-        NetworkPolicy::Open if !has_domain_scope => {
-            let url = parse_open_endpoint(raw_url)?;
-            (url, None)
-        }
-        NetworkPolicy::Open | NetworkPolicy::Restricted => {
-            let destination = haven_common::network::resolve_http_destination(
-                raw_url,
-                &snapshot.policy.allowed_domains,
-            )
-            .await?;
+        NetworkPolicy::Open => (parse_open_endpoint(raw_url)?, None),
+        NetworkPolicy::Restricted => {
+            let destination = haven_common::network::resolve_http_destination(raw_url, &[]).await?;
             (destination.url, destination.pinned_address)
         }
     };
-
     let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
     if restricted_destination {
         // A system proxy can resolve the destination on Haven's behalf,
@@ -80,7 +86,6 @@ mod tests {
                     NetworkPolicy::Restricted => NetworkAccessBoundary::Restricted,
                     NetworkPolicy::Open => NetworkAccessBoundary::Open,
                 },
-                allowed_domains: Vec::new(),
             },
         )
     }

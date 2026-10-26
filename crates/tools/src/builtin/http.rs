@@ -26,21 +26,28 @@ pub struct HttpTool {
     pub backoff_base_secs: u64,
     /// Cap on how much of the response body is read (and thus buffered).
     pub max_body_bytes: usize,
-    /// Optional host allowlist. Empty means public hosts are allowed after
-    /// destination validation has rejected local/private hosts.
-    pub allowed_domains: Vec<String>,
     /// Live resource policy so global and per-tool domain restrictions remain
     /// effective after settings change, including on redirect targets.
     pub authorization: Option<Arc<crate::security::AuthorizationEngine>>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 struct HttpDestinationPolicy {
+    permission: Option<Arc<HttpPermissionContext>>,
     allowed_domain_groups: Vec<Vec<String>>,
     /// Only enabled by unit tests so the canned loopback HTTP servers can be
     /// exercised without weakening production policy.
     #[cfg(test)]
     allow_loopback: bool,
+}
+
+struct HttpPermissionContext {
+    authorization: Arc<crate::security::AuthorizationEngine>,
+    session_id: Option<String>,
+    approved_origin: Option<reqwest::Url>,
+    timeout: Duration,
+    cancel: CancellationToken,
+    resolved: tokio::sync::Mutex<HashMap<String, ResolvedHttpDestination>>,
 }
 
 const MAX_HTTP_REQUEST_HEADERS: usize = 64;
@@ -98,7 +105,23 @@ impl HttpTool {
         params: HttpRequestParams,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        self.run_with_domain_constraints(params, cancel, None).await
+        let permission = self.permission_context(&params, cancel.clone(), None, None);
+        self.run_with_domain_constraints(params, cancel, None, permission)
+            .await
+    }
+
+    fn permission_context(
+        &self,
+        params: &HttpRequestParams,
+        cancel: CancellationToken,
+        session_id: Option<String>,
+        approved_origin: Option<reqwest::Url>,
+    ) -> Option<Arc<HttpPermissionContext>> {
+        self.authorization.as_ref().map(|authorization| Arc::new(HttpPermissionContext {
+            authorization: authorization.clone(), session_id, approved_origin, cancel,
+            timeout: Duration::from_secs(params.timeout_secs.unwrap_or(15).clamp(1,120) as u64),
+            resolved: tokio::sync::Mutex::new(HashMap::new()),
+        }))
     }
 
     async fn run_with_authorization_context(
@@ -111,6 +134,9 @@ impl HttpTool {
             .acquire_execution_policy_permit()
             .await
             .map_err(anyhow::Error::msg)?;
+        if self.authorization.is_some() && _permit.is_none() {
+            anyhow::bail!("HTTP execution requires a verified authorization context");
+        }
         if let Some(extension) = context.network_destination_extension() {
             let input = serde_json::json!({"url": params.url});
             let declared = self
@@ -120,12 +146,39 @@ impl HttpTool {
                 anyhow::bail!("HTTP destination no longer matches its confirmed origin");
             }
         }
-        self.run_with_domain_constraints(
-            params,
-            cancel,
-            context.network_domain_constraints().map(<[_]>::to_vec),
-        )
-        .await
+        drop(_permit);
+        let permission = self
+            .authorization
+            .as_ref()
+            .map(|authorization| -> anyhow::Result<_> {
+                Ok(Arc::new(HttpPermissionContext {
+                    authorization: authorization.clone(),
+                    session_id: context
+                        .clone_execution_authorization()
+                        .and_then(|authorization| authorization.session_id().map(str::to_owned)),
+                    approved_origin: Some(reqwest::Url::parse(&params.url)?),
+                    timeout: Duration::from_secs(
+                        params.timeout_secs.unwrap_or(15).clamp(1, 120) as u64
+                    ),
+                    cancel: cancel.clone(),
+                    resolved: tokio::sync::Mutex::new(HashMap::new()),
+                }))
+            })
+            .transpose()?;
+        let authorization = context.clone_execution_authorization();
+        let operation_cancel = cancel.child_token();
+        let _cancel_guard = operation_cancel.clone().drop_guard();
+        let revoked = async {
+            match authorization {
+                Some(authorization) => authorization.wait_for_policy_revocation().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = revoked => Ok(ToolResult::cancelled("HTTP permission changed; request cancelled")),
+            result = self.run_with_domain_constraints(params, operation_cancel, context.network_domain_constraints().map(<[_]>::to_vec), permission) => result,
+        }
     }
 
     async fn run_with_domain_constraints(
@@ -133,6 +186,7 @@ impl HttpTool {
         params: HttpRequestParams,
         cancel: CancellationToken,
         domain_constraints: Option<Vec<Vec<String>>>,
+        permission: Option<Arc<HttpPermissionContext>>,
     ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             return Ok(ToolResult::cancelled("HTTP request cancelled"));
@@ -153,10 +207,7 @@ impl HttpTool {
         let as_html = params.as_html.unwrap_or(false);
         let headers: Vec<(String, String)> =
             params.headers.unwrap_or_default().into_iter().collect();
-        let allowed_domain_groups = match domain_constraints {
-            Some(constraints) => constraints,
-            None => self.effective_domain_constraints().await,
-        };
+        let allowed_domain_groups = domain_constraints.unwrap_or_default();
 
         if cancel.is_cancelled() {
             return Ok(ToolResult::cancelled("HTTP request cancelled"));
@@ -176,6 +227,7 @@ impl HttpTool {
                 &allowed_domain_groups,
                 true,
                 cancel.clone(),
+                permission,
             ) => result,
         }
     }
@@ -195,7 +247,7 @@ impl HttpTool {
         if url.len() > MAX_HTTP_URL_BYTES {
             anyhow::bail!("HTTP URL exceeds the {MAX_HTTP_URL_BYTES} byte limit");
         }
-        let allowed_domain_groups = self.effective_domain_constraints().await;
+        let allowed_domain_groups = Vec::new();
         let result = execute_once_mode(
             url,
             "GET",
@@ -206,20 +258,20 @@ impl HttpTool {
             self.max_body_bytes,
             &allowed_domain_groups,
             true,
-            cancel,
+            cancel.clone(),
+            self.authorization.as_ref().map(|authorization| {
+                Arc::new(HttpPermissionContext {
+                    authorization: authorization.clone(),
+                    session_id: None,
+                    approved_origin: None,
+                    timeout: Duration::from_secs(15),
+                    cancel: cancel.clone(),
+                    resolved: tokio::sync::Mutex::new(HashMap::new()),
+                })
+            }),
         )
         .await?;
         Ok(result.output)
-    }
-
-    async fn effective_domain_constraints(&self) -> Vec<Vec<String>> {
-        if let Some(authorization) = &self.authorization {
-            authorization.network_domain_constraints("http").await
-        } else if self.allowed_domains.is_empty() {
-            Vec::new()
-        } else {
-            vec![self.allowed_domains.clone()]
-        }
     }
 }
 
@@ -279,7 +331,7 @@ impl Default for HttpTool {
             max_retries: 2,
             backoff_base_secs: 1,
             max_body_bytes: 1024 * 1024,
-            allowed_domains: Vec::new(),
+
             authorization: None,
         }
     }
@@ -450,8 +502,10 @@ async fn execute_once_mode(
     allowed_domain_groups: &[Vec<String>],
     extract_known_content: bool,
     cancel: CancellationToken,
+    permission: Option<Arc<HttpPermissionContext>>,
 ) -> anyhow::Result<ToolResult> {
     let destination_policy = HttpDestinationPolicy {
+        permission,
         allowed_domain_groups: allowed_domain_groups.to_vec(),
         #[cfg(test)]
         allow_loopback: true,
@@ -533,12 +587,30 @@ async fn execute_once_with_mode(
     let mut current_url = validate_http_destination(url, destination_policy).await?;
     let mut current_method = method.to_string();
     let mut current_body = body.map(str::to_owned);
-    let current_headers = headers.to_vec();
+    let mut current_headers = headers.to_vec();
     let mut redirect_hops = 0usize;
     let response = loop {
+        let authorized_client;
+        let request_client = if let Some(permission) = &destination_policy.permission {
+            let destination =
+                resolve_http_destination(current_url.as_str(), destination_policy).await?;
+            let mut builder = reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(permission.timeout);
+            if let (Some(host), Some(address)) =
+                (destination.url.host_str(), destination.pinned_address)
+            {
+                builder = builder.resolve(host, address);
+            }
+            authorized_client = builder.build()?;
+            &authorized_client
+        } else {
+            client
+        };
         let mut req = match current_method.as_str() {
-            "GET" => client.get(current_url.clone()),
-            "POST" => client
+            "GET" => request_client.get(current_url.clone()),
+            "POST" => request_client
                 .post(current_url.clone())
                 .body(current_body.clone().unwrap_or_default()),
             _ => anyhow::bail!("unsupported method: {}", current_method),
@@ -578,7 +650,34 @@ async fn execute_once_with_mode(
             current_body = None;
         }
         if !same_origin(&current_url, &next_url) {
-            anyhow::bail!("cross-origin HTTP redirects are not allowed");
+            if destination_policy.permission.is_none() {
+                anyhow::bail!("cross-origin HTTP redirects require permission");
+            }
+            // Destination approval does not authorize disclosing credentials
+            // intended for the previous origin. Never forward custom headers.
+            current_headers.clear();
+            if current_body.is_some()
+                && let Some(permission) = &destination_policy.permission
+            {
+                let request = crate::security::AuthorizationEngine::runtime_permission_request(
+                    permission.session_id.as_deref(),
+                    "http",
+                    serde_json::json!({"url":next_url.as_str(), "method":current_method,
+                            "body":current_body, "reason":"跨域重定向将向新目标发送此正文"}),
+                    crate::NetworkAccess::Public,
+                    vec![crate::DeclaredResource::NetworkDestination {
+                        scheme: next_url.scheme().into(),
+                        host: next_url.host_str().unwrap_or_default().into(),
+                        port: next_url.port_or_known_default(),
+                    }],
+                )
+                .map_err(anyhow::Error::msg)?;
+                permission
+                    .authorization
+                    .request_execution_permission(&request, permission.cancel.clone())
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+            }
         }
         current_url = next_url;
     };
@@ -662,6 +761,58 @@ async fn resolve_http_destination(
     destination_policy: &HttpDestinationPolicy,
 ) -> anyhow::Result<ResolvedHttpDestination> {
     let parsed = reqwest::Url::parse(raw_url)?;
+    if let Some(permission) = &destination_policy.permission {
+        let origin = parsed.origin().ascii_serialization();
+        if let Some(destination) = permission.resolved.lock().await.get(&origin).cloned() {
+            return Ok(ResolvedHttpDestination {
+                url: parsed,
+                ..destination
+            });
+        }
+        let destination = if !permission
+            .approved_origin
+            .as_ref()
+            .is_some_and(|origin| same_origin(&parsed, origin))
+        {
+            permission
+                .authorization
+                .request_network_destination(
+                    permission.session_id.as_deref(),
+                    "http",
+                    raw_url,
+                    permission.cancel.clone(),
+                )
+                .await
+                .map_err(anyhow::Error::msg)?
+        } else {
+            let destination = network::resolve_authorized_http_destination(raw_url).await?;
+            if let Some(address) = destination.pinned_address
+                && network::http_host_is_local_or_special(&address.ip().to_string())
+                && !parsed
+                    .host_str()
+                    .is_some_and(network::http_host_is_local_or_special)
+            {
+                return permission
+                    .authorization
+                    .request_network_destination(
+                        permission.session_id.as_deref(),
+                        "http",
+                        raw_url,
+                        permission.cancel.clone(),
+                    )
+                    .await
+                    .map_err(anyhow::Error::msg);
+            }
+            destination
+        };
+        let mut resolved = permission.resolved.lock().await;
+        anyhow::ensure!(
+            resolved.len() <= MAX_HTTP_REDIRECT_HOPS,
+            "HTTP destination permission budget exceeded"
+        );
+        resolved.insert(origin, destination.clone());
+        return Ok(destination);
+    }
     let host = parsed
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("HTTP URL has no destination host"))?;
@@ -993,7 +1144,7 @@ mod tests {
             max_retries: 0,
             backoff_base_secs: 0,
             max_body_bytes: 5,
-            allowed_domains: Vec::new(),
+
             authorization: None,
         };
         let result = tool
@@ -1147,6 +1298,7 @@ mod tests {
             false,
             1024 * 1024,
             &HttpDestinationPolicy {
+                permission: None,
                 allowed_domain_groups: Vec::new(),
                 allow_loopback: true,
             },
@@ -1320,6 +1472,7 @@ mod tests {
     #[tokio::test]
     async fn http_destination_policy_allows_loopback_only_for_test_configuration() {
         let destination_policy = HttpDestinationPolicy {
+            permission: None,
             allowed_domain_groups: Vec::new(),
             allow_loopback: true,
         };
@@ -1346,6 +1499,7 @@ mod tests {
         );
 
         let allowlist = HttpDestinationPolicy {
+            permission: None,
             allowed_domain_groups: vec![vec!["example.com".into()]],
             allow_loopback: false,
         };
@@ -1375,5 +1529,116 @@ mod tests {
             .unwrap();
         assert_eq!(result.output["status"], 200);
         assert_eq!(result.output["body"], "hello native");
+    }
+    #[tokio::test]
+    async fn new_redirect_origins_request_permission_and_do_not_receive_original_headers() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        struct Approve(tokio::sync::Mutex<Vec<crate::DeclaredResource>>);
+        #[async_trait]
+        impl crate::PermissionInteractionPort for Approve {
+            async fn request_permission(
+                &self,
+                request: crate::AuthorizationRequest,
+                receipt: crate::ConfirmationReceipt,
+                _: CancellationToken,
+            ) -> Result<crate::ConfirmationReceipt, String> {
+                self.0.lock().await.extend(request.resources);
+                Ok(receipt)
+            }
+        }
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_url = format!("http://{}/", target.local_addr().unwrap());
+        let (headers_tx, headers_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = target.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            let count = socket.read(&mut buffer).await.unwrap();
+            headers_tx
+                .send(String::from_utf8_lossy(&buffer[..count]).into_owned())
+                .unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nallowed",
+                )
+                .await
+                .unwrap();
+        });
+        let initial = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let initial_url = format!("http://{}/", initial.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = initial.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            socket.read(&mut buffer).await.unwrap();
+            socket.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {target_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+        });
+        let authorization = Arc::new(crate::security::AuthorizationEngine::new());
+        let approvals = Arc::new(Approve(Default::default()));
+        authorization
+            .set_permission_interaction(approvals.clone())
+            .await;
+        let tool = HttpTool {
+            authorization: Some(authorization),
+            ..Default::default()
+        };
+        let result = tool
+            .execute(
+                json!({"url":initial_url,"headers":{"X-Secret":"original-only"}}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert!(
+            !headers_rx
+                .await
+                .unwrap()
+                .to_ascii_lowercase()
+                .contains("x-secret")
+        );
+        let resources = approvals.0.lock().await;
+        assert_eq!(
+            resources.len(),
+            2,
+            "each new origin is approved exactly once"
+        );
+        assert_ne!(resources[0], resources[1]);
+    }
+
+    #[tokio::test]
+    async fn declining_a_native_http_permission_prevents_any_target_connection() {
+        struct Decline;
+        #[async_trait]
+        impl crate::PermissionInteractionPort for Decline {
+            async fn request_permission(
+                &self,
+                _: crate::AuthorizationRequest,
+                _: crate::ConfirmationReceipt,
+                _: CancellationToken,
+            ) -> Result<crate::ConfirmationReceipt, String> {
+                Err("declined".into())
+            }
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let authorization = Arc::new(crate::security::AuthorizationEngine::new());
+        authorization
+            .set_permission_interaction(Arc::new(Decline))
+            .await;
+        let tool = HttpTool {
+            authorization: Some(authorization),
+            ..Default::default()
+        };
+        assert!(
+            tool.execute(
+                json!({"url":format!("http://{}/",listener.local_addr().unwrap())}),
+                CancellationToken::new()
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
     }
 }

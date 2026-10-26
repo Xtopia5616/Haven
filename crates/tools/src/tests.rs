@@ -379,8 +379,8 @@ async fn load_skill_activation_is_in_process_while_skill_execution_stays_host_pr
             .authorize_for_execution(&execution)
             .await
             .decision,
-        AuthorizationDecision::Blocked {
-            reason_code: AuthorizationReasonCode::SandboxBoundary,
+        AuthorizationDecision::RequiresConfirmation {
+            reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
             ..
         }
     ));

@@ -7,7 +7,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use haven_common::tools::ToolCatalogGroup;
-use haven_common::types::{NetworkPolicy, RiskLevel, SandboxMode};
+use haven_common::types::{RiskLevel, SandboxMode};
 use haven_platform::filesystem::DirectoryCapability;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -183,10 +183,10 @@ impl GitTool {
                             .collect(),
                         filesystem.protected_readonly_paths,
                         filesystem.denied_paths,
-                        SandboxedProcessNetworkPolicy {
-                            allow_public_egress: network_required
-                                && permit.network_policy() == NetworkPolicy::Open,
-                            ..Default::default()
+                        if network_required {
+                            permit.process_network_policy()
+                        } else {
+                            SandboxedProcessNetworkPolicy::default()
                         },
                         false,
                     )?;

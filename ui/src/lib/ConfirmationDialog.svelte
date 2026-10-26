@@ -178,7 +178,6 @@
 		target: PermissionTargetInput = 'operation',
 		selectedResourceTarget?: PermissionResourceTargetInput,
 	) {
-		if (resourceBoundaryExtension && effect === 'allow' && scope !== 'once') return;
 		const activeRequestId = requestId;
 		if (!activeRequestId || submittedRequestId === activeRequestId) {
 			return;
@@ -205,7 +204,7 @@
 	}
 
 	function requestPersistentAllow(target: PermissionTargetInput) {
-		if (!hasPersistentResources || resourceBoundaryExtension) return;
+		if (!hasPersistentResources) return;
 		const needsWarning =
 			target !== 'operation' ||
 			normalizedRisk === 'high' ||
@@ -364,18 +363,16 @@
 	{#snippet footer()}
 		<footer class="dialog-footer">
 			<div class="action-heading">
-				<span>{resourceBoundaryExtension ? '只扩展本次操作' : '选择允许范围和期限'}</span>
+				<span>选择允许范围和期限</span>
 				<span class="action-hint">
-					{resourceBoundaryExtension
-						? hasDirectoryBoundaryExtension
-							? '目录权限覆盖列出的目录及其全部子项；仅本次生效，不保存授权或更改设置'
-							: '临时扩展只适用于上方列出的资源；不会保存授权或更改设置'
+					{hasDirectoryBoundaryExtension
+						? '目录授权覆盖列出的目录及其子项；可选择本次、会话或永久授权'
 						: allowSessionScope
 							? '本会话授权不会按时间自动到期；撤销、清除授权或删除会话后失效'
 							: '永久授权跨会话生效，关键操作仍可能继续要求确认'}
 				</span>
 			</div>
-			{#if hasPersistentResources && hasLocalPathResource && !resourceBoundaryExtension}
+			{#if hasPersistentResources && hasLocalPathResource}
 				<label class="resource-target-choice">
 					<span>保存的路径范围</span>
 					<select bind:value={resourceTarget} aria-label="保存的路径范围">
@@ -384,7 +381,7 @@
 					</select>
 				</label>
 			{/if}
-			{#if pendingPersistentTarget && !resourceBoundaryExtension}
+			{#if pendingPersistentTarget}
 				<div class="always-warning" role="alert">
 					<Icon name="alertTriangle" size={16} />
 					<div class="warning-copy">
@@ -420,7 +417,7 @@
 						label={resourceBoundaryExtension ? '临时扩展并允许本次' : '本次允许'}
 						onclick={() => decide('allow', 'once', 'operation')}
 					/>
-					{#if !resourceBoundaryExtension && allowSessionScope && hasPersistentResources}
+					{#if allowSessionScope && hasPersistentResources}
 						<MaterialButton
 							variant="tonal"
 							className="btn-session"
@@ -429,7 +426,7 @@
 							onclick={() => decide('allow', 'session', 'operation', resourceTarget)}
 						/>
 					{/if}
-					{#if !resourceBoundaryExtension && hasPersistentResources}
+					{#if hasPersistentResources}
 						<div class="more-allow">
 							<MaterialButton
 								variant="text"
@@ -442,7 +439,7 @@
 							{#if showAllowMenu}
 								<div class="allow-menu motion-menu-enter motion-list" role="menu">
 									<p class="scope-impact-note">
-										功能组和工具规则会匹配对应权限键及其所有下级操作；任何匹配的拒绝规则仍优先。
+										功能组和工具规则会匹配对应权限键及其所有下级操作；已声明的资源允许规则优先。
 									</p>
 									{#if allowSessionScope}
 										<div class="menu-section-label">本会话</div>
@@ -484,7 +481,7 @@
 						{#if showDenyMenu}
 							<div class="deny-menu motion-menu-enter motion-list" role="menu">
 								<p class="scope-impact-note scope-impact-note--deny">
-									功能组和工具拒绝会阻止对应权限键及其所有下级操作，并优先于匹配的允许规则。
+									功能组和工具拒绝会阻止对应权限键及其所有下级操作，但已有明确资源授权的操作优先执行。
 								</p>
 								{#if allowSessionScope}
 									<MenuItem

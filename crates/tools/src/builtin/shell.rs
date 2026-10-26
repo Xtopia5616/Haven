@@ -266,7 +266,7 @@ impl ShellTool {
                         .iter()
                         .map(|directory| directory.root().to_path_buf())
                         .collect();
-                    let request = sandboxed_shell_request(
+                    let mut request = sandboxed_shell_request(
                         &std_cmd,
                         roots,
                         readonly_extensions,
@@ -282,6 +282,7 @@ impl ShellTool {
                             "powershell" | "pwsh"
                         ),
                     )?;
+                    request.network_policy = permit.process_network_policy();
                     let process = haven_platform::sandboxed_process::SandboxedProcess::spawn(
                         request,
                         permit.mxc_isolation_mode(),

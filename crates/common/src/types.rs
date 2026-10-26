@@ -215,8 +215,7 @@ impl ExecutionMode {
 
     pub const fn approval_policy(self) -> ApprovalPolicy {
         match self {
-            Self::Analyze | Self::Collaborative => ApprovalPolicy::AskWhenNeeded,
-            Self::Unattended => ApprovalPolicy::DenyIfRequired,
+            Self::Analyze | Self::Collaborative | Self::Unattended => ApprovalPolicy::AskWhenNeeded,
         }
     }
 }
@@ -245,14 +244,12 @@ impl TaskIntent {
 pub enum ApprovalPolicy {
     #[default]
     AskWhenNeeded,
-    DenyIfRequired,
 }
 
 impl ApprovalPolicy {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AskWhenNeeded => "ask_when_needed",
-            Self::DenyIfRequired => "deny_if_required",
         }
     }
 }
@@ -395,6 +392,11 @@ pub enum DesktopAccess {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum PermissionResourceScope {
+    /// Network authority for one opaque child-process invocation. It covers
+    /// public egress, bidirectional private networking and host loopback.
+    ProcessNetwork {
+        target_fingerprint: String,
+    },
     LocalPath {
         path: std::path::PathBuf,
         recursive: bool,
@@ -1551,7 +1553,7 @@ mod tests {
         assert!(serde_json::from_str::<ExecutionMode>("\"always\"").is_err());
         assert_eq!(
             ExecutionMode::Unattended.approval_policy(),
-            ApprovalPolicy::DenyIfRequired
+            ApprovalPolicy::AskWhenNeeded
         );
         assert_eq!(ExecutionMode::Analyze.task_intent(), TaskIntent::Analyze);
     }

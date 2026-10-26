@@ -120,7 +120,7 @@ describe('ConfirmationDialog', () => {
 		expect(screen.getByRole('alert').textContent).toContain(
 			'整个目录及其子目录和文件，不限于首轮被拒绝的单个文件',
 		);
-		expect(screen.getByText(/目录权限覆盖列出的目录及其全部子项/)).toBeTruthy();
+		expect(screen.getByText(/目录授权覆盖列出的目录及其子项/)).toBeTruthy();
 		expect(screen.getByRole('button', { name: '临时扩展并允许本次' })).toBeTruthy();
 	});
 
@@ -144,7 +144,7 @@ describe('ConfirmationDialog', () => {
 				/匹配“system.power”本身及所有以“system.power.”开头的下级操作或工具能力/,
 			),
 		).toBeTruthy();
-		expect(screen.getByText(/任何匹配的拒绝规则仍会阻止操作/)).toBeTruthy();
+		expect(screen.getByText(/明确资源授权优先于匹配的拒绝规则/)).toBeTruthy();
 	});
 
 	it('closes without deciding and can be shown again while the request stays pending', async () => {

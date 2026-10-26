@@ -10,7 +10,6 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tempfile::TempDir;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, Command};
 use tokio::sync::Semaphore;
@@ -20,27 +19,7 @@ const MAX_EVERYTHING_CONCURRENT: usize = 2;
 const MAX_STDOUT_BYTES: usize = MAX_SEARCH_RESULT_BYTES;
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 const EVERYTHING_TIMEOUT: Duration = Duration::from_secs(15);
-const EVERYTHING_SCRATCH_DIRECTORY: &str = "everything-scratch";
-
-struct EverythingScratch(TempDir);
-
-impl EverythingScratch {
-    fn create() -> anyhow::Result<Self> {
-        let root =
-            haven_common::config::default_runtime_temp_root().join(EVERYTHING_SCRATCH_DIRECTORY);
-        std::fs::create_dir_all(&root)?;
-        haven_platform::filesystem::DirectoryCapability::open(&root)?;
-        Ok(Self(
-            tempfile::Builder::new()
-                .prefix("search-")
-                .tempdir_in(root)?,
-        ))
-    }
-
-    fn path(&self) -> &Path {
-        self.0.path()
-    }
-}
+type EverythingScratch = crate::shell_runtime::ProcessScratchDirectory;
 
 enum EverythingProcess {
     Host {
@@ -202,7 +181,7 @@ impl EverythingSearch {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let scratch = EverythingScratch::create()?;
+        let scratch = EverythingScratch::create_everything()?;
         #[cfg(windows)]
         let mut runtime_read_roots =
             crate::process_sandbox::runtime_dependency_roots(command.as_std());
@@ -292,11 +271,24 @@ impl EverythingSearch {
             .ok_or_else(|| anyhow::anyhow!("Everything diagnostics are unavailable"))?;
         let stdout_task = tokio::spawn(read_bounded(stdout, MAX_STDOUT_BYTES));
         let stderr_task = tokio::spawn(read_bounded(stderr, MAX_STDERR_BYTES));
+        let capacity_watch = async {
+            loop {
+                scratch.ensure_within_capacity().await?;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
         let status = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
                 process.terminate().await;
                 anyhow::bail!("cancelled")
+            }
+            result = capacity_watch => {
+                process.terminate().await;
+                result?;
+                anyhow::bail!("Everything scratch capacity monitor stopped")
             }
             result = tokio::time::timeout(EVERYTHING_TIMEOUT, process.wait()) => match result {
                 Ok(result) => result.map_err(|_| anyhow::anyhow!("Everything search process failed"))?,
