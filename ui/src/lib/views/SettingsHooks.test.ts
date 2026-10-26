@@ -172,17 +172,21 @@ describe('SettingsHooks', () => {
 		settings.diagnostics = ['pre_tool_use', 'run_end'].map((event) => ({
 			event,
 			event_runs: 1,
-			command_runs: 0,
+			command_attempts: 2,
+			command_starts: 1,
 			failures: 1,
 			denials: 0,
 			last_outcome: 'failed_open',
 			last_failure_code: 'security_policy_denied',
+			last_problem_command: { source: 'project', index: 0 },
 		})) as typeof settings.diagnostics;
 		getSettings.mockResolvedValue(settings);
 		render(SettingsHooks, { active: false, onDraftState: vi.fn() });
 		await screen.findByLabelText('可执行文件');
 		expect(screen.getByText('失败，已阻止工具')).toBeTruthy();
 		expect(screen.getByText('失败，主操作继续')).toBeTruthy();
+		expect(screen.getAllByText(/命令尝试 2 次 · 已启动 1 次/)).toHaveLength(2);
+		expect(screen.getAllByText(/最近问题命令：项目级第 1 条/)).toHaveLength(2);
 		const row = screen.getByText('失败，已阻止工具').parentElement!;
 		expect(within(row).getByText(/检查执行边界/)).toBeTruthy();
 	});

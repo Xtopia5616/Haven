@@ -1,6 +1,6 @@
 # Lifecycle hooks
 
-Haven can run user-configured commands at seven Agent lifecycle points: `pre_tool_use`, `post_tool_use`, `session_start`, `run_start`, `run_end`, `pre_compact`, and `post_compact`. User hooks are managed in Settings → Lifecycle Hooks and saved in `config.toml`. The service reads the current ConfigService snapshot for every event, so edits take effect without restarting Haven.
+Haven can run user-configured commands at eight Agent lifecycle points: `pre_tool_use`, `post_tool_use`, `session_start`, `run_start`, `run_end`, `session_end`, `pre_compact`, and `post_compact`. User hooks are managed in Settings → Lifecycle Hooks and saved in `config.toml`. The service reads the current ConfigService snapshot for every event, so edits take effect without restarting Haven.
 
 ## User hooks
 
@@ -15,6 +15,9 @@ matcher = "shell"
 
 [[hooks.run_start]]
 command = "C:/Tools/haven-session-note.exe"
+
+[[hooks.session_end]]
+command = "C:/Tools/haven-session-cleanup.exe"
 ```
 
 Settings lets you add/remove Hook commands, edit the executable and literal arguments, configure tool matchers, and review the active security policy. Arguments are entered one per line in the UI. `matcher` is optional; omit it to match every tool. `*` matches any sequence of characters, so patterns such as `mcp_*.search` are supported. Matching is case-sensitive.
@@ -71,7 +74,7 @@ if (event.event === 'pre_tool_use') {
 }
 ```
 
-Use `post_tool_use` for local audit checks based on `success`, `run_end` for completion integrations based on `run_outcome`, and `post_compact` for compaction metrics. Notification hooks cannot change Haven state through their response. For example, inspect `event.run_outcome === 'completed'` in a `run_end` script before updating a local completion indicator. Never insert raw tool input into executable code or shell command strings.
+Use `post_tool_use` for local audit checks based on `success`, `run_end` for per-run integrations based on `run_outcome`, `session_end` for final session cleanup, and `post_compact` for compaction metrics. Notification hooks cannot change Haven state through their response. For example, inspect `event.run_outcome === 'completed'` in a `run_end` script before updating a local completion indicator. Never insert raw tool input into executable code or shell command strings.
 
 User-level command lists run before project-level lists for each event. Within each list, commands run in their configured order. `pre_tool_use` stops at the first deny or failure. Notification events attempt each configured command in order, subject to the event-wide five-second limit.
 
@@ -89,6 +92,9 @@ matcher = "shell"
 
 [[hooks.post_compact]]
 command = "C:/Tools/project-compact-note.exe"
+
+[[hooks.session_end]]
+command = "C:/Tools/project-session-cleanup.exe"
 ```
 
 Haven reads the project file through its pinned workspace directory handle and rejects reparse points, non-regular files, invalid TOML, and files larger than 64 KiB. An untrusted workspace's `.haven/hooks.toml` is ignored without reading it. Trust authorizes the project Hook configuration only; every resulting command still passes Haven's active security policy.
@@ -100,6 +106,7 @@ Haven reads the project file through its pinned workspace directory handle and r
 - `session_start` runs once when a session actor accepts its first Agent run. If Haven is restarted and rebuilds the actor while resuming a session, the event runs again.
 - `run_start` runs at the beginning of every Agent run, including resumes and continuations.
 - `run_end` runs after each Agent run returns, including completed, paused, cancelled, and error outcomes. It includes a content-free `run_outcome` value and a success flag.
+- `session_end` runs after an explicit session end has durably changed the session status to `completed`, before terminal cleanup. It runs once for that transition; repeated end requests do not run it again. Deleting a session does not emit this event. It includes the `session_id` and `success: true`; use `run_end` for per-run completion, pause, cancellation, and error handling. When ending an active session, `session_end` can run before the eventual `run_end` while the run unwinds. The event is best-effort: a process crash after the status commit and before Hook dispatch can skip it.
 - `pre_compact` runs after the context threshold is crossed and immediately before compaction starts. It includes the estimated token count before compaction. This is a notification; it cannot cancel compaction.
 - `post_compact` runs after the compacted transcript has been committed. It includes token estimates before and after compaction.
 
@@ -109,7 +116,7 @@ Haven reads the project file through its pinned workspace directory handle and r
 
 `pre_tool_use` fails closed: if a matching hook cannot run, exits unsuccessfully, times out, is cancelled, is rejected by policy, or returns invalid JSON, the tool does not run. Other events are notifications: a Hook failure is logged as a static error code and does not change the primary operation. A user Hook failure does not prevent later matching notification hooks from being attempted unless the event deadline is exhausted.
 
-The Settings diagnostics panel keeps bounded, in-memory counters per event: event runs, command runs, failures, denials, last outcome, and a static failure code. It never stores executable paths, arguments, payloads, stdout, stderr, or denial text. Counters reset when Haven exits.
+The Settings diagnostics panel keeps bounded, in-memory counters per event: event runs, command attempts, processes successfully started inside the required execution boundary, failures, denials, last outcome, and a static failure code. When an individual command fails or explicitly denies a tool, diagnostics also show whether it came from the user or project list and its list position. They never store executable paths, arguments, payloads, stdout, stderr, or denial text. Counters reset when Haven exits.
 
 Diagnostics distinguish a failed `pre_tool_use` (tool blocked) from a failed notification (primary operation continues), and show a suggested next step for static failure codes: executable/script paths, policy changes, invalid stdout, event time budget, output cap, project configuration and workspace availability. The denial counter counts explicit script denials; failures are counted separately. While an event is in progress its last outcome is unset.
 

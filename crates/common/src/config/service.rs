@@ -1196,6 +1196,12 @@ mod tests {
                 args: vec!["--run-start".into()],
                 matcher: None,
             }],
+            session_end: vec![super::super::HookCommand {
+                enabled: true,
+                command: "session-end.exe".into(),
+                args: Vec::new(),
+                matcher: None,
+            }],
             ..Default::default()
         };
 

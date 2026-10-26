@@ -11,6 +11,7 @@ pub struct LifecycleHooksConfig {
     pub run_end: Vec<HookCommand>,
     pub pre_compact: Vec<HookCommand>,
     pub post_compact: Vec<HookCommand>,
+    pub session_end: Vec<HookCommand>,
 }
 
 impl LifecycleHooksConfig {
@@ -23,6 +24,7 @@ impl LifecycleHooksConfig {
             crate::hooks::LifecycleHookEvent::RunEnd => &self.run_end,
             crate::hooks::LifecycleHookEvent::PreCompact => &self.pre_compact,
             crate::hooks::LifecycleHookEvent::PostCompact => &self.post_compact,
+            crate::hooks::LifecycleHookEvent::SessionEnd => &self.session_end,
         }
     }
 
@@ -34,6 +36,7 @@ impl LifecycleHooksConfig {
             && self.run_end.is_empty()
             && self.pre_compact.is_empty()
             && self.post_compact.is_empty()
+            && self.session_end.is_empty()
     }
 }
 
@@ -95,6 +98,7 @@ pub(crate) fn validate_lifecycle_hooks(config: &LifecycleHooksConfig) -> anyhow:
         ("run_end", &config.run_end),
         ("pre_compact", &config.pre_compact),
         ("post_compact", &config.post_compact),
+        ("session_end", &config.session_end),
     ] {
         anyhow::ensure!(
             commands.len() <= super::MAX_HOOKS_PER_EVENT,
@@ -211,6 +215,20 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_lifecycle_hooks(&invalid_command).is_err());
+    }
+
+    #[test]
+    fn project_hooks_accept_session_end_commands() {
+        let hooks =
+            parse_project_hooks("[[hooks.session_end]]\ncommand = 'hook.exe'\nmatcher = '*'\n")
+                .unwrap();
+
+        assert_eq!(
+            hooks
+                .for_event(crate::hooks::LifecycleHookEvent::SessionEnd)
+                .len(),
+            1
+        );
     }
 
     #[test]

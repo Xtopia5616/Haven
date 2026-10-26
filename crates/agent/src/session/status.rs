@@ -133,6 +133,9 @@ impl SessionSupervisor {
             // sessions. Existing callers may end a stale selection while its
             // durable row has already been removed.
             let record = self.store.load_session_record(session_id).await?;
+            let emit_session_end = record
+                .as_ref()
+                .is_some_and(|record| record.status != SessionStatus::Completed);
             if record.as_ref().is_some_and(|record| {
                 record.status != SessionStatus::Paused && record.status != SessionStatus::Completed
             }) {
@@ -161,6 +164,9 @@ impl SessionSupervisor {
                     session_id: session_id.to_string(),
                 });
                 return Err(error);
+            }
+            if emit_session_end {
+                self.emit_session_end_hook(session_id).await;
             }
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
@@ -200,7 +206,13 @@ impl SessionSupervisor {
         // dispatcher run-exit edge, which keeps late tool output isolated from
         // the next session without blocking the user's control action.
         if let Err(error) = self
-            .complete_resident_session_end(session_id, &actor, closing, cascade)
+            .complete_resident_session_end(
+                session_id,
+                &actor,
+                closing,
+                cascade,
+                status != SessionStatus::Completed,
+            )
             .await
         {
             if self.get_session_status(session_id).await == Some(SessionStatus::Paused) {
@@ -218,6 +230,7 @@ impl SessionSupervisor {
         expected_actor: &actor::SessionActorHandle,
         closing: &SessionClosingGuard,
         cascade: bool,
+        emit_session_end: bool,
     ) -> anyhow::Result<()> {
         let actor = {
             let _lifecycle = self.lifecycle_guard().await;
@@ -241,6 +254,10 @@ impl SessionSupervisor {
             actor
         };
 
+        if emit_session_end {
+            self.emit_session_end_hook(session_id).await;
+        }
+
         // End has now committed Completed and published its handoff phase.
         // If the run has already exited, this caller claims cleanup; otherwise
         // the run-exit owner may take over while the marker remains installed.
@@ -249,6 +266,18 @@ impl SessionSupervisor {
                 .await;
         }
         Ok(())
+    }
+
+    async fn emit_session_end_hook(&self, session_id: &str) {
+        let mut payload = haven_common::hooks::LifecycleHookPayload::new(
+            haven_common::hooks::LifecycleHookEvent::SessionEnd,
+        );
+        payload.session_id = Some(session_id.to_owned());
+        payload.success = Some(true);
+        let _ = self
+            .lifecycle_hooks
+            .run(payload, CancellationToken::new())
+            .await;
     }
 
     async fn emit_end_paused_for_retry(

@@ -1326,3 +1326,4 @@
 - [1421：在 WorkspaceWrite 下隔离 Lifecycle Hooks](1421-isolate-lifecycle-hooks-in-workspace-write.md)
 - [1422：在 WorkspaceWrite 下隔离 Everything CLI](1422-isolate-everything-cli-in-workspace-write.md)
 - [1423：在 WorkspaceWrite 下隔离 MCP stdio server](1423-isolate-mcp-stdio-in-workspace-write.md)
+- [1424：增加 SessionEnd 生命周期 Hook](1424-add-session-end-lifecycle-hook.md)

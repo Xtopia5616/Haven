@@ -605,6 +605,7 @@ pub struct SessionToolPorts {
     pub(super) session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
     pub(super) managed_asset_leases: Arc<dyn ManagedAssetLeasePort>,
     pub(super) observations: Arc<dyn ToolObservationPort>,
+    pub(super) lifecycle_hooks: Arc<dyn crate::LifecycleHooksPort>,
 }
 
 impl SessionToolPorts {
@@ -631,7 +632,16 @@ impl SessionToolPorts {
             session_tool_overlay,
             managed_asset_leases,
             observations,
+            lifecycle_hooks: Arc::new(crate::agent_tool_ports::NoopLifecycleHooksPort),
         }
+    }
+
+    pub(crate) fn with_lifecycle_hooks(
+        mut self,
+        lifecycle_hooks: Arc<dyn crate::LifecycleHooksPort>,
+    ) -> Self {
+        self.lifecycle_hooks = lifecycle_hooks;
+        self
     }
 
     #[cfg(test)]

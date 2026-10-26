@@ -324,8 +324,10 @@ impl AuthorizationEngine {
     /// the runner still revalidates this snapshot immediately before spawn.
     pub(crate) async fn capture_lifecycle_hook_process_start_authorization(
         self: &Arc<Self>,
+        session_id: Option<&str>,
     ) -> Result<LifecycleHookProcessStartAuthorization, String> {
         let config = self.config.read().await;
+        let execution_workspace = config.execution_workspace_for(session_id);
         match config.sandbox_mode {
             SandboxMode::FullAccess
                 if opaque_network_is_unrestricted(&config, "lifecycle_hook") => {}
@@ -344,9 +346,13 @@ impl AuthorizationEngine {
         }
         Ok(LifecycleHookProcessStartAuthorization::new(
             Arc::clone(self),
+            super::execution::LifecycleHookSessionContext {
+                session_id: session_id.map(str::to_owned),
+                trust_cancellation: self.register_session_trust_cancellation(session_id),
+            },
             config.policy_revision,
             config.process_boundary_revision,
-            config.execution_workspace.generation(),
+            execution_workspace.generation(),
             self.process_revocations.borrow().clone(),
             self.process_boundary_changes.borrow().clone(),
         ))
@@ -354,6 +360,16 @@ impl AuthorizationEngine {
 
     pub(crate) async fn execution_workspace(&self) -> ExecutionWorkspace {
         self.config.read().await.execution_workspace.clone()
+    }
+
+    pub(crate) async fn execution_workspace_for_session(
+        &self,
+        session_id: &str,
+    ) -> ExecutionWorkspace {
+        self.config
+            .read()
+            .await
+            .execution_workspace_for(Some(session_id))
     }
 
     pub(crate) async fn sandbox_mode(&self) -> SandboxMode {

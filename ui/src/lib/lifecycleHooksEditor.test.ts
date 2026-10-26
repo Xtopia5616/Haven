@@ -62,6 +62,7 @@ describe('Hook configuration editor', () => {
 		first.args.push('extra');
 		expect(createHook('powershell').args).not.toContain('extra');
 		expect(emptyHooks().pre_tool_use).toEqual([]);
+		expect(emptyHooks().session_end).toEqual([]);
 	});
 
 	it.each([

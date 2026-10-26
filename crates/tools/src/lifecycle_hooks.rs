@@ -11,8 +11,8 @@ use haven_common::config::{
     ConfigService, HookCommand, LifecycleHooksConfig, MAX_HOOKS_PER_EVENT, parse_project_hooks,
 };
 use haven_common::hooks::{
-    LifecycleHookDecision, LifecycleHookEvent, LifecycleHookEventDiagnostics, LifecycleHookOutcome,
-    LifecycleHookPayload,
+    LifecycleHookCommandLocation, LifecycleHookCommandSource, LifecycleHookDecision,
+    LifecycleHookEvent, LifecycleHookEventDiagnostics, LifecycleHookOutcome, LifecycleHookPayload,
 };
 use haven_platform::filesystem::DirectoryCapability;
 use haven_platform::process_containment::{ProcessContainment, process_spawn_lock};
@@ -20,6 +20,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -32,6 +33,12 @@ const MAX_HOOK_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_HOOK_EVENT_DURATION: Duration = Duration::from_secs(5);
 const MAX_HOOK_PROCESS_DURATION: Duration = Duration::from_secs(5);
 const PROCESS_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+
+#[derive(Clone)]
+struct ConfiguredHook {
+    command: HookCommand,
+    location: LifecycleHookCommandLocation,
+}
 
 #[derive(Default)]
 pub(crate) struct LifecycleHookService {
@@ -72,7 +79,15 @@ impl LifecycleHookService {
             }
         };
 
-        let workspace = authorization.execution_workspace().await;
+        let session_id = payload.session_id.as_deref();
+        let workspace = match session_id {
+            Some(session_id) => {
+                authorization
+                    .execution_workspace_for_session(session_id)
+                    .await
+            }
+            None => authorization.execution_workspace().await,
+        };
         let Some(workspace_root) = workspace.root().map(Path::to_path_buf) else {
             if snapshot
                 .config
@@ -89,11 +104,38 @@ impl LifecycleHookService {
             return LifecycleHookDecision::Allow;
         };
 
-        let mut hooks = snapshot.config.hooks.for_event(payload.event).to_vec();
+        let mut hooks = snapshot
+            .config
+            .hooks
+            .for_event(payload.event)
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(index, command)| ConfiguredHook {
+                command,
+                location: LifecycleHookCommandLocation {
+                    source: LifecycleHookCommandSource::User,
+                    index,
+                },
+            })
+            .collect::<Vec<_>>();
         if is_trusted_workspace(&workspace_root, &snapshot.config.trusted_hook_workspaces) {
             match read_project_hooks(workspace.directory().as_ref()) {
                 Ok(Some(project_hooks)) => {
-                    hooks.extend(project_hooks.for_event(payload.event).iter().cloned());
+                    hooks.extend(
+                        project_hooks
+                            .for_event(payload.event)
+                            .iter()
+                            .cloned()
+                            .enumerate()
+                            .map(|(index, command)| ConfiguredHook {
+                                command,
+                                location: LifecycleHookCommandLocation {
+                                    source: LifecycleHookCommandSource::Project,
+                                    index,
+                                },
+                            }),
+                    );
                 }
                 Ok(None) => {}
                 Err(_) => {
@@ -104,7 +146,9 @@ impl LifecycleHookService {
             }
         }
 
-        hooks.retain(|hook| hook.enabled && matcher_applies(hook, payload.tool_name.as_deref()));
+        hooks.retain(|hook| {
+            hook.command.enabled && matcher_applies(&hook.command, payload.tool_name.as_deref())
+        });
         if hooks.is_empty() {
             self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None);
             return LifecycleHookDecision::Allow;
@@ -116,7 +160,7 @@ impl LifecycleHookService {
         }
 
         let hook_authorization = match authorization
-            .capture_lifecycle_hook_process_start_authorization()
+            .capture_lifecycle_hook_process_start_authorization(session_id)
             .await
         {
             Ok(authorization)
@@ -151,28 +195,35 @@ impl LifecycleHookService {
         };
         let mut had_failure = false;
         let mut event_failure_code = None;
-        for hook in hooks {
+        for configured_hook in hooks {
             if cancel.is_cancelled() {
                 return self.failure_decision(payload.event, "cancelled").await;
             }
-            self.command_started(payload.event);
+            let hook = &configured_hook.command;
+            let location = configured_hook.location;
+            self.command_attempted(payload.event);
+            let process_started = Arc::new(AtomicBool::new(false));
             let result = tokio::time::timeout_at(
                 event_deadline,
                 run_hook_command(
-                    &hook,
+                    hook,
                     &workspace_root,
                     input.clone(),
                     hook_authorization.clone(),
                     cancel.clone(),
+                    Arc::clone(&process_started),
                 ),
             )
             .await;
+            if process_started.load(Ordering::Acquire) {
+                self.command_started(payload.event);
+            }
             let output = match result {
                 Ok(Ok(output)) => output,
                 Ok(Err(failure)) => {
                     had_failure = true;
                     event_failure_code = Some(failure.code());
-                    self.record_failure(payload.event, failure.code());
+                    self.record_failure(payload.event, failure.code(), Some(location));
                     if payload.event == LifecycleHookEvent::PreToolUse {
                         self.finish_event(
                             payload.event,
@@ -189,7 +240,7 @@ impl LifecycleHookService {
                 Err(_) => {
                     had_failure = true;
                     event_failure_code = Some("event_time_limit");
-                    self.record_failure(payload.event, "event_time_limit");
+                    self.record_failure(payload.event, "event_time_limit", Some(location));
                     if payload.event == LifecycleHookEvent::PreToolUse {
                         self.finish_event(
                             payload.event,
@@ -209,11 +260,12 @@ impl LifecycleHookService {
                 match parse_pre_tool_reply(&output.stdout) {
                     Ok(LifecycleHookDecision::Allow) => {}
                     Ok(denied @ LifecycleHookDecision::Deny { .. }) => {
+                        self.record_problem_command(payload.event, location);
                         self.finish_event(payload.event, LifecycleHookOutcome::Denied, None);
                         return denied;
                     }
                     Err(failure) => {
-                        self.record_failure(payload.event, failure.code());
+                        self.record_failure(payload.event, failure.code(), Some(location));
                         self.finish_event(
                             payload.event,
                             LifecycleHookOutcome::FailedOpen,
@@ -253,19 +305,42 @@ impl LifecycleHookService {
             stats.event_runs = stats.event_runs.saturating_add(1);
             stats.last_outcome = None;
             stats.last_failure_code = None;
+            stats.last_problem_command = None;
+        });
+    }
+
+    fn command_attempted(&self, event: LifecycleHookEvent) {
+        self.with_event_stats(event, |stats| {
+            stats.command_attempts = stats.command_attempts.saturating_add(1);
         });
     }
 
     fn command_started(&self, event: LifecycleHookEvent) {
         self.with_event_stats(event, |stats| {
-            stats.command_runs = stats.command_runs.saturating_add(1);
+            stats.command_starts = stats.command_starts.saturating_add(1);
         });
     }
 
-    fn record_failure(&self, event: LifecycleHookEvent, code: &str) {
+    fn record_failure(
+        &self,
+        event: LifecycleHookEvent,
+        code: &str,
+        location: Option<LifecycleHookCommandLocation>,
+    ) {
         self.with_event_stats(event, |stats| {
             stats.failures = stats.failures.saturating_add(1);
             stats.last_failure_code = Some(code.to_owned());
+            stats.last_problem_command = location;
+        });
+    }
+
+    fn record_problem_command(
+        &self,
+        event: LifecycleHookEvent,
+        location: LifecycleHookCommandLocation,
+    ) {
+        self.with_event_stats(event, |stats| {
+            stats.last_problem_command = Some(location);
         });
     }
 
@@ -302,11 +377,13 @@ impl LifecycleHookService {
             .or_insert_with(|| LifecycleHookEventDiagnostics {
                 event,
                 event_runs: 0,
-                command_runs: 0,
+                command_attempts: 0,
+                command_starts: 0,
                 failures: 0,
                 denials: 0,
                 last_outcome: None,
                 last_failure_code: None,
+                last_problem_command: None,
             });
         update(stats);
     }
@@ -316,7 +393,7 @@ impl LifecycleHookService {
         event: LifecycleHookEvent,
         failure: &'static str,
     ) -> LifecycleHookDecision {
-        self.record_failure(event, failure);
+        self.record_failure(event, failure, None);
         self.finish_event(event, LifecycleHookOutcome::FailedOpen, Some(failure));
         tracing::warn!(event = ?event, failure, "lifecycle hook event could not run");
         if event == LifecycleHookEvent::PreToolUse {
@@ -338,6 +415,7 @@ fn event_order(event: LifecycleHookEvent) -> u8 {
         LifecycleHookEvent::PreCompact => 4,
         LifecycleHookEvent::PostCompact => 5,
         LifecycleHookEvent::RunEnd => 6,
+        LifecycleHookEvent::SessionEnd => 7,
     }
 }
 
@@ -391,6 +469,7 @@ async fn run_hook_command(
     input: Vec<u8>,
     authorization: LifecycleHookProcessStartAuthorization,
     cancel: CancellationToken,
+    process_started: Arc<AtomicBool>,
 ) -> Result<HookProcessOutput, HookFailure> {
     let mut command = tokio::process::Command::new(&hook.command);
     command
@@ -446,6 +525,7 @@ async fn run_hook_command(
             )
             .await
             .map_err(|_| HookFailure::Spawn)?;
+            process_started.store(true, Ordering::Release);
             drop(permit);
 
             let stdin = process.take_stdin().ok_or(HookFailure::Io)?;
@@ -514,6 +594,7 @@ async fn run_hook_command(
         let _ = child.wait().await;
         return Err(HookFailure::Spawn);
     }
+    process_started.store(true, Ordering::Release);
     drop(permit);
 
     let stdin = child.stdin.take().ok_or(HookFailure::Io)?;
@@ -817,6 +898,32 @@ mod tests {
         assert_eq!(bounded.tool_input, payload.tool_input);
     }
 
+    #[test]
+    fn diagnostics_distinguish_attempts_starts_and_problem_command_location() {
+        let hooks = LifecycleHookService::default();
+        let event = LifecycleHookEvent::PostToolUse;
+        let location = LifecycleHookCommandLocation {
+            source: LifecycleHookCommandSource::Project,
+            index: 1,
+        };
+
+        hooks.begin_event(event);
+        hooks.command_attempted(event);
+        hooks.record_failure(event, "spawn_failed", Some(location));
+
+        let diagnostics = hooks.diagnostics();
+        assert_eq!(diagnostics[0].command_attempts, 1);
+        assert_eq!(diagnostics[0].command_starts, 0);
+        assert_eq!(
+            diagnostics[0].last_failure_code.as_deref(),
+            Some("spawn_failed")
+        );
+        assert_eq!(diagnostics[0].last_problem_command, Some(location));
+
+        hooks.command_started(event);
+        assert_eq!(hooks.diagnostics()[0].command_starts, 1);
+    }
+
     #[tokio::test]
     async fn diagnostics_are_content_free_and_count_unconfigured_events() {
         let hooks = LifecycleHookService::default();
@@ -832,7 +939,8 @@ mod tests {
         let diagnostics = hooks.diagnostics();
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].event_runs, 1);
-        assert_eq!(diagnostics[0].command_runs, 0);
+        assert_eq!(diagnostics[0].command_attempts, 0);
+        assert_eq!(diagnostics[0].command_starts, 0);
         assert_eq!(
             diagnostics[0].last_outcome,
             Some(LifecycleHookOutcome::NoHooks)
@@ -931,7 +1039,8 @@ mod tests {
                 .await,
             LifecycleHookDecision::Allow
         );
-        assert_eq!(hooks.diagnostics()[0].command_runs, 0);
+        assert_eq!(hooks.diagnostics()[0].command_attempts, 0);
+        assert_eq!(hooks.diagnostics()[0].command_starts, 0);
         assert_eq!(
             hooks.diagnostics()[0].last_outcome,
             Some(LifecycleHookOutcome::NoHooks)
@@ -967,7 +1076,7 @@ mod tests {
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         let process_authorization = authorization
-            .capture_lifecycle_hook_process_start_authorization()
+            .capture_lifecycle_hook_process_start_authorization(None)
             .await
             .unwrap();
         let hook = HookCommand {
@@ -976,6 +1085,7 @@ mod tests {
             args: vec!["/D".into(), "/C".into(), "echo lifecycle-hook-ok".into()],
             matcher: None,
         };
+        let process_started = Arc::new(AtomicBool::new(false));
 
         let output = run_hook_command(
             &hook,
@@ -983,10 +1093,12 @@ mod tests {
             br#"{"event":"session_start"}"#.to_vec(),
             process_authorization,
             CancellationToken::new(),
+            Arc::clone(&process_started),
         )
         .await
         .unwrap();
 
+        assert!(process_started.load(Ordering::Acquire));
         assert!(String::from_utf8_lossy(&output.stdout).contains("lifecycle-hook-ok"));
     }
 
@@ -1007,7 +1119,7 @@ mod tests {
             .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
             .await;
         let process_authorization = authorization
-            .capture_lifecycle_hook_process_start_authorization()
+            .capture_lifecycle_hook_process_start_authorization(None)
             .await
             .unwrap();
         let hook = HookCommand {
@@ -1020,6 +1132,7 @@ mod tests {
             ],
             matcher: None,
         };
+        let process_started = Arc::new(AtomicBool::new(false));
 
         run_hook_command(
             &hook,
@@ -1027,10 +1140,12 @@ mod tests {
             br#"{"event":"session_start"}"#.to_vec(),
             process_authorization,
             CancellationToken::new(),
+            Arc::clone(&process_started),
         )
         .await
         .unwrap();
 
+        assert!(process_started.load(Ordering::Acquire));
         let output = std::fs::read_to_string(workspace.join("hook-output.txt")).unwrap();
         assert!(output.contains("lifecycle-hook-mxc"));
     }

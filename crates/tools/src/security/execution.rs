@@ -42,16 +42,23 @@ pub(crate) struct ExecutionPolicyAuthorization {
 #[derive(Clone)]
 pub(crate) struct LifecycleHookProcessStartAuthorization {
     authorization: Arc<AuthorizationEngine>,
+    session_id: Option<String>,
     policy_revision: u64,
     process_boundary_revision: u64,
     execution_workspace_generation: u64,
     process_revocation_signal: Arc<()>,
     process_boundary_signal: Arc<()>,
+    session_trust_cancellation: Arc<CancellationToken>,
 }
 
 pub(crate) struct LifecycleHookProcessStartRequest {
     pub(crate) working_directory: std::path::PathBuf,
     pub(crate) runtime_read_roots: Vec<std::path::PathBuf>,
+}
+
+pub(super) struct LifecycleHookSessionContext {
+    pub(super) session_id: Option<String>,
+    pub(super) trust_cancellation: Arc<CancellationToken>,
 }
 
 pub(crate) struct EverythingProcessStartRequest {
@@ -92,6 +99,7 @@ impl haven_mcp::McpStdioProcessStartPermit for McpStdioProcessStartPermit {
 impl LifecycleHookProcessStartAuthorization {
     pub(super) fn new(
         authorization: Arc<AuthorizationEngine>,
+        session_context: LifecycleHookSessionContext,
         policy_revision: u64,
         process_boundary_revision: u64,
         execution_workspace_generation: u64,
@@ -100,11 +108,13 @@ impl LifecycleHookProcessStartAuthorization {
     ) -> Self {
         Self {
             authorization,
+            session_id: session_context.session_id,
             policy_revision,
             process_boundary_revision,
             execution_workspace_generation,
             process_revocation_signal,
             process_boundary_signal,
+            session_trust_cancellation: session_context.trust_cancellation,
         }
     }
 
@@ -119,14 +129,17 @@ impl LifecycleHookProcessStartAuthorization {
         let config = Arc::clone(&self.authorization.config).read_owned().await;
         if config.policy_revision != self.policy_revision
             || config.process_boundary_revision != self.process_boundary_revision
-            || config.execution_workspace.generation() != self.execution_workspace_generation
+            || config
+                .execution_workspace_for(self.session_id.as_deref())
+                .generation()
+                != self.execution_workspace_generation
         {
             return Err("execution policy changed before lifecycle hook process start".into());
         }
         let sandbox_mode = config.sandbox_mode;
         let mut permit = ExecutionPolicyPermit {
             _config: config,
-            session_id: None,
+            session_id: self.session_id.clone(),
             tool_name: "lifecycle_hook".into(),
             resource_boundary_extension: false,
             authorized_resources: Vec::new(),
@@ -187,7 +200,11 @@ impl LifecycleHookProcessStartAuthorization {
             if policy_changed || boundary_changed {
                 return;
             }
+            if self.session_trust_cancellation.is_cancelled() {
+                return;
+            }
             tokio::select! {
+                _ = self.session_trust_cancellation.cancelled() => return,
                 result = policy_changes.changed() => if result.is_err() { return; },
                 result = boundary_changes.changed() => if result.is_err() { return; },
             }
@@ -1630,7 +1647,7 @@ mod tests {
     async fn lifecycle_hook_start_uses_mxc_for_workspace_write_and_requires_live_policy() {
         let engine = Arc::new(AuthorizationEngine::new());
         let workspace_write = engine
-            .capture_lifecycle_hook_process_start_authorization()
+            .capture_lifecycle_hook_process_start_authorization(None)
             .await;
         if cfg!(windows) {
             assert!(workspace_write.is_ok());
@@ -1648,7 +1665,7 @@ mod tests {
             .await;
         assert!(
             engine
-                .capture_lifecycle_hook_process_start_authorization()
+                .capture_lifecycle_hook_process_start_authorization(None)
                 .await
                 .err()
                 .expect("ReadOnly blocks user Hook processes")
@@ -1664,7 +1681,7 @@ mod tests {
             .await;
         assert!(
             engine
-                .capture_lifecycle_hook_process_start_authorization()
+                .capture_lifecycle_hook_process_start_authorization(None)
                 .await
                 .err()
                 .expect("Ask network boundary is denied")
@@ -1675,7 +1692,7 @@ mod tests {
             .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
             .await;
         let authorization = engine
-            .capture_lifecycle_hook_process_start_authorization()
+            .capture_lifecycle_hook_process_start_authorization(None)
             .await
             .unwrap();
         let request = LifecycleHookProcessStartRequest {
@@ -1698,7 +1715,7 @@ mod tests {
         assert!(error.contains("without domain allowlists"));
         assert!(
             engine
-                .capture_lifecycle_hook_process_start_authorization()
+                .capture_lifecycle_hook_process_start_authorization(None)
                 .await
                 .err()
                 .expect("global Hook domain allowlist blocks FullAccess")
@@ -1724,7 +1741,7 @@ mod tests {
         }
         assert!(
             engine
-                .capture_lifecycle_hook_process_start_authorization()
+                .capture_lifecycle_hook_process_start_authorization(None)
                 .await
                 .err()
                 .expect("Hook-level network restriction blocks FullAccess")
@@ -1770,7 +1787,7 @@ mod tests {
                 NetworkPolicy::Restricted,
             );
         let authorization = engine
-            .capture_lifecycle_hook_process_start_authorization()
+            .capture_lifecycle_hook_process_start_authorization(None)
             .await;
         if cfg!(windows) {
             let authorization = authorization.expect("Workspace Write hooks use Windows MXC");
@@ -1793,6 +1810,75 @@ mod tests {
         } else {
             assert!(authorization.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_hook_authorization_uses_and_tracks_the_session_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let global_workspace = temp.path().join("global");
+        let first_session_workspace = temp.path().join("first-session");
+        let second_session_workspace = temp.path().join("second-session");
+        for path in [
+            &global_workspace,
+            &first_session_workspace,
+            &second_session_workspace,
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+
+        let session_id = "ses-00000000000000000000000000000001";
+        let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .switch_execution_workspace(&global_workspace)
+            .await
+            .unwrap();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        engine
+            .bind_session_execution_workspace(session_id, Some(&first_session_workspace))
+            .await
+            .unwrap();
+
+        let workspace = engine.execution_workspace_for_session(session_id).await;
+        assert_eq!(workspace.root(), Some(first_session_workspace.as_path()));
+        let authorization = engine
+            .capture_lifecycle_hook_process_start_authorization(Some(session_id))
+            .await
+            .unwrap();
+        assert_eq!(
+            authorization.execution_workspace_generation(),
+            workspace.generation()
+        );
+        authorization
+            .acquire(LifecycleHookProcessStartRequest {
+                working_directory: first_session_workspace.clone(),
+                runtime_read_roots: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        engine
+            .bind_session_execution_workspace(session_id, Some(&second_session_workspace))
+            .await
+            .unwrap();
+        assert!(
+            authorization
+                .acquire(LifecycleHookProcessStartRequest {
+                    working_directory: first_session_workspace,
+                    runtime_read_roots: Vec::new(),
+                })
+                .await
+                .err()
+                .expect("the previous session workspace is stale")
+                .contains("policy changed")
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            authorization.wait_for_revocation(),
+        )
+        .await
+        .expect("changing a session workspace revokes its running Hook");
     }
 
     #[tokio::test]
@@ -1826,7 +1912,7 @@ mod tests {
         );
 
         let authorization = engine
-            .capture_lifecycle_hook_process_start_authorization()
+            .capture_lifecycle_hook_process_start_authorization(None)
             .await
             .unwrap();
         let permit = authorization
@@ -1847,7 +1933,7 @@ mod tests {
             config.global_file_roots = vec![allowed_subdirectory];
         }
         let authorization = engine
-            .capture_lifecycle_hook_process_start_authorization()
+            .capture_lifecycle_hook_process_start_authorization(None)
             .await
             .unwrap();
         let error = match authorization

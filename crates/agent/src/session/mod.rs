@@ -403,6 +403,8 @@ pub struct SessionSupervisor {
     managed_asset_lease_port: Arc<dyn ManagedAssetLeasePort>,
     /// Agent-owned read boundary for formatting completed tool observations.
     observation_port: Arc<dyn ToolObservationPort>,
+    /// Best-effort notifications for durable session lifecycle boundaries.
+    lifecycle_hooks: Arc<dyn crate::LifecycleHooksPort>,
     /// The sole cross-session registry. A session's mutable runtime state is
     /// owned by its actor and is never protected by a shared per-session lock.
     actors: Arc<Mutex<HashMap<String, actor::SessionActorHandle>>>,
@@ -570,6 +572,7 @@ impl SessionSupervisor {
             session_tool_overlay,
             managed_asset_leases,
             observations,
+            lifecycle_hooks,
         } = ports;
         let (event_tx, _) = broadcast::channel(256);
         let (retry_tx, retry_rx) = mpsc::unbounded_channel();
@@ -588,6 +591,7 @@ impl SessionSupervisor {
             tool_run_test_support,
             session_tool_overlay_port: session_tool_overlay,
             observation_port: observations,
+            lifecycle_hooks,
             managed_asset_lease_port: managed_asset_leases,
             actors: Arc::new(Mutex::new(HashMap::new())),
             admission: Arc::new(dispatcher::SessionRunAdmission::new(max_concurrent.clamp(
@@ -970,7 +974,23 @@ impl SessionSupervisor {
         tools: Arc<ToolsFacade>,
         max_concurrent: usize,
     ) -> Self {
+        Self::new_for_test_with_lifecycle_hooks(
+            db,
+            tools,
+            max_concurrent,
+            Arc::new(crate::agent_tool_ports::NoopLifecycleHooksPort),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_lifecycle_hooks(
+        db: Arc<Database>,
+        tools: Arc<ToolsFacade>,
+        max_concurrent: usize,
+        lifecycle_hooks: Arc<dyn crate::LifecycleHooksPort>,
+    ) -> Self {
         let mut ports = tool_ports::SessionToolPorts::from_tools_facade(tools);
+        ports = ports.with_lifecycle_hooks(lifecycle_hooks);
         ports.schedules = Arc::new(tool_ports::DatabaseScheduleAdapter::new(
             haven_memory::ScheduleStore::new(Arc::clone(&db)),
         ));
@@ -1374,6 +1394,23 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    #[derive(Default)]
+    struct RecordingLifecycleHooks {
+        payloads: StdMutex<Vec<haven_common::hooks::LifecycleHookPayload>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::LifecycleHooksPort for RecordingLifecycleHooks {
+        async fn run(
+            &self,
+            payload: haven_common::hooks::LifecycleHookPayload,
+            _cancel: CancellationToken,
+        ) -> haven_common::hooks::LifecycleHookDecision {
+            self.payloads.lock().unwrap().push(payload);
+            haven_common::hooks::LifecycleHookDecision::Allow
+        }
+    }
+
     fn temp_db_path() -> PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
@@ -1398,6 +1435,40 @@ mod tests {
         // temp files eventually.
         let _ = path;
         (exec, db)
+    }
+
+    #[tokio::test]
+    async fn session_end_hook_fires_after_completed_once_across_repeated_end_calls() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let hooks = Arc::new(RecordingLifecycleHooks::default());
+        let executor = Arc::new(SessionSupervisor::new_for_test_with_lifecycle_hooks(
+            db,
+            Arc::new(ToolsFacade::new()),
+            1,
+            hooks.clone(),
+        ));
+        let session = executor.create_session("session end hook").await.unwrap();
+
+        assert_eq!(
+            executor.end_session(&session.session_id).await.unwrap(),
+            SessionStatus::Completed
+        );
+        assert_eq!(
+            executor.end_session(&session.session_id).await.unwrap(),
+            SessionStatus::Completed
+        );
+
+        let payloads = hooks.payloads.lock().unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(
+            payloads[0].event,
+            haven_common::hooks::LifecycleHookEvent::SessionEnd
+        );
+        assert_eq!(
+            payloads[0].session_id.as_deref(),
+            Some(session.session_id.as_str())
+        );
+        assert_eq!(payloads[0].success, Some(true));
     }
 
     #[tokio::test]

@@ -63,7 +63,9 @@ impl AgentToolPorts {
     }
 
     pub fn session_ports(&self) -> SessionToolPorts {
-        self.session.clone()
+        self.session
+            .clone()
+            .with_lifecycle_hooks(Arc::clone(&self.lifecycle_hooks))
     }
 
     pub(crate) fn prompt_port(&self) -> Arc<dyn PromptToolPort> {

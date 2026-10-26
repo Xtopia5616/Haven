@@ -441,12 +441,9 @@
 					<div class="hook-diagnostic-row">
 						<strong>{item.event}</strong>
 						<span>{outcomeLabel(item)}</span>
-						<span>事件 {item.event_runs} 次 · 命令 {item.command_runs} 次</span>
+						<span>事件 {item.event_runs} 次 · 命令尝试 {item.command_attempts} 次 · 已启动 {item.command_starts} 次</span>
 						{#if item.failures || item.denials}
-							<small
-								>失败 {item.failures} · 脚本拒绝 {item.denials} · {item.last_failure_code ??
-									''}</small
-							>
+							<small>失败 {item.failures} · 脚本拒绝 {item.denials} · {item.last_failure_code ?? ''}{#if item.last_problem_command} · 最近问题命令：{item.last_problem_command.source === 'user' ? '用户级' : '项目级'}第 {item.last_problem_command.index + 1} 条{/if}</small>
 						{/if}
 						{#if item.last_failure_code}<small
 								>{hookFailureHelp(item.last_failure_code)}</small

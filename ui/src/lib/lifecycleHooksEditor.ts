@@ -39,6 +39,12 @@ export const HOOK_EVENTS: Array<{
 		veto: false,
 	},
 	{
+		key: 'session_end',
+		label: 'SessionEnd',
+		description: '会话结束状态持久化后通知；删除会话不会触发。',
+		veto: false,
+	},
+	{
 		key: 'pre_compact',
 		label: 'PreCompact',
 		description: '上下文压缩前通知，包含 tokens_before。',
@@ -58,6 +64,7 @@ export const emptyHooks = (): LifecycleHooksConfig => ({
 	session_start: [],
 	run_start: [],
 	run_end: [],
+	session_end: [],
 	pre_compact: [],
 	post_compact: [],
 });

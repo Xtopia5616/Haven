@@ -17,6 +17,7 @@ pub enum LifecycleHookEvent {
     RunEnd,
     PreCompact,
     PostCompact,
+    SessionEnd,
 }
 
 /// Content-free outcome visible in the Hooks settings diagnostics.
@@ -35,11 +36,31 @@ pub enum LifecycleHookOutcome {
 pub struct LifecycleHookEventDiagnostics {
     pub event: LifecycleHookEvent,
     pub event_runs: u64,
-    pub command_runs: u64,
+    /// Commands that passed event filtering and reached their start attempt.
+    pub command_attempts: u64,
+    /// Commands whose process entered its configured containment boundary.
+    pub command_starts: u64,
     pub failures: u64,
     pub denials: u64,
     pub last_outcome: Option<LifecycleHookOutcome>,
     pub last_failure_code: Option<String>,
+    pub last_problem_command: Option<LifecycleHookCommandLocation>,
+}
+
+/// Which configured Hook list contains a command, without exposing its path
+/// or arguments in diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleHookCommandSource {
+    User,
+    Project,
+}
+
+/// Zero-based command position in its user-level or project-level event list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecycleHookCommandLocation {
+    pub source: LifecycleHookCommandSource,
+    pub index: usize,
 }
 
 /// Bounded, typed metadata passed to a configured hook through JSON on stdin.
