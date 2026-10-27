@@ -1337,3 +1337,4 @@
 - [1431：派生会话的创建结果与页面协调分层](1431-ui-fork-session-action-results.md)
 - [1432：终态清理重试的合并唤醒与独立工作窗口](1432-isolate-terminal-cleanup-retry-worker.md)
 - [1433：恢复 Tools 严格 Clippy 基线](1433-restore-tools-strict-clippy-baseline.md)
+- [1434：结束会话失败按用户选择隔离](1434-fence-end-session-failure-by-user-selection.md)

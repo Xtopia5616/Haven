@@ -322,13 +322,19 @@ export class ChatSessionController {
 	async endSession(): Promise<void> {
 		const sessionId = this.dependencies.getActiveSessionId();
 		if (!sessionId) return;
+		const selectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
 		// Prevent lifecycle events from auto-selecting an existing session while ending.
 		this.dependencies.setFreshSessionIntent(true);
 		try {
 			await this.dependencies.commands.endSession({ sessionId });
 		} catch (error) {
-			// Keep the active pointer attached so a still-running session stays visible.
-			this.dependencies.setFreshSessionIntent(false);
+			// Restore only the intent owned by this selection. A newer draft or
+			// session choice must survive a late failure from the previous session.
+			if (
+				this.dependencies.reducer.isUserSelectionCurrent(selectionVersion) &&
+				this.dependencies.getActiveSessionId() === sessionId
+			)
+				this.dependencies.setFreshSessionIntent(false);
 			this.report(error, '完成会话失败');
 		}
 	}

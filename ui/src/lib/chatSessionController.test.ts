@@ -14,6 +14,8 @@ import type { CanonicalRole } from './contracts/generatedCommands.ts';
 import type { SessionResumeResponse } from './contracts/sessionHistory.ts';
 import type { SessionMessagePresentationType } from './streaming.ts';
 import type { ResumeTranscriptProjectionInput } from './resumeMessages.ts';
+import { createChatSessionEventHandler } from './chatSessionEventHandlers.ts';
+import { createChatSessionStartup } from './chatSessionStartup.ts';
 
 const SESSION_ID = 'ses-00000000000000000000000000000001';
 const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
@@ -136,6 +138,7 @@ function makeHarness(
 
 	return {
 		controller: createChatSessionController(dependencies),
+		setFreshSessionIntent: dependencies.setFreshSessionIntent,
 		reducer,
 		commandCalls,
 		submitCalls,
@@ -867,6 +870,153 @@ describe('ChatSessionController session guards', () => {
 			refresh: { kind: 'failed', error: refreshError },
 		});
 		expect(harness.reducer.snapshot().activeSessionId).toBe(CREATED_SESSION_ID);
+	});
+
+	it('preserves a newer draft after end fails and refuses an unrelated created event', async () => {
+		let rejectEnd!: (error: Error) => void;
+		const harness = makeHarness({
+			runCommand: () =>
+				new Promise((_, reject) => {
+					rejectEnd = reject;
+				}),
+		});
+		const ending = harness.controller.endSession();
+		// Match the route's explicit New Session intent before the old command settles.
+		harness.controller.beginUserSessionSelection();
+		harness.setFreshSessionIntent(true);
+		harness.reducer.dispatch({ type: 'session/cleared' });
+		rejectEnd(new Error('late end failure'));
+		await ending;
+
+		const onLifecycle = createChatSessionEventHandler({
+			getActiveSessionId: () => harness.reducer.snapshot().activeSessionId,
+			isFreshSessionIntent: () => harness.freshSessionIntent,
+			closeCompletedSession: () => {},
+			adoptDraftMessages: () => false,
+			dispatchSession: (action) => harness.reducer.dispatch(action),
+			getErroredSessionId: () => null,
+			clearAskAwaiting: () => {},
+			evictTerminalSessionMemory: () => {},
+			clearStepBlockIds: () => {},
+			flushChunksNow: () => {},
+			updateSessionTitle: () => {},
+			scheduleLoadSessions: () => {},
+		});
+		onLifecycle({
+			event: 'session:lifecycle',
+			id: 1,
+			payload: {
+				type: 'created',
+				sessionId: CREATED_SESSION_ID,
+				status: 'pending',
+				waitingReason: null,
+				title: null,
+			},
+		});
+		expect(harness.reducer.snapshot().sessions).toContainEqual(
+			expect.objectContaining({ sessionId: CREATED_SESSION_ID }),
+		);
+		expect(harness.reducer.snapshot().activeSessionId).toBeNull();
+		expect(harness.freshSessionIntent).toBe(true);
+	});
+
+	it('keeps a new draft unselected when the real startup owner refreshes after an old end failure', async () => {
+		let rejectEnd!: (error: Error) => void;
+		const harness = makeHarness({
+			runCommand: () =>
+				new Promise((_, reject) => {
+					rejectEnd = reject;
+				}),
+		});
+		harness.reducer.dispatch({
+			type: 'session/messages/resume-loaded',
+			sessionId: OTHER_SESSION_ID,
+			messages: [{ id: USER_MESSAGE_ID, role: 'user', content: 'Cached other session' }],
+		});
+		const startup = createChatSessionStartup({
+			reducer: harness.reducer,
+			dispatch: (action) => harness.reducer.dispatch(action),
+			listRuntimeSessions: async () => ({
+				sessions: [
+					{
+						sessionId: OTHER_SESSION_ID,
+						status: 'paused',
+						inputText: '',
+						title: null,
+						waitingReason: 'user_input',
+					},
+				],
+			}),
+			getLatestSessionForResume: async () => null,
+			reopenSession: async () => {},
+			refreshToolRuns: () => {},
+			getFreshSessionIntent: () => harness.freshSessionIntent,
+			setFreshSessionIntent: harness.setFreshSessionIntent,
+			hasPersistedFreshSessionIntent: () => false,
+			clearPersistedFreshSessionIntent: () => {},
+			getPendingInteractionRequestIds: () => [],
+			evictTerminalSessionMemory: () => {},
+			setInitialLoading: () => {},
+			deferResumeTargetClear: () => {},
+			warn: () => {},
+			reportError: () => {},
+		});
+		try {
+			const ending = harness.controller.endSession();
+			harness.controller.beginUserSessionSelection();
+			harness.setFreshSessionIntent(true);
+			harness.reducer.dispatch({ type: 'session/memory-cleared', sessionId: SESSION_ID });
+			harness.reducer.dispatch({ type: 'session/cleared' });
+			rejectEnd(new Error('late end failure'));
+			await ending;
+			await startup.loadSessions();
+			expect(harness.reducer.snapshot().sessions).toHaveLength(1);
+			expect(harness.reducer.snapshot().activeSessionId).toBeNull();
+			expect(harness.freshSessionIntent).toBe(true);
+		} finally {
+			startup.dispose();
+		}
+	});
+
+	it('does not clear a newer end intent after switching away and back', async () => {
+		const endings: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+		const harness = makeHarness({
+			runCommand: (command) =>
+				command === 'end_session'
+					? new Promise<void>((resolve, reject) => {
+							endings.push({ resolve, reject });
+						})
+					: resumeResponseFixture(),
+		});
+		const olderEnd = harness.controller.endSession();
+		await harness.controller.switchToSession(OTHER_SESSION_ID);
+		await harness.controller.switchToSession(SESSION_ID);
+		expect(harness.freshSessionIntent).toBe(false);
+		const newerEnd = harness.controller.endSession();
+		endings[0]!.reject(new Error('old end failed'));
+		await olderEnd;
+		expect(harness.freshSessionIntent).toBe(true);
+		expect(harness.reducer.snapshot().activeSessionId).toBe(SESSION_ID);
+		endings[1]!.resolve();
+		await newerEnd;
+	});
+
+	it('does not clear fresh intent if lifecycle completion already cleared the active session', async () => {
+		let rejectEnd!: (error: Error) => void;
+		const harness = makeHarness({
+			runCommand: () =>
+				new Promise((_, reject) => {
+					rejectEnd = reject;
+				}),
+		});
+		const ending = harness.controller.endSession();
+		// Completion closes the active session without beginning a user selection.
+		harness.setFreshSessionIntent(true);
+		harness.reducer.dispatch({ type: 'session/cleared' });
+		rejectEnd(new Error('end failed after completion'));
+		await ending;
+		expect(harness.freshSessionIntent).toBe(true);
+		expect(harness.reducer.snapshot().activeSessionId).toBeNull();
 	});
 
 	it('keeps the session selected when end fails and clears fresh-session intent', async () => {

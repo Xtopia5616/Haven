@@ -153,7 +153,7 @@
 
 **验收。** 快速切会话后旧请求返回、继续/回滚并发、提交成功但列表刷新失败、当前会话完成自动关闭、重新打开历史与新会话意图相遇。当前已有用户选择版本和 submission token 机制，应保留；相同文本的两次独立提交不能去重。
 
-**源码复核（2026-10-27，下一切片）。** `ChatSessionController.endSession` 在旧会话结束失败后无条件清除 fresh intent；而页面 `newSession` 在等待期间已经递增用户选择版本、设置新会话意图并清空活动指针。旧失败因此可能让后续 created 事件或列表刷新重新选择已有会话。下一切片先建立 deferred End → 新建 → 旧失败的回归，再将失败恢复限定在原选择版本和会话身份。`interruptOutput` 未发现同类选择写入，跨会话 pending 展示仅保留为候选。
+**源码复核与实施（2026-10-27，ADR 1434）。** `ChatSessionController.endSession` 原先在旧会话结束失败后无条件清除 fresh intent，可能覆盖页面后来新建的会话意图。已先复现 deferred End → 新建 → 旧失败 → created 事件抢选，再将失败恢复限定在原选择版本和会话身份。真实 created/list owner、新草稿、切走再切回及终态清除均有覆盖；UI 1536 项测试、检查和生产构建通过。`interruptOutput` 未发现同类选择写入，跨会话 pending 展示仅保留为候选；不宣布 R12 全部完成。
 
 ## 14. R13：App 生命周期、Common 配置与 Platform 按职责演进
 
