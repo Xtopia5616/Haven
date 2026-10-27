@@ -1342,3 +1342,4 @@
 - [1436：后代结束失败保留终态清理工作](1436-retain-failed-descendant-terminal-cleanup.md)
 - [1437：恢复 workspace 全目标严格 Clippy 基线](1437-restore-workspace-all-targets-clippy-baseline.md)
 - [1438：会话执行设置按发起时选择隔离](1438-fence-execution-settings-by-user-selection.md)
+- [1439：Inbox 注销失败保留终态清理责任](1439-retain-failed-inbox-terminal-cleanup.md)

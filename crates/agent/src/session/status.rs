@@ -310,21 +310,28 @@ impl SessionSupervisor {
         session_id: &str,
         cascade: bool,
     ) -> anyhow::Result<()> {
-        self.unregister_from_inbox(session_id).await;
+        let inbox_result = self.unregister_from_inbox(session_id).await;
         self.unregister_session_tool_overlay(session_id).await;
         self.scheduled_confirms
             .lock()
             .await
             .retain(|_, request| request.session_id.as_deref() != Some(session_id));
         self.authorization.clear_session_trust(session_id).await;
-        if cascade && self.may_have_children(session_id).await {
-            Box::pin(self.cascade_end_children(session_id)).await?;
-        }
+        let cascade_result = if cascade && self.may_have_children(session_id).await {
+            Box::pin(self.cascade_end_children(session_id)).await
+        } else {
+            Ok(())
+        };
+        // Independent cleanup and trust revocation must still run when the
+        // registry is temporarily unavailable. Retain the cleanup owner until
+        // both registry cleanup and descendant termination have completed.
+        inbox_result?;
+        cascade_result?;
         self.clear_has_children(session_id).await;
         Ok(())
     }
 
-    async fn unregister_from_inbox(&self, session_id: &str) {
+    async fn unregister_from_inbox(&self, session_id: &str) -> anyhow::Result<()> {
         let session_id = session_id.to_string();
         let log_id = session_id.clone();
         let messaging = self.messaging_service.clone();
@@ -344,17 +351,23 @@ impl SessionSupervisor {
         })
         .await;
         match result {
-            Ok(Err(error)) => tracing::debug!(
-                session_id = %log_id,
-                error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                "messaging registry cleanup failed"
-            ),
-            Err(error) => tracing::warn!(
-                session_id = %log_id,
-                error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                "messaging registry cleanup task failed"
-            ),
-            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::debug!(
+                    session_id = %log_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "messaging registry cleanup failed"
+                );
+                anyhow::bail!("messaging registry cleanup failed");
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %log_id,
+                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                    "messaging registry cleanup task failed"
+                );
+                anyhow::bail!("messaging registry cleanup task failed");
+            }
+            Ok(Ok(())) => Ok(()),
         }
     }
 
@@ -1541,3 +1554,7 @@ impl SessionSupervisor {
             .await;
     }
 }
+
+#[cfg(test)]
+#[path = "terminal_inbox_tests.rs"]
+mod terminal_inbox_tests;

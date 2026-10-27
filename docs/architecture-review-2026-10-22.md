@@ -85,6 +85,8 @@
 
 **下一切片证据复核（2026-10-27）。** `status.rs::unregister_from_inbox` 仍将 registry 读取、注销、标记离线及 blocking join 错误仅写日志；`finish_ended_session` 因而可能成功，`finish_terminal_cleanup` 随后完成 guard 并移除 Actor。无后代或显式 `cascade=false` 时，后代枚举不会替此失败保留 owner；actorless worker retry 直接返回成功。root 条目可能残留，child 的 online 状态最多延续到原 heartbeat 后 300 秒，显式再次 End 可以恢复。下一切片用隔离 registry 损坏/恢复验证错误传播和自动重试，不扩大 backlog/restart 合同。本次仅源码确认，未运行该故障回归，不作为已修复结果。
 
+**实施（2026-10-27，ADR 1439）。** 旧实现回归复现 root/child 清理失败后 Actor 被移除，以及 actorless End 误报成功；修复后 registry 错误进入原 terminal cleanup guard，独立清理与信任撤销继续执行。5 项定向测试及 Agent 710 项测试通过，涵盖普通 worker 退避恢复、失败 final drain、显式 false、child offline 保留父关系，以及 actorless 已提交 Completed 的错误与显式重试；最终 workspace 验收记录见 ADR 1439。容量与跨重启恢复继续保持原边界。
+
 ## 6. R05：事件传递的可靠性应按消费者声明
 
 **证据。** [EventBus::emit](../crates/agent/src/event.rs) 顺序 await 每个 subscriber。已有 BufferedEmitter、流分片合并以及 overflow 不丢权威事件的测试，不能再建议从零新增全部机制。[MemoryPersistence::session_store](../crates/memory/src/persistence.rs) 每次产生独立 live channel；[AppState](../crates/app-binary/src/app_state.rs) 有意构造 App/命令侧与 supervisor 两个 store。
