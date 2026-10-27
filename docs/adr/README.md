@@ -1341,3 +1341,4 @@
 - [1435：中断等待状态按会话隔离](1435-scope-interrupt-pending-to-session.md)
 - [1436：后代结束失败保留终态清理工作](1436-retain-failed-descendant-terminal-cleanup.md)
 - [1437：恢复 workspace 全目标严格 Clippy 基线](1437-restore-workspace-all-targets-clippy-baseline.md)
+- [1438：会话执行设置按发起时选择隔离](1438-fence-execution-settings-by-user-selection.md)

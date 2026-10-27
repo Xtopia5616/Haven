@@ -89,6 +89,7 @@
 	import { mediaPlanStore } from '$lib/mediaPlanStore.ts';
 	import { executionWorkspaceStore } from '$lib/executionWorkspaceStore.ts';
 	import type { ExecutionMode } from '$lib/contracts/generatedCommands.ts';
+	import { createChatExecutionController } from '$lib/chatExecutionController.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
@@ -251,7 +252,7 @@
 				}
 			})
 			.catch((error) => {
-				if (!cancelled) {
+				if (!cancelled && requestSequence === executionWorkspaceRequestSequence) {
 					reportError(error, { context: '+page', message: '读取会话工作目录失败' });
 				}
 			});
@@ -279,7 +280,7 @@
 				}
 			})
 			.catch((error) => {
-				if (!cancelled) {
+				if (!cancelled && requestSequence === executionModeRequestSequence) {
 					reportError(error, { context: '+page', message: '读取会话执行方式失败' });
 				}
 			});
@@ -1418,26 +1419,44 @@
 	const sessionHeaderTitle = $derived(
 		String(activeSession?.title || activeSession?.inputText || '新会话'),
 	);
-	async function persistExecutionWorkspace(selectedRoot: string | null) {
-		if (activeSessionId) {
-			executionWorkspaceRoot = await setSessionExecutionWorkspace({
-				sessionId: activeSessionId,
-				root: selectedRoot,
-			});
-			addNotification('当前会话工作目录已更新', 'success', 3000);
-		} else {
-			await updateSettings({ settings: { security: { execution_root: selectedRoot } } });
-			defaultExecutionWorkspaceRoot = selectedRoot;
-			executionWorkspaceRoot = selectedRoot;
-			addNotification('新会话默认工作目录已更新', 'success', 3000);
-		}
-		if (selectedRoot) executionWorkspaceStore.add(selectedRoot);
-	}
+	const chatExecutionController = createChatExecutionController({
+		getSelection: () => ({
+			sessionId: sessionReducer.snapshot().activeSessionId,
+			version: sessionReducer.currentUserSelectionVersion(),
+		}),
+		setWorkspace: (sessionId, root) => setSessionExecutionWorkspace({ sessionId, root }),
+		setMode: (sessionId, mode) => setSessionExecutionMode({ sessionId, mode }),
+		setDefaultWorkspace: (root) =>
+			updateSettings({ settings: { security: { execution_root: root } } }),
+		setDefaultMode: (mode) =>
+			updateSettings({ settings: { security: { execution_mode: mode } } }),
+		pickWorkspace: pickExecutionWorkspaceDirectory,
+		applyWorkspace: (root) => {
+			executionWorkspaceRoot = root;
+		},
+		applyMode: (mode) => {
+			executionMode = mode;
+		},
+		applyDefaultWorkspace: (root) => {
+			defaultExecutionWorkspaceRoot = root;
+		},
+		applyDefaultMode: (mode) => {
+			defaultExecutionMode = mode;
+		},
+		rememberWorkspace: (root) => executionWorkspaceStore.add(root),
+		invalidateWorkspaceRead: () => {
+			++executionWorkspaceRequestSequence;
+		},
+		invalidateModeRead: () => {
+			++executionModeRequestSequence;
+		},
+		notify: (message) => addNotification(message, 'success', 3000),
+	});
 	async function selectExecutionWorkspace(selectedRoot: string | null) {
 		if (executionWorkspaceSwitching) return;
 		executionWorkspaceSwitching = true;
 		try {
-			await persistExecutionWorkspace(selectedRoot);
+			await chatExecutionController.workspace(selectedRoot);
 		} catch (error) {
 			reportError(error, { context: '+page', message: '切换会话工作目录失败' });
 		} finally {
@@ -1448,17 +1467,7 @@
 		if (executionModeSwitching) return;
 		executionModeSwitching = true;
 		try {
-			if (activeSessionId) {
-				executionMode = await setSessionExecutionMode({
-					sessionId: activeSessionId,
-					mode: selectedMode,
-				});
-			} else {
-				await updateSettings({ settings: { security: { execution_mode: selectedMode } } });
-				defaultExecutionMode = selectedMode;
-				executionMode = selectedMode;
-			}
-			addNotification('会话执行方式已更新', 'success', 3000);
+			await chatExecutionController.mode(selectedMode);
 		} catch (error) {
 			reportError(error, { context: '+page', message: '切换会话执行方式失败' });
 		} finally {
@@ -1469,9 +1478,7 @@
 		if (executionWorkspaceSwitching) return;
 		executionWorkspaceSwitching = true;
 		try {
-			const selectedRoot = await pickExecutionWorkspaceDirectory();
-			if (selectedRoot === null) return;
-			await persistExecutionWorkspace(selectedRoot);
+			await chatExecutionController.pickWorkspace();
 		} catch (error) {
 			reportError(error, { context: '+page', message: '选择工作目录失败' });
 		} finally {

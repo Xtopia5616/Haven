@@ -83,6 +83,8 @@
 
 **后续失败路径复核与实施（2026-10-27，ADR 1436）。** 真实 SQLite trigger 注入确认：子会话 Completed 写入失败后，父 End 两次均返回 Completed，子会话仍为 Paused；父 Actor 已移除，队列虽有待办但 actorless retry 无法继续。现将后代枚举/End 失败保留为原 terminal cleanup owner 的未完成工作，保留父 Actor 与后代提示；普通失败使用既有退避，信任在级联前撤销。8 项定向回归覆盖重试、兄弟部分失败、显式 false、退出、取消和真实隔离 registry 损坏；backlog 总量与跨重启恢复仍为候选，不因本修复关闭。
 
+**下一切片证据复核（2026-10-27）。** `status.rs::unregister_from_inbox` 仍将 registry 读取、注销、标记离线及 blocking join 错误仅写日志；`finish_ended_session` 因而可能成功，`finish_terminal_cleanup` 随后完成 guard 并移除 Actor。无后代或显式 `cascade=false` 时，后代枚举不会替此失败保留 owner；actorless worker retry 直接返回成功。root 条目可能残留，child 的 online 状态最多延续到原 heartbeat 后 300 秒，显式再次 End 可以恢复。下一切片用隔离 registry 损坏/恢复验证错误传播和自动重试，不扩大 backlog/restart 合同。本次仅源码确认，未运行该故障回归，不作为已修复结果。
+
 ## 6. R05：事件传递的可靠性应按消费者声明
 
 **证据。** [EventBus::emit](../crates/agent/src/event.rs) 顺序 await 每个 subscriber。已有 BufferedEmitter、流分片合并以及 overflow 不丢权威事件的测试，不能再建议从零新增全部机制。[MemoryPersistence::session_store](../crates/memory/src/persistence.rs) 每次产生独立 live channel；[AppState](../crates/app-binary/src/app_state.rs) 有意构造 App/命令侧与 supervisor 两个 store。
