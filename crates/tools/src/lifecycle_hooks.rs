@@ -1,8 +1,8 @@
 //! User-configured lifecycle command execution.
 //!
-//! FullAccess hooks run as host commands only with NetworkPolicy::Open;
-//! WorkspaceWrite hooks use Windows MXC. Job Object containment manages the
-//! host process tree but does not itself sandbox filesystem or network access.
+//! Hook processes require resource authorization. FullAccess uses a host
+//! process boundary; WorkspaceWrite uses Windows MXC. Job Object containment
+//! manages the host process tree but does not itself sandbox filesystem or network access.
 
 use crate::security::{
     AuthorizationEngine, LifecycleHookProcessStartAuthorization, LifecycleHookProcessStartRequest,
@@ -67,7 +67,7 @@ impl LifecycleHookService {
     ) -> LifecycleHookDecision {
         self.begin_event(payload.event);
         let Some(config_service) = self.config_service.get() else {
-            self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None);
+            self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None, None);
             return LifecycleHookDecision::Allow;
         };
         let snapshot = match config_service.snapshot() {
@@ -100,7 +100,7 @@ impl LifecycleHookService {
                     .failure_decision(payload.event, "execution_workspace_unavailable")
                     .await;
             }
-            self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None);
+            self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None, None);
             return LifecycleHookDecision::Allow;
         };
 
@@ -150,7 +150,7 @@ impl LifecycleHookService {
             hook.command.enabled && matcher_applies(&hook.command, payload.tool_name.as_deref())
         });
         if hooks.is_empty() {
-            self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None);
+            self.finish_event(payload.event, LifecycleHookOutcome::NoHooks, None, None);
             return LifecycleHookDecision::Allow;
         }
         if hooks.len() > MAX_HOOKS_PER_EVENT * 2 {
@@ -197,6 +197,7 @@ impl LifecycleHookService {
         };
         let mut had_failure = false;
         let mut event_failure_code = None;
+        let mut event_problem_command = None;
         for configured_hook in hooks {
             if cancel.is_cancelled() {
                 return self.failure_decision(payload.event, "cancelled").await;
@@ -241,12 +242,14 @@ impl LifecycleHookService {
                 Ok(Err(failure)) => {
                     had_failure = true;
                     event_failure_code = Some(failure.code());
-                    self.record_failure(payload.event, failure.code(), Some(location));
+                    self.record_failure(payload.event);
+                    event_problem_command = Some(location);
                     if is_veto_event(payload.event) {
                         self.finish_event(
                             payload.event,
                             LifecycleHookOutcome::FailedOpen,
                             Some(failure.code()),
+                            Some(location),
                         );
                         return LifecycleHookDecision::Deny {
                             reason: failure.public_reason(payload.event),
@@ -258,12 +261,14 @@ impl LifecycleHookService {
                 Err(_) => {
                     had_failure = true;
                     event_failure_code = Some("event_time_limit");
-                    self.record_failure(payload.event, "event_time_limit", Some(location));
+                    self.record_failure(payload.event);
+                    event_problem_command = Some(location);
                     if is_veto_event(payload.event) {
                         self.finish_event(
                             payload.event,
                             LifecycleHookOutcome::FailedOpen,
                             Some("event_time_limit"),
+                            Some(location),
                         );
                         return LifecycleHookDecision::Deny {
                             reason: format!(
@@ -281,16 +286,21 @@ impl LifecycleHookService {
                 match parse_veto_reply(&output.stdout, payload.event) {
                     Ok(LifecycleHookDecision::Allow) => {}
                     Ok(denied @ LifecycleHookDecision::Deny { .. }) => {
-                        self.record_problem_command(payload.event, location);
-                        self.finish_event(payload.event, LifecycleHookOutcome::Denied, None);
+                        self.finish_event(
+                            payload.event,
+                            LifecycleHookOutcome::Denied,
+                            None,
+                            Some(location),
+                        );
                         return denied;
                     }
                     Err(failure) => {
-                        self.record_failure(payload.event, failure.code(), Some(location));
+                        self.record_failure(payload.event);
                         self.finish_event(
                             payload.event,
                             LifecycleHookOutcome::FailedOpen,
                             Some(failure.code()),
+                            Some(location),
                         );
                         return LifecycleHookDecision::Deny {
                             reason: failure.public_reason(payload.event),
@@ -304,9 +314,10 @@ impl LifecycleHookService {
                 payload.event,
                 LifecycleHookOutcome::FailedOpen,
                 event_failure_code,
+                event_problem_command,
             );
         } else {
-            self.finish_event(payload.event, LifecycleHookOutcome::Succeeded, None);
+            self.finish_event(payload.event, LifecycleHookOutcome::Succeeded, None, None);
         }
         LifecycleHookDecision::Allow
     }
@@ -324,9 +335,6 @@ impl LifecycleHookService {
     fn begin_event(&self, event: LifecycleHookEvent) {
         self.with_event_stats(event, |stats| {
             stats.event_runs = stats.event_runs.saturating_add(1);
-            stats.last_outcome = None;
-            stats.last_failure_code = None;
-            stats.last_problem_command = None;
         });
     }
 
@@ -342,26 +350,9 @@ impl LifecycleHookService {
         });
     }
 
-    fn record_failure(
-        &self,
-        event: LifecycleHookEvent,
-        code: &str,
-        location: Option<LifecycleHookCommandLocation>,
-    ) {
+    fn record_failure(&self, event: LifecycleHookEvent) {
         self.with_event_stats(event, |stats| {
             stats.failures = stats.failures.saturating_add(1);
-            stats.last_failure_code = Some(code.to_owned());
-            stats.last_problem_command = location;
-        });
-    }
-
-    fn record_problem_command(
-        &self,
-        event: LifecycleHookEvent,
-        location: LifecycleHookCommandLocation,
-    ) {
-        self.with_event_stats(event, |stats| {
-            stats.last_problem_command = Some(location);
         });
     }
 
@@ -370,14 +361,12 @@ impl LifecycleHookService {
         event: LifecycleHookEvent,
         outcome: LifecycleHookOutcome,
         failure_code: Option<&str>,
+        problem_command: Option<LifecycleHookCommandLocation>,
     ) {
         self.with_event_stats(event, |stats| {
             stats.last_outcome = Some(outcome);
-            if let Some(code) = failure_code {
-                stats.last_failure_code = Some(code.to_owned());
-            } else if outcome != LifecycleHookOutcome::FailedOpen {
-                stats.last_failure_code = None;
-            }
+            stats.last_failure_code = failure_code.map(str::to_owned);
+            stats.last_problem_command = problem_command;
             if outcome == LifecycleHookOutcome::Denied {
                 stats.denials = stats.denials.saturating_add(1);
             }
@@ -414,8 +403,8 @@ impl LifecycleHookService {
         event: LifecycleHookEvent,
         failure: &'static str,
     ) -> LifecycleHookDecision {
-        self.record_failure(event, failure, None);
-        self.finish_event(event, LifecycleHookOutcome::FailedOpen, Some(failure));
+        self.record_failure(event);
+        self.finish_event(event, LifecycleHookOutcome::FailedOpen, Some(failure), None);
         tracing::warn!(event = ?event, failure, "lifecycle hook event could not run");
         if is_veto_event(event) {
             LifecycleHookDecision::Deny {
@@ -1002,7 +991,13 @@ mod tests {
 
         hooks.begin_event(event);
         hooks.command_attempted(event);
-        hooks.record_failure(event, "spawn_failed", Some(location));
+        hooks.record_failure(event);
+        hooks.finish_event(
+            event,
+            LifecycleHookOutcome::FailedOpen,
+            Some("spawn_failed"),
+            Some(location),
+        );
 
         let diagnostics = hooks.diagnostics();
         assert_eq!(diagnostics[0].command_attempts, 1);
@@ -1015,6 +1010,48 @@ mod tests {
 
         hooks.command_started(event);
         assert_eq!(hooks.diagnostics()[0].command_starts, 1);
+    }
+
+    #[test]
+    fn concurrent_event_diagnostics_describe_one_completed_invocation() {
+        let hooks = LifecycleHookService::default();
+        let event = LifecycleHookEvent::PreToolUse;
+        let location = LifecycleHookCommandLocation {
+            source: LifecycleHookCommandSource::Project,
+            index: 2,
+        };
+        hooks.begin_event(event);
+        hooks.begin_event(event);
+        hooks.record_failure(event);
+        hooks.finish_event(
+            event,
+            LifecycleHookOutcome::FailedOpen,
+            Some("spawn_failed"),
+            Some(location),
+        );
+        hooks.finish_event(event, LifecycleHookOutcome::Succeeded, None, None);
+        let stats = &hooks.diagnostics()[0];
+        assert_eq!(stats.event_runs, 2);
+        assert_eq!(stats.failures, 1);
+        assert_eq!(stats.last_outcome, Some(LifecycleHookOutcome::Succeeded));
+        assert_eq!(stats.last_failure_code, None);
+        assert_eq!(stats.last_problem_command, None);
+
+        hooks.begin_event(event);
+        hooks.begin_event(event);
+        hooks.record_failure(event);
+        hooks.finish_event(event, LifecycleHookOutcome::Denied, None, Some(location));
+        hooks.finish_event(
+            event,
+            LifecycleHookOutcome::FailedOpen,
+            Some("spawn_failed"),
+            None,
+        );
+        let stats = &hooks.diagnostics()[0];
+        assert_eq!(stats.last_outcome, Some(LifecycleHookOutcome::FailedOpen));
+        assert_eq!(stats.last_failure_code.as_deref(), Some("spawn_failed"));
+        assert_eq!(stats.last_problem_command, None);
+        assert_eq!(stats.denials, 1);
     }
 
     #[tokio::test]
