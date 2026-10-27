@@ -66,7 +66,7 @@ function makeHarness(
 	const reportedErrors: Array<{ error: unknown; message?: string }> = [];
 	const stepBlockClears: string[] = [];
 	const continuePending: boolean[] = [];
-	const interruptPending: boolean[] = [];
+	const interruptPending: Array<readonly string[]> = [];
 	const rollbackLoading: boolean[] = [];
 	const autoFollow: boolean[] = [];
 	let freshSessionIntent = false;
@@ -132,7 +132,7 @@ function makeHarness(
 		setRollbackLoading: (loading) => rollbackLoading.push(loading),
 		setForkLoading: () => {},
 		setContinuePending: (pending) => continuePending.push(pending),
-		setInterruptPending: (pending) => interruptPending.push(pending),
+		setInterruptPendingSessions: (sessionIds) => interruptPending.push(sessionIds),
 		setAutoFollow: (follow) => autoFollow.push(follow),
 	};
 
@@ -158,6 +158,10 @@ function makeHarness(
 		},
 		get loadSessionsCalls() {
 			return loadSessionsCalls;
+		},
+		get activeInterruptPending() {
+			const sessionId = reducer.snapshot().activeSessionId;
+			return sessionId !== null && (interruptPending.at(-1) ?? []).includes(sessionId);
 		},
 	};
 }
@@ -1036,6 +1040,77 @@ describe('ChatSessionController session guards', () => {
 		expect(harness.reportedErrors).toEqual([{ error, message: '完成会话失败' }]);
 	});
 
+	it('allows another session to interrupt while the first request is pending', async () => {
+		const resolvers: Array<() => void> = [];
+		const harness = makeHarness({
+			runCommand: () => new Promise<void>((resolve) => resolvers.push(resolve)),
+		});
+		const first = harness.controller.interruptOutput();
+		expect(harness.activeInterruptPending).toBe(true);
+		harness.controller.beginUserSessionSelection();
+		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
+		expect(harness.activeInterruptPending).toBe(false);
+		const second = harness.controller.interruptOutput();
+		expect(harness.activeInterruptPending).toBe(true);
+		expect(harness.commandCalls.map((call) => call.args)).toEqual([
+			{ sessionId: SESSION_ID },
+			{ sessionId: OTHER_SESSION_ID },
+		]);
+		resolvers[0]!();
+		await first;
+		expect(harness.activeInterruptPending).toBe(true);
+		expect(harness.notifications).toEqual([]);
+		expect(harness.interruptPending).toEqual([
+			[SESSION_ID],
+			[SESSION_ID, OTHER_SESSION_ID],
+			[OTHER_SESSION_ID],
+		]);
+		await harness.controller.interruptOutput();
+		expect(harness.commandCalls).toHaveLength(2);
+		resolvers[1]!();
+		await second;
+		expect(harness.notifications).toHaveLength(1);
+		expect(harness.interruptPending.at(-1)).toEqual([]);
+		expect(harness.activeInterruptPending).toBe(false);
+	});
+
+	it('keeps a new draft available while the previous interrupt is pending', async () => {
+		let resolveInterrupt!: () => void;
+		const harness = makeHarness({
+			runCommand: () => new Promise<void>((resolve) => (resolveInterrupt = resolve)),
+		});
+		const pending = harness.controller.interruptOutput();
+		harness.controller.beginUserSessionSelection();
+		harness.setFreshSessionIntent(true);
+		harness.reducer.dispatch({ type: 'session/cleared' });
+		expect(harness.activeInterruptPending).toBe(false);
+		await harness.controller.interruptOutput();
+		expect(harness.commandCalls).toHaveLength(1);
+		resolveInterrupt();
+		await pending;
+		expect(harness.notifications).toEqual([]);
+		expect(harness.freshSessionIntent).toBe(true);
+		expect(harness.reducer.snapshot().activeSessionId).toBeNull();
+	});
+
+	it('does not announce an old interrupt after switching away and back', async () => {
+		let resolveInterrupt!: () => void;
+		const harness = makeHarness({
+			runCommand: () => new Promise<void>((resolve) => (resolveInterrupt = resolve)),
+		});
+		const pending = harness.controller.interruptOutput();
+		harness.controller.beginUserSessionSelection();
+		harness.reducer.dispatch({ type: 'session/selected', sessionId: OTHER_SESSION_ID });
+		harness.controller.beginUserSessionSelection();
+		harness.reducer.dispatch({ type: 'session/selected', sessionId: SESSION_ID });
+		expect(harness.activeInterruptPending).toBe(true);
+		await harness.controller.interruptOutput();
+		expect(harness.commandCalls).toHaveLength(1);
+		resolveInterrupt();
+		await pending;
+		expect(harness.notifications).toEqual([]);
+	});
+
 	it('clears the interrupt pending state and reports failure without success toast', async () => {
 		const error = new Error('interrupt failed');
 		const harness = makeHarness({ runCommand: () => Promise.reject(error) });
@@ -1048,7 +1123,7 @@ describe('ChatSessionController session guards', () => {
 				args: { sessionId: SESSION_ID },
 			},
 		]);
-		expect(harness.interruptPending).toEqual([true, false]);
+		expect(harness.interruptPending).toEqual([[SESSION_ID], []]);
 		expect(harness.reportedErrors).toEqual([{ error, message: '中断输出失败' }]);
 		expect(harness.notifications).toEqual([]);
 	});

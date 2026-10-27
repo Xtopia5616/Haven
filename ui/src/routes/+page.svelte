@@ -416,7 +416,10 @@
 		sessionId: null,
 		phase: 'idle',
 	});
-	let interruptPending = $state(false);
+	let interruptPendingSessions = $state<readonly string[]>([]);
+	const interruptPending = $derived(
+		activeSessionId !== null && interruptPendingSessions.includes(activeSessionId),
+	);
 	$effect(() =>
 		syncStore(reactExecutionPhaseStore, (v) => {
 			reactExecutionPhase = v;
@@ -1100,7 +1103,7 @@
 		setRollbackLoading: (loading) => (rollbackLoading = loading),
 		setForkLoading: (loading) => (forkLoading = loading),
 		setContinuePending: (pending) => (continuePending = pending),
-		setInterruptPending: (pending) => (interruptPending = pending),
+		setInterruptPendingSessions: (sessionIds) => (interruptPendingSessions = sessionIds),
 		setAutoFollow: (follow) => chatViewController.setAutoFollow(follow),
 	});
 	const sessionEventReconciler = createSessionEventReconciler({

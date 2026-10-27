@@ -83,7 +83,7 @@ export interface ChatSessionControllerDependencies {
 	setRollbackLoading: (loading: boolean) => void;
 	setForkLoading: (loading: boolean) => void;
 	setContinuePending: (pending: boolean) => void;
-	setInterruptPending: (pending: boolean) => void;
+	setInterruptPendingSessions: (sessionIds: readonly string[]) => void;
 	setAutoFollow: (follow: boolean) => void;
 }
 
@@ -92,7 +92,7 @@ export class ChatSessionController {
 	private readonly dependencies: ChatSessionControllerDependencies;
 	private rollbackInFlight = false;
 	private continueInFlight = false;
-	private interruptInFlight = false;
+	private readonly interruptPendingSessions = new Set<string>();
 	private forkInFlight = false;
 	private lastReconciliationErrorAt = 0;
 
@@ -341,17 +341,22 @@ export class ChatSessionController {
 
 	async interruptOutput(): Promise<void> {
 		const sessionId = this.dependencies.getActiveSessionId();
-		if (!sessionId || this.interruptInFlight) return;
-		this.interruptInFlight = true;
-		this.dependencies.setInterruptPending(true);
+		if (!sessionId || this.interruptPendingSessions.has(sessionId)) return;
+		const selectionVersion = this.dependencies.reducer.currentUserSelectionVersion();
+		this.interruptPendingSessions.add(sessionId);
+		this.dependencies.setInterruptPendingSessions([...this.interruptPendingSessions]);
 		try {
 			await this.dependencies.commands.interruptSession({ sessionId });
-			this.dependencies.notify('输出已中断，可继续生成', 'info', 2000);
+			if (
+				this.dependencies.reducer.isUserSelectionCurrent(selectionVersion) &&
+				this.dependencies.getActiveSessionId() === sessionId
+			)
+				this.dependencies.notify('输出已中断，可继续生成', 'info', 2000);
 		} catch (error) {
 			this.report(error, '中断输出失败');
 		} finally {
-			this.interruptInFlight = false;
-			this.dependencies.setInterruptPending(false);
+			this.interruptPendingSessions.delete(sessionId);
+			this.dependencies.setInterruptPendingSessions([...this.interruptPendingSessions]);
 		}
 	}
 

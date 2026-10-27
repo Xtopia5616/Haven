@@ -1338,3 +1338,4 @@
 - [1432：终态清理重试的合并唤醒与独立工作窗口](1432-isolate-terminal-cleanup-retry-worker.md)
 - [1433：恢复 Tools 严格 Clippy 基线](1433-restore-tools-strict-clippy-baseline.md)
 - [1434：结束会话失败按用户选择隔离](1434-fence-end-session-failure-by-user-selection.md)
+- [1435：中断等待状态按会话隔离](1435-scope-interrupt-pending-to-session.md)
