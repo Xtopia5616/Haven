@@ -594,7 +594,7 @@ mod tests {
             query.get("code_challenge_method").map(String::as_str),
             Some("S256")
         );
-        assert!(query.get("code_challenge").is_some());
+        assert!(query.contains_key("code_challenge"));
         assert_eq!(
             query.get("state"),
             Some(&authorization.expected_state().to_string())

@@ -625,6 +625,51 @@ fn chatgpt_plan_response_error(error: Option<&Value>) -> LlmError {
     }
 }
 
+pub(super) fn append_completed_output(
+    accumulated: &mut String,
+    output: &[ResponsesItem],
+) -> Option<String> {
+    let full = completed_output_text(output);
+    if full.is_empty() || full == *accumulated {
+        return None;
+    }
+    if let Some(suffix) = full.strip_prefix(accumulated.as_str()) {
+        if suffix.is_empty() {
+            return None;
+        }
+        accumulated.push_str(suffix);
+        return Some(suffix.to_string());
+    }
+    // A shorter completion is stale relative to already streamed output. A
+    // divergent completion cannot be represented as an append-only delta, so
+    // leave the stream's accumulated text intact and make the discrepancy
+    // observable for provider-specific follow-up.
+    if accumulated.starts_with(full.as_str()) {
+        return None;
+    }
+    tracing::warn!(
+        streamed_bytes = accumulated.len(),
+        completed_bytes = full.len(),
+        "Responses completed output diverges from streamed text"
+    );
+    None
+}
+
+pub(super) fn completed_output_text(output: &[ResponsesItem]) -> String {
+    let mut text = String::new();
+    for item in output {
+        if item.item_type.as_deref() != Some("message") {
+            continue;
+        }
+        for part in &item.content {
+            if let Some(t) = &part.text {
+                text.push_str(t);
+            }
+        }
+    }
+    text
+}
+
 #[cfg(test)]
 mod plan_error_tests {
     use super::*;
@@ -671,48 +716,4 @@ mod plan_error_tests {
         assert!(matches!(error, LlmError::Billing(_)));
         assert!(!error.is_retryable());
     }
-}
-pub(super) fn append_completed_output(
-    accumulated: &mut String,
-    output: &[ResponsesItem],
-) -> Option<String> {
-    let full = completed_output_text(output);
-    if full.is_empty() || full == *accumulated {
-        return None;
-    }
-    if let Some(suffix) = full.strip_prefix(accumulated.as_str()) {
-        if suffix.is_empty() {
-            return None;
-        }
-        accumulated.push_str(suffix);
-        return Some(suffix.to_string());
-    }
-    // A shorter completion is stale relative to already streamed output. A
-    // divergent completion cannot be represented as an append-only delta, so
-    // leave the stream's accumulated text intact and make the discrepancy
-    // observable for provider-specific follow-up.
-    if accumulated.starts_with(full.as_str()) {
-        return None;
-    }
-    tracing::warn!(
-        streamed_bytes = accumulated.len(),
-        completed_bytes = full.len(),
-        "Responses completed output diverges from streamed text"
-    );
-    None
-}
-
-pub(super) fn completed_output_text(output: &[ResponsesItem]) -> String {
-    let mut text = String::new();
-    for item in output {
-        if item.item_type.as_deref() != Some("message") {
-            continue;
-        }
-        for part in &item.content {
-            if let Some(t) = &part.text {
-                text.push_str(t);
-            }
-        }
-    }
-    text
 }

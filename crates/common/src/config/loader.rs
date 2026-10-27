@@ -1085,9 +1085,11 @@ mod tests {
     #[test]
     fn security_execution_root_round_trips_as_an_optional_path() {
         let directory = tempfile::tempdir().unwrap();
-        let mut security = SecurityConfig::default();
-        security.execution_root = Some(directory.path().to_path_buf());
-        security.shell_runtime_read_roots = vec![directory.path().to_string_lossy().into_owned()];
+        let security = SecurityConfig {
+            execution_root: Some(directory.path().to_path_buf()),
+            shell_runtime_read_roots: vec![directory.path().to_string_lossy().into_owned()],
+            ..Default::default()
+        };
 
         let encoded = toml::to_string(&security).unwrap();
         let decoded: SecurityConfig = toml::from_str(&encoded).unwrap();

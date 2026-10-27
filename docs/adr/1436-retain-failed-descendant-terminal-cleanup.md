@@ -4,6 +4,8 @@
 
 已实施 — 2026-10-27。
 
+后续验收：[ADR 1437](1437-restore-workspace-all-targets-clippy-baseline.md) 已独立整理测试代码告警，并通过 workspace 全目标严格 Clippy；下文保留本切片当时的验收记录。
+
 ## 背景与准入证据
 
 R04 复核发现，`cascade_end_children` 忽略后代枚举与子会话 End 失败，`finish_ended_session` 随后清除 Actor 的后代提示，`finish_terminal_cleanup` 仍标记清理完成并移除父 Actor。子会话因暂时存储故障保留 Paused 时，父会话的后续 End 因无 Actor 而跳过后代扫描，原工作不再有重试 owner。

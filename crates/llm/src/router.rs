@@ -3851,8 +3851,10 @@ mod tests {
 
     #[test]
     fn request_limit_clamps_to_the_shared_concurrency_contract() {
-        let mut config = RouterConfig::default();
-        config.max_concurrent_requests = 0;
+        let mut config = RouterConfig {
+            max_concurrent_requests: 0,
+            ..Default::default()
+        };
         assert_eq!(
             LlmRouter::request_limit(&config),
             MIN_LLM_CONCURRENT_REQUESTS

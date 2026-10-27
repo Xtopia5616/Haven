@@ -288,7 +288,7 @@ async fn resolve_image_fetch_destination(
 ) -> Result<ResolvedHttpDestination> {
     #[cfg(test)]
     if allow_loopback_for_test {
-        return Ok(network::resolve_http_destination_for_test(raw_url, &[]).await?);
+        return network::resolve_http_destination_for_test(raw_url, &[]).await;
     }
     #[cfg(not(test))]
     let _ = allow_loopback_for_test;

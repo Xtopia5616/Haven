@@ -269,7 +269,7 @@ mod tests {
         let (seed, subject_neighbor, object_neighbor) = seed_and_neighbors(&db);
 
         let related = db
-            .related_facts_for_recall(&[seed.clone()], 10, None, None)
+            .related_facts_for_recall(std::slice::from_ref(&seed), 10, None, None)
             .unwrap();
         let ids: Vec<&str> = related.iter().map(|fact| fact.fact_id.as_str()).collect();
 
@@ -295,7 +295,7 @@ mod tests {
             .unwrap();
 
         let related = db
-            .related_facts_for_recall(&[seed.fact_id.clone()], 20, None, None)
+            .related_facts_for_recall(std::slice::from_ref(&seed.fact_id), 20, None, None)
             .unwrap();
         let ids: Vec<&str> = related.iter().map(|fact| fact.fact_id.as_str()).collect();
 
@@ -336,7 +336,12 @@ mod tests {
             .unwrap();
 
         let scoped = db
-            .related_facts_for_recall(&[seed.clone()], 10, Some("user"), Some("profile"))
+            .related_facts_for_recall(
+                std::slice::from_ref(&seed),
+                10,
+                Some("user"),
+                Some("profile"),
+            )
             .unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].fact_id, user_neighbor.fact_id);
@@ -377,7 +382,7 @@ mod tests {
         }
 
         let limited = db
-            .related_facts_for_recall(&[seed.clone()], 1_000, None, None)
+            .related_facts_for_recall(std::slice::from_ref(&seed), 1_000, None, None)
             .unwrap();
         assert_eq!(limited.len(), MAX_GRAPH_CANDIDATES);
         assert!(

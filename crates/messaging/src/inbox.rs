@@ -5042,7 +5042,7 @@ mod tests {
                 .contains("deleted")
         );
         assert!(
-            bus.ack_claimed(deleted, &[pending.message_id.clone()])
+            bus.ack_claimed(deleted, std::slice::from_ref(&pending.message_id))
                 .is_err()
         );
         assert!(bus.last_received(deleted).is_err());
