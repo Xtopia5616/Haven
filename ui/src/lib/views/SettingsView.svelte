@@ -2229,7 +2229,7 @@
 			max-width: none;
 		}
 		.settings-layout {
-			grid-template-rows: minmax(0, 1fr);
+			grid-template-rows: minmax(min-content, 1fr);
 		}
 	}
 	@container settings-page (max-width: 640px) {
