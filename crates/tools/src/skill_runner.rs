@@ -1336,7 +1336,6 @@ mod tests {
             max_output_lines: 5000,
             venv_root: temp.path().join("venvs"),
             work_dir: temp.path().join("work"),
-            ..Default::default()
         };
         let venv = VenvManager::new(config.venv_root.clone());
         let mut runner = SkillRunner::new(venv, config);

@@ -351,8 +351,10 @@ async fn rejects_noncanonical_asset_id_before_registry_lookup() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("large-inspect.txt");
         tokio::fs::write(&file, "hello").await.unwrap();
-        let mut tool = FilesTool::default();
-        tool.max_byte_read_bytes = 4;
+        let tool = FilesTool {
+            max_byte_read_bytes: 4,
+            ..FilesTool::default()
+        };
 
         let result = tool
             .execute(

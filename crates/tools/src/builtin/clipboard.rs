@@ -102,7 +102,7 @@ impl ClipboardHistory {
         state.entries.iter().take(limit).cloned().collect()
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.state
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -111,7 +111,7 @@ impl ClipboardHistory {
     }
 
     #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }

@@ -1532,6 +1532,26 @@ mod tests {
     }
     #[tokio::test]
     async fn new_redirect_origins_request_permission_and_do_not_receive_original_headers() {
+        async fn read_headers(socket: &mut tokio::net::TcpStream) -> String {
+            let mut buffer = [0; 4096];
+            let mut retained = 0;
+            loop {
+                assert!(
+                    retained < buffer.len(),
+                    "test request headers exceed fixture limit"
+                );
+                let count = socket.read(&mut buffer[retained..]).await.unwrap();
+                assert!(count > 0, "request ended before its headers were complete");
+                retained += count;
+                if buffer[..retained]
+                    .windows(4)
+                    .any(|part| part == b"\r\n\r\n")
+                {
+                    return String::from_utf8_lossy(&buffer[..retained]).into_owned();
+                }
+            }
+        }
+
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         struct Approve(tokio::sync::Mutex<Vec<crate::DeclaredResource>>);
         #[async_trait]
@@ -1551,11 +1571,7 @@ mod tests {
         let (headers_tx, headers_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let (mut socket, _) = target.accept().await.unwrap();
-            let mut buffer = [0; 4096];
-            let count = socket.read(&mut buffer).await.unwrap();
-            headers_tx
-                .send(String::from_utf8_lossy(&buffer[..count]).into_owned())
-                .unwrap();
+            headers_tx.send(read_headers(&mut socket).await).unwrap();
             socket
                 .write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nallowed",
@@ -1567,8 +1583,7 @@ mod tests {
         let initial_url = format!("http://{}/", initial.local_addr().unwrap());
         tokio::spawn(async move {
             let (mut socket, _) = initial.accept().await.unwrap();
-            let mut buffer = [0; 4096];
-            socket.read(&mut buffer).await.unwrap();
+            read_headers(&mut socket).await;
             socket.write_all(format!("HTTP/1.1 302 Found\r\nLocation: {target_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
         });
         let authorization = Arc::new(crate::security::AuthorizationEngine::new());

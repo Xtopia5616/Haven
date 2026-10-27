@@ -2905,13 +2905,8 @@ mod tests {
             }
             _ => NetworkAccess::None,
         };
-        let execution_boundary = if tool_name == "shell" {
-            if cfg!(windows) {
-                crate::ExecutionBoundary::HostProcess
-            } else {
-                crate::ExecutionBoundary::HostProcess
-            }
-        } else if tool_name.starts_with("mcp::")
+        let execution_boundary = if tool_name == "shell"
+            || tool_name.starts_with("mcp::")
             || tool_name.starts_with("mcp__")
             || tool_name.starts_with("skill::")
             || tool_name.starts_with("skill__")
@@ -4310,7 +4305,6 @@ mod tests {
                 },
                 network: NetworkResourcePolicy {
                     access: NetworkAccessBoundary::Open,
-                    ..NetworkResourcePolicy::default()
                 },
             },
             ..SecurityConfig::default()
@@ -5555,7 +5549,6 @@ mod tests {
             resource_policy: ResourcePolicy {
                 network: NetworkResourcePolicy {
                     access: NetworkAccessBoundary::Deny,
-                    ..NetworkResourcePolicy::default()
                 },
                 ..ResourcePolicy::default()
             },
@@ -7411,10 +7404,10 @@ mod tests {
                 if schema.get("format").and_then(Value::as_str) == Some("uri") {
                     value = "https://example.invalid/".into();
                 }
-                if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
-                    if pattern.contains("msg-") {
-                        value = "msg-00000000000000000000000000000000".into();
-                    }
+                if let Some(pattern) = schema.get("pattern").and_then(Value::as_str)
+                    && pattern.contains("msg-")
+                {
+                    value = "msg-00000000000000000000000000000000".into();
                 }
                 if let Some(max_len) = schema.get("maxLength").and_then(Value::as_u64) {
                     value.truncate(max_len as usize);
@@ -8107,16 +8100,25 @@ mod tests {
                 &workspace,
                 NetworkPolicy::Deny,
             );
-        let mut security = SecurityConfig::default();
-        security.execution_root = Some(workspace.clone());
-        security.shell_runtime_read_roots = vec![
-            toolchain.to_string_lossy().into_owned(),
-            outside_global.to_string_lossy().into_owned(),
-            workspace_vendor.to_string_lossy().into_owned(),
-        ];
-        security.resource_policy.files.path_roots = vec![allowed.to_string_lossy().into_owned()];
-        security.resource_policy.files.denied_paths =
-            vec![global_denied.to_string_lossy().into_owned()];
+        let defaults = SecurityConfig::default();
+        let resource_policy = ResourcePolicy {
+            files: FileResourcePolicy {
+                path_roots: vec![allowed.to_string_lossy().into_owned()],
+                denied_paths: vec![global_denied.to_string_lossy().into_owned()],
+                ..defaults.resource_policy.files
+            },
+            ..defaults.resource_policy
+        };
+        let security = SecurityConfig {
+            execution_root: Some(workspace.clone()),
+            shell_runtime_read_roots: vec![
+                toolchain.to_string_lossy().into_owned(),
+                outside_global.to_string_lossy().into_owned(),
+                workspace_vendor.to_string_lossy().into_owned(),
+            ],
+            resource_policy,
+            ..defaults
+        };
         engine
             .apply_security(&security)
             .await

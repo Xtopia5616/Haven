@@ -80,7 +80,7 @@ impl McpServerConfigSource {
                 .cloned()
                 .collect::<Vec<_>>();
             configs.sort_by(|left, right| left.name.cmp(&right.name));
-            return Ok(configs);
+            Ok(configs)
         }
 
         #[cfg(not(any(test, feature = "test-support")))]
@@ -123,10 +123,10 @@ impl McpServerConfigSource {
         {
             let fixtures = self.test_fixtures.read().await;
             let revision = self.test_revision.load(Ordering::Acquire);
-            return Ok(fixtures
+            Ok(fixtures
                 .get(name)
                 .cloned()
-                .map(|server| VersionedMcpServerConfig { server, revision }));
+                .map(|server| VersionedMcpServerConfig { server, revision }))
         }
 
         #[cfg(not(any(test, feature = "test-support")))]

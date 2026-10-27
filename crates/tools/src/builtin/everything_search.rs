@@ -444,6 +444,30 @@ fn parse_entries(bytes: &[u8]) -> anyhow::Result<Vec<EverythingEntry>> {
         .collect()
 }
 
+async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    cap: usize,
+) -> anyhow::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut overflow = false;
+    loop {
+        let read = reader.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = cap.saturating_sub(output.len());
+        output.extend_from_slice(&chunk[..read.min(remaining)]);
+        overflow |= read > remaining;
+        if overflow {
+            // Drain only through the pipe; retained memory stays bounded.
+            while reader.read(&mut chunk).await? != 0 {}
+            break;
+        }
+    }
+    Ok((output, overflow))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MAX_STDOUT_BYTES, parse_entries, path_is_within_root, read_bounded};
@@ -516,28 +540,4 @@ mod tests {
         assert!(overflow);
         assert_eq!(retained.len(), MAX_STDOUT_BYTES);
     }
-}
-
-async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
-    mut reader: R,
-    cap: usize,
-) -> anyhow::Result<(Vec<u8>, bool)> {
-    let mut output = Vec::new();
-    let mut chunk = [0u8; 8192];
-    let mut overflow = false;
-    loop {
-        let read = reader.read(&mut chunk).await?;
-        if read == 0 {
-            break;
-        }
-        let remaining = cap.saturating_sub(output.len());
-        output.extend_from_slice(&chunk[..read.min(remaining)]);
-        overflow |= read > remaining;
-        if overflow {
-            // Drain only through the pipe; retained memory stays bounded.
-            while reader.read(&mut chunk).await? != 0 {}
-            break;
-        }
-    }
-    Ok((output, overflow))
 }

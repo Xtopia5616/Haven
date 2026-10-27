@@ -336,12 +336,9 @@ mod tests {
             || false,
         )
         .unwrap();
-        let subkeys = collect_bounded_registry_entries(
-            [Ok::<_, ()>("child".to_string())].into_iter(),
-            3,
-            || false,
-        )
-        .unwrap();
+        let subkeys =
+            collect_bounded_registry_entries([Ok::<_, ()>("child".to_string())], 3, || false)
+                .unwrap();
 
         let output = registry_list_output("HKCU", values, subkeys);
         assert_eq!(
@@ -355,8 +352,7 @@ mod tests {
         );
 
         let exact_limit =
-            collect_bounded_registry_entries((0..3).map(|index| Ok::<_, ()>(index)), 3, || false)
-                .unwrap();
+            collect_bounded_registry_entries((0..3).map(Ok::<_, ()>), 3, || false).unwrap();
         assert_eq!(exact_limit.entries, [0, 1, 2]);
         assert!(!exact_limit.truncated);
     }

@@ -1273,7 +1273,7 @@ mod tests {
         let result = tool
             .run_with_execution_context(
                 ShellParams {
-                    command: script.into(),
+                    command: script,
                     shell: Some("powershell".into()),
                     silent: Some(true),
                     cwd: Some(workspace_root.to_string_lossy().into_owned()),

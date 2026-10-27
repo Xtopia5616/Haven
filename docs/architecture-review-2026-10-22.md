@@ -153,6 +153,8 @@
 
 **验收。** 快速切会话后旧请求返回、继续/回滚并发、提交成功但列表刷新失败、当前会话完成自动关闭、重新打开历史与新会话意图相遇。当前已有用户选择版本和 submission token 机制，应保留；相同文本的两次独立提交不能去重。
 
+**源码复核（2026-10-27，下一切片）。** `ChatSessionController.endSession` 在旧会话结束失败后无条件清除 fresh intent；而页面 `newSession` 在等待期间已经递增用户选择版本、设置新会话意图并清空活动指针。旧失败因此可能让后续 created 事件或列表刷新重新选择已有会话。下一切片先建立 deferred End → 新建 → 旧失败的回归，再将失败恢复限定在原选择版本和会话身份。`interruptOutput` 未发现同类选择写入，跨会话 pending 展示仅保留为候选。
+
 ## 14. R13：App 生命周期、Common 配置与 Platform 按职责演进
 
 **证据。** [ApplicationRuntime](../crates/app-binary/src/runtime.rs) 有统一 tasks JoinSet、完成任务回收、关闭 gate 和两类取消方式；[ConfigService](../crates/common/src/config/service.rs) 是规范允许的有状态例外；Platform 承担 OS/FFI。现有依赖图不支持为了“Common 太大”立即拆 crate。

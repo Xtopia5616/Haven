@@ -4,6 +4,8 @@
 
 已实施 — 2026-10-27。
 
+后续验收：[ADR 1433](1433-restore-tools-strict-clippy-baseline.md) 修复了当时阻断依赖检查的 Tools 告警，并重新通过包含依赖的 Agent 全目标严格 Clippy；下文保留本切片当时的验收记录。
+
 ## 背景与证据
 
 R04 源码复核确认，`TerminalCleanupRetryQueue` 虽按 session 合并待办，仍向无界通道写入 session ID；dispatcher 的两个主循环分支直接 await 清理重试。清理会访问 partial、inbox、工具 overlay、后代会话和授权状态，慢适配器会阻止主循环准入其他会话。已有 shutdown 等待 run wrappers、最终尝试重试队列和 30 秒总期限的保证需要保留。
