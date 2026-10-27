@@ -23,7 +23,7 @@
 | R01 | 模型热切换与记忆/标题消费者 | 已完成：Agent consumers 共享热切换运行时；见 ADR 1370 | Completed |
 | R02 | 配置保存与运行时应用 | 已完成：显式重试和按目标版本状态；见 ADR 1384 | Completed |
 | R03 | 模型/媒体组合发布 | 已完成：共享代次句柄，ReAct 每次新请求读取最新已发布代次；见 ADR 1385/1396 | Completed |
-| R04 | Session/交互/清理队列 | retry 唤醒与独立串行工作窗口已完成（ADR 1432）；初次清理、backlog 与重启边界保留 | P2，整体容量/恢复仍为 Candidate |
+| R04 | Session/交互/清理队列 | retry 唤醒与独立串行工作窗口已完成（ADR 1432）；后代失败保留清理 owner（ADR 1436）；初次清理调度、backlog 与重启边界保留 | P2，整体容量/恢复仍为 Candidate |
 | R05 | 事件流与前端恢复 | 聊天页以稳定 durable cursor 补齐并拒绝不稳定恢复快照；UI 自动测试通过，Windows 聚焦丢通知与 rollback 并发仍待验收 | Windows acceptance open，见 ADR 1397 |
 | R06 | 语音采集与转写 | 实施录音目标冻结、有限并发、失败保留与显式重试；自动门禁和 Windows 交互仍待完成 | P2，完成故障验收 |
 | R07 | 记忆抽取、检索、维护 | 存储边界合理；编排角色密集 | P2，按工作类型与数据来源收口 |
@@ -80,6 +80,8 @@
 **源码复核（2026-10-27）。** 上述证据仍成立：`session/mod.rs` 的 `TerminalCleanupRetryQueue` 以 HashMap 合并策略，仍用无界 ID 通知；`dispatcher.rs::start_dispatcher_inner` 的两个通知分支仍直接 await 清理。`status.rs::finish_terminal_cleanup` 涉及 partial、inbox、后代结束与注册表清理；shutdown 已等待 run wrappers 并最终 drain 重试，不能删除这项保证。首个候选切片应只收敛唤醒和工作窗口：合并唤醒、固定 batch、单清理 worker，保留 actor identity、策略合并和退出 drain，并用阻塞清理证明新 run 可进入 handler。该切片不能声称整体 backlog 有界或跨重启可靠：`cascade=false` 等 retry 策略仍是进程内信息，startup 只恢复 pending session；硬截断 map 会丢工作。完整 backlog/restart 契约须先确定持久标记或可恢复扫描及取消边界，再进入实现。
 
 **实施结论（2026-10-27，ADR 1432）。** 上述基线中的无界通知与 admission 内重试已移除；新 worker 采用合并唤醒、FIFO、32 项 batch、取消安全 lease、5 秒单次期限和 1 秒退避。run wrappers 结束后进行单轮 final drain，保留 30 秒总期限。旧实现先复现准入阻塞，修复后 Agent 全量 697 项测试及本 crate 全目标 strict Clippy 通过，真实期限用例验证无异步 worker/lease 残留。Tools 依赖的既有 Clippy 告警、初次清理占用 run permit、backlog 总量及跨重启补做均未据此关闭。
+
+**后续失败路径复核与实施（2026-10-27，ADR 1436）。** 真实 SQLite trigger 注入确认：子会话 Completed 写入失败后，父 End 两次均返回 Completed，子会话仍为 Paused；父 Actor 已移除，队列虽有待办但 actorless retry 无法继续。现将后代枚举/End 失败保留为原 terminal cleanup owner 的未完成工作，保留父 Actor 与后代提示；普通失败使用既有退避，信任在级联前撤销。8 项定向回归覆盖重试、兄弟部分失败、显式 false、退出、取消和真实隔离 registry 损坏；backlog 总量与跨重启恢复仍为候选，不因本修复关闭。
 
 ## 6. R05：事件传递的可靠性应按消费者声明
 
@@ -153,7 +155,7 @@
 
 **验收。** 快速切会话后旧请求返回、继续/回滚并发、提交成功但列表刷新失败、当前会话完成自动关闭、重新打开历史与新会话意图相遇。当前已有用户选择版本和 submission token 机制，应保留；相同文本的两次独立提交不能去重。
 
-**源码复核与实施（2026-10-27，ADR 1434）。** `ChatSessionController.endSession` 原先在旧会话结束失败后无条件清除 fresh intent，可能覆盖页面后来新建的会话意图。已先复现 deferred End → 新建 → 旧失败 → created 事件抢选，再将失败恢复限定在原选择版本和会话身份。真实 created/list owner、新草稿、切走再切回及终态清除均有覆盖；UI 1536 项测试、检查和生产构建通过。`interruptOutput` 未发现同类选择写入，跨会话 pending 展示仅保留为候选；不宣布 R12 全部完成。
+**源码复核与实施（2026-10-27，ADR 1434）。** `ChatSessionController.endSession` 原先在旧会话结束失败后无条件清除 fresh intent，可能覆盖页面后来新建的会话意图。已先复现 deferred End → 新建 → 旧失败 → created 事件抢选，再将失败恢复限定在原选择版本和会话身份。真实 created/list owner、新草稿、切走再切回及终态清除均有覆盖；UI 1536 项测试、检查和生产构建通过。`interruptOutput` 未发现同类选择写入，中断的跨会话 pending 随后已按 ADR 1435 隔离，覆盖 A/B 并发、旧请求 finally、新草稿和切走再切回；UI 1539 项测试、检查和构建通过。继续生成等其他动作仍按证据复核，不宣布 R12 全部完成。
 
 ## 14. R13：App 生命周期、Common 配置与 Platform 按职责演进
 

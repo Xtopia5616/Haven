@@ -525,7 +525,7 @@ Compaction summary episode 与首个 pending marker 只由 `MemoryOutboxStore::p
 - 调用 `LlmRouter`、执行 `haven-tools` 工具、写 `haven-memory`、
   通过 `AgentEvent` 对外发事件。
 
-终态清理重试由 dispatcher 持有的独立串行 worker 执行，进程内待办按 session 合并并以 FIFO 索引公平重排；唤醒只表达存在待办。每批最多 32 项、单次重试 5 秒，超时保留策略并退避 1 秒；shutdown 在 run wrappers 结束后进行一轮最终尝试，沿用 30 秒总 join 期限。初次 End/run-exit 清理不改变；backlog 总量与跨重启补做不在本切片保证内（[ADR 1432](adr/1432-isolate-terminal-cleanup-retry-worker.md)）。
+终态清理重试由 dispatcher 持有的独立串行 worker 执行，进程内待办按 session 合并并以 FIFO 索引公平重排；唤醒只表达存在待办。每批最多 32 项、单次重试 5 秒，超时或后代清理失败保留策略并退避 1 秒；shutdown 在 run wrappers 结束后进行一轮最终尝试，沿用 30 秒总 join 期限。初次 End/run-exit 清理仍在原调用链执行；backlog 总量与跨重启补做不在本切片保证内（[ADR 1432](adr/1432-isolate-terminal-cleanup-retry-worker.md)）。后代枚举或 End 失败时，父会话已提交的终态不回滚，但保留父 Actor、后代提示及原清理策略，直到重试完成才解除清理责任；信任在级联前撤销。actorless 不扫描历史后代，仍无跨重启级联补做保证（[ADR 1436](adr/1436-retain-failed-descendant-terminal-cleanup.md)）。
 
 **步数预算（Phase 7/8 / J1）**：`session.max_steps_per_run` 是每次 ReAct run 获得的步数预算，范围为 1–1000；暂停后恢复会启动新 run 并重新获得该预算。可选
 `session.max_steps_per_session: Option<u32>`（默认 `None` = 不限）限制整个持久 Session 跨所有 run 可到达的绝对 `step_number`，范围为 1–100000。Settings UI 显示 0 代表不限，并在提交时转换为 `None`；TOML/IPC 中显式的 0 不合法。

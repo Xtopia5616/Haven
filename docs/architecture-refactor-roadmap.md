@@ -74,6 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
+| **Completed** | R04 后代结束失败重试（[ADR 1436](adr/1436-retain-failed-descendant-terminal-cleanup.md)）：后代枚举/End 失败保留父 Actor、后代提示及原 cleanup 策略，普通失败退避后重试；8 项故障矩阵、workspace 测试和严格 Clippy、Agent 全目标严格 Clippy 通过。不扩展跨重启恢复或 backlog 容量合同。 |
 | **Completed** | R12 中断等待隔离（[ADR 1435](adr/1435-scope-interrupt-pending-to-session.md)）：中断准入与等待状态按会话持有，当前 Composer 只显示自身状态；不同会话独立中断，旧请求结束不清除新请求等待，成功通知按选择代次隔离。真实 WebView 交互仍归 §5.1。 |
 | **Completed** | R12 结束失败的选择隔离（[ADR 1434](adr/1434-fence-end-session-failure-by-user-selection.md)）：失败恢复限定原选择版本和会话身份，保护新草稿、切走再切回及终态清除后的意图；真实 created/list owner 回归与 UI 1536 项测试、检查和构建通过。 |
 | **Completed** | Tools 严格 Clippy 基线（[ADR 1433](adr/1433-restore-tools-strict-clippy-baseline.md)）：收窄历史计数方法并整理测试 lint；Tools 全目标及 Agent 含依赖 strict Clippy 通过，Tools 1021 项测试通过，16 项原有忽略项保持不变。 |
@@ -175,7 +176,7 @@ Session、ScheduleRun 与 AppCommand 确认均由各自 owner 和稳定 request 
 | 4    | **crate/API 边界**           | 模块 owner 已稳定且存在单向依赖边界、独立消费者或可复核构建/维护收益。                                                                                          | API 清晰、无反向依赖或重复 adapter；否则保留现 crate 边界。              |
 | 5    | **性能与容量**               | 同负载 profile 复现用户相关延迟、资源或容量问题；固定场景记录优化前后指标。                                                                                     | 改善超过噪声并达到目标，否则关闭候选。                                   |
 
-**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1359）、§5.10 Prompt 记忆召回分路（ADR 1360）与 §5.11 事实历史与按时点查询（ADR 1361）已完成；§5.12 推断事实先审核再写入（ADR 1362）、§5.13 原文证据核验与受控自动接受（ADR 1363）、§5.14 有界两跳事实图召回（ADR 1364）与 §5.15 事实现实有效时间（ADR 1365）已完成。R12 派生会话动作结果及显式刷新失败传播已完成（ADR 1431）；R04 清理唤醒与工作窗口已完成（ADR 1432），明确保留进程内 backlog 与现有重启边界，不以丢弃待办实现容量上限。R10 源码复核未形成新的结构准入证据；Tools 严格 Clippy 基线已完成（ADR 1433）；R12 结束失败的选择隔离已完成（ADR 1434）；R12 中断等待与迟到通知隔离已完成（ADR 1435）；当前无 Active/Next 结构切片，R04 整体容量/重启及其余 UI 动作按证据继续复核。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布验收仍按 §5.1 跟踪。
+**当前执行位置：** 阶段 0–8、第二轮 Slice 1–9 与第一轮 Slice 7 均已完成；历史覆盖记录（Rust 271/271、UI/App/IPC/文档 320/320）是当时审计快照，不代表此后源码与文档没有漂移。§5.9 图谱感知召回（ADR 1359）、§5.10 Prompt 记忆召回分路（ADR 1360）与 §5.11 事实历史与按时点查询（ADR 1361）已完成；§5.12 推断事实先审核再写入（ADR 1362）、§5.13 原文证据核验与受控自动接受（ADR 1363）、§5.14 有界两跳事实图召回（ADR 1364）与 §5.15 事实现实有效时间（ADR 1365）已完成。R12 派生会话动作结果及显式刷新失败传播已完成（ADR 1431）；R04 清理唤醒与工作窗口已完成（ADR 1432），明确保留进程内 backlog 与现有重启边界，不以丢弃待办实现容量上限。R10 源码复核未形成新的结构准入证据；Tools 严格 Clippy 基线已完成（ADR 1433）；R12 结束失败的选择隔离已完成（ADR 1434）；R12 中断等待与迟到通知隔离已完成（ADR 1435）；R04 后代结束失败保留清理 owner 已完成（ADR 1436）；当前无 Active/Next 结构切片，R04 整体容量/重启及其余 UI 动作按证据继续复核。AppCommand confirmation/admin adapter、SessionStore 内部职责、Tools `security.rs`、Agent `tool_runner.rs`、PDF/OpenXML parser、App command DTO 与 guarded process spawn 分别见 ADR 1302–1314。AppState/runtime 与 Tauri bootstrap 经复核继续作为单一组合和生命周期 owner，不提出 crate 合并或拆分。Windows 发布验收仍按 §5.1 跟踪。
 
 ### 5.7 全项目领域术语与架构角色命名收敛（持续覆盖）
 

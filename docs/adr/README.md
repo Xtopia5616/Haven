@@ -1339,3 +1339,4 @@
 - [1433：恢复 Tools 严格 Clippy 基线](1433-restore-tools-strict-clippy-baseline.md)
 - [1434：结束会话失败按用户选择隔离](1434-fence-end-session-failure-by-user-selection.md)
 - [1435：中断等待状态按会话隔离](1435-scope-interrupt-pending-to-session.md)
+- [1436：后代结束失败保留终态清理工作](1436-retain-failed-descendant-terminal-cleanup.md)

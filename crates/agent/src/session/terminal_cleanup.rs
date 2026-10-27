@@ -118,12 +118,12 @@ impl SessionSupervisor {
                 continue;
             }
             for _ in 0..CLEANUP_BATCH_SIZE {
-                let timed_out = tokio::select! {
+                let retry_required = tokio::select! {
                     biased;
                     _ = final_drain.cancelled() => break 'normal,
                     result = self.attempt_terminal_cleanup_retry() => result,
                 };
-                match timed_out {
+                match retry_required {
                     None => break,
                     Some(false) => {}
                     Some(true) => {
@@ -156,7 +156,7 @@ impl SessionSupervisor {
         }
     }
 
-    /// None means idle; Some(true) means the attempt reached its deadline.
+    /// None means idle; Some(true) means incomplete cleanup or a deadline.
     async fn attempt_terminal_cleanup_retry(&self) -> Option<bool> {
         let mut lease = self.terminal_cleanup_retry_queue.pop()?;
         let retry = lease
@@ -168,9 +168,11 @@ impl SessionSupervisor {
         )
         .await
         {
-            Ok(()) => {
+            Ok(completed) => {
+                // An incomplete cleanup has already requeued its guard policy.
+                // Do not duplicate it, but apply the same backoff as a timeout.
                 lease.retry = None;
-                Some(false)
+                Some(!completed)
             }
             Err(_) => {
                 tracing::warn!(

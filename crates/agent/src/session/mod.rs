@@ -465,6 +465,8 @@ mod status;
 mod terminal_cleanup;
 use terminal_cleanup::TerminalCleanupRetryQueue;
 #[cfg(test)]
+mod terminal_cascade_tests;
+#[cfg(test)]
 mod terminal_cleanup_tests;
 mod tool_ports;
 mod tool_runner;

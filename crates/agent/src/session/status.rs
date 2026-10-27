@@ -170,7 +170,7 @@ impl SessionSupervisor {
             if emit_session_end {
                 self.emit_session_end_hook(session_id).await;
             }
-            self.finish_ended_session(session_id, cascade).await;
+            self.finish_ended_session(session_id, cascade).await?;
             return Ok(SessionStatus::Completed);
         };
         #[cfg(test)]
@@ -305,18 +305,23 @@ impl SessionSupervisor {
         });
     }
 
-    pub(super) async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
+    pub(super) async fn finish_ended_session(
+        &self,
+        session_id: &str,
+        cascade: bool,
+    ) -> anyhow::Result<()> {
         self.unregister_from_inbox(session_id).await;
         self.unregister_session_tool_overlay(session_id).await;
         self.scheduled_confirms
             .lock()
             .await
             .retain(|_, request| request.session_id.as_deref() != Some(session_id));
+        self.authorization.clear_session_trust(session_id).await;
         if cascade && self.may_have_children(session_id).await {
-            Box::pin(self.cascade_end_children(session_id)).await;
+            Box::pin(self.cascade_end_children(session_id)).await?;
         }
         self.clear_has_children(session_id).await;
-        self.authorization.clear_session_trust(session_id).await;
+        Ok(())
     }
 
     async fn unregister_from_inbox(&self, session_id: &str) {
@@ -353,7 +358,7 @@ impl SessionSupervisor {
         }
     }
 
-    async fn cascade_end_children(&self, parent_session_id: &str) {
+    async fn cascade_end_children(&self, parent_session_id: &str) -> anyhow::Result<()> {
         let parent = parent_session_id.to_string();
         let messaging = self.messaging_service.clone();
         let descendants = match tokio::task::spawn_blocking({
@@ -379,7 +384,7 @@ impl SessionSupervisor {
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to enumerate descendants"
                 );
-                return;
+                anyhow::bail!("descendant session enumeration failed");
             }
             Err(error) => {
                 tracing::error!(
@@ -387,9 +392,10 @@ impl SessionSupervisor {
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "descendant enumeration worker failed"
                 );
-                return;
+                anyhow::bail!("descendant session enumeration worker failed");
             }
         };
+        let mut incomplete = false;
         for child_id in descendants {
             if child_id == parent {
                 continue;
@@ -399,17 +405,24 @@ impl SessionSupervisor {
                 .await
                 .map(|session| session.title.unwrap_or(session.input))
                 .unwrap_or_default();
-            if self
-                .end_session_with_cascade(&child_id, false)
-                .await
-                .is_ok()
-            {
-                self.emit_event(SessionSupervisorEvent::CascadeCompleted {
+            match self.end_session_with_cascade(&child_id, false).await {
+                Ok(_) => self.emit_event(SessionSupervisorEvent::CascadeCompleted {
                     session_id: child_id,
                     title,
-                });
+                }),
+                Err(error) => {
+                    incomplete = true;
+                    tracing::warn!(
+                        parent_session_id = %parent,
+                        session_id = %child_id,
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "descendant session end failed; parent cleanup retained for retry"
+                    );
+                }
             }
         }
+        anyhow::ensure!(!incomplete, "descendant session cleanup incomplete");
+        Ok(())
     }
 
     pub async fn remove_session(&self, session_id: &str) -> anyhow::Result<()> {
@@ -1029,7 +1042,7 @@ impl SessionSupervisor {
         mut cleanup: TerminalCleanupGuard,
         remove_error_actor: bool,
         cascade: bool,
-    ) {
+    ) -> bool {
         self.dequeue_pending(session_id).await;
         if let Err(error) = self.partials.promote(session_id).await {
             tracing::warn!(
@@ -1039,18 +1052,27 @@ impl SessionSupervisor {
             );
         }
         self.cleanup_session_maps(session_id).await;
-        self.finish_ended_session(session_id, cascade).await;
+        if let Err(error) = self.finish_ended_session(session_id, cascade).await {
+            tracing::warn!(
+                session_id,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "terminal session cleanup incomplete; retained for retry"
+            );
+            // Drop requeues the original policy. Keep the actor and its child
+            // hint so the next attempt can still discover unfinished work.
+            return false;
+        }
 
         let _lifecycle = self.lifecycle_guard().await;
         let Some(actor) = self.actor_for(session_id).await else {
             cleanup.mark_complete();
             drop(cleanup);
-            return;
+            return true;
         };
         let Some(snapshot) = actor.snapshot().await else {
             cleanup.mark_complete();
             drop(cleanup);
-            return;
+            return true;
         };
         let status = snapshot.status;
         if actor.same_instance(expected_actor)
@@ -1062,6 +1084,7 @@ impl SessionSupervisor {
         }
         cleanup.mark_complete();
         drop(cleanup);
+        true
     }
 
     /// Reconcile the actor's live state after the run bit has been cleared.
@@ -1088,12 +1111,12 @@ impl SessionSupervisor {
         &self,
         session_id: &str,
         retry: TerminalCleanupRetry,
-    ) {
+    ) -> bool {
         let Some(actor) = self.actor_for(session_id).await else {
-            return;
+            return true;
         };
         self.reconcile_run_exit_with_retry(session_id, &actor, retry)
-            .await;
+            .await
     }
 
     async fn reconcile_run_exit_with_retry(
@@ -1101,7 +1124,7 @@ impl SessionSupervisor {
         session_id: &str,
         expected_actor: &actor::SessionActorHandle,
         retry: TerminalCleanupRetry,
-    ) {
+    ) -> bool {
         enum Decision {
             Pending,
             Cleanup(TerminalCleanupGuard, bool, bool),
@@ -1111,13 +1134,13 @@ impl SessionSupervisor {
         let decision = {
             let _lifecycle = self.lifecycle_guard().await;
             let Some(actor) = self.actor_for(session_id).await else {
-                return;
+                return true;
             };
             if !actor.same_instance(expected_actor) || actor.is_running().await {
-                return;
+                return true;
             }
             let Some(snapshot) = actor.snapshot().await else {
-                return;
+                return true;
             };
             let status = snapshot.status;
             if status == SessionStatus::Pending && !self.is_session_closing(session_id) {
@@ -1145,7 +1168,10 @@ impl SessionSupervisor {
         };
 
         match decision {
-            Decision::Pending => self.wake_dispatcher(),
+            Decision::Pending => {
+                self.wake_dispatcher();
+                true
+            }
             Decision::Cleanup(cleanup, cascade, remove_error_actor) => {
                 self.finish_terminal_cleanup(
                     session_id,
@@ -1154,9 +1180,9 @@ impl SessionSupervisor {
                     remove_error_actor,
                     cascade,
                 )
-                .await;
+                .await
             }
-            Decision::None => {}
+            Decision::None => true,
         }
     }
 
