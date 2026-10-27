@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from './SettingsView.svelte';
+import settingsViewSource from './SettingsView.svelte?raw';
 import { createSettingsFixture } from '$lib/contracts/settingsFixture.ts';
 import { AGENT_METRICS_PHASE_COUNT } from '$lib/contracts/generatedCommands.ts';
 
@@ -15,7 +16,7 @@ import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 
 vi.mock('$lib/tauri.ts', () => ({ invoke, listen, isTauri }));
 
-describe('SettingsView diagnostics export', () => {
+describe('SettingsView', () => {
 	beforeEach(() => {
 		invoke.mockImplementation(async (command: string) => {
 			switch (command) {
@@ -56,6 +57,14 @@ describe('SettingsView diagnostics export', () => {
 			}
 		});
 		listen.mockResolvedValue(() => {});
+	});
+
+	it('keeps the search area out of a raised stacking context above settings dialogs', () => {
+		const styles = settingsViewSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
+		const searchAreaStyles = styles?.match(/\.settings-search-area\s*\{([^}]*)\}/)?.[1];
+
+		expect(searchAreaStyles).toBeTruthy();
+		expect(searchAreaStyles).not.toMatch(/\b(?:position|z-index)\s*:/);
 	});
 
 	it('keeps the settings page clear when no model provider is configured', async () => {

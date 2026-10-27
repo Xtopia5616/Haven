@@ -2103,8 +2103,6 @@
 		overflow-wrap: anywhere;
 	}
 	.settings-search-area {
-		position: relative;
-		z-index: 2;
 		width: 100%;
 		margin-bottom: var(--md-sys-space-lg);
 	}
