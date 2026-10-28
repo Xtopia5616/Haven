@@ -1306,6 +1306,17 @@ impl ExecutionPolicyAuthorization {
     }
 }
 
+fn resolve_mcp_working_directory(
+    configured: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    let current = std::env::current_dir()
+        .map_err(|_| "MCP process working directory is unavailable".to_owned())?;
+    let path = configured.map_or(current.clone(), |path| current.join(path));
+    haven_platform::filesystem::DirectoryCapability::open(&path)
+        .map(|directory| directory.root().to_path_buf())
+        .map_err(|_| "MCP server working directory is unavailable or unsafe".to_owned())
+}
+
 impl McpStdioProcessStartAuthorization {
     pub(super) async fn acquire(
         &self,
@@ -1318,16 +1329,14 @@ impl McpStdioProcessStartAuthorization {
             {
                 return Err("MCP process boundaries changed before process start".into());
             }
-            request
-                .working_directory
-                .clone()
-                .or_else(|| {
-                    config
-                        .execution_workspace
-                        .root()
-                        .map(std::path::Path::to_path_buf)
-                })
-                .ok_or_else(|| "MCP server has no working directory".to_owned())?
+            let configured = request.working_directory.as_deref().or_else(|| {
+                if config.file_policy.sandbox_mode() == SandboxMode::WorkspaceWrite {
+                    config.execution_workspace.root()
+                } else {
+                    None
+                }
+            });
+            resolve_mcp_working_directory(configured)?
         };
         let permission_request = AuthorizationEngine::runtime_permission_request(
             None,
@@ -1335,7 +1344,7 @@ impl McpStdioProcessStartAuthorization {
             serde_json::json!({"command_fingerprint":request.command_fingerprint, "cwd":cwd}),
             crate::NetworkAccess::Opaque,
             vec![crate::DeclaredResource::LocalPath {
-                path: cwd,
+                path: cwd.clone(),
                 access: haven_common::types::LocalPathAccess::Read,
             }],
         )?;
@@ -1369,7 +1378,7 @@ impl McpStdioProcessStartAuthorization {
                 Ok(McpStdioProcessStartPermit {
                     _permit: permit,
                     policy: None,
-                    working_directory: None,
+                    working_directory: Some(cwd.clone()),
                     scratch: None,
                 })
             }
@@ -1388,8 +1397,10 @@ impl McpStdioProcessStartAuthorization {
                     }
                 };
                 let allow_public_egress = permit.opaque_network_is_unrestricted();
+                let mut resolved_request = request.clone();
+                resolved_request.working_directory = Some(cwd);
                 let (policy, working_directory) = permit.mcp_stdio_process_policy(
-                    &request,
+                    &resolved_request,
                     scratch.path(),
                     allow_public_egress,
                 )?;

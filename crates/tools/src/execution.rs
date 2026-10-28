@@ -6,12 +6,8 @@ use haven_common::retry::{
 };
 
 /// Pure execution entry: admit the call, validate it, run the handler, and
-/// classify the outcome.
-///
-/// `ToolsFacade` only forwards to this type. Interactive authorization is
-/// assembled here and decided by the caller before `execute`, because a
-/// missing confirmation receipt must fail closed without blocking inside the
-/// tool future.
+/// classify the outcome. Stale proofs return to the authorization owner for
+/// a fresh decision before an attempt.
 pub(crate) struct AuthorizedExecutor<'a> {
     tools: &'a ToolsFacade,
 }
@@ -438,12 +434,32 @@ impl AuthorizedExecutor<'_> {
                     }
                 }
                 .map_err(anyhow::Error::msg)?;
-                authorization_context = match self
-                    .tools
-                    .coordinator
-                    .core
-                    .authorization
-                    .execution_context_for_proof(&request, proof)
+                let authorization = &self.tools.coordinator.core.authorization;
+                let refreshed_proof = if authorization
+                    .proof_needs_reevaluation(&request, proof)
+                    .await
+                {
+                    match authorization
+                        .request_execution_permission(&request, cancel.clone())
+                        .await
+                    {
+                        Ok(proof) => Some(proof),
+                        Err(reason) => {
+                            return Ok(ToolResult::failed_with_class(
+                                Value::Null,
+                                format!("operation authorization is no longer valid: {reason}"),
+                                ToolErrorClass::Permission,
+                            ));
+                        }
+                    }
+                } else {
+                    None
+                };
+                authorization_context = match authorization
+                    .execution_context_for_proof(
+                        &request,
+                        refreshed_proof.as_ref().unwrap_or(proof),
+                    )
                     .await
                 {
                     Ok(context) => context,

@@ -1350,6 +1350,7 @@ impl AuthorizationEngine {
                 tool_name: request.tool_name.clone(),
                 capability: request.capability().clone(),
                 canonical_input_hash: canonical_authorization_hash(request),
+                operation_input_hash: canonical_input_hash(&request.input),
                 target_binding: request.target_binding.clone(),
                 policy: request.policy.clone(),
                 policy_revision: receipt.policy_revision,
@@ -1362,6 +1363,33 @@ impl AuthorizationEngine {
             },
             authorization: ExecutionAuthorizationKind::Confirmed(receipt.clone()),
         })
+    }
+
+    /// Only stale proofs for the same operation may enter the fresh gate.
+    /// Resource declarations are resolved again under the current workspace.
+    pub(crate) async fn proof_needs_reevaluation(
+        &self,
+        request: &AuthorizationRequest,
+        proof: &AuthorizationExecutionProof,
+    ) -> bool {
+        let binding = &proof.binding;
+        if binding.session_id != request.session_id
+            || binding.tool_name != request.tool_name
+            || binding.capability != *request.capability()
+            || binding.operation_input_hash != canonical_input_hash(&request.input)
+            || binding.target_binding != request.target_binding
+        {
+            return false;
+        }
+        let cfg = self.config.read().await;
+        confirmation_now() >= binding.expires_at
+            || binding.policy_revision != cfg.policy_revision
+            || binding.workspace_generation
+                != cfg
+                    .execution_workspace_for(request.session_id.as_deref())
+                    .generation()
+            || binding.session_execution_mode_revision
+                != cfg.execution_mode_revision_for(request.session_id.as_deref())
     }
 
     /// Revalidate a proof immediately before an operation attempt. Auto
@@ -1974,7 +2002,7 @@ pub(super) fn execution_proof_expiry() -> u64 {
     confirmation_now().saturating_add(30)
 }
 
-fn canonical_input_hash(input: &Value) -> String {
+pub(super) fn canonical_input_hash(input: &Value) -> String {
     let digest = Sha256::digest(haven_common::json::canonical_json_bytes(input));
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -3747,6 +3775,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_proof_reevaluation_preserves_operation_identity() {
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let input = json!({"value": "original"});
+        let request = AuthorizationRequest::new(
+            None,
+            "ask",
+            input.clone(),
+            fixture_policy("ask", &input, RiskLevel::Safe),
+        );
+        let mut proof = engine
+            .authorize_for_execution(&request)
+            .await
+            .execution_proof
+            .unwrap();
+        assert!(!engine.proof_needs_reevaluation(&request, &proof).await);
+        proof.binding.expires_at = 0;
+        assert!(engine.proof_needs_reevaluation(&request, &proof).await);
+        let mut changed = request.clone();
+        changed.input = json!({"value": "different"});
+        assert!(!engine.proof_needs_reevaluation(&changed, &proof).await);
+        changed = request.clone();
+        changed.target_binding = Some("different".into());
+        assert!(!engine.proof_needs_reevaluation(&changed, &proof).await);
+        let fresh = engine
+            .request_execution_permission(&request, CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(
+            engine
+                .verify_execution_proof(&request, &fresh)
+                .await
+                .is_ok()
+        );
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        assert!(engine.proof_needs_reevaluation(&request, &fresh).await);
+    }
+
+    #[tokio::test]
     async fn execution_proof_binds_input_and_policy_revision() {
         let engine = AuthorizationEngine::new();
         engine
@@ -4240,6 +4311,47 @@ mod tests {
         assert!(
             !session_processes.contains_key("session-retired"),
             "inactive session identities should not accumulate in the registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_host_permit_uses_resolved_working_directory() {
+        let engine = Arc::new(AuthorizationEngine::new());
+        engine
+            .set_permission_interaction(Arc::new(
+                super::super::consent::ApprovingPermissionInteraction,
+            ))
+            .await;
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        let authorization = engine
+            .capture_mcp_stdio_process_start_authorization()
+            .await
+            .unwrap();
+        let current = std::env::current_dir().unwrap();
+        for configured in [None, Some(std::path::PathBuf::from("."))] {
+            let permit = authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest {
+                    working_directory: configured,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            let expected = haven_platform::filesystem::DirectoryCapability::open(&current).unwrap();
+            assert_eq!(
+                haven_mcp::McpStdioProcessStartPermit::sandboxed_working_directory(&permit),
+                Some(expected.root())
+            );
+        }
+        assert!(
+            authorization
+                .acquire(haven_mcp::McpStdioProcessStartRequest {
+                    working_directory: Some(current.join("nonexistent-mcp-working-directory")),
+                    ..Default::default()
+                })
+                .await
+                .is_err()
         );
     }
 

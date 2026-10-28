@@ -613,7 +613,7 @@ async fn execute_tool_does_not_inject_idempotency_key_into_strict_tool_args() {
 }
 
 #[tokio::test]
-async fn authorized_execution_rejects_a_revoked_proof_before_calling_the_tool() {
+async fn authorized_execution_reevaluates_a_stale_proof_before_calling_the_tool() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CounterTool(Arc<AtomicUsize>);
@@ -674,9 +674,12 @@ async fn authorized_execution_rejects_a_revoked_proof_before_calling_the_tool() 
         .await
         .unwrap();
 
-    assert!(!result.success);
-    assert_eq!(result.error_class, Some(ToolErrorClass::Permission));
-    assert_eq!(executions.load(Ordering::SeqCst), 0);
+    assert!(
+        result.success,
+        "fresh policy should permit the same operation: {:?}",
+        result.error
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

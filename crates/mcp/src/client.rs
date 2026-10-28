@@ -776,7 +776,13 @@ impl McpStdioProcessLauncher for LocalMcpStdioProcessLauncher {
                         )
                     })?;
                 let build = |program: &str, args: &[String]| {
-                    build_stdio_server_command(program, args, spec, None, None)
+                    build_stdio_server_command(
+                        program,
+                        args,
+                        spec,
+                        permit.sandboxed_working_directory(),
+                        None,
+                    )
                 };
                 let child = spawn_mcp_child(
                     spec.server_name(),

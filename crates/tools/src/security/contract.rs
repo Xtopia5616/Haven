@@ -1,4 +1,4 @@
-use super::engine::{canonical_authorization_hash, execution_proof_expiry};
+use super::engine::{canonical_authorization_hash, canonical_input_hash, execution_proof_expiry};
 use crate::OperationPolicy;
 use haven_common::config::StoredPermission;
 pub use haven_common::types::LocalPathAccess;
@@ -163,6 +163,7 @@ pub(super) struct AuthorizationExecutionBinding {
     pub(super) tool_name: String,
     pub(super) capability: CapabilityScope,
     pub(super) canonical_input_hash: String,
+    pub(super) operation_input_hash: String,
     pub(super) target_binding: Option<String>,
     pub(super) policy: OperationPolicy,
     pub(super) policy_revision: u64,
@@ -221,6 +222,7 @@ impl AuthorizationCheck {
                     tool_name: request.tool_name.clone(),
                     capability: request.capability().clone(),
                     canonical_input_hash: canonical_authorization_hash(request),
+                    operation_input_hash: canonical_input_hash(&request.input),
                     target_binding: request.target_binding.clone(),
                     policy: request.policy.clone(),
                     policy_revision,

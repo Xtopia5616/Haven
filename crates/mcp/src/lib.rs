@@ -36,8 +36,7 @@ pub trait McpStdioProcessStartPermit: Send {
         None
     }
 
-    /// Working directory selected by the authorization owner for a sandboxed
-    /// generation. Full Access keeps the configured cwd behavior.
+    /// Working directory selected by the authorization owner for this generation.
     fn sandboxed_working_directory(&self) -> Option<&Path> {
         None
     }
