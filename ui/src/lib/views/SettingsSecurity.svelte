@@ -611,10 +611,9 @@
 	<div class="settings-subsection">
 		<div class="subsection-heading">
 			<div>
-				<h3>WorkspaceWrite Shell 的 MXC 隔离</h3>
+				<h3>MXC 进程隔离</h3>
 				<p>
-					只影响 Windows 上 WorkspaceWrite 模式的 Shell 进程；FullAccess
-					与其它进程入口不使用 MXC。
+					适用于 Windows 上所有使用 MXC 的进程，包括 WorkspaceWrite 模式的 Shell、MCP stdio、Everything、Skill、Hook、Git 和 LSP；FullAccess 进程不使用 MXC。
 				</p>
 			</div>
 		</div>

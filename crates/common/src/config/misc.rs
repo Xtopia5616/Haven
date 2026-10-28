@@ -696,7 +696,7 @@ pub struct SecurityConfig {
     /// keep their durable session_context execution mode.
     #[serde(default)]
     pub execution_mode: crate::types::ExecutionMode,
-    /// MXC isolation policy for WorkspaceWrite Shell processes. Strict mode
+    /// MXC isolation policy for processes using MXC. Strict mode
     /// requires BaseContainer; compatibility mode may select an AppContainer
     /// tier and reduce network access when the requested policy cannot start.
     pub mxc_isolation_mode: MxcIsolationMode,
@@ -780,8 +780,7 @@ impl TryFrom<SecurityConfigInput> for SecurityConfig {
     }
 }
 
-/// How WorkspaceWrite Shell handles MXC BaseContainer probe or startup
-/// failures.
+/// How processes using MXC handle BaseContainer probe or startup failures.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MxcIsolationMode {
