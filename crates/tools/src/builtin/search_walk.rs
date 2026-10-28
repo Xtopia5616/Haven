@@ -470,7 +470,7 @@ mod tests {
         if linked.is_err() {
             return;
         }
-        let policy = FileReadPolicy::for_test_roots(&[root.clone()]);
+        let policy = FileReadPolicy::for_test_roots(std::slice::from_ref(&root));
         let mut paths = Vec::new();
         let result = walk(
             &root,

@@ -178,8 +178,15 @@ async fn read_summary_source_from_file(
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    let read = read_for_summary_from_file(file, start_line, end_line, input_budget, max_line_bytes)
-        .await?;
+    let read = read_for_summary_from_file(
+        file,
+        start_line,
+        end_line,
+        input_budget,
+        max_line_bytes,
+        cancel,
+    )
+    .await?;
     Ok(SummaryInput {
         content: read.content,
         actual_start_line: read.actual_start_line,
@@ -231,7 +238,15 @@ pub(super) async fn read_for_summary(
     max_line_bytes: usize,
 ) -> anyhow::Result<SummaryFileRead> {
     let file = tokio::fs::File::open(path).await?;
-    read_for_summary_from_file(file, start_line, end_line, max_chars, max_line_bytes).await
+    read_for_summary_from_file(
+        file,
+        start_line,
+        end_line,
+        max_chars,
+        max_line_bytes,
+        CancellationToken::new(),
+    )
+    .await
 }
 
 async fn read_for_summary_from_file(
@@ -240,7 +255,11 @@ async fn read_for_summary_from_file(
     end_line: u64,
     max_chars: usize,
     max_line_bytes: usize,
+    cancel: CancellationToken,
 ) -> anyhow::Result<SummaryFileRead> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
     let size = file.metadata().await?.len();
     let mut reader = BufReader::new(file);
     let mut line_buf = Vec::new();
@@ -251,9 +270,12 @@ async fn read_for_summary_from_file(
     let mut used_chars = 0usize;
 
     loop {
-        let Some((_bytes_read, exceeded)) =
-            read_line_bounded(&mut reader, &mut line_buf, max_line_bytes).await?
-        else {
+        let read = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+            read = read_line_bounded(&mut reader, &mut line_buf, max_line_bytes) => read?,
+        };
+        let Some((_bytes_read, exceeded)) = read else {
             break;
         };
         if exceeded {
@@ -290,4 +312,26 @@ async fn read_for_summary_from_file(
         file_size_bytes: size,
         truncated,
     })
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::read_for_summary_from_file;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn summary_source_read_stops_when_cancelled() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.txt");
+        std::fs::write(&path, "line\n".repeat(32)).unwrap();
+        let file = tokio::fs::File::open(path).await.unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let error = read_for_summary_from_file(file, 1, 0, 1024, 128_000, cancel)
+            .await
+            .err()
+            .expect("a cancelled summary read must stop");
+        assert_eq!(error.to_string(), "cancelled");
+    }
 }

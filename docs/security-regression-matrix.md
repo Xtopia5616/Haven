@@ -89,6 +89,7 @@ WorkspaceWrite 都进入确认流程；本地文件写入仍分别受只读拒�
 | structured error class | `transient`、`unknown_outcome`、`validation`、`permission`、`side_effect_may_have_happened` | agent 按 class 决定 retry/verify/ask；不得把错误文本作为主要策略条件 |
 | cancellation | gate 后、实际文件/进程/网络提交前取消 | 不调用下游，或下游按 token 停止；不以取消作为授权 |
 | 链接解析容量与取消 | 同一引擎并发解析超过 4、等待槽位超过 1 秒、解析超过 3 秒或操作取消 | 超额调用快速拒绝；deadline/取消返回可见错误并在组件检查点释放句柄和容量；单个同步 Windows 文件系统调用不可硬中断，超时期间 worker 保留槽位直至调用返回 |
+| Files 长读取取消 | 摘要输入扫描、内容搜索或异步文件读取过程中取消操作 | 摘要扫描在每次异步读行前等待取消；搜索与文件读取响应同一取消令牌；已取消操作不继续消费文件内容或提交摘要请求 |
 | race/TOCTOU | 文件读授权后、打开前替换目标或路径 component；打开后再替换 pathname | 文件读入口先打开并持有 handle，再解析路径、验证允许根和 handle/file identity；无法证明相同对象时 fail-closed；读取、摘要、outline、inspect/hash、内容搜索及受管媒体读取都消费已验证的同一 handle。仅在执行入口重查 pathname 不足以满足此项 |
 | 输出泄漏 | denial、tool error、日志 tail、MCP env | 不返回 key/token、完整命令输出或原始 provider/MCP secret |
 
