@@ -46,14 +46,14 @@ impl ExecutionPolicyPermit {
             .filter_map(|name| self._config.tool_settings.get(name))
             .collect::<Vec<_>>();
         let mut path_constraints = Vec::new();
-        if !self._config.global_file_roots.is_empty() {
+        if !self._config.file_policy.global_file_roots.is_empty() {
             path_constraints.push(open_directory_roots(
-                &self._config.global_file_roots,
+                &self._config.file_policy.global_file_roots,
                 "security.resource_policy.files.path_roots",
             )?);
         }
-        let mut denied_paths = self._config.global_denied_paths.clone();
-        let mut protected_paths = self._config.global_read_only_roots.clone();
+        let mut denied_paths = self._config.file_policy.global_denied_paths.clone();
+        let mut protected_paths = self._config.file_policy.global_read_only_roots.clone();
         for setting in &settings {
             let files = &setting.resource_policy.files;
             if !files.path_roots.is_empty() {
@@ -203,14 +203,14 @@ impl ExecutionPolicyPermit {
             .into_iter()
             .collect::<Vec<_>>();
         let mut path_constraints = Vec::new();
-        if !self._config.global_file_roots.is_empty() {
+        if !self._config.file_policy.global_file_roots.is_empty() {
             path_constraints.push(open_directory_roots(
-                &self._config.global_file_roots,
+                &self._config.file_policy.global_file_roots,
                 "security.resource_policy.files.path_roots",
             )?);
         }
-        let mut denied_paths = self._config.global_denied_paths.clone();
-        let mut protected_paths = self._config.global_read_only_roots.clone();
+        let mut denied_paths = self._config.file_policy.global_denied_paths.clone();
+        let mut protected_paths = self._config.file_policy.global_read_only_roots.clone();
         for setting in &settings {
             if !setting.resource_policy.files.path_roots.is_empty() {
                 let roots = setting
@@ -347,8 +347,8 @@ impl ExecutionPolicyPermit {
             .get(&self.tool_name)
             .into_iter()
             .collect::<Vec<_>>();
-        let mut denied_paths = self._config.global_denied_paths.clone();
-        let mut protected_paths = self._config.global_read_only_roots.clone();
+        let mut denied_paths = self._config.file_policy.global_denied_paths.clone();
+        let mut protected_paths = self._config.file_policy.global_read_only_roots.clone();
         for setting in &settings {
             denied_paths.extend(
                 setting
@@ -515,9 +515,9 @@ impl ExecutionPolicyPermit {
             ._config
             .workspace_write_directories(self.session_id.as_deref())?;
         let mut path_constraints = Vec::new();
-        if !self._config.global_file_roots.is_empty() {
+        if !self._config.file_policy.global_file_roots.is_empty() {
             path_constraints.push(open_directory_roots(
-                &self._config.global_file_roots,
+                &self._config.file_policy.global_file_roots,
                 "security.resource_policy.files.path_roots",
             )?);
         }
@@ -528,8 +528,8 @@ impl ExecutionPolicyPermit {
             .get("lsp")
             .into_iter()
             .collect::<Vec<_>>();
-        let mut protected_readonly_paths = self._config.global_read_only_roots.clone();
-        let mut denied_paths = self._config.global_denied_paths.clone();
+        let mut protected_readonly_paths = self._config.file_policy.global_read_only_roots.clone();
+        let mut denied_paths = self._config.file_policy.global_denied_paths.clone();
         for setting in &lsp_settings {
             let files = &setting.resource_policy.files;
             if !files.path_roots.is_empty() {

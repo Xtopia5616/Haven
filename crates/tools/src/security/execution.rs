@@ -302,10 +302,12 @@ pub(crate) struct WorkspaceProcessFilesystemPolicy {
 
 impl ExecutionPolicyPermit {
     pub(crate) fn sandbox_mode(&self) -> SandboxMode {
-        if self.resource_boundary_extension && self._config.sandbox_mode == SandboxMode::ReadOnly {
+        if self.resource_boundary_extension
+            && self._config.file_policy.sandbox_mode() == SandboxMode::ReadOnly
+        {
             SandboxMode::WorkspaceWrite
         } else {
-            self._config.sandbox_mode
+            self._config.file_policy.sandbox_mode()
         }
     }
 
@@ -445,9 +447,9 @@ impl ExecutionPolicyPermit {
             .workspace_write_directories(self.session_id.as_deref())?;
 
         let mut path_constraints = Vec::new();
-        if !self._config.global_file_roots.is_empty() {
+        if !self._config.file_policy.global_file_roots.is_empty() {
             path_constraints.push(super::filesystem::open_directory_roots(
-                &self._config.global_file_roots,
+                &self._config.file_policy.global_file_roots,
                 "security.resource_policy.files.path_roots",
             )?);
         }
@@ -457,8 +459,8 @@ impl ExecutionPolicyPermit {
             .get(tool_name)
             .into_iter()
             .collect::<Vec<_>>();
-        let mut protected_readonly_paths = self._config.global_read_only_roots.clone();
-        let mut denied_paths = self._config.global_denied_paths.clone();
+        let mut protected_readonly_paths = self._config.file_policy.global_read_only_roots.clone();
+        let mut denied_paths = self._config.file_policy.global_denied_paths.clone();
         for setting in &tool_settings {
             if !setting.resource_policy.files.path_roots.is_empty() {
                 let roots = setting
@@ -546,7 +548,7 @@ impl ExecutionPolicyPermit {
         });
 
         let mut read_scope = workspace_writable.clone();
-        let mut write_scope = if self._config.sandbox_mode == SandboxMode::ReadOnly {
+        let mut write_scope = if self._config.file_policy.sandbox_mode() == SandboxMode::ReadOnly {
             Vec::new()
         } else {
             workspace_writable
@@ -1143,7 +1145,12 @@ impl ExecutionPolicyAuthorization {
             .config
             .try_write()
             .expect("test authorization config must be idle")
-            .sandbox_mode = sandbox_mode;
+            .file_policy
+            .write_mode = match sandbox_mode {
+            SandboxMode::ReadOnly => haven_common::config::FileWriteMode::ReadOnly,
+            SandboxMode::WorkspaceWrite => haven_common::config::FileWriteMode::Workspace,
+            SandboxMode::FullAccess => haven_common::config::FileWriteMode::Unrestricted,
+        };
         let proof = Self::for_test_with_engine_and_tool(Arc::clone(&authorization), "shell");
         (proof, authorization)
     }
@@ -1743,6 +1750,7 @@ mod tests {
             .config
             .try_write()
             .expect("test config must be idle")
+            .file_policy
             .global_denied_paths = vec![git_metadata.clone()];
         let permit = authorization.acquire().await.unwrap();
 
@@ -2013,7 +2021,7 @@ mod tests {
         {
             let mut config = engine.config.try_write().unwrap();
             config.tool_settings.remove("lifecycle_hook");
-            config.global_file_roots = vec![allowed_subdirectory];
+            config.file_policy.global_file_roots = vec![allowed_subdirectory];
         }
         let authorization = engine
             .capture_lifecycle_hook_process_start_authorization(None)

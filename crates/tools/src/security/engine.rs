@@ -85,18 +85,47 @@ struct SessionGrants {
     deny: ScopedGrantMap,
 }
 
+/// Global file boundary compiled from the authoritative resource policy.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct CompiledFilePolicy {
+    pub(super) write_mode: FileWriteMode,
+    writable_roots: Vec<PathBuf>,
+    pub(super) global_file_roots: Vec<PathBuf>,
+    pub(super) global_read_only_roots: Vec<PathBuf>,
+    pub(super) global_denied_paths: Vec<PathBuf>,
+}
+
+impl CompiledFilePolicy {
+    pub(super) fn sandbox_mode(&self) -> SandboxMode {
+        match self.write_mode {
+            FileWriteMode::ReadOnly => SandboxMode::ReadOnly,
+            FileWriteMode::Workspace | FileWriteMode::Roots | FileWriteMode::Inherit => {
+                SandboxMode::WorkspaceWrite
+            }
+            FileWriteMode::Unrestricted => SandboxMode::FullAccess,
+        }
+    }
+
+    fn effective_write_mode(mode: FileWriteMode, roots: &[PathBuf]) -> FileWriteMode {
+        match mode {
+            FileWriteMode::Workspace | FileWriteMode::Inherit if !roots.is_empty() => {
+                FileWriteMode::Roots
+            }
+            FileWriteMode::Inherit => FileWriteMode::Workspace,
+            FileWriteMode::Roots if roots.is_empty() => FileWriteMode::Workspace,
+            mode => mode,
+        }
+    }
+}
+
 /// Combined safety config under a single RwLock so `check` reads atomically.
 #[derive(Clone)]
 pub(super) struct SafetyConfig {
     execution_mode: ExecutionMode,
     session_execution_modes: HashMap<String, ExecutionMode>,
     session_execution_mode_revisions: HashMap<String, u64>,
-    pub(super) sandbox_mode: SandboxMode,
+    pub(super) file_policy: CompiledFilePolicy,
     pub(super) mxc_isolation_mode: MxcIsolationMode,
-    writable_roots: Vec<PathBuf>,
-    pub(super) global_file_roots: Vec<PathBuf>,
-    pub(super) global_read_only_roots: Vec<PathBuf>,
-    pub(super) global_denied_paths: Vec<PathBuf>,
     pub(super) shell_runtime_read_roots: Vec<PathBuf>,
     pub(super) network: NetworkResourcePolicy,
     /// Revision for the authoritative global network resource policy only.
@@ -145,13 +174,13 @@ impl SafetyConfig {
         &self,
         session_id: Option<&str>,
     ) -> Result<Vec<haven_platform::filesystem::DirectoryCapability>, String> {
-        let directories = if self.writable_roots.is_empty() {
+        let directories = if self.file_policy.writable_roots.is_empty() {
             self.execution_workspace_for(session_id)
                 .directory()
                 .into_iter()
                 .collect()
         } else {
-            open_directory_roots(&self.writable_roots, "security.writable_roots")?
+            open_directory_roots(&self.file_policy.writable_roots, "security.writable_roots")?
         };
         if directories.is_empty() {
             return Err("Workspace Write has no execution root for MXC".into());
@@ -165,8 +194,8 @@ impl SafetyConfig {
         root: &Path,
         network_policy: NetworkPolicy,
     ) -> anyhow::Result<()> {
-        self.sandbox_mode = SandboxMode::WorkspaceWrite;
-        self.writable_roots = vec![root.to_path_buf()];
+        self.file_policy.write_mode = FileWriteMode::Roots;
+        self.file_policy.writable_roots = vec![root.to_path_buf()];
         self.execution_workspace = ExecutionWorkspace::open_root(root, 1)?;
         self.network.access = network_policy.into();
         Ok(())
@@ -210,12 +239,14 @@ impl AuthorizationEngine {
                 execution_mode: ExecutionMode::Collaborative,
                 session_execution_modes: HashMap::new(),
                 session_execution_mode_revisions: HashMap::new(),
-                sandbox_mode: SandboxMode::WorkspaceWrite,
+                file_policy: CompiledFilePolicy {
+                    write_mode: FileWriteMode::Workspace,
+                    writable_roots: Vec::new(),
+                    global_file_roots: Vec::new(),
+                    global_read_only_roots: Vec::new(),
+                    global_denied_paths: Vec::new(),
+                },
                 mxc_isolation_mode: MxcIsolationMode::Strict,
-                writable_roots: Vec::new(),
-                global_file_roots: Vec::new(),
-                global_read_only_roots: Vec::new(),
-                global_denied_paths: Vec::new(),
                 shell_runtime_read_roots: Vec::new(),
                 network: NetworkResourcePolicy {
                     access: NetworkAccessBoundary::Restricted,
@@ -387,37 +418,34 @@ impl AuthorizationEngine {
     }
 
     pub(crate) async fn sandbox_mode(&self) -> SandboxMode {
-        self.config.read().await.sandbox_mode
+        self.config.read().await.file_policy.sandbox_mode()
     }
 
     pub(crate) async fn lifecycle_hook_resource_policy(&self) -> ResourcePolicy {
         let config = self.config.read().await;
         ResourcePolicy {
             files: FileResourcePolicy {
-                write_mode: match config.sandbox_mode {
-                    SandboxMode::ReadOnly => FileWriteMode::ReadOnly,
-                    SandboxMode::WorkspaceWrite if !config.writable_roots.is_empty() => {
-                        FileWriteMode::Roots
-                    }
-                    SandboxMode::WorkspaceWrite => FileWriteMode::Workspace,
-                    SandboxMode::FullAccess => FileWriteMode::Unrestricted,
-                },
+                write_mode: config.file_policy.write_mode,
                 write_roots: config
+                    .file_policy
                     .writable_roots
                     .iter()
                     .map(|root| root.to_string_lossy().into_owned())
                     .collect(),
                 path_roots: config
+                    .file_policy
                     .global_file_roots
                     .iter()
                     .map(|root| root.to_string_lossy().into_owned())
                     .collect(),
                 read_only_roots: config
+                    .file_policy
                     .global_read_only_roots
                     .iter()
                     .map(|root| root.to_string_lossy().into_owned())
                     .collect(),
                 denied_paths: config
+                    .file_policy
                     .global_denied_paths
                     .iter()
                     .map(|path| path.to_string_lossy().into_owned())
@@ -632,15 +660,20 @@ impl AuthorizationEngine {
         )
         .map(|_| ());
         let network = security.resource_policy.network.clone();
-        let sandbox_mode = security.resource_policy.sandbox_mode();
+        let file_policy = CompiledFilePolicy {
+            write_mode: CompiledFilePolicy::effective_write_mode(
+                security.resource_policy.files.write_mode,
+                &writable_roots,
+            ),
+            writable_roots,
+            global_file_roots,
+            global_read_only_roots,
+            global_denied_paths,
+        };
         let network_policy_changed = cfg.network != network;
-        let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
+        let process_boundaries_changed = cfg.file_policy != file_policy
             || !cfg.execution_workspace.same_root(&workspace)
             || cfg.mxc_isolation_mode != security.mxc_isolation_mode
-            || cfg.writable_roots != writable_roots
-            || cfg.global_file_roots != global_file_roots
-            || cfg.global_read_only_roots != global_read_only_roots
-            || cfg.global_denied_paths != global_denied_paths
             || cfg.shell_runtime_read_roots != shell_runtime_read_roots
             || cfg.network != network;
         let mut permanent = SessionGrants::default();
@@ -675,23 +708,15 @@ impl AuthorizationEngine {
             }
         }
         let policy_changed = cfg.execution_mode != security.execution_mode
-            || cfg.sandbox_mode != sandbox_mode
+            || cfg.file_policy != file_policy
             || cfg.mxc_isolation_mode != security.mxc_isolation_mode
-            || cfg.writable_roots != writable_roots
-            || cfg.global_file_roots != global_file_roots
-            || cfg.global_read_only_roots != global_read_only_roots
-            || cfg.global_denied_paths != global_denied_paths
             || cfg.shell_runtime_read_roots != shell_runtime_read_roots
             || cfg.network != network
             || cfg.permanent != permanent;
         cfg.execution_workspace = workspace;
         cfg.execution_mode = security.execution_mode;
-        cfg.sandbox_mode = sandbox_mode;
+        cfg.file_policy = file_policy;
         cfg.mxc_isolation_mode = security.mxc_isolation_mode;
-        cfg.writable_roots = writable_roots;
-        cfg.global_file_roots = global_file_roots;
-        cfg.global_read_only_roots = global_read_only_roots;
-        cfg.global_denied_paths = global_denied_paths;
         cfg.shell_runtime_read_roots = shell_runtime_read_roots;
         cfg.network = network;
         if mcp_connection_authority_removed(&cfg.permanent.allow, &permanent.allow) {
@@ -763,11 +788,18 @@ impl AuthorizationEngine {
         let mut network = cfg.network.clone();
         network.access = network_policy.into();
         let network_policy_changed = cfg.network != network;
-        let process_boundaries_changed = cfg.sandbox_mode != sandbox_mode
-            || cfg.writable_roots != writable_roots
+        let process_boundaries_changed = cfg.file_policy.sandbox_mode() != sandbox_mode
+            || cfg.file_policy.writable_roots != writable_roots
             || network_policy_changed;
-        cfg.sandbox_mode = sandbox_mode;
-        cfg.writable_roots = writable_roots;
+        cfg.file_policy.write_mode = CompiledFilePolicy::effective_write_mode(
+            match sandbox_mode {
+                SandboxMode::ReadOnly => FileWriteMode::ReadOnly,
+                SandboxMode::WorkspaceWrite => FileWriteMode::Workspace,
+                SandboxMode::FullAccess => FileWriteMode::Unrestricted,
+            },
+            &writable_roots,
+        );
+        cfg.file_policy.writable_roots = writable_roots;
         cfg.network = network;
         if network_policy_changed {
             cfg.network_policy_revision = cfg.network_policy_revision.saturating_add(1);
@@ -820,12 +852,7 @@ impl AuthorizationEngine {
             .values()
             .map(|c| c.disabled_operations.len())
             .sum::<usize>();
-        let file_write_mode = match cfg.sandbox_mode {
-            SandboxMode::ReadOnly => FileWriteMode::ReadOnly,
-            SandboxMode::WorkspaceWrite if !cfg.writable_roots.is_empty() => FileWriteMode::Roots,
-            SandboxMode::WorkspaceWrite => FileWriteMode::Workspace,
-            SandboxMode::FullAccess => FileWriteMode::Unrestricted,
-        };
+        let file_write_mode = cfg.file_policy.write_mode;
         let network_access = cfg.network.access;
         format!(
             "mode={:?}; resource_policy.files.write_mode={file_write_mode:?}; resource_policy.network.access={network_access:?}; always_allowed={always_allowed}; always_denied={always_denied}; disabled_tools={disabled_tools}; disabled_operations={disabled_operations}; operation contracts decide read-only access; higher-risk operations may require confirmation",
@@ -864,21 +891,21 @@ impl AuthorizationEngine {
         {
             let mut root_constraints = Vec::new();
             let mut protection_roots = Vec::new();
-            let mut readonly_paths = cfg.global_read_only_roots.clone();
-            let mut denied_paths = cfg.global_denied_paths.clone();
+            let mut readonly_paths = cfg.file_policy.global_read_only_roots.clone();
+            let mut denied_paths = cfg.file_policy.global_denied_paths.clone();
             let resource_boundary_extension = proof_resource_boundary_extension(proof);
             let (extension_roots, extension_targets) = if resource_boundary_extension {
                 resource_extension_write_roots(request, &execution_workspace)?
             } else {
                 (Vec::new(), Vec::new())
             };
-            let ambient = match cfg.sandbox_mode {
+            let ambient = match cfg.file_policy.sandbox_mode() {
                 SandboxMode::ReadOnly if !resource_boundary_extension => {
                     return Err("file mutation requires permission".into());
                 }
                 SandboxMode::ReadOnly => false,
                 SandboxMode::WorkspaceWrite if resource_boundary_extension => false,
-                SandboxMode::WorkspaceWrite if cfg.writable_roots.is_empty() => {
+                SandboxMode::WorkspaceWrite if cfg.file_policy.writable_roots.is_empty() => {
                     let roots = execution_workspace
                         .directory()
                         .into_iter()
@@ -889,9 +916,9 @@ impl AuthorizationEngine {
                     false
                 }
                 SandboxMode::WorkspaceWrite => {
-                    protection_roots.extend(cfg.writable_roots.iter().cloned());
+                    protection_roots.extend(cfg.file_policy.writable_roots.iter().cloned());
                     root_constraints.push(open_directory_roots(
-                        &cfg.writable_roots,
+                        &cfg.file_policy.writable_roots,
                         "security.writable_roots",
                     )?);
                     false
@@ -902,10 +929,10 @@ impl AuthorizationEngine {
                 }
             };
 
-            if !resource_boundary_extension && !cfg.global_file_roots.is_empty() {
-                protection_roots.extend(cfg.global_file_roots.iter().cloned());
+            if !resource_boundary_extension && !cfg.file_policy.global_file_roots.is_empty() {
+                protection_roots.extend(cfg.file_policy.global_file_roots.iter().cloned());
                 root_constraints.push(open_directory_roots(
-                    &cfg.global_file_roots,
+                    &cfg.file_policy.global_file_roots,
                     "security.resource_policy.files.path_roots",
                 )?);
             }
@@ -2046,8 +2073,8 @@ fn resolve_network_policy(
 
 fn file_read_policy_for_config(cfg: &SafetyConfig, tool_name: &str) -> FileReadPolicy {
     let mut allowed_roots = Vec::new();
-    if !cfg.global_file_roots.is_empty() {
-        allowed_roots.push(cfg.global_file_roots.clone());
+    if !cfg.file_policy.global_file_roots.is_empty() {
+        allowed_roots.push(cfg.file_policy.global_file_roots.clone());
     }
     allowed_roots.extend(
         tool_setting_names(tool_name)
@@ -2063,7 +2090,7 @@ fn file_read_policy_for_config(cfg: &SafetyConfig, tool_name: &str) -> FileReadP
                     .collect()
             }),
     );
-    let mut denied_paths = cfg.global_denied_paths.clone();
+    let mut denied_paths = cfg.file_policy.global_denied_paths.clone();
     denied_paths.extend(
         tool_setting_names(tool_name)
             .filter_map(|name| cfg.tool_settings.get(name))
@@ -2442,7 +2469,7 @@ fn check_policy_boundaries(
             resource_extension_allowed: false,
         });
     }
-    let mut denied_paths = cfg.global_denied_paths.clone();
+    let mut denied_paths = cfg.file_policy.global_denied_paths.clone();
     for setting in tool_setting_names(tool_name).filter_map(|name| cfg.tool_settings.get(name)) {
         denied_paths.extend(
             setting
@@ -2466,13 +2493,13 @@ fn check_policy_boundaries(
         }
     }
     let mut expansion =
-        workspace_host_process_block(cfg.sandbox_mode, tool_name, policy).map(|reason| {
-            PolicyBoundaryFailure {
+        workspace_host_process_block(cfg.file_policy.sandbox_mode(), tool_name, policy).map(
+            |reason| PolicyBoundaryFailure {
                 reason,
                 reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
                 resource_extension_allowed: true,
-            }
-        });
+            },
+        );
     let network = resolve_network_policy(cfg, tool_name, resources, policy);
     if let Some(reason) = network.reason {
         let failure = PolicyBoundaryFailure {
@@ -2511,7 +2538,7 @@ fn path_sandbox_block(
     resources: &[super::DeclaredResource],
     policy: &OperationPolicy,
 ) -> Option<PolicyBoundaryFailure> {
-    if matches!(cfg.sandbox_mode, SandboxMode::ReadOnly)
+    if matches!(cfg.file_policy.sandbox_mode(), SandboxMode::ReadOnly)
         && (matches!(policy.effect, OperationEffect::WorkspaceWrite)
             || policy.execution_boundary != crate::ExecutionBoundary::InProcess)
     {
@@ -2559,7 +2586,7 @@ fn path_sandbox_block(
                     )
             })
         });
-        if (matches!(cfg.sandbox_mode, SandboxMode::WorkspaceWrite)
+        if (matches!(cfg.file_policy.sandbox_mode(), SandboxMode::WorkspaceWrite)
             && matches!(policy.effect, OperationEffect::WorkspaceWrite))
             || has_tool_path_policy
         {
@@ -2573,7 +2600,7 @@ fn path_sandbox_block(
     }
     for (path, access) in &paths {
         let path = resolve_relative_sandbox_path((*path).clone(), execution_workspace);
-        let mut denied_paths = cfg.global_denied_paths.clone();
+        let mut denied_paths = cfg.file_policy.global_denied_paths.clone();
         for setting in tool_setting_names(tool_name).filter_map(|name| cfg.tool_settings.get(name))
         {
             denied_paths.extend(
@@ -2593,7 +2620,7 @@ fn path_sandbox_block(
             });
         }
         if **access == super::LocalPathAccess::Write {
-            let mut readonly_paths = cfg.global_read_only_roots.clone();
+            let mut readonly_paths = cfg.file_policy.global_read_only_roots.clone();
             for setting in
                 tool_setting_names(tool_name).filter_map(|name| cfg.tool_settings.get(name))
             {
@@ -2616,9 +2643,9 @@ fn path_sandbox_block(
         }
     }
     for (path, _) in &paths {
-        if !cfg.global_file_roots.is_empty() {
+        if !cfg.file_policy.global_file_roots.is_empty() {
             let path = resolve_relative_sandbox_path((*path).clone(), execution_workspace);
-            if !path_is_allowed(&path, &cfg.global_file_roots) {
+            if !path_is_allowed(&path, &cfg.file_policy.global_file_roots) {
                 return Some(PolicyBoundaryFailure {
                     reason: format!(
                         "operation '{tool_name}' is blocked by the global file resource path policy"
@@ -2723,17 +2750,17 @@ fn path_sandbox_block(
             }
         }
     }
-    if matches!(cfg.sandbox_mode, SandboxMode::WorkspaceWrite)
+    if matches!(cfg.file_policy.sandbox_mode(), SandboxMode::WorkspaceWrite)
         && matches!(policy.effect, OperationEffect::WorkspaceWrite)
     {
-        let allowed: Vec<PathBuf> = if cfg.writable_roots.is_empty() {
+        let allowed: Vec<PathBuf> = if cfg.file_policy.writable_roots.is_empty() {
             execution_workspace
                 .root()
                 .map(Path::to_path_buf)
                 .into_iter()
                 .collect()
         } else {
-            cfg.writable_roots.clone()
+            cfg.file_policy.writable_roots.clone()
         };
         if allowed.is_empty() {
             return Some(PolicyBoundaryFailure {
@@ -2760,15 +2787,16 @@ fn path_sandbox_block(
             });
         }
     }
-    if matches!(cfg.sandbox_mode, SandboxMode::WorkspaceWrite) && tool_name == "shell" {
-        let allowed: Vec<PathBuf> = if cfg.writable_roots.is_empty() {
+    if matches!(cfg.file_policy.sandbox_mode(), SandboxMode::WorkspaceWrite) && tool_name == "shell"
+    {
+        let allowed: Vec<PathBuf> = if cfg.file_policy.writable_roots.is_empty() {
             execution_workspace
                 .root()
                 .map(Path::to_path_buf)
                 .into_iter()
                 .collect()
         } else {
-            cfg.writable_roots.clone()
+            cfg.file_policy.writable_roots.clone()
         };
         if allowed.is_empty() {
             return Some(PolicyBoundaryFailure {
@@ -2867,6 +2895,27 @@ mod tests {
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
     use tokio_util::sync::CancellationToken;
+
+    #[test]
+    fn compiled_file_mode_preserves_existing_root_interpretation() {
+        let roots = vec![PathBuf::from("root")];
+        assert_eq!(
+            CompiledFilePolicy::effective_write_mode(FileWriteMode::Workspace, &roots),
+            FileWriteMode::Roots
+        );
+        assert_eq!(
+            CompiledFilePolicy::effective_write_mode(FileWriteMode::Roots, &[]),
+            FileWriteMode::Workspace
+        );
+        assert_eq!(
+            CompiledFilePolicy::effective_write_mode(FileWriteMode::ReadOnly, &roots),
+            FileWriteMode::ReadOnly
+        );
+        assert_eq!(
+            CompiledFilePolicy::effective_write_mode(FileWriteMode::Unrestricted, &roots),
+            FileWriteMode::Unrestricted
+        );
+    }
 
     macro_rules! capability_scope {
         ($value:expr) => {
@@ -4820,10 +4869,16 @@ mod tests {
 
         let config = engine.config.read().await;
         assert_eq!(
-            config.writable_roots,
+            config.file_policy.writable_roots,
             vec![valid_root.path().to_path_buf(), missing_root]
         );
-        assert!(open_directory_roots(&config.writable_roots, "security.writable_roots").is_err());
+        assert!(
+            open_directory_roots(
+                &config.file_policy.writable_roots,
+                "security.writable_roots"
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -4990,7 +5045,7 @@ mod tests {
             // defaults instead.
             let mut config = engine.config.try_write().unwrap();
             config.network.access = NetworkAccessBoundary::Open;
-            config.sandbox_mode = SandboxMode::FullAccess;
+            config.file_policy.write_mode = FileWriteMode::Unrestricted;
             drop(config);
             Self { engine, threshold }
         }
@@ -6679,7 +6734,7 @@ mod tests {
             AuthorizationReasonCode::SandboxBoundary,
             "host-process sandbox failure must win over network and path failures"
         );
-        cfg.sandbox_mode = SandboxMode::FullAccess;
+        cfg.file_policy.write_mode = FileWriteMode::Unrestricted;
         cfg.network.access = NetworkAccessBoundary::Deny;
         assert_eq!(
             check(&cfg),
@@ -7920,10 +7975,10 @@ mod tests {
                 .config
                 .try_write()
                 .expect("test authorization config must be idle");
-            config.writable_roots = vec![src.clone()];
-            config.global_file_roots = vec![src.clone()];
-            config.global_read_only_roots = vec![global_protected.clone()];
-            config.global_denied_paths = vec![global_denied.clone()];
+            config.file_policy.writable_roots = vec![src.clone()];
+            config.file_policy.global_file_roots = vec![src.clone()];
+            config.file_policy.global_read_only_roots = vec![global_protected.clone()];
+            config.file_policy.global_denied_paths = vec![global_denied.clone()];
             config.tool_settings.insert(
                 "shell".into(),
                 ToolConfig {
@@ -8237,7 +8292,7 @@ mod tests {
                 .config
                 .try_write()
                 .expect("test authorization config must be idle");
-            config.global_file_roots = vec![allowed];
+            config.file_policy.global_file_roots = vec![allowed];
         }
 
         let permit = authorization.acquire().await.expect("acquire live permit");
@@ -8263,7 +8318,7 @@ mod tests {
                 .config
                 .try_write()
                 .expect("test authorization config must be idle");
-            config.global_denied_paths = vec![denied.clone()];
+            config.file_policy.global_denied_paths = vec![denied.clone()];
         }
 
         let permit = authorization.acquire().await.expect("acquire live permit");

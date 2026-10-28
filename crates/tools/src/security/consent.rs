@@ -305,7 +305,7 @@ mod tests {
         .unwrap();
         {
             let mut config = engine.config.write().await;
-            config.sandbox_mode = haven_common::types::SandboxMode::ReadOnly;
+            config.file_policy.write_mode = haven_common::config::FileWriteMode::ReadOnly;
         }
         assert!(matches!(
             engine.authorize(&request).await,
