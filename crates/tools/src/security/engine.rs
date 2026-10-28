@@ -417,6 +417,13 @@ impl AuthorizationEngine {
             .execution_workspace_for(Some(session_id))
     }
 
+    pub(crate) async fn execution_workspace_for_request(
+        &self,
+        session_id: Option<&str>,
+    ) -> ExecutionWorkspace {
+        self.config.read().await.execution_workspace_for(session_id)
+    }
+
     pub(crate) async fn sandbox_mode(&self) -> SandboxMode {
         self.config.read().await.file_policy.sandbox_mode()
     }

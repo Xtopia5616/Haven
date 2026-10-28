@@ -1,10 +1,17 @@
 import type {
 	DeclaredResource,
+	DesktopAccess,
 	PermissionResourceScope,
 } from '$lib/contracts/generatedCommands.ts';
 
 function origin(scheme: string, host: string, port: number | null | undefined): string {
 	return `${scheme}://${host}${port == null ? '' : `:${port}`}`;
+}
+
+function desktopAccessDescription(access: DesktopAccess): string {
+	if (access === 'read') return '读取桌面窗口信息';
+	if (access === 'capture') return '截取桌面画面';
+	return '子进程共享交互桌面，可访问窗口（剪贴板和输入注入仍受限制）';
 }
 
 export function declaredResourceDescription(resource: DeclaredResource): string {
@@ -20,7 +27,7 @@ export function declaredResourceDescription(resource: DeclaredResource): string 
 		return resource.access === 'read' ? '读取系统剪贴板' : '写入系统剪贴板';
 	}
 	if (resource.kind === 'desktop') {
-		return resource.access === 'read' ? '读取桌面窗口信息' : '截取桌面画面';
+		return desktopAccessDescription(resource.access);
 	}
 	if (resource.kind === 'window') {
 		const access =
@@ -58,7 +65,7 @@ export function permissionResourceScopeDescription(scope: PermissionResourceScop
 		return scope.access === 'read' ? '读取系统剪贴板' : '写入系统剪贴板';
 	}
 	if (scope.kind === 'desktop') {
-		return scope.access === 'read' ? '读取桌面窗口信息' : '截取桌面画面';
+		return desktopAccessDescription(scope.access);
 	}
 	if (scope.kind === 'window') {
 		const access =

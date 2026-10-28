@@ -38,6 +38,15 @@ describe('permission resource descriptions', () => {
 		).toBe('操作窗口 · hwnd:2a · PID 42 · 指定控件');
 	});
 
+	it('describes child process desktop handles separately from capture', () => {
+		expect(declaredResourceDescription({ kind: 'desktop', access: 'process_handles' })).toBe(
+			'子进程共享交互桌面，可访问窗口（剪贴板和输入注入仍受限制）',
+		);
+		expect(permissionResourceScopeDescription({ kind: 'desktop', access: 'process_handles' })).toBe(
+			'子进程共享交互桌面，可访问窗口（剪贴板和输入注入仍受限制）',
+		);
+	});
+
 	it('distinguishes Registry name enumeration from reading one value', () => {
 		expect(
 			declaredResourceDescription({

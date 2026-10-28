@@ -301,6 +301,17 @@ pub(crate) struct WorkspaceProcessFilesystemPolicy {
 }
 
 impl ExecutionPolicyPermit {
+    pub(crate) fn authorizes_git_desktop_handles(&self) -> bool {
+        self.authorized_resources.iter().any(|resource| {
+            matches!(
+                resource,
+                crate::DeclaredResource::Desktop {
+                    access: haven_common::types::DesktopAccess::ProcessHandles
+                }
+            )
+        })
+    }
+
     /// Match the Git cwd against the write resource bound to this proof.
     pub(crate) fn authorizes_git_directory(
         &self,
@@ -381,7 +392,7 @@ impl ExecutionPolicyPermit {
             runtime_read_roots,
             None,
             &[],
-            None,
+            &[],
         )
     }
 
@@ -415,7 +426,7 @@ impl ExecutionPolicyPermit {
             runtime_read_roots,
             Some(scratch_directory),
             cache_directories,
-            None,
+            &[],
         )
     }
 
@@ -431,7 +442,7 @@ impl ExecutionPolicyPermit {
             runtime_read_roots,
             None,
             &[],
-            None,
+            &[],
         )
     }
 
@@ -440,7 +451,7 @@ impl ExecutionPolicyPermit {
         working_directory: &std::path::Path,
         runtime_read_roots: &[std::path::PathBuf],
         scratch_directory: &std::path::Path,
-        git_metadata_directory: &std::path::Path,
+        git_metadata_directories: &[std::path::PathBuf],
     ) -> Result<WorkspaceProcessFilesystemPolicy, String> {
         self.compile_workspace_process_directories(
             "git",
@@ -448,7 +459,7 @@ impl ExecutionPolicyPermit {
             runtime_read_roots,
             Some(scratch_directory),
             &[],
-            Some(git_metadata_directory),
+            git_metadata_directories,
         )
     }
 
@@ -463,7 +474,7 @@ impl ExecutionPolicyPermit {
         runtime_read_roots: &[std::path::PathBuf],
         scratch_directory: Option<&std::path::Path>,
         cache_directories: &[std::path::PathBuf],
-        git_metadata_write: Option<&std::path::Path>,
+        git_metadata_write: &[std::path::PathBuf],
     ) -> Result<WorkspaceProcessFilesystemPolicy, String> {
         if self.sandbox_mode() != SandboxMode::WorkspaceWrite {
             return Err("MXC process roots require the Workspace Write sandbox".into());
@@ -526,15 +537,10 @@ impl ExecutionPolicyPermit {
             &denied_paths,
             "resource_policy.files.denied_paths",
         )?;
-        let git_metadata_identity = git_metadata_write
-            .map(|path| {
-                super::filesystem::open_filesystem_paths(
-                    &[path.to_path_buf()],
-                    "Git repository metadata",
-                )
-                .map(|mut paths| paths.remove(0))
-            })
-            .transpose()?;
+        let git_metadata_identity = super::filesystem::open_filesystem_paths(
+            git_metadata_write,
+            "Git repository metadata",
+        )?;
 
         let tool_write_constraint: Option<
             Result<Vec<haven_platform::filesystem::DirectoryCapability>, String>,
@@ -683,7 +689,7 @@ impl ExecutionPolicyPermit {
                     .any(|protected| directory_root_contains_path(protected, writable.root())))
         });
 
-        if let Some(git_metadata) = &git_metadata_identity {
+        for git_metadata in &git_metadata_identity {
             let metadata_directory =
                 haven_platform::filesystem::DirectoryCapability::open(git_metadata.path())
                     .map_err(|_| "Git repository metadata is unavailable or unsafe".to_owned())?;
@@ -697,12 +703,15 @@ impl ExecutionPolicyPermit {
             }) {
                 return Err("Git repository metadata overlaps a denied path".into());
             }
-            if protected_readonly.iter().any(|protected| {
-                protected
-                    .contains_path(metadata_directory.root())
-                    .unwrap_or(true)
-                    || git_metadata.contains_path(protected.path()).unwrap_or(true)
-            }) {
+            if !(self.resource_boundary_extension
+                && self.authorizes_git_directory(&metadata_directory))
+                && protected_readonly.iter().any(|protected| {
+                    protected
+                        .contains_path(metadata_directory.root())
+                        .unwrap_or(true)
+                        || git_metadata.contains_path(protected.path()).unwrap_or(true)
+                })
+            {
                 return Err("Git repository metadata is explicitly protected read-only".into());
             }
         }
@@ -1471,6 +1480,280 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn git_confirmed_metadata_write_overrides_default_read_only_scope() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let metadata = workspace.join(".git");
+        let scratch = root.path().join("scratch");
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        let (_, engine) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        engine
+            .config
+            .try_write()
+            .unwrap()
+            .file_policy
+            .global_read_only_roots = vec![metadata.clone()];
+        let resources = [&workspace, &metadata]
+            .into_iter()
+            .map(|path| crate::DeclaredResource::LocalPath {
+                path: path.clone(),
+                access: haven_common::types::LocalPathAccess::Write,
+            })
+            .collect();
+        let request = AuthorizationEngine::runtime_permission_request(
+            None,
+            "git",
+            serde_json::json!({}),
+            crate::NetworkAccess::None,
+            resources,
+        )
+        .unwrap();
+        let check = engine.authorize_for_execution(&request).await;
+        let crate::security::AuthorizationDecision::RequiresConfirmation { receipt, .. } =
+            check.decision
+        else {
+            panic!("protected Git metadata needs confirmation");
+        };
+        assert!(receipt.resource_boundary_extension);
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .unwrap();
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        let authorization = context.clone_execution_authorization().unwrap();
+        let permit = authorization.acquire().await.unwrap();
+        let policy = permit
+            .workspace_git_directories(&workspace, &[], &scratch, std::slice::from_ref(&metadata))
+            .unwrap();
+        assert!(!policy.protected_readonly_paths.contains(&metadata));
+    }
+
+    #[tokio::test]
+    async fn git_linked_directory_permission_decline_or_cancel_yields_no_proof() {
+        struct Decline;
+        #[async_trait::async_trait]
+        impl crate::PermissionInteractionPort for Decline {
+            async fn request_permission(
+                &self,
+                _: crate::AuthorizationRequest,
+                _: crate::ConfirmationReceipt,
+                _: CancellationToken,
+            ) -> Result<crate::ConfirmationReceipt, String> {
+                Err("declined".into())
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let external = root.path().join("external");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let (_, engine) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        engine.set_permission_interaction(Arc::new(Decline)).await;
+        let request = AuthorizationEngine::runtime_permission_request(
+            None,
+            "git",
+            serde_json::json!({}),
+            crate::NetworkAccess::None,
+            vec![crate::DeclaredResource::LocalPath {
+                path: external,
+                access: haven_common::types::LocalPathAccess::Write,
+            }],
+        )
+        .unwrap();
+        assert!(
+            engine
+                .request_execution_permission(&request, CancellationToken::new())
+                .await
+                .is_err()
+        );
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        assert!(
+            engine
+                .request_execution_permission(&request, cancel)
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "requires installed Git and a Windows host with MXC support"]
+    async fn git_linked_worktree_runs_after_confirmed_resources() {
+        use crate::Tool;
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let repository = root.path().join("repository");
+        let worktree = root.path().join("worktree");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&repository).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(&repository)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "NUL")
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git fixture failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ]);
+        git(&[
+            "worktree",
+            "add",
+            "-b",
+            "test-worktree",
+            worktree.to_str().unwrap(),
+        ]);
+        let (_, engine) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        let tool = crate::builtin::git::GitTool::new(Arc::clone(&engine), 8000);
+        let input = serde_json::json!({"subcommand":"status", "cwd": worktree});
+        let contract = tool.authorization_contract(&input).await.unwrap();
+        let resources =
+            crate::builtin::git::authorization_resources_for_workspace(&input, &workspace).unwrap();
+        let request = crate::AuthorizationRequest::new(None, "git", input.clone(), contract.policy)
+            .with_resources(resources);
+        let check = engine.authorize_for_execution(&request).await;
+        let crate::security::AuthorizationDecision::RequiresConfirmation { receipt, .. } =
+            check.decision
+        else {
+            panic!("linked Git requires confirmation");
+        };
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .unwrap();
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        let marker = worktree.join(".git");
+        let original_marker = std::fs::read(&marker).unwrap();
+        let replacement = root.path().join("replacement-metadata");
+        std::fs::create_dir_all(&replacement).unwrap();
+        std::fs::write(&marker, format!("gitdir: {}\n", replacement.display())).unwrap();
+        let changed = tool
+            .execute_with_authorization_context(
+                input.clone(),
+                CancellationToken::new(),
+                None,
+                &context,
+            )
+            .await
+            .unwrap_err();
+        assert!(changed.to_string().contains("changed after authorization"));
+        std::fs::write(&marker, original_marker).unwrap();
+        let result = tool
+            .execute_with_authorization_context(input, CancellationToken::new(), None, &context)
+            .await
+            .unwrap();
+        assert!(result.success, "Git status should succeed: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn git_linked_metadata_and_worktree_use_one_confirmed_scope() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let worktree = root.path().join("worktree");
+        let common = root.path().join("repository/.git");
+        let metadata = common.join("worktrees/linked");
+        let scratch = root.path().join("scratch");
+        for path in [&workspace, &worktree, &metadata, &scratch] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let (_, engine) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        let resources = [&worktree, &metadata, &common]
+            .into_iter()
+            .map(|path| crate::DeclaredResource::LocalPath {
+                path: path.clone(),
+                access: haven_common::types::LocalPathAccess::Write,
+            })
+            .collect();
+        let request = AuthorizationEngine::runtime_permission_request(
+            None,
+            "git",
+            serde_json::json!({"worktree": worktree, "metadata": metadata, "common": common}),
+            crate::NetworkAccess::None,
+            resources,
+        )
+        .unwrap();
+        let check = engine.authorize_for_execution(&request).await;
+        let crate::security::AuthorizationDecision::RequiresConfirmation { receipt, .. } =
+            check.decision
+        else {
+            panic!("linked worktree must request permission");
+        };
+        assert_eq!(receipt.resources, request.resources);
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .unwrap();
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        let authorization = context.clone_execution_authorization().unwrap();
+        let permit = authorization.acquire().await.unwrap();
+        let policy = permit
+            .workspace_git_directories(
+                &worktree,
+                &[],
+                &scratch,
+                &[metadata.clone(), common.clone()],
+            )
+            .unwrap();
+        assert!(
+            policy
+                .readwrite_roots
+                .iter()
+                .any(|root| root.root() == worktree)
+        );
+        assert!(
+            policy
+                .readwrite_roots
+                .iter()
+                .any(|root| root.root() == common)
+        );
+        assert!(
+            !policy
+                .readwrite_roots
+                .iter()
+                .any(|root| root.root() == workspace)
+        );
+    }
+
+    #[tokio::test]
     async fn git_external_resource_confirmation_reaches_process_policy() {
         let root = tempfile::tempdir().unwrap();
         let workspace = root.path().join("workspace");
@@ -1514,7 +1797,7 @@ mod tests {
         let directory = haven_platform::filesystem::DirectoryCapability::open(&external).unwrap();
         assert!(permit.authorizes_git_directory(&directory));
         let policy = permit
-            .workspace_git_directories(&external, &[], &scratch, &external.join(".git"))
+            .workspace_git_directories(&external, &[], &scratch, &[external.join(".git")])
             .unwrap();
         assert!(
             policy
@@ -1522,6 +1805,25 @@ mod tests {
                 .iter()
                 .any(|root| root.root() == directory.root())
         );
+    }
+
+    #[tokio::test]
+    async fn git_desktop_handles_require_the_corresponding_proof_resource() {
+        let (mut authorization, _) = ExecutionPolicyAuthorization::for_test_with_engine();
+        let permit = authorization.acquire().await.unwrap();
+        assert!(!permit.authorizes_git_desktop_handles());
+        drop(permit);
+        authorization.authorized_resources = vec![crate::DeclaredResource::Desktop {
+            access: haven_common::types::DesktopAccess::Capture,
+        }];
+        let permit = authorization.acquire().await.unwrap();
+        assert!(!permit.authorizes_git_desktop_handles());
+        drop(permit);
+        authorization.authorized_resources = vec![crate::DeclaredResource::Desktop {
+            access: haven_common::types::DesktopAccess::ProcessHandles,
+        }];
+        let permit = authorization.acquire().await.unwrap();
+        assert!(permit.authorizes_git_desktop_handles());
     }
 
     #[tokio::test]
@@ -1552,7 +1854,7 @@ mod tests {
         let scratch = root.path().join("scratch");
         std::fs::create_dir_all(&scratch).unwrap();
         let policy = permit
-            .workspace_git_directories(&external, &[], &scratch, &external.join(".git"))
+            .workspace_git_directories(&external, &[], &scratch, &[external.join(".git")])
             .unwrap();
         assert!(
             policy
@@ -1847,7 +2149,12 @@ mod tests {
         );
 
         let git_policy = permit
-            .workspace_git_directories(&workspace, &[], &scratch, &git_metadata)
+            .workspace_git_directories(
+                &workspace,
+                &[],
+                &scratch,
+                std::slice::from_ref(&git_metadata),
+            )
             .expect("scoped Git policy allows its repository metadata");
         assert!(
             git_policy
@@ -1886,7 +2193,12 @@ mod tests {
         let permit = authorization.acquire().await.unwrap();
 
         let error = permit
-            .workspace_git_directories(&workspace, &[], &scratch, &git_metadata)
+            .workspace_git_directories(
+                &workspace,
+                &[],
+                &scratch,
+                std::slice::from_ref(&git_metadata),
+            )
             .expect_err("explicit Git metadata denial is authoritative");
         assert!(error.contains("denied path"));
     }
@@ -1925,7 +2237,12 @@ mod tests {
         let permit = authorization.acquire().await.unwrap();
 
         let error = permit
-            .workspace_git_directories(&workspace, &[], &scratch, &git_metadata)
+            .workspace_git_directories(
+                &workspace,
+                &[],
+                &scratch,
+                std::slice::from_ref(&git_metadata),
+            )
             .expect_err("Git tool read-only policy must block metadata writes");
         assert!(error.contains("outside the configured write scope"));
     }

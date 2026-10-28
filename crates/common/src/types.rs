@@ -386,6 +386,8 @@ pub enum RegistryAccess {
 pub enum DesktopAccess {
     Read,
     Capture,
+    /// Child process shares the interactive desktop for compatibility.
+    ProcessHandles,
 }
 
 /// Persistent resource boundary attached to an allow or deny grant.

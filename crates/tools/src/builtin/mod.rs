@@ -9,7 +9,7 @@ mod file_line_reader;
 mod file_outline;
 pub mod file_search;
 pub mod files;
-mod git;
+pub(crate) mod git;
 pub mod http;
 mod http_content;
 pub mod input;

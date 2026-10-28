@@ -255,6 +255,45 @@ impl Tool for SessionAuthorizationTool {
 }
 
 #[tokio::test]
+async fn git_live_and_snapshot_requests_include_linked_worktree_resources() {
+    let root = TempDir::new().unwrap();
+    let workspace = root.path().join("workspace");
+    let worktree = root.path().join("worktree");
+    let common = root.path().join("repo/.git");
+    let metadata = common.join("worktrees/linked");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(worktree.join("src")).unwrap();
+    std::fs::create_dir_all(&metadata).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!("gitdir: {}\n", metadata.display()),
+    )
+    .unwrap();
+    std::fs::write(metadata.join("commondir"), "../..\n").unwrap();
+    let mgr = ToolsFacade::new();
+    mgr.rebuild_catalog().await.unwrap();
+    mgr.switch_execution_workspace(&workspace).await.unwrap();
+    let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let tool =
+        crate::builtin::git::GitTool::new(Arc::clone(&mgr.coordinator.core.authorization), 8000);
+    mgr.register_for_session(session_id, Arc::new(tool)).await;
+    let input = json!({"subcommand":"status", "cwd":worktree.join("src")});
+    let catalog = mgr.tool_catalog_snapshot(session_id).await;
+    let live = mgr
+        .resolve_authorization_request(Some(session_id), "git", &input)
+        .await
+        .unwrap();
+    let snapshot = mgr
+        .resolve_authorization_request_from_snapshot(&catalog, Some(session_id), "git", &input)
+        .await
+        .unwrap();
+    assert_eq!(live.resources, snapshot.resources);
+    for path in [worktree.join("src"), worktree, metadata, common] {
+        assert!(live.resources.iter().any(|resource| matches!(resource, DeclaredResource::LocalPath { path: actual, access: LocalPathAccess::Write } if actual == &path)));
+    }
+}
+
+#[tokio::test]
 async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
     let mgr = ToolsFacade::new();
     mgr.rebuild_catalog().await.unwrap();

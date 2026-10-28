@@ -132,12 +132,30 @@ impl GitTool {
             &workspace,
             permit.authorizes_git_directory(&working_directory),
         )?;
-        let boundary = if directory_contains_path(&workspace, working_directory.root())? {
-            &workspace
-        } else {
-            &working_directory
-        };
-        let (_repository_root, git_metadata) = find_repository(&working_directory, boundary)?;
+        let repository = discover_git_repository(&working_directory)?;
+        let mut repository_directories = Vec::new();
+        for path in [
+            &repository.worktree,
+            &repository.metadata,
+            &repository.common,
+        ] {
+            let directory = DirectoryCapability::open(path).map_err(|_| {
+                anyhow::anyhow!("Git repository directory is unavailable or unsafe")
+            })?;
+            anyhow::ensure!(
+                permit.authorizes_git_directory(&directory),
+                "Git repository changed after authorization"
+            );
+            repository_directories.push(directory);
+        }
+        if cancel.is_cancelled() {
+            return Ok(ToolResult::cancelled(
+                "Git operation cancelled before process start",
+            ));
+        }
+        #[cfg(windows)]
+        let process_network_policy = permit.process_network_policy();
+        let git_metadata = vec![repository.metadata.clone(), repository.common.clone()];
         let scratch = crate::shell_runtime::ProcessScratchDirectory::create_git().await?;
         scratch.ensure_within_capacity().await?;
         let global_git_config = scratch.path().join("global.gitconfig");
@@ -163,6 +181,11 @@ impl GitTool {
             .env("GIT_CONFIG_GLOBAL", &global_git_config)
             .env("GIT_TERMINAL_PROMPT", "0");
 
+        if cancel.is_cancelled() {
+            return Ok(ToolResult::cancelled(
+                "Git operation cancelled before process start",
+            ));
+        }
         let (mut process, sandbox_notice) = match permit.sandbox_mode() {
             SandboxMode::FullAccess => (spawn_host_git(command).await?, None),
             SandboxMode::WorkspaceWrite => {
@@ -194,11 +217,11 @@ impl GitTool {
                         filesystem.protected_readonly_paths,
                         filesystem.denied_paths,
                         if network_required {
-                            permit.process_network_policy()
+                            process_network_policy
                         } else {
                             SandboxedProcessNetworkPolicy::default()
                         },
-                        false,
+                        permit.authorizes_git_desktop_handles(),
                     )?;
                     let mut process = haven_platform::sandboxed_process::SandboxedProcess::spawn(
                         request,
@@ -224,6 +247,7 @@ impl GitTool {
                 anyhow::bail!("Git operations are blocked by the read-only sandbox")
             }
         };
+        drop(repository_directories);
         drop(permit);
 
         let output_cap = crate::collect_byte_cap(self.max_output_chars);
@@ -534,45 +558,119 @@ fn check_working_directory(
     Ok(())
 }
 
-fn find_repository(
-    working_directory: &DirectoryCapability,
-    workspace: &DirectoryCapability,
-) -> anyhow::Result<(PathBuf, PathBuf)> {
-    let mut candidate = working_directory.root().to_path_buf();
+#[derive(Debug, PartialEq, Eq)]
+struct GitRepository {
+    worktree: PathBuf,
+    metadata: PathBuf,
+    common: PathBuf,
+}
+
+pub(crate) fn authorization_resources_for_workspace(
+    input: &Value,
+    workspace_root: &std::path::Path,
+) -> Result<Vec<DeclaredResource>, String> {
+    let params = parse_git_params(input)?;
+    validate_git_params(&params)?;
+    let workspace = DirectoryCapability::open(workspace_root)
+        .map_err(|_| "Git workspace is unavailable or unsafe".to_owned())?;
+    let cwd =
+        resolve_working_directory(&params.cwd, &workspace).map_err(|error| error.to_string())?;
+    let repository = discover_git_repository(&cwd).map_err(|error| error.to_string())?;
+    let mut paths = vec![
+        cwd.root().to_path_buf(),
+        repository.worktree,
+        repository.metadata,
+        repository.common,
+    ];
+    paths.sort();
+    paths.dedup();
+    let mut resources: Vec<_> = paths
+        .into_iter()
+        .map(|path| DeclaredResource::LocalPath {
+            path,
+            access: LocalPathAccess::Write,
+        })
+        .collect();
+    if cfg!(windows) {
+        resources.push(DeclaredResource::Desktop {
+            access: haven_common::types::DesktopAccess::ProcessHandles,
+        });
+    }
+    Ok(resources)
+}
+
+fn read_git_pointer(directory: &DirectoryCapability, name: &str) -> anyhow::Result<String> {
+    use std::io::Read;
+    let file = directory.open_read(std::path::Path::new(name))?;
+    let mut bytes = Vec::new();
+    file.take(8193).read_to_end(&mut bytes)?;
+    anyhow::ensure!(bytes.len() <= 8192, "Git metadata pointer is too long");
+    let text = String::from_utf8(bytes)?;
+    let text = text.trim_end_matches(['\r', '\n']);
+    anyhow::ensure!(
+        !text.is_empty() && !text.contains(['\r', '\n', '\0']),
+        "invalid Git metadata pointer"
+    );
+    Ok(text.to_owned())
+}
+
+fn discover_git_repository(cwd: &DirectoryCapability) -> anyhow::Result<GitRepository> {
+    let mut candidate = cwd.root().to_path_buf();
     loop {
+        let directory = DirectoryCapability::open(&candidate)?;
         let marker = candidate.join(".git");
         match std::fs::symlink_metadata(&marker) {
-            Ok(metadata) if metadata.is_dir() => {
-                let metadata_directory = DirectoryCapability::open(&marker).map_err(|_| {
-                    anyhow::anyhow!("Git repository metadata is unsafe or unavailable")
-                })?;
+            Ok(info) if info.is_dir() => {
+                let metadata_directory = DirectoryCapability::open(&marker)?;
                 anyhow::ensure!(
-                    !directory_contains_path(&metadata_directory, working_directory.root())?,
+                    !directory_contains_path(&metadata_directory, cwd.root())?,
                     "Git working directory cannot be inside the metadata directory"
                 );
-                return Ok((candidate, metadata_directory.root().to_path_buf()));
+                let metadata = metadata_directory.root().to_path_buf();
+                return Ok(GitRepository {
+                    worktree: candidate,
+                    common: metadata.clone(),
+                    metadata,
+                });
             }
-            Ok(metadata) if metadata.is_file() => {
-                anyhow::bail!(
-                    "linked worktrees with an external Git metadata directory are not supported by the isolated Git tool"
-                )
+            Ok(info) if info.is_file() => {
+                let text = read_git_pointer(&directory, ".git")?;
+                let target = text
+                    .strip_prefix("gitdir: ")
+                    .ok_or_else(|| anyhow::anyhow!("invalid Git worktree metadata pointer"))?;
+                let metadata = DirectoryCapability::open(&candidate.join(target))?;
+                anyhow::ensure!(
+                    !directory_contains_path(&metadata, cwd.root())?,
+                    "Git working directory cannot be inside the metadata directory"
+                );
+                let common = match read_git_pointer(&metadata, "commondir") {
+                    Ok(target) => DirectoryCapability::open(&metadata.root().join(target))?
+                        .root()
+                        .to_path_buf(),
+                    Err(error)
+                        if error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+                    {
+                        metadata.root().to_path_buf()
+                    }
+                    Err(error) => return Err(error),
+                };
+                return Ok(GitRepository {
+                    worktree: candidate,
+                    metadata: metadata.root().to_path_buf(),
+                    common,
+                });
             }
-            Ok(_) => anyhow::bail!("Git repository metadata is not a regular directory"),
+            Ok(_) => anyhow::bail!("Git metadata marker is unsafe"),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => anyhow::bail!("Git repository metadata could not be inspected safely"),
+            Err(error) => return Err(error.into()),
         }
-        if candidate == workspace.root() {
+        if !candidate.pop() {
             break;
         }
-        let Some(parent) = candidate.parent() else {
-            break;
-        };
-        if !directory_contains_path(workspace, parent)? || parent == candidate {
-            break;
-        }
-        candidate = parent.to_path_buf();
     }
-    anyhow::bail!("Git repository is not inside the authorized search boundary")
+    anyhow::bail!("Git repository not found")
 }
 
 fn directory_contains_path(
@@ -752,6 +850,60 @@ mod tests {
             local_full_access.policy.network_access,
             NetworkAccess::Opaque
         );
+    }
+
+    #[test]
+    fn git_rejects_working_directory_inside_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let metadata = root.path().join(".git/objects");
+        std::fs::create_dir_all(&metadata).unwrap();
+        let cwd = haven_platform::filesystem::DirectoryCapability::open(&metadata).unwrap();
+        assert!(super::discover_git_repository(&cwd).is_err());
+    }
+
+    #[test]
+    fn git_rejects_malformed_and_oversized_worktree_pointers() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = haven_platform::filesystem::DirectoryCapability::open(root.path()).unwrap();
+        std::fs::write(root.path().join(".git"), "gitdir: bad\nextra\n").unwrap();
+        assert!(super::discover_git_repository(&cwd).is_err());
+        std::fs::write(root.path().join(".git"), vec![b'x'; 8193]).unwrap();
+        assert!(super::discover_git_repository(&cwd).is_err());
+    }
+
+    #[test]
+    fn git_discovers_linked_worktree_and_common_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let worktree = root.path().join("worktree");
+        let common = root.path().join("repository/.git");
+        let metadata = common.join("worktrees/linked");
+        std::fs::create_dir_all(worktree.join("src")).unwrap();
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", metadata.display()),
+        )
+        .unwrap();
+        std::fs::write(metadata.join("commondir"), "../..\n").unwrap();
+        let cwd =
+            haven_platform::filesystem::DirectoryCapability::open(&worktree.join("src")).unwrap();
+        let found = super::discover_git_repository(&cwd).unwrap();
+        assert_eq!(found.worktree, worktree);
+        assert_eq!(found.metadata, metadata);
+        assert_eq!(found.common, common);
+        let resources = super::authorization_resources_for_workspace(
+            &json!({"subcommand":"status", "cwd":worktree.join("src")}),
+            root.path(),
+        )
+        .unwrap();
+        for expected in [
+            worktree.join("src"),
+            worktree.clone(),
+            metadata.clone(),
+            common.clone(),
+        ] {
+            assert!(resources.iter().any(|resource| matches!(resource, crate::DeclaredResource::LocalPath { path, access: LocalPathAccess::Write } if path == &expected)));
+        }
     }
 
     #[test]

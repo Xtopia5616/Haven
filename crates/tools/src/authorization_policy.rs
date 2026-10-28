@@ -81,6 +81,29 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
             .await)
     }
 
+    async fn resources_for_request(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+        resources: Vec<crate::DeclaredResource>,
+    ) -> Result<Vec<crate::DeclaredResource>, String> {
+        if tool_name != "git" {
+            return Ok(resources);
+        }
+        let workspace = self
+            .tools
+            .coordinator
+            .core
+            .authorization
+            .execution_workspace_for_request(session_id)
+            .await;
+        let root = workspace
+            .root()
+            .ok_or_else(|| "Git execution workspace is unavailable".to_owned())?;
+        crate::builtin::git::authorization_resources_for_workspace(input, root)
+    }
+
     async fn authorization_request(
         &self,
         session_id: Option<&str>,
@@ -97,10 +120,16 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
             },
         };
         let authorization_input = Self::authorization_input_for(tool.as_ref(), input);
+        let resources = if tool.is_some() {
+            self.resources_for_request(session_id, tool_name, input, contract.resources)
+                .await?
+        } else {
+            contract.resources
+        };
         Ok(
             AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
                 .with_target_binding(contract.target_binding)
-                .with_resources(contract.resources),
+                .with_resources(resources),
         )
     }
 
@@ -127,6 +156,7 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
     }
 
     async fn authorization_request_from_snapshot(
+        &self,
         catalog: &ToolCatalogSnapshot,
         session_id: Option<&str>,
         tool_name: &str,
@@ -142,10 +172,16 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
                 resources: Vec::new(),
             },
         };
+        let resources = if tool.is_some() {
+            self.resources_for_request(session_id, tool_name, input, contract.resources)
+                .await?
+        } else {
+            contract.resources
+        };
         Ok(
             AuthorizationRequest::new(session_id, tool_name, authorization_input, contract.policy)
                 .with_target_binding(contract.target_binding)
-                .with_resources(contract.resources),
+                .with_resources(resources),
         )
     }
 }
@@ -225,9 +261,8 @@ impl ToolsFacade {
         tool_name: &str,
         input: &Value,
     ) -> Result<AuthorizationRequest, String> {
-        ToolAuthorizationRequestResolver::authorization_request_from_snapshot(
-            catalog, session_id, tool_name, input,
-        )
-        .await
+        ToolAuthorizationRequestResolver::new(self)
+            .authorization_request_from_snapshot(catalog, session_id, tool_name, input)
+            .await
     }
 }
