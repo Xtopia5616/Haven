@@ -131,16 +131,17 @@ impl EverythingSearch {
             })?;
         let max_results = request.max_results.clamp(1, 1_000);
         let root = PathBuf::from(&request.root);
+        let check_root = root.clone();
+        let check_policy = policy.clone();
         let root_metadata = tokio::select! {
             biased;
             _ = cancel.cancelled() => anyhow::bail!("cancelled"),
-            result = tokio::fs::metadata(&root) => result.map_err(|_| anyhow::anyhow!("search root is inaccessible"))?,
+            result = tokio::task::spawn_blocking(move || check_policy.open_metadata(&check_root).and_then(|file| file.metadata())) => {
+                result?.map_err(|_| anyhow::anyhow!("search root is outside the active file access policy"))?
+            },
         };
         if !root_metadata.is_dir() && !root_metadata.is_file() {
             anyhow::bail!("search root is not a file or directory");
-        }
-        if !policy.open_metadata(&root).is_ok() {
-            anyhow::bail!("search root is outside the active file access policy");
         }
         let permit = tokio::select! {
             biased;
@@ -300,7 +301,6 @@ impl EverythingSearch {
         };
         let (stdout, stdout_overflow) = stdout_task.await??;
         let (_stderr, stderr_overflow) = stderr_task.await??;
-        drop(permit);
         if stdout_overflow || stderr_overflow {
             anyhow::bail!("Everything search output exceeded its safety limit");
         }
@@ -320,58 +320,34 @@ impl EverythingSearch {
         let index_coverage_unknown = provider_result_count == 0;
         let mut results = Vec::new();
         let mut rejected = 0usize;
-        let mut walker = ignore::WalkBuilder::new(&root);
-        walker
-            .max_depth(if request.max_depth == 0 {
-                None
-            } else {
-                Some(request.max_depth)
-            })
-            .require_git(false)
-            .hidden(request.ignore_hidden)
-            .ignore(true)
-            .git_ignore(true)
-            .git_global(true)
-            .git_exclude(true);
-        let mut ignore_matcher = walker
-            .build_matchers()
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("native search filters are unavailable"))?;
+        // Provider paths are only candidates. Resolve them against the same
+        // handle-based traversal and rule loading used by native search.
+        let wanted: std::collections::HashSet<_> = response
+            .iter()
+            .filter_map(|entry| entry.path.as_ref().or(entry.filename.as_ref()))
+            .map(|path| search_path_key(Path::new(path)))
+            .collect();
+        let scan_root = root.clone();
+        let scan_cancel = cancel.clone();
+        let depth = request.max_depth;
+        let hidden = request.ignore_hidden;
+        let (accepted, walk) = tokio::task::spawn_blocking(move || {
+            filter_candidates(&scan_root, depth, hidden, &policy, &scan_cancel, &wanted)
+        })
+        .await?;
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        drop(permit);
         for entry in response {
             let path = entry.path.or(entry.filename).unwrap_or_default();
-            if path.is_empty() {
+            if let Some((path, is_dir)) = accepted.get(&search_path_key(Path::new(&path))) {
+                results.push(serde_json::json!({"path": path, "match_reason": "filename", "kind": if *is_dir { "directory" } else { "file" }}));
+            } else {
                 rejected += 1;
-                continue;
             }
-            let path = PathBuf::from(&path);
-            if !path_is_within_root(&path, &root) {
-                rejected += 1;
-                continue;
-            }
-            let Ok(relative_path) = path.strip_prefix(&root) else {
-                rejected += 1;
-                continue;
-            };
-            let metadata = match policy.open_metadata(&path) {
-                Ok(file) => file.metadata()?,
-                Err(_) => {
-                    rejected += 1;
-                    continue;
-                }
-            };
-            let is_dir = metadata.is_dir();
-            if ignore_matcher.matched(relative_path, is_dir).is_ignore() {
-                continue;
-            }
-            // Validate current metadata under the same file-read allowlist as
-            // native search. Everything's index is not an authorization source.
-            results.push(serde_json::json!({
-                "path": path,
-                "match_reason": "filename",
-                "kind": if is_dir { "directory" } else { "file" },
-            }));
         }
+        rejected += walk.errors + usize::from(walk.limit_hit);
         results.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
         results.dedup_by(|a, b| a["path"] == b["path"]);
         let has_more = provider_result_count > max_results;
@@ -388,7 +364,7 @@ impl EverythingSearch {
             "io_error_count": rejected,
             "search_backend": "everything",
             "index_coverage": if index_coverage_unknown { "unknown" } else { "matches_returned" },
-            "hint": if index_coverage_unknown { Some("Everything returned no matches, but its index may still be loading or may not include this directory. Check Everything's indexing settings and wait for initial indexing to finish." ) } else if !complete { Some("Everything results may be incomplete because paths were rejected by the active file policy or the result cap was reached." ) } else { None },
+            "hint": if index_coverage_unknown { Some("Everything returned no matches, but its index may still be loading or may not include this directory. Check Everything's indexing settings and wait for initial indexing to finish." ) } else if !complete { Some("Everything results may be incomplete because candidates were filtered, paths were inaccessible, or a search limit was reached." ) } else { None },
         });
         Ok(ToolResult::from_output(output, has_more))
     }
@@ -402,14 +378,40 @@ struct EverythingEntry {
     filename: Option<String>,
 }
 
-fn path_is_within_root(path: &Path, root: &Path) -> bool {
-    let Ok(path) = std::fs::canonicalize(path) else {
-        return false;
-    };
-    let Ok(root) = std::fs::canonicalize(root) else {
-        return false;
-    };
-    path.starts_with(root)
+fn search_path_key(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        path.replace('/', "\\").to_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        path.into_owned()
+    }
+}
+
+fn filter_candidates(
+    root: &Path,
+    depth: usize,
+    hidden: bool,
+    policy: &FileReadPolicy,
+    cancel: &CancellationToken,
+    wanted: &std::collections::HashSet<String>,
+) -> (
+    std::collections::HashMap<String, (PathBuf, bool)>,
+    super::search_walk::WalkResult,
+) {
+    let mut accepted = std::collections::HashMap::new();
+    let walk = super::search_walk::walk(root, depth, hidden, policy, cancel, 100_000, |entry| {
+        let key = search_path_key(&entry.path);
+        if wanted.contains(&key)
+            && let Ok(metadata) = entry.file.metadata()
+        {
+            accepted.insert(key, (entry.path, metadata.is_dir()));
+        }
+        true
+    });
+    (accepted, walk)
 }
 
 fn parse_entries(bytes: &[u8]) -> anyhow::Result<Vec<EverythingEntry>> {
@@ -470,17 +472,38 @@ async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_STDOUT_BYTES, parse_entries, path_is_within_root, read_bounded};
-    use std::path::Path;
+    use super::{
+        MAX_STDOUT_BYTES, filter_candidates, parse_entries, read_bounded, search_path_key,
+    };
 
     #[test]
-    fn path_scope_uses_components_instead_of_prefixes() {
-        let current = std::env::current_dir().unwrap();
-        assert!(path_is_within_root(&current.join("Cargo.toml"), &current));
-        assert!(!path_is_within_root(
-            &current.join("..\\Haven-other\\Cargo.toml"),
-            &current,
-        ));
+    fn candidate_filter_uses_handle_traversal_and_ignore_rules() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(".ignore"), "ignored.txt\n").unwrap();
+        let visible = temp.path().join("visible.txt");
+        let ignored = temp.path().join("ignored.txt");
+        std::fs::write(&visible, "visible").unwrap();
+        std::fs::write(&ignored, "ignored").unwrap();
+        let policy = crate::security::FileReadPolicy::for_test_roots(&[temp.path().to_path_buf()]);
+        let wanted = [
+            search_path_key(&visible),
+            search_path_key(&ignored),
+            search_path_key(&temp.path().join("../outside.txt")),
+        ]
+        .into_iter()
+        .collect();
+        let (accepted, walk) = filter_candidates(
+            temp.path(),
+            0,
+            true,
+            &policy,
+            &tokio_util::sync::CancellationToken::new(),
+            &wanted,
+        );
+        assert_eq!(walk.errors, 0);
+        assert!(accepted.contains_key(&search_path_key(&visible)));
+        assert!(!accepted.contains_key(&search_path_key(&ignored)));
+        assert_eq!(accepted.len(), 1);
     }
 
     #[test]
@@ -502,33 +525,6 @@ mod tests {
         let complete = result_count <= 50 && !index_coverage_unknown;
         assert!(index_coverage_unknown);
         assert!(!complete);
-    }
-
-    #[test]
-    fn incremental_native_filters_match_depth_hidden_and_gitignore() {
-        let temp = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir_all(temp.path().join("nested/deep")).unwrap();
-        std::fs::create_dir_all(temp.path().join(".git/info")).unwrap();
-        std::fs::write(temp.path().join(".gitignore"), "ignored.txt\n").unwrap();
-        std::fs::write(temp.path().join("ignored.txt"), "ignored").unwrap();
-        std::fs::write(temp.path().join(".hidden.txt"), "hidden").unwrap();
-        std::fs::write(temp.path().join("nested/deep/visible.txt"), "visible").unwrap();
-        let mut builder = ignore::WalkBuilder::new(temp.path());
-        builder
-            .max_depth(Some(2))
-            .hidden(true)
-            .ignore(true)
-            .git_ignore(true)
-            .git_global(true)
-            .git_exclude(true);
-        let mut matcher = builder.build_matchers().remove(0);
-        assert!(matcher.matched(Path::new("ignored.txt"), false).is_ignore());
-        assert!(matcher.matched(Path::new(".hidden.txt"), false).is_ignore());
-        assert!(
-            matcher
-                .matched(Path::new("nested/deep/visible.txt"), false)
-                .is_ignore()
-        );
     }
 
     #[tokio::test]

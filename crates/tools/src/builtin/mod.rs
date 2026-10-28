@@ -26,6 +26,7 @@ mod operation_contract;
 mod power;
 mod registry;
 pub mod schedule;
+mod search_walk;
 pub mod session;
 pub mod shell;
 pub mod system;

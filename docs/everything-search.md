@@ -2,6 +2,8 @@
 
 Haven 可选使用 voidtools 的 ES 命令行工具查询 Everything 文件名索引。默认关闭；内容搜索始终由 Haven 原生后端执行。
 
+两个后端只读取搜索根内获准访问的 `.ignore`、`.gitignore` 和目录型 `.git/info/exclude`；不会自动读取根外的父级或全局忽略规则。ES 候选还要经过有界的本地句柄遍历验证，达到遍历上限或规则无法读取时会报告搜索不完整。
+
 ## 配置
 
 1. 安装并启动 [Everything](https://www.voidtools.com/)，等待首次索引完成。

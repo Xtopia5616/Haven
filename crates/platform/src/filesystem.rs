@@ -80,6 +80,10 @@ impl DirectoryCapability {
         &self.root
     }
 
+    pub fn directory_handle(&self) -> io::Result<File> {
+        Ok(self.directory.try_clone()?.into_std_file())
+    }
+
     /// Open an unrestricted directory capability from ambient process
     /// authority. Callers should use this only after FullAccess authorization.
     pub fn open_ambient(path: &Path) -> io::Result<Self> {
@@ -220,7 +224,69 @@ impl DirectoryCapability {
     /// handle. An oversized directory fails closed instead of allocating an
     /// unbounded list.
     pub fn entries(&self, maximum: usize) -> io::Result<Vec<DirectoryEntryInfo>> {
-        self.entries_from(&self.directory, maximum)
+        self.entries_from(&self.directory, maximum, || false)
+    }
+
+    pub fn entries_cancellable(
+        &self,
+        maximum: usize,
+        cancelled: impl FnMut() -> bool,
+    ) -> io::Result<Vec<DirectoryEntryInfo>> {
+        self.entries_from(&self.directory, maximum, cancelled)
+    }
+
+    /// Open a single child without following its final reparse point. The
+    /// returned handle is bound to this directory, not to its ambient path.
+    pub fn open_child(&self, name: &std::ffi::OsStr) -> io::Result<File> {
+        let path = Path::new(name);
+        if !matches!(path.components().next(), Some(Component::Normal(_)))
+            || path.components().count() != 1
+        {
+            return Err(permission_denied("child must be a single path component"));
+        }
+        let mut options = cap_std::fs::OpenOptions::new();
+        use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+        options.read(true);
+        options.follow(FollowSymlinks::No);
+        #[cfg(windows)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+                FILE_SHARE_WRITE,
+            };
+            options
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = self.directory.open_with(path, &options)?.into_std();
+        if is_link_or_reparse_point(&file.metadata()?) {
+            return Err(permission_denied("child is a reparse point"));
+        }
+        Ok(file)
+    }
+
+    /// Turn a verified child directory handle into an independently pinned
+    /// directory capability. The caller must authorize the opened handle.
+    pub fn child_directory(&self, name: &std::ffi::OsStr, file: File) -> io::Result<Self> {
+        let path = Path::new(name);
+        if !matches!(path.components().next(), Some(Component::Normal(_)))
+            || path.components().count() != 1
+        {
+            return Err(permission_denied("child must be a single path component"));
+        }
+        if !file.metadata()?.is_dir() {
+            return Err(permission_denied("child is not a directory"));
+        }
+        Ok(Self {
+            root: self.root.join(name),
+            directory: Arc::new(cap_std::fs::Dir::from_std_file(file)),
+        })
     }
 
     /// Refuse a writable tree that contains a file with multiple hard-link
@@ -267,9 +333,16 @@ impl DirectoryCapability {
         &self,
         directory: &cap_std::fs::Dir,
         maximum: usize,
+        mut cancelled: impl FnMut() -> bool,
     ) -> io::Result<Vec<DirectoryEntryInfo>> {
         let mut result = Vec::new();
         for entry in directory.entries()? {
+            if cancelled() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "directory listing cancelled",
+                ));
+            }
             let entry = entry?;
             if result.len() >= maximum {
                 return Err(io::Error::new(
@@ -995,6 +1068,60 @@ mod directory_capability_tests {
             capability.entries(1).unwrap_err().kind(),
             std::io::ErrorKind::InvalidData
         );
+        assert_eq!(
+            capability
+                .entries_cancellable(2, || true)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+    }
+
+    #[test]
+    fn capability_child_open_rejects_reparse_and_non_child_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let capability = DirectoryCapability::open(&root).unwrap();
+        assert!(capability.open_child("../outside".as_ref()).is_err());
+        if symlink_directory(&outside, &root.join("link")).is_ok() {
+            assert!(capability.open_child("link".as_ref()).is_err());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capability_child_directory_handle_blocks_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("child")).unwrap();
+        let root = DirectoryCapability::open(temp.path()).unwrap();
+        let child = root.open_child("child".as_ref()).unwrap();
+        let child = root.child_directory("child".as_ref(), child).unwrap();
+        assert!(std::fs::rename(temp.path().join("child"), temp.path().join("moved")).is_err());
+        drop(child);
+        std::fs::rename(temp.path().join("child"), temp.path().join("moved")).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn capability_child_open_rejects_windows_junction() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        let junction = root.join("junction");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "junction creation failed");
+        let capability = DirectoryCapability::open(&root).unwrap();
+        assert!(capability.open_child("junction".as_ref()).is_err());
     }
 
     #[test]

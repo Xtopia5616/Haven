@@ -20,13 +20,6 @@ use haven_common::config::{
     MAX_SEARCH_WINDOW_BYTES, MIN_SEARCH_MAX_RESULTS,
 };
 
-/// Keep a file search from consuming every logical CPU on the desktop.
-///
-/// `ignore::WalkBuilder::threads(0)` chooses a machine-dependent number of
-/// workers. That is a poor default for an interactive desktop assistant: a
-/// broad search can otherwise starve the Tauri/WebView, audio, and agent
-/// runtimes even though the search itself runs in a blocking task.
-const MAX_SEARCH_THREADS: usize = 2;
 /// Bound work as well as result size. A no-match search must not walk an
 /// unbounded directory tree forever when the requested root is too broad.
 const MAX_SEARCH_ENTRIES: usize = 100_000;
@@ -83,21 +76,6 @@ fn reserve_result_bytes(reserved: &AtomicUsize, additional: usize) -> bool {
             Ok(_) => return true,
             Err(observed) => current = observed,
         }
-    }
-}
-
-fn reserve_scan_entry(
-    stop_flag: &AtomicBool,
-    scanned_entries: &AtomicUsize,
-    scan_limit_hit: &AtomicBool,
-) -> bool {
-    let index = scanned_entries.fetch_add(1, Ordering::Relaxed);
-    if index >= MAX_SEARCH_ENTRIES {
-        scan_limit_hit.store(true, Ordering::Relaxed);
-        stop_flag.store(true, Ordering::Relaxed);
-        false
-    } else {
-        true
     }
 }
 
@@ -242,8 +220,7 @@ pub struct FileSearchEngine {
     /// Line-range search window cap in bytes. Ranges wider than this fall
     /// back to a whole-file scan with sink-side line filtering.
     pub(crate) max_window_bytes: u64,
-    /// A full-tree scan is internally parallel. Keep separate sessions from
-    /// multiplying that parallelism and exhausting Tokio's blocking pool.
+    /// Bound concurrent full-tree scans to protect Tokio's blocking pool.
     search_slots: Arc<Semaphore>,
 }
 
@@ -466,7 +443,7 @@ struct ContentSearchParams<'a> {
 
 fn search_files(params: SearchParams<'_>) -> FileSearchResult {
     match params.mode {
-        FileSearchMode::Content => search_content_parallel(&ContentSearchParams {
+        FileSearchMode::Content => search_content(&ContentSearchParams {
             root: params.root,
             pattern: params.pattern,
             max_depth: params.max_depth,
@@ -480,7 +457,7 @@ fn search_files(params: SearchParams<'_>) -> FileSearchResult {
             cancel: params.cancel,
             access_policy: params.access_policy,
         }),
-        FileSearchMode::Filename => search_filenames_parallel(
+        FileSearchMode::Filename => search_filenames(
             params.root,
             params.pattern,
             params.max_depth,
@@ -490,30 +467,6 @@ fn search_files(params: SearchParams<'_>) -> FileSearchResult {
             params.access_policy,
         ),
     }
-}
-
-/// Shared walker configuration honoring ignore rules, depth and hidden filters.
-fn walk_builder(
-    root: &Path,
-    max_depth: usize,
-    ignore_hidden: bool,
-    access_policy: FileReadPolicy,
-) -> ignore::WalkBuilder {
-    let mut builder = ignore::WalkBuilder::new(root);
-    builder
-        .max_depth(if max_depth == 0 {
-            None
-        } else {
-            Some(max_depth)
-        })
-        .hidden(ignore_hidden)
-        .ignore(true)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .threads(MAX_SEARCH_THREADS)
-        .filter_entry(move |entry| access_policy.open_metadata(entry.path()).is_ok());
-    builder
 }
 
 fn finalize(results: Arc<Mutex<Vec<Value>>>, max_results: usize) -> Vec<Value> {
@@ -528,9 +481,9 @@ fn finalize(results: Arc<Mutex<Vec<Value>>>, max_results: usize) -> Vec<Value> {
     results
 }
 
-/// Filename matching with parallel traversal. The glob is converted to a
+/// Filename matching with bounded traversal. The glob is converted to a
 /// regex; if that fails, matching falls back to a substring check.
-fn search_filenames_parallel(
+fn search_filenames(
     root: &Path,
     pattern: &str,
     max_depth: usize,
@@ -539,223 +492,126 @@ fn search_filenames_parallel(
     cancel: CancellationToken,
     access_policy: FileReadPolicy,
 ) -> FileSearchResult {
-    let found_flag = Arc::new(AtomicBool::new(false));
-    let scanned_entries = Arc::new(AtomicUsize::new(0));
-    let scan_limit_hit = Arc::new(AtomicBool::new(false));
-    let result_count = Arc::new(AtomicUsize::new(0));
     let results = Arc::new(Mutex::new(Vec::new()));
-    let result_bytes = Arc::new(AtomicUsize::new(0));
-    let result_bytes_limit_hit = Arc::new(AtomicBool::new(false));
-    let io_error_count = Arc::new(AtomicUsize::new(0));
+    let result_bytes = AtomicUsize::new(0);
+    let mut count = 0usize;
+    let mut bytes_hit = false;
     let re = regex::Regex::new(&glob_to_regex(pattern)).ok();
-    let glob = pattern.to_string();
-
-    let builder = walk_builder(root, max_depth, ignore_hidden, access_policy);
-    builder.build_parallel().run(|| {
-        let re = re.clone();
-        let glob = glob.clone();
-        let found_flag = found_flag.clone();
-        let scanned_entries = scanned_entries.clone();
-        let scan_limit_hit = scan_limit_hit.clone();
-        let result_count = result_count.clone();
-        let results = results.clone();
-        let result_bytes = result_bytes.clone();
-        let result_bytes_limit_hit = result_bytes_limit_hit.clone();
-        let io_error_count = io_error_count.clone();
-        let cancel = cancel.clone();
-        Box::new(move |entry| {
-            if cancel.is_cancelled() || found_flag.load(Ordering::Relaxed) {
-                return ignore::WalkState::Quit;
-            }
-            if !reserve_scan_entry(&found_flag, &scanned_entries, &scan_limit_hit) {
-                return ignore::WalkState::Quit;
-            }
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => {
-                    record_search_io_error(&io_error_count, &cancel);
-                    return ignore::WalkState::Continue;
-                }
+    let walk = super::search_walk::walk(
+        root,
+        max_depth,
+        ignore_hidden,
+        &access_policy,
+        &cancel,
+        MAX_SEARCH_ENTRIES,
+        |entry| {
+            let Some(name) = entry.path.file_name() else {
+                return true;
             };
-            let name = entry.file_name().to_string_lossy();
-            let matched = re
+            let name = name.to_string_lossy();
+            if !re
                 .as_ref()
                 .map(|r| r.is_match(&name))
-                .unwrap_or_else(|| name.contains(&glob));
-            if matched {
-                if result_count.fetch_add(1, Ordering::Relaxed) >= max_results {
-                    found_flag.store(true, Ordering::Relaxed);
-                    return ignore::WalkState::Quit;
-                }
-                let result = serde_json::json!({
-                    "path": entry.path().to_string_lossy(),
-                    "match_reason": "filename",
-                });
-                let size = serde_json::to_vec(&result).map_or(usize::MAX, |bytes| bytes.len());
-                if !reserve_result_bytes(&result_bytes, size) {
-                    result_bytes_limit_hit.store(true, Ordering::Relaxed);
-                    found_flag.store(true, Ordering::Relaxed);
-                    return ignore::WalkState::Quit;
-                }
-                results.lock().unwrap().push(result);
+                .unwrap_or_else(|| name.contains(pattern))
+            {
+                return true;
             }
-            ignore::WalkState::Continue
-        })
-    });
+            count += 1;
+            if count > max_results {
+                return false;
+            }
+            let value = serde_json::json!({"path": entry.path.to_string_lossy(), "match_reason": "filename"});
+            let size = serde_json::to_vec(&value).map_or(usize::MAX, |bytes| bytes.len());
+            if !reserve_result_bytes(&result_bytes, size) {
+                bytes_hit = true;
+                return false;
+            }
+            results.lock().unwrap().push(value);
+            true
+        },
+    );
     FileSearchResult {
         results: finalize(results, max_results),
-        truncation_reason: truncation_reason(
-            result_count.load(Ordering::Relaxed) > max_results,
-            scan_limit_hit.load(Ordering::Relaxed),
-            result_bytes_limit_hit.load(Ordering::Relaxed),
-        ),
-        io_error_count: io_error_count.load(Ordering::Relaxed),
+        truncation_reason: truncation_reason(count > max_results, walk.limit_hit, bytes_hit),
+        io_error_count: walk.errors,
     }
 }
 
-/// Full-text search using ripgrep's engine (`grep-searcher`): parallel
-/// traversal, memory-mapped reads, regex matching, and NUL-based binary
-/// detection. With `start_line`/`end_line`, each file is searched only within
-/// that 1-based line range (windowed slice when the range is small, sink-side
-/// filtering otherwise). Returns results and whether the result cap was hit.
-fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
-    let root = p.root;
-    let pattern = p.pattern;
-    let max_depth = p.max_depth;
-    let max_results = p.max_results;
-    let ignore_hidden = p.ignore_hidden;
-    let max_file_size = p.max_file_size;
-    let start_line = p.start_line;
-    let end_line = p.end_line;
-    let snippet_chars = p.snippet_chars;
-    let max_window_bytes = p.max_window_bytes;
-    let cancel = p.cancel.clone();
-    let access_policy = p.access_policy.clone();
-    let matcher = match RegexMatcher::new(pattern) {
-        Ok(m) => m,
-        Err(_) => {
-            // Not a valid regex: treat it as a literal (preserves substring behavior).
-            RegexMatcher::new(&regex::escape(pattern)).expect("escaped regex always compiles")
-        }
-    };
-    let searcher = SearcherBuilder::new()
+fn search_content(p: &ContentSearchParams<'_>) -> FileSearchResult {
+    let matcher = RegexMatcher::new(p.pattern).unwrap_or_else(|_| {
+        RegexMatcher::new(&regex::escape(p.pattern)).expect("escaped regex always compiles")
+    });
+    let mut searcher = SearcherBuilder::new()
         .line_number(true)
         .before_context(2)
         .after_context(2)
         .binary_detection(BinaryDetection::quit(b'\x00'))
-        // A cancellable reader below must observe progress in bounded reads;
-        // memory maps would let a no-match scan run without a read boundary.
         .memory_map(MmapChoice::never())
         .build();
-
-    let line_range = if start_line > 1 || end_line > 0 {
-        Some((start_line, end_line))
-    } else {
-        None
+    let collector = SearchResultCollector {
+        max_results: p.max_results,
+        stop_flag: Arc::new(AtomicBool::new(false)),
+        result_count: Arc::new(AtomicUsize::new(0)),
+        results: Arc::new(Mutex::new(Vec::new())),
+        result_bytes: Arc::new(AtomicUsize::new(0)),
+        result_bytes_limit_hit: Arc::new(AtomicBool::new(false)),
+        io_error_count: Arc::new(AtomicUsize::new(0)),
+        snippet_chars: p.snippet_chars,
     };
-
-    let found_flag = Arc::new(AtomicBool::new(false));
-    let scanned_entries = Arc::new(AtomicUsize::new(0));
-    let scan_limit_hit = Arc::new(AtomicBool::new(false));
-    let result_count = Arc::new(AtomicUsize::new(0));
-    let results = Arc::new(Mutex::new(Vec::new()));
-    let result_bytes = Arc::new(AtomicUsize::new(0));
-    let result_bytes_limit_hit = Arc::new(AtomicBool::new(false));
-    let io_error_count = Arc::new(AtomicUsize::new(0));
-    let result_collector = SearchResultCollector {
-        max_results,
-        stop_flag: found_flag.clone(),
-        result_count,
-        results,
-        result_bytes,
-        result_bytes_limit_hit,
-        io_error_count,
-        snippet_chars,
-    };
-
-    let builder = walk_builder(root, max_depth, ignore_hidden, access_policy.clone());
-    builder.build_parallel().run(|| {
-        let matcher = matcher.clone();
-        let mut searcher = searcher.clone();
-        let found_flag = found_flag.clone();
-        let scanned_entries = scanned_entries.clone();
-        let scan_limit_hit = scan_limit_hit.clone();
-        let result_collector = result_collector.clone();
-        let cancel = cancel.clone();
-        let access_policy = access_policy.clone();
-        Box::new(move |entry| {
-            if cancel.is_cancelled() || found_flag.load(Ordering::Relaxed) {
-                return ignore::WalkState::Quit;
+    let walk = super::search_walk::walk(
+        p.root,
+        p.max_depth,
+        p.ignore_hidden,
+        &p.access_policy,
+        &p.cancel,
+        MAX_SEARCH_ENTRIES,
+        |entry| {
+            if collector.stop_flag.load(Ordering::Relaxed) {
+                return false;
             }
-            if !reserve_scan_entry(&found_flag, &scanned_entries, &scan_limit_hit) {
-                return ignore::WalkState::Quit;
-            }
-            let entry = match entry {
-                Ok(e) => e,
+            let metadata = match entry.file.metadata() {
+                Ok(m) => m,
                 Err(_) => {
-                    record_search_io_error(&result_collector.io_error_count, &cancel);
-                    return ignore::WalkState::Continue;
+                    record_search_io_error(&collector.io_error_count, &p.cancel);
+                    return true;
                 }
             };
-            let Some(file_type) = entry.file_type() else {
-                record_search_io_error(&result_collector.io_error_count, &cancel);
-                return ignore::WalkState::Continue;
-            };
-            if !file_type.is_file() {
-                return ignore::WalkState::Continue;
+            if !metadata.is_file() || (p.max_file_size > 0 && metadata.len() > p.max_file_size) {
+                return true;
             }
-            if max_file_size > 0 {
-                match entry.metadata() {
-                    Ok(metadata) if metadata.len() > max_file_size => {
-                        return ignore::WalkState::Continue;
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        record_search_io_error(&result_collector.io_error_count, &cancel);
-                        return ignore::WalkState::Continue;
-                    }
-                }
-            }
-            if let Some((sl, el)) = line_range {
+            if p.start_line > 1 || p.end_line > 0 {
                 search_content_line_range(
-                    entry.path(),
+                    &entry.path,
+                    entry.file,
                     &matcher,
                     &mut searcher,
-                    sl,
-                    el,
-                    &result_collector,
-                    max_window_bytes,
-                    &cancel,
-                    &access_policy,
+                    p.start_line,
+                    p.end_line,
+                    &collector,
+                    p.max_window_bytes,
+                    &p.cancel,
                 );
-            } else {
-                let sink =
-                    CollectingSink::new(entry.path().to_path_buf(), result_collector.clone());
-                let Ok(file) = access_policy.open_read(entry.path()) else {
-                    record_search_io_error(&result_collector.io_error_count, &cancel);
-                    return ignore::WalkState::Continue;
-                };
-                let reader = cancellable_search_reader(file, &cancel);
-                if searcher
-                    .search_reader(matcher.clone(), reader, sink)
-                    .is_err()
-                {
-                    record_search_io_error(&result_collector.io_error_count, &cancel);
-                }
+            } else if searcher
+                .search_reader(
+                    matcher.clone(),
+                    cancellable_search_reader(entry.file, &p.cancel),
+                    CollectingSink::new(entry.path, collector.clone()),
+                )
+                .is_err()
+            {
+                record_search_io_error(&collector.io_error_count, &p.cancel);
             }
-            ignore::WalkState::Continue
-        })
-    });
+            !collector.stop_flag.load(Ordering::Relaxed)
+        },
+    );
     FileSearchResult {
-        results: finalize(result_collector.results.clone(), max_results),
+        results: finalize(collector.results.clone(), p.max_results),
         truncation_reason: truncation_reason(
-            result_collector.result_count.load(Ordering::Relaxed) > max_results,
-            scan_limit_hit.load(Ordering::Relaxed),
-            result_collector
-                .result_bytes_limit_hit
-                .load(Ordering::Relaxed),
+            collector.result_count.load(Ordering::Relaxed) > p.max_results,
+            walk.limit_hit,
+            collector.result_bytes_limit_hit.load(Ordering::Relaxed),
         ),
-        io_error_count: result_collector.io_error_count.load(Ordering::Relaxed),
+        io_error_count: collector.io_error_count.load(Ordering::Relaxed) + walk.errors,
     }
 }
 
@@ -777,6 +633,7 @@ struct SearchResultCollector {
 #[allow(clippy::too_many_arguments)]
 fn search_content_line_range(
     path: &Path,
+    mut file: std::fs::File,
     matcher: &grep_regex::RegexMatcher,
     searcher: &mut grep_searcher::Searcher,
     start_line: u64,
@@ -784,9 +641,9 @@ fn search_content_line_range(
     result_collector: &SearchResultCollector,
     max_window_bytes: u64,
     cancel: &CancellationToken,
-    access_policy: &FileReadPolicy,
 ) {
-    let (start, end) = match line_range_bytes(path, start_line, end_line, cancel, access_policy) {
+    use std::io::{Seek, SeekFrom};
+    let (start, end) = match line_range_bytes(&mut file, start_line, end_line, cancel) {
         Ok(Some(range)) => range,
         Ok(None) => return,
         Err(_) => {
@@ -798,10 +655,10 @@ fn search_content_line_range(
     if window_len > max_window_bytes {
         let sink = CollectingSink::new(path.to_path_buf(), result_collector.clone())
             .with_line_filter(start_line, end_line);
-        let Ok(file) = access_policy.open_read(path) else {
+        if file.seek(SeekFrom::Start(0)).is_err() {
             record_search_io_error(&result_collector.io_error_count, cancel);
             return;
-        };
+        }
         let reader = cancellable_search_reader(file, cancel);
         if searcher
             .search_reader(matcher.clone(), reader, sink)
@@ -811,11 +668,6 @@ fn search_content_line_range(
         }
         return;
     }
-    let Ok(mut file) = access_policy.open_read(path) else {
-        record_search_io_error(&result_collector.io_error_count, cancel);
-        return;
-    };
-    use std::io::{Read, Seek, SeekFrom};
     if file.seek(SeekFrom::Start(start)).is_err() {
         record_search_io_error(&result_collector.io_error_count, cancel);
         return;
@@ -850,13 +702,11 @@ fn search_content_line_range(
 /// `end_line` inclusive). Returns `None` when `start_line` is past the last line;
 /// when `end_line` is past EOF the range ends at the file length.
 fn line_range_bytes(
-    path: &Path,
+    file: &mut std::fs::File,
     start_line: u64,
     end_line: u64,
     cancel: &CancellationToken,
-    access_policy: &FileReadPolicy,
 ) -> std::io::Result<Option<(u64, u64)>> {
-    let file = access_policy.open_read(path)?;
     let total = file.metadata()?.len();
     let mut reader = cancellable_search_reader(file, cancel);
     let mut buf = [0u8; 65536];
@@ -1122,6 +972,41 @@ mod tests {
     use std::io::Read;
 
     #[tokio::test]
+    async fn filename_search_does_not_read_denied_ignore_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ignore = tmp.path().join(".ignore");
+        std::fs::write(&ignore, "visible.txt\n").unwrap();
+        std::fs::write(tmp.path().join("visible.txt"), "public").unwrap();
+        let engine = crate::security::AuthorizationEngine::new();
+        let mut settings = haven_common::config::ToolConfig::default();
+        settings.resource_policy.files.denied_paths = vec![ignore.to_string_lossy().into_owned()];
+        engine
+            .set_tool_settings(std::collections::HashMap::from([(
+                "files".into(),
+                settings,
+            )]))
+            .await;
+        let policy = engine.file_read_policy("files.search").await;
+        let request = SearchRequest::from_value(
+            json!({"root": tmp.path(), "pattern": "visible.txt", "mode": "filename"}),
+            100,
+            100000,
+        )
+        .unwrap();
+        let result = FileSearchEngine::default()
+            .search_request_with_policy(request, CancellationToken::new(), policy)
+            .await
+            .unwrap();
+        let visible = result.output["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"].as_str().unwrap().ends_with("visible.txt"));
+        assert!(visible);
+        assert_eq!(result.output["search_complete"], false);
+    }
+
+    #[tokio::test]
     async fn filename_search_prunes_denied_directories_and_files() {
         let tmp = tempfile::tempdir().unwrap();
         let private = tmp.path().join("private");
@@ -1227,25 +1112,6 @@ mod tests {
     }
 
     #[test]
-    fn file_search_has_a_bounded_traversal_thread_budget() {
-        assert_eq!(MAX_SEARCH_THREADS, 2);
-    }
-
-    #[test]
-    fn scan_entry_budget_stops_after_the_configured_limit() {
-        let stop_flag = AtomicBool::new(false);
-        let scanned_entries = AtomicUsize::new(MAX_SEARCH_ENTRIES);
-        let scan_limit_hit = AtomicBool::new(false);
-        assert!(!reserve_scan_entry(
-            &stop_flag,
-            &scanned_entries,
-            &scan_limit_hit
-        ));
-        assert!(stop_flag.load(Ordering::Relaxed));
-        assert!(scan_limit_hit.load(Ordering::Relaxed));
-    }
-
-    #[test]
     fn materialized_result_byte_budget_cannot_be_exceeded() {
         let reserved = AtomicUsize::new(0);
         assert!(reserve_result_bytes(&reserved, MAX_SEARCH_RESULT_BYTES - 1));
@@ -1271,7 +1137,8 @@ mod tests {
     #[test]
     fn line_range_io_failure_is_counted_as_incomplete_search() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let missing_path = temp_dir.path().join("missing.txt");
+        let missing_path = temp_dir.path().join("write-only.txt");
+        let file = std::fs::File::create(&missing_path).unwrap();
         let collector = SearchResultCollector {
             max_results: 10,
             stop_flag: Arc::new(AtomicBool::new(false)),
@@ -1288,6 +1155,7 @@ mod tests {
 
         search_content_line_range(
             &missing_path,
+            file,
             &matcher,
             &mut searcher,
             1,
@@ -1295,7 +1163,6 @@ mod tests {
             &collector,
             MAX_SEARCH_WINDOW_BYTES,
             &cancel,
-            &FileReadPolicy::default(),
         );
 
         assert_eq!(collector.io_error_count.load(Ordering::Relaxed), 1);
@@ -1735,7 +1602,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_search_filename_mode_parallel() {
+    async fn test_search_filename_mode() {
         let tmp = tempfile::TempDir::new().unwrap();
         tokio::fs::write(tmp.path().join("alpha.rs"), "x")
             .await
@@ -1786,7 +1653,7 @@ mod tests {
         }
 
         let started_at = std::time::Instant::now();
-        let results = search_content_parallel(&ContentSearchParams {
+        let results = search_content(&ContentSearchParams {
             root,
             pattern: "needle",
             max_depth: 0,
@@ -1804,6 +1671,6 @@ mod tests {
         let elapsed = started_at.elapsed();
 
         assert_eq!(results.len(), 42_000);
-        tracing::debug!(elapsed = ?elapsed, matches = results.len(), "ripgrep parallel search benchmark");
+        tracing::debug!(elapsed = ?elapsed, matches = results.len(), "ripgrep search benchmark");
     }
 }

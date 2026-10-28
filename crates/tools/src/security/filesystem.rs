@@ -208,7 +208,12 @@ impl FileReadPolicy {
         Ok(opened)
     }
 
-    fn validate_opened(&self, path: &Path, opened: &File, require_file: bool) -> io::Result<()> {
+    pub(crate) fn validate_opened(
+        &self,
+        path: &Path,
+        opened: &File,
+        require_file: bool,
+    ) -> io::Result<()> {
         let denied = || io::Error::new(io::ErrorKind::PermissionDenied, "path is not allowed");
         if !path.is_absolute() || is_unc_or_device_path(path) {
             return Err(denied());
