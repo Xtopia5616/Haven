@@ -60,15 +60,22 @@ pub(super) fn walk(
         }
         return result;
     }
-    let dir = match DirectoryCapability::open(root) {
+    let dir = match policy.open_directory(root) {
         Ok(dir) => dir,
         Err(_) => {
             result.errors += 1;
             return result;
         }
     };
+    let traversal_root = dir.root().to_path_buf();
     let handle = match dir.directory_handle() {
-        Ok(handle) if policy.validate_opened(root, &handle, false).is_ok() => handle,
+        Ok(handle)
+            if policy
+                .validate_opened(&traversal_root, &handle, false)
+                .is_ok() =>
+        {
+            handle
+        }
         _ => {
             result.errors += 1;
             return result;
@@ -76,17 +83,12 @@ pub(super) fn walk(
     };
     result.scanned += 1;
     if !visit(Entry {
-        path: root.to_path_buf(),
+        path: traversal_root.clone(),
         file: handle,
     }) {
         return result;
     }
-    let mut pending = vec![(
-        dir,
-        root.to_path_buf(),
-        0usize,
-        Vec::<Arc<Gitignore>>::new(),
-    )];
+    let mut pending = vec![(dir, traversal_root, 0usize, Vec::<Arc<Gitignore>>::new())];
     let mut rule_bytes = 0usize;
     let mut rule_files = 0usize;
     while let Some((dir, path, depth, mut rules)) = pending.pop() {

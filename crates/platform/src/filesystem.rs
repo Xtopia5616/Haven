@@ -12,6 +12,7 @@ use std::io;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1239,6 +1240,52 @@ pub fn is_link_or_reparse_point(metadata: &Metadata) -> bool {
     }
 }
 
+/// Inspect only the existing lexical prefix of an absolute local path and
+/// report whether it crosses a link or Windows reparse point. On Windows the
+/// drive mapping is classified locally before any filesystem path is queried,
+/// so UNC/device targets are not contacted as a side effect of this check.
+pub fn contains_local_reparse_component(path: &Path) -> io::Result<bool> {
+    if !path.is_absolute() || is_unc_or_device_path(path) {
+        return Err(permission_denied("path must be an absolute local path"));
+    }
+    #[cfg(windows)]
+    ensure_local_target_drive(path)?;
+
+    if path.components().count() > MAX_LOCAL_PATH_COMPONENTS {
+        return Err(permission_denied("path component limit exceeded"));
+    }
+    let mut current = PathBuf::new();
+    let mut volume_root = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) => {
+                current.push(component.as_os_str());
+                volume_root.push(component.as_os_str());
+            }
+            Component::RootDir => {
+                current.push(component.as_os_str());
+                volume_root.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if current != volume_root {
+                    current.pop();
+                }
+            }
+            Component::Normal(_) => {
+                current.push(component.as_os_str());
+                match std::fs::symlink_metadata(&current) {
+                    Ok(metadata) if is_link_or_reparse_point(&metadata) => return Ok(true),
+                    Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// Open a file for reading. On Windows, deny new write and delete handles for
 /// the lifetime of the returned handle so an in-place rewrite or rename cannot
 /// change the bytes being snapshotted.
@@ -1291,10 +1338,11 @@ pub fn open_for_metadata(path: &Path) -> io::Result<File> {
 }
 
 /// Stable identity for a file object while at least one handle remains open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileIdentity {
     volume: u64,
-    index: u128,
+    index: u64,
+    created_at: u64,
 }
 
 /// A held identity for one existing file or directory used by path policy.
@@ -1305,6 +1353,386 @@ pub struct FilesystemPathCapability {
     identity: FileIdentity,
     is_directory: bool,
     _file: Arc<File>,
+}
+
+/// An existing local target selected through a path that may contain links.
+/// This capability is currently used only to bind a target identity. A caller
+/// must consume the retained target handle or a capability derived from it;
+/// `path()` is display and policy metadata, not an authority to reopen it.
+#[derive(Clone, Debug)]
+pub struct ResolvedLocalTarget {
+    target: FilesystemPathCapability,
+    link_chain: Vec<ResolvedLink>,
+    _permit: Arc<ResolvedLocalTargetPermit>,
+}
+
+const MAX_RESOLVED_LOCAL_TARGETS: usize = 64;
+const MAX_LOCAL_PATH_COMPONENTS: usize = 128;
+static ACTIVE_RESOLVED_LOCAL_TARGETS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug)]
+struct ResolvedLocalTargetPermit;
+
+impl ResolvedLocalTargetPermit {
+    fn acquire() -> io::Result<Arc<Self>> {
+        let mut active = ACTIVE_RESOLVED_LOCAL_TARGETS.load(Ordering::Acquire);
+        loop {
+            if active >= MAX_RESOLVED_LOCAL_TARGETS {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "too many linked local targets are currently held",
+                ));
+            }
+            match ACTIVE_RESOLVED_LOCAL_TARGETS.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(Arc::new(Self)),
+                Err(current) => active = current,
+            }
+        }
+    }
+}
+
+impl Drop for ResolvedLocalTargetPermit {
+    fn drop(&mut self) {
+        ACTIVE_RESOLVED_LOCAL_TARGETS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// One reparse point traversed while resolving a local target.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedLink {
+    pub path: PathBuf,
+    pub identity: FileIdentity,
+}
+
+impl ResolvedLocalTarget {
+    pub fn open(path: &Path) -> io::Result<Self> {
+        if !path.is_absolute() || is_unc_or_device_path(path) {
+            return Err(permission_denied("target must be an absolute local path"));
+        }
+        #[cfg(windows)]
+        {
+            Self::open_windows(path, ResolvedLocalTargetPermit::acquire()?)
+        }
+        #[cfg(not(windows))]
+        {
+            Err(permission_denied(
+                "linked local target resolution is available only on Windows",
+            ))
+        }
+    }
+
+    #[cfg(windows)]
+    fn open_windows(path: &Path, permit: Arc<ResolvedLocalTargetPermit>) -> io::Result<Self> {
+        ensure_local_target_drive(path)?;
+        let (path_guards, link_chain) = lock_local_path_components(path, 0)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.share_mode(0x0000_0001);
+            options.custom_flags(0x0200_0000);
+        }
+        let selected = options.open(path)?;
+        let canonical = normalize_windows_extended_path(std::fs::canonicalize(path)?)
+            .filter(|resolved| !is_unc_or_device_path(resolved))
+            .ok_or_else(|| permission_denied("target is not a local path"))?;
+        ensure_local_target_drive(&canonical)?;
+        let target = FilesystemPathCapability::open(&canonical)?;
+        if file_identity(&selected)? != target.identity {
+            return Err(permission_denied("target changed while resolving"));
+        }
+        if !link_chain.is_empty() && !is_ntfs_volume(&selected)? {
+            return Err(permission_denied(
+                "links are supported only on verified local NTFS volumes",
+            ));
+        }
+        drop(path_guards);
+        Ok(Self {
+            target,
+            link_chain,
+            _permit: permit,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        self.target.path()
+    }
+
+    pub fn identity(&self) -> FileIdentity {
+        self.target.identity
+    }
+
+    pub fn is_directory(&self) -> bool {
+        self.target.is_directory
+    }
+
+    pub fn link_chain(&self) -> &[ResolvedLink] {
+        &self.link_chain
+    }
+
+    pub fn followed_links(&self) -> bool {
+        !self.link_chain.is_empty()
+    }
+
+    /// Duplicate the already-validated target handle. This preserves object
+    /// identity and never resolves the original path again.
+    pub fn try_clone_target_handle(&self) -> io::Result<File> {
+        self.target._file.try_clone()
+    }
+
+    /// Derive a directory capability from the already-open target handle.
+    pub fn directory_capability(&self) -> io::Result<DirectoryCapability> {
+        if !self.target.is_directory {
+            return Err(permission_denied("resolved target is not a directory"));
+        }
+        Ok(DirectoryCapability {
+            root: self.target.path.clone(),
+            directory: Arc::new(cap_std::fs::Dir::from_std_file(
+                self.target._file.try_clone()?,
+            )),
+        })
+    }
+
+    pub fn matches(&self, path: &Path) -> io::Result<bool> {
+        let current = Self::open(path)?;
+        Ok(self.target.same_object(&current.target) && self.path() == current.path())
+    }
+
+    pub fn binding_matches(&self, other: &Self) -> bool {
+        self.target.same_object(&other.target)
+            && self.path() == other.path()
+            && self.link_chain == other.link_chain
+    }
+}
+
+#[cfg(windows)]
+fn lock_local_path_components(
+    path: &Path,
+    depth: usize,
+) -> io::Result<(Vec<File>, Vec<ResolvedLink>)> {
+    const MAX_LINK_DEPTH: usize = 32;
+    if depth > MAX_LINK_DEPTH || !path.is_absolute() || is_unc_or_device_path(path) {
+        return Err(permission_denied("link target cannot be safely resolved"));
+    }
+    ensure_local_target_drive(path)?;
+    let components: Vec<_> = path.components().collect();
+    if components.len() > MAX_LOCAL_PATH_COMPONENTS {
+        return Err(permission_denied("path component limit exceeded"));
+    }
+    let mut current = PathBuf::new();
+    let mut guards = Vec::new();
+    let mut link_chain = Vec::new();
+    let mut volume_root = PathBuf::new();
+    for (index, component) in components.iter().enumerate() {
+        match component {
+            Component::Prefix(_) => {
+                current.push(component.as_os_str());
+                volume_root.push(component.as_os_str());
+                continue;
+            }
+            Component::RootDir => {
+                current.push(component.as_os_str());
+                volume_root.push(component.as_os_str());
+                continue;
+            }
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                if current != volume_root {
+                    current.pop();
+                }
+                continue;
+            }
+            _ => current.push(component.as_os_str()),
+        }
+        let guard = open_for_metadata(&current)?;
+        let is_reparse = is_link_or_reparse_point(&guard.metadata()?);
+        if is_reparse {
+            let tag = windows_reparse_tag(&guard)?;
+            if !matches!(tag, 0xA000_000C | 0xA000_0003) {
+                return Err(permission_denied("unsupported Windows reparse tag"));
+            }
+            if !is_ntfs_volume(&guard)? {
+                return Err(permission_denied(
+                    "links are supported only on verified local NTFS volumes",
+                ));
+            }
+        }
+        let link_identity = is_reparse.then(|| file_identity(&guard)).transpose()?;
+        guards.push(guard);
+        if is_reparse {
+            if depth >= MAX_LINK_DEPTH {
+                return Err(permission_denied("link nesting limit exceeded"));
+            }
+            let target = normalize_local_link_target(&std::fs::read_link(&current)?)?;
+            let mut target = if target.is_absolute() {
+                target
+            } else if target
+                .components()
+                .any(|part| matches!(part, Component::Prefix(_)))
+            {
+                return Err(permission_denied(
+                    "drive-relative link target is unsupported",
+                ));
+            } else {
+                current
+                    .parent()
+                    .ok_or_else(|| permission_denied("link has no parent"))?
+                    .join(target)
+            };
+            for rest in &components[index + 1..] {
+                target.push(rest.as_os_str());
+            }
+            let (target_guards, target_links) = lock_local_path_components(&target, depth + 1)?;
+            guards.extend(target_guards);
+            link_chain.push(ResolvedLink {
+                path: current,
+                identity: link_identity.expect("reparse identity was read"),
+            });
+            link_chain.extend(target_links);
+            if guards.len() > MAX_LOCAL_PATH_COMPONENTS {
+                return Err(permission_denied("path component handle limit exceeded"));
+            }
+            return Ok((guards, link_chain));
+        }
+        if guards.len() > MAX_LOCAL_PATH_COMPONENTS {
+            return Err(permission_denied("path component handle limit exceeded"));
+        }
+    }
+    Ok((guards, link_chain))
+}
+
+#[cfg(windows)]
+fn normalize_local_link_target(target: &Path) -> io::Result<PathBuf> {
+    let raw = target.to_string_lossy();
+    let raw = raw.as_ref();
+    if raw.starts_with(r"\??\UNC\")
+        || raw.starts_with(r"\\?\UNC\")
+        || raw.starts_with(r"\??\Volume{")
+        || raw.starts_with(r"\\?\Volume{")
+        || raw.starts_with(r"\Device\")
+        || raw.starts_with(r"\\.\")
+    {
+        return Err(permission_denied(
+            "network or device link target is unsupported",
+        ));
+    }
+    let target = if let Some(dos_path) = raw.strip_prefix(r"\??\") {
+        PathBuf::from(dos_path)
+    } else {
+        target.to_path_buf()
+    };
+    let target = normalize_windows_extended_path(target)
+        .ok_or_else(|| permission_denied("network or device link target is unsupported"))?;
+    if target.is_absolute()
+        && target
+            .components()
+            .next()
+            .is_none_or(|component| !matches!(component, Component::Prefix(_)))
+    {
+        return Err(permission_denied(
+            "rooted device link target is unsupported",
+        ));
+    }
+    Ok(target)
+}
+
+#[cfg(windows)]
+fn ensure_local_target_drive(path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+
+    let prefix = path
+        .components()
+        .next()
+        .ok_or_else(|| permission_denied("target has no local drive"))?;
+    let drive: Vec<u16> = prefix
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut device = vec![0u16; 1024];
+    // QueryDosDevice reads the local DOS-device namespace and does not open a
+    // mapped share or attempt to contact its server.
+    // SAFETY: both buffers are valid UTF-16 storage for the duration of call.
+    let length =
+        unsafe { QueryDosDeviceW(drive.as_ptr(), device.as_mut_ptr(), device.len() as u32) };
+    if length == 0 {
+        return Err(permission_denied(
+            "drive mapping cannot be classified locally",
+        ));
+    }
+    let target = String::from_utf16_lossy(&device[..length as usize]);
+    if !target.starts_with("\\Device\\HarddiskVolume") {
+        return Err(permission_denied(
+            "mapped or non-local drive is unsupported",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_reparse_tag(file: &File) -> io::Result<u32> {
+    use std::mem::MaybeUninit;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_TAG_INFO, FileAttributeTagInfo, GetFileInformationByHandleEx,
+    };
+
+    let mut information = MaybeUninit::<FILE_ATTRIBUTE_TAG_INFO>::zeroed();
+    // SAFETY: the handle is live and the output buffer matches the selected
+    // FileAttributeTagInfo structure.
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileAttributeTagInfo,
+            information.as_mut_ptr().cast(),
+            std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful API call initialized the structure.
+    Ok(unsafe { information.assume_init() }.ReparseTag)
+}
+
+#[cfg(windows)]
+fn is_ntfs_volume(file: &File) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
+
+    let mut file_system = [0u16; 32];
+    // SAFETY: the file handle is live, and all output buffers are valid.
+    let succeeded = unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            file_system.as_mut_ptr(),
+            file_system.len() as u32,
+        )
+    };
+    if succeeded == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let end = file_system
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(file_system.len());
+    Ok(String::from_utf16_lossy(&file_system[..end]).eq_ignore_ascii_case("NTFS"))
+}
+
+#[cfg(not(windows))]
+fn ensure_local_target_drive(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 impl FilesystemPathCapability {
@@ -1467,7 +1895,8 @@ pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
         let metadata = file.metadata()?;
         Ok(FileIdentity {
             volume: metadata.dev(),
-            index: u128::from(metadata.ino()),
+            index: metadata.ino(),
+            created_at: 0,
         })
     }
     #[cfg(windows)]
@@ -1489,10 +1918,12 @@ pub fn file_identity(file: &File) -> io::Result<FileIdentity> {
         // SAFETY: the API returned success and initialized the structure.
         let information = unsafe { information.assume_init() };
         let index =
-            (u128::from(information.nFileIndexHigh) << 32) | u128::from(information.nFileIndexLow);
+            (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow);
         Ok(FileIdentity {
             volume: u64::from(information.dwVolumeSerialNumber),
             index,
+            created_at: (u64::from(information.ftCreationTime.dwHighDateTime) << 32)
+                | u64::from(information.ftCreationTime.dwLowDateTime),
         })
     }
     #[cfg(not(any(unix, windows)))]
@@ -1538,7 +1969,140 @@ pub fn same_file_identity(left: &File, right: &File) -> io::Result<bool> {
 
 #[cfg(test)]
 mod filesystem_path_capability_tests {
-    use super::FilesystemPathCapability;
+    use super::{FilesystemPathCapability, ResolvedLocalTarget, contains_local_reparse_component};
+
+    #[test]
+    fn resolved_local_target_rejects_relative_and_network_paths() {
+        assert!(ResolvedLocalTarget::open(std::path::Path::new("relative")).is_err());
+        assert!(ResolvedLocalTarget::open(std::path::Path::new("//server/share")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolved_local_target_pins_junction_target_and_detects_retargeting() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        let link = temp.path().join("link");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        let create = |target: &std::path::Path| {
+            assert!(
+                std::process::Command::new("cmd")
+                    .args(["/C", "mklink", "/J"])
+                    .arg(&link)
+                    .arg(target)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        create(&first);
+        let target = ResolvedLocalTarget::open(&link).unwrap();
+        assert_eq!(target.path(), first);
+        assert!(target.matches(&link).unwrap());
+        std::fs::remove_dir(&link).unwrap();
+        create(&second);
+        assert!(!target.matches(&link).unwrap());
+        assert!(target.matches(&first).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolved_local_target_follows_nested_junctions_and_marks_missing_suffix() {
+        let temp = tempfile::tempdir().unwrap();
+        let actual = temp.path().join("actual");
+        let inner = temp.path().join("inner");
+        let outer = temp.path().join("outer");
+        std::fs::create_dir(&actual).unwrap();
+        std::fs::write(actual.join("note.txt"), b"nested target").unwrap();
+        for (link, target) in [(&inner, &actual), (&outer, &inner)] {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "junction creation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let requested = outer.join("note.txt");
+        let target = ResolvedLocalTarget::open(&requested).unwrap();
+        assert_eq!(target.link_chain().len(), 2);
+        assert_eq!(
+            target.path().file_name(),
+            Some(std::ffi::OsStr::new("note.txt"))
+        );
+
+        let missing = outer.join("not-created.txt");
+        assert!(contains_local_reparse_component(&missing).unwrap());
+        assert_eq!(
+            ResolvedLocalTarget::open(&missing).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolved_local_target_follows_relative_symlinks_and_rejects_cycles() {
+        use super::normalize_local_link_target;
+        use std::os::windows::fs::symlink_file;
+
+        fn create_symlink(target: &std::path::Path, link: &std::path::Path) -> bool {
+            match symlink_file(target, link) {
+                Ok(()) => true,
+                // Windows runners without Developer Mode or SeCreateSymbolicLinkPrivilege
+                // cannot create this fixture. Junction integration tests still run there.
+                Err(error) if error.raw_os_error() == Some(1314) => false,
+                Err(error) => panic!("symbolic link creation failed: {error}"),
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target.txt");
+        let relative_link = temp.path().join("relative.txt");
+        let cycle_a = temp.path().join("cycle-a.txt");
+        let cycle_b = temp.path().join("cycle-b.txt");
+        std::fs::write(&target, b"relative symlink target").unwrap();
+
+        if !create_symlink(std::path::Path::new("target.txt"), &relative_link) {
+            return;
+        }
+        let resolved = ResolvedLocalTarget::open(&relative_link).unwrap();
+        assert!(resolved.followed_links());
+        assert_eq!(resolved.path(), std::fs::canonicalize(&target).unwrap());
+
+        for network_or_device in [
+            r"\\?\UNC\server\share\file.txt",
+            r"\??\UNC\server\share\file.txt",
+            r"\\.\PhysicalDrive0",
+            r"\Device\HarddiskVolume1\file.txt",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\file.txt",
+        ] {
+            assert!(
+                normalize_local_link_target(std::path::Path::new(network_or_device)).is_err(),
+                "network/device link target was accepted: {network_or_device}"
+            );
+        }
+
+        assert!(create_symlink(
+            std::path::Path::new("cycle-b.txt"),
+            &cycle_a
+        ));
+        assert!(create_symlink(
+            std::path::Path::new("cycle-a.txt"),
+            &cycle_b
+        ));
+        assert_eq!(
+            ResolvedLocalTarget::open(&cycle_a).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
 
     #[test]
     fn filesystem_path_capability_merges_same_object_and_matches_descendants() {

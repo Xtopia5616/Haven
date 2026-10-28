@@ -106,6 +106,36 @@ describe('ConfirmationDialog', () => {
 		});
 	});
 
+	it('shows both paths and offers one-time approval only for an unresolved link binding', () => {
+		const identity = { volume: 1, index: 2, created_at: 3 };
+		render(ConfirmationDialog as any, {
+			...deadlineProps(),
+			requestId: 'conf-5b4fa9f7d430bca655c3d109ecbe7861',
+			toolName: 'files.read',
+			sessionId: 'ses-f598facda111677e0871bdc09d391332',
+			resources: [
+				{
+					kind: 'resolved_local_path',
+					requested_path: 'C:\\workspace\\shortcut.txt',
+					path: 'D:\\approved\\note.txt',
+					access: 'read',
+					identity,
+					link_chain: [{ path: 'C:\\workspace\\shortcut.txt', identity }],
+					reusable: false,
+					resolution_epoch: '0123456789abcdef0123456789abcdef',
+				},
+			],
+			onConfirm: vi.fn(),
+		});
+
+		expect(screen.getByText(/请求路径：C:\\workspace\\shortcut.txt · 实际目标：D:\\approved\\note.txt/)).toBeTruthy();
+		expect(screen.getByText(/因此只能授权本次操作/)).toBeTruthy();
+		expect(screen.getByRole('button', { name: '本次允许' })).toBeTruthy();
+		expect(screen.queryByRole('button', { name: '本会话允许此操作' })).toBeNull();
+		expect(screen.queryByRole('button', { name: '更多允许' })).toBeNull();
+		expect(screen.queryByLabelText('保存的路径范围')).toBeNull();
+	});
+
 	it('warns that a Shell file denial grants the entire parent directory for this retry', () => {
 		render(ConfirmationDialog as any, {
 			...deadlineProps(),

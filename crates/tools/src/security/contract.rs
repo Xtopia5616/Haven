@@ -111,6 +111,15 @@ pub struct AuthorizationRequest {
     pub target_binding: Option<String>,
 }
 
+/// The extent of a Files operation over a backend-resolved linked target.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolvedLocalPathExtent {
+    Exact,
+    DirectoryEntries,
+    DirectorySubtree,
+}
+
 /// A resource named by a trusted operation contract, with its access intent.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -121,6 +130,19 @@ pub enum DeclaredResource {
     LocalPath {
         path: std::path::PathBuf,
         access: LocalPathAccess,
+    },
+    /// A Files path resolved by the backend. The original input remains for
+    /// confirmation display; `path` is the actual target used for policy
+    /// checks, while identity/link metadata binds confirmation and execution.
+    ResolvedLocalPath {
+        requested_path: std::path::PathBuf,
+        path: std::path::PathBuf,
+        access: LocalPathAccess,
+        extent: ResolvedLocalPathExtent,
+        identity: haven_platform::filesystem::FileIdentity,
+        link_chain: Vec<haven_platform::filesystem::ResolvedLink>,
+        reusable: bool,
+        resolution_epoch: String,
     },
     NetworkDestination {
         scheme: String,

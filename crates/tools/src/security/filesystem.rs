@@ -1,11 +1,18 @@
 use haven_platform::filesystem::{DirectoryCapability, FilesystemPathCapability};
 use haven_platform::filesystem::{
-    is_link_or_reparse_point, open_for_metadata, open_read_only, same_file_identity,
+    ResolvedLocalTarget, is_link_or_reparse_point, open_for_metadata, open_read_only,
+    same_file_identity,
 };
 use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+
+#[derive(Clone)]
+pub(super) struct AuthorizedLocalReadTarget {
+    pub(super) requested_path: PathBuf,
+    pub(super) target: ResolvedLocalTarget,
+}
 
 /// Check an absolute local path without applying a tool-specific allowlist.
 /// This is for native app entry points such as “open skills directory” and
@@ -25,6 +32,12 @@ pub(crate) struct FileReadPolicy {
     pub(super) allowed_roots: Vec<Vec<PathBuf>>,
     pub(super) denied_paths: Vec<FilesystemPathCapability>,
     pub(super) deny_all: bool,
+    /// Only the built-in Files contract may opt into verified local links.
+    /// Other path consumers retain the historical no-reparse behavior.
+    pub(super) allow_local_links: bool,
+    /// Re-resolved and identity-checked targets captured after authorization.
+    /// These handles live for one execution context only.
+    pub(super) authorized_targets: Vec<AuthorizedLocalReadTarget>,
 }
 
 /// Per-attempt filesystem authority derived from the same policy revision as
@@ -196,16 +209,121 @@ impl FileReadPolicy {
         }
     }
 
+    pub(crate) fn is_link_bound_path(&self, path: &Path) -> bool {
+        self.authorized_targets.iter().any(|expected| {
+            expected.target.followed_links()
+                && normalized_local_path(path) == normalized_local_path(&expected.requested_path)
+        })
+    }
+
     pub(crate) fn open_read(&self, path: &Path) -> io::Result<File> {
+        #[cfg(windows)]
+        if self.allow_local_links {
+            let target = ResolvedLocalTarget::open(path)?;
+            if target.followed_links() {
+                self.validate_bound_target(path, &target)?;
+                let opened = target.try_clone_target_handle()?;
+                self.validate_opened(target.path(), &opened, true)?;
+                self.validate_link_aliases(path, &target)?;
+                return Ok(opened);
+            }
+        }
         let opened = open_read_only(path)?;
         self.validate_opened(path, &opened, true)?;
         Ok(opened)
     }
 
     pub(crate) fn open_metadata(&self, path: &Path) -> io::Result<File> {
+        #[cfg(windows)]
+        if self.allow_local_links {
+            let target = ResolvedLocalTarget::open(path)?;
+            if target.followed_links() {
+                self.validate_bound_target(path, &target)?;
+                let opened = target.try_clone_target_handle()?;
+                self.validate_opened(target.path(), &opened, false)?;
+                self.validate_link_aliases(path, &target)?;
+                return Ok(opened);
+            }
+        }
         let opened = open_for_metadata(path)?;
         self.validate_opened(path, &opened, false)?;
         Ok(opened)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn open_directory(&self, path: &Path) -> io::Result<DirectoryCapability> {
+        if self.allow_local_links {
+            let target = ResolvedLocalTarget::open(path)?;
+            if target.followed_links() {
+                self.validate_bound_target(path, &target)?;
+                self.validate_link_aliases(path, &target)?;
+                let directory = target.directory_capability()?;
+                let handle = directory.directory_handle()?;
+                self.validate_opened(target.path(), &handle, false)?;
+                return Ok(directory);
+            }
+        }
+        let directory = DirectoryCapability::open(path)?;
+        let handle = directory.directory_handle()?;
+        self.validate_opened(path, &handle, false)?;
+        Ok(directory)
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn open_directory(&self, path: &Path) -> io::Result<DirectoryCapability> {
+        let directory = DirectoryCapability::open(path)?;
+        let handle = directory.directory_handle()?;
+        self.validate_opened(path, &handle, false)?;
+        Ok(directory)
+    }
+
+    #[cfg(windows)]
+    fn validate_bound_target(
+        &self,
+        requested: &Path,
+        current: &ResolvedLocalTarget,
+    ) -> io::Result<()> {
+        let denied = || {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "local target was not bound to this authorization proof",
+            )
+        };
+        let requested = normalized_local_path(requested);
+        for expected in &self.authorized_targets {
+            if normalized_local_path(&expected.requested_path) == requested {
+                if expected.target.binding_matches(current) {
+                    return Ok(());
+                }
+                return Err(denied());
+            }
+        }
+        Err(denied())
+    }
+
+    #[cfg(windows)]
+    fn validate_link_aliases(
+        &self,
+        requested_path: &Path,
+        target: &ResolvedLocalTarget,
+    ) -> io::Result<()> {
+        let denied = || io::Error::new(io::ErrorKind::PermissionDenied, "path is not allowed");
+        if self.deny_all {
+            return Err(denied());
+        }
+        let mut aliases = Vec::with_capacity(target.link_chain().len() + 1);
+        aliases.push(requested_path);
+        aliases.extend(target.link_chain().iter().map(|link| link.path.as_path()));
+        for alias in aliases {
+            if self
+                .denied_paths
+                .iter()
+                .any(|denied_path| denied_path.contains_path(alias).unwrap_or(true))
+            {
+                return Err(denied());
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn validate_opened(
@@ -254,6 +372,22 @@ impl FileReadPolicy {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn normalized_local_path(path: &Path) -> std::borrow::Cow<'_, str> {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy();
+        match value.strip_prefix(r"\\?\") {
+            Some(ordinary) => std::borrow::Cow::Owned(ordinary.to_ascii_lowercase()),
+            None => std::borrow::Cow::Owned(value.to_ascii_lowercase()),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::borrow::Cow::Owned(path.to_string_lossy().into_owned())
     }
 }
 
@@ -574,6 +708,7 @@ mod tests {
             denied_paths: open_filesystem_paths(std::slice::from_ref(&denied), "test denied path")
                 .unwrap(),
             deny_all: false,
+            ..FileReadPolicy::default()
         };
 
         assert_eq!(
@@ -635,6 +770,121 @@ mod tests {
         let mut contents = Vec::new();
         opened.read_to_end(&mut contents).unwrap();
         assert_eq!(contents, b"authorized contents");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn file_read_policy_consumes_only_the_confirmed_junction_target() {
+        use std::io::Read;
+
+        fn create_junction(link: &Path, target: &Path) {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "junction creation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let alias_root = tempfile::tempdir().unwrap();
+        let first_target = tempfile::tempdir().unwrap();
+        let second_target = tempfile::tempdir().unwrap();
+        let link = alias_root.path().join("approved-link");
+        let requested = link.join("note.txt");
+        std::fs::write(first_target.path().join("note.txt"), b"first target").unwrap();
+        std::fs::write(second_target.path().join("note.txt"), b"second target").unwrap();
+        create_junction(&link, first_target.path());
+
+        let target = ResolvedLocalTarget::open(&requested).unwrap();
+        assert!(target.followed_links());
+        let policy = FileReadPolicy {
+            allowed_roots: vec![vec![first_target.path().to_path_buf()]],
+            allow_local_links: true,
+            authorized_targets: vec![AuthorizedLocalReadTarget {
+                requested_path: requested.clone(),
+                target,
+            }],
+            ..FileReadPolicy::default()
+        };
+
+        let mut opened = policy.open_read(&requested).unwrap();
+        let mut contents = Vec::new();
+        opened.read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, b"first target");
+        drop(opened);
+
+        std::fs::remove_dir(&link).unwrap();
+        create_junction(&link, second_target.path());
+        assert_eq!(
+            policy.open_read(&requested).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn file_read_policy_lists_only_the_confirmed_junction_directory() {
+        fn create_junction(link: &Path, target: &Path) {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "junction creation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let alias_root = tempfile::tempdir().unwrap();
+        let first_target = tempfile::tempdir().unwrap();
+        let second_target = tempfile::tempdir().unwrap();
+        let link = alias_root.path().join("approved-directory");
+        let nested_link = first_target.path().join("nested-link");
+        std::fs::write(first_target.path().join("note.txt"), b"approved").unwrap();
+        std::fs::write(second_target.path().join("other.txt"), b"unapproved").unwrap();
+        create_junction(&nested_link, second_target.path());
+        create_junction(&link, first_target.path());
+
+        let target = ResolvedLocalTarget::open(&link).unwrap();
+        let policy = FileReadPolicy {
+            allowed_roots: vec![vec![first_target.path().to_path_buf()]],
+            allow_local_links: true,
+            authorized_targets: vec![AuthorizedLocalReadTarget {
+                requested_path: link.clone(),
+                target,
+            }],
+            ..FileReadPolicy::default()
+        };
+
+        let directory = policy.open_directory(&link).unwrap();
+        let entries = directory.entries(16).unwrap();
+        let kinds = entries
+            .into_iter()
+            .map(|entry| (entry.name, entry.kind))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            kinds.get(std::ffi::OsStr::new("note.txt")),
+            Some(&haven_platform::filesystem::DirectoryEntryKind::File)
+        );
+        assert_eq!(
+            kinds.get(std::ffi::OsStr::new("nested-link")),
+            Some(&haven_platform::filesystem::DirectoryEntryKind::ReparsePoint)
+        );
+
+        std::fs::remove_dir(&link).unwrap();
+        create_junction(&link, second_target.path());
+        assert_eq!(
+            policy.open_directory(&link).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
     }
 
     #[test]

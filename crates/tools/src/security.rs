@@ -7,7 +7,7 @@ pub use contract::{
     AuthorizationCheck, AuthorizationDecision, AuthorizationExecutionProof, AuthorizationPort,
     AuthorizationReasonCode, AuthorizationRequest, ClipboardAccess, ConfirmationReceipt,
     DeclaredResource, DesktopAccess, LocalPathAccess, NetworkPolicyDecision, RegistryAccess,
-    WindowAccess,
+    ResolvedLocalPathExtent, WindowAccess,
 };
 pub use engine::AuthorizationEngine;
 pub(crate) use execution::{

@@ -39,6 +39,9 @@ pub(super) async fn register_rich_path_asset(
     ) {
         return Ok(None);
     }
+    if access_policy.is_link_bound_path(Path::new(path)) {
+        anyhow::bail!("media operations through local links are not supported");
+    }
     let opened = access_policy.open_read(Path::new(path))?;
     let canonical = tokio::fs::canonicalize(path).await?;
     let generated_media_root =

@@ -10,7 +10,7 @@ use super::{
     MAX_PATCH_MATCHES, MAX_PATCH_REPORTED_LINES,
 };
 use crate::ToolResult;
-use crate::security::FileWritePolicy;
+use crate::security::{FileReadPolicy, FileWritePolicy};
 use haven_platform::filesystem::DirectoryCapability;
 
 async fn run_file_mutation<T>(
@@ -504,20 +504,27 @@ pub(super) async fn list(
     path: &str,
     max_list_entries: usize,
     cancel: CancellationToken,
+    policy: &FileReadPolicy,
 ) -> anyhow::Result<ToolResult> {
-    let mut entries = tokio::fs::read_dir(path).await?;
-    let mut names = Vec::new();
-    let mut truncated = false;
-    while let Some(entry) = entries.next_entry().await? {
-        if cancel.is_cancelled() {
-            anyhow::bail!("cancelled");
-        }
-        if names.len() >= max_list_entries {
-            truncated = true;
-            break;
-        }
-        names.push(entry.file_name().to_string_lossy().to_string());
+    let policy = policy.clone();
+    let directory_path = PathBuf::from(path);
+    let cancel_for_listing = cancel.clone();
+    let entries = blocking_io(move || {
+        let directory = policy.open_directory(&directory_path)?;
+        directory.entries_cancellable(max_list_entries.saturating_add(1).max(1), || {
+            cancel_for_listing.is_cancelled()
+        })
+    })
+    .await?;
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
     }
+    let truncated = entries.len() > max_list_entries;
+    let mut names = entries
+        .into_iter()
+        .take(max_list_entries)
+        .map(|entry| entry.name.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     names.sort();
     let mut result = serde_json::json!({"entries": names, "count": names.len()});
     if truncated {

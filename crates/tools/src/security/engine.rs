@@ -218,6 +218,8 @@ pub struct AuthorizationEngine {
     mcp_permission_changes: tokio::sync::watch::Sender<Arc<()>>,
     tool_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
     session_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
+    /// Process-local salt invalidating link-bound receipts after restart.
+    resolution_epoch: String,
 }
 
 impl AuthorizationEngine {
@@ -231,6 +233,7 @@ impl AuthorizationEngine {
         let (process_boundary_changes, _process_boundary_change_receiver) =
             tokio::sync::watch::channel(Arc::new(()));
         let (mcp_permission_changes, _) = tokio::sync::watch::channel(Arc::new(()));
+        let resolution_epoch = uuid::Uuid::new_v4().simple().to_string();
         Self {
             mcp_permission_changes,
             permission_slots: tokio::sync::Semaphore::new(32),
@@ -264,7 +267,149 @@ impl AuthorizationEngine {
             process_boundary_changes,
             tool_processes: Mutex::new(HashMap::new()),
             session_processes: Mutex::new(HashMap::new()),
+            resolution_epoch,
         }
+    }
+
+    /// Resolve Files read resources on the backend before policy evaluation.
+    /// The resulting resource is carried by the receipt and execution proof;
+    /// a later verification must reproduce its target identity and link chain.
+    fn bind_local_file_resources(
+        &self,
+        request: &AuthorizationRequest,
+        workspace: &ExecutionWorkspace,
+    ) -> Result<AuthorizationRequest, String> {
+        if !request.tool_name.starts_with("files.") {
+            return Ok(request.clone());
+        }
+        let follows_links = matches!(
+            request.input["operation"].as_str(),
+            Some("read" | "inspect" | "list" | "outline" | "summary" | "search")
+        );
+        let mut bound = request.clone();
+        for resource in &mut bound.resources {
+            match resource {
+                super::DeclaredResource::LocalPath { path, access } if follows_links => {
+                    let requested_path = resolve_relative_sandbox_path(path.clone(), workspace);
+                    if !requested_path.is_absolute() || is_unc_or_device_path(&requested_path) {
+                        continue;
+                    }
+                    #[cfg(windows)]
+                    {
+                        match haven_platform::filesystem::ResolvedLocalTarget::open(&requested_path)
+                        {
+                            Ok(target) if target.followed_links() => {
+                                let extent = if target.is_directory() {
+                                    match request.input["operation"].as_str() {
+                                        Some("list") => {
+                                            super::ResolvedLocalPathExtent::DirectoryEntries
+                                        }
+                                        Some("search") => {
+                                            super::ResolvedLocalPathExtent::DirectorySubtree
+                                        }
+                                        _ => super::ResolvedLocalPathExtent::Exact,
+                                    }
+                                } else {
+                                    super::ResolvedLocalPathExtent::Exact
+                                };
+                                *resource = super::DeclaredResource::ResolvedLocalPath {
+                                    requested_path,
+                                    path: target.path().to_path_buf(),
+                                    access: *access,
+                                    extent,
+                                    identity: target.identity(),
+                                    link_chain: target.link_chain().to_vec(),
+                                    reusable: false,
+                                    resolution_epoch: self.resolution_epoch.clone(),
+                                };
+                            }
+                            Ok(_) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                match haven_platform::filesystem::contains_local_reparse_component(
+                                    &requested_path,
+                                ) {
+                                    Ok(true) => {
+                                        return Err(
+                                            "local link target is missing or incomplete".into()
+                                        );
+                                    }
+                                    Ok(false) => {}
+                                    Err(_) => {
+                                        return Err(
+                                            "local path could not be safely inspected".into()
+                                        );
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                return Err(format!(
+                                    "local link target could not be safely resolved: {}",
+                                    error.kind()
+                                ));
+                            }
+                        }
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let _ = access;
+                    }
+                }
+                super::DeclaredResource::LocalPath { path, .. } => {
+                    let requested_path = resolve_relative_sandbox_path(path.clone(), workspace);
+                    if !requested_path.is_absolute() || is_unc_or_device_path(&requested_path) {
+                        continue;
+                    }
+                    match haven_platform::filesystem::contains_local_reparse_component(
+                        &requested_path,
+                    ) {
+                        Ok(true) => {
+                            return Err(
+                                "this Files operation does not support paths through local links"
+                                    .into(),
+                            );
+                        }
+                        Ok(false) => {}
+                        Err(_) => {
+                            return Err("local path could not be safely inspected".into());
+                        }
+                    }
+                }
+                super::DeclaredResource::ResolvedLocalPath {
+                    requested_path,
+                    path,
+                    identity,
+                    link_chain,
+                    resolution_epoch,
+                    ..
+                } => {
+                    if !follows_links || *resolution_epoch != self.resolution_epoch {
+                        return Err("resolved local path binding is no longer valid".into());
+                    }
+                    let requested_path =
+                        resolve_relative_sandbox_path(requested_path.clone(), workspace);
+                    #[cfg(windows)]
+                    {
+                        let current =
+                            haven_platform::filesystem::ResolvedLocalTarget::open(&requested_path)
+                                .map_err(|_| {
+                                    "local link target changed or is no longer available".to_owned()
+                                })?;
+                        if current.path() != path
+                            || current.identity() != *identity
+                            || current.link_chain() != link_chain
+                        {
+                            return Err("local link target changed after confirmation".into());
+                        }
+                    }
+                    #[cfg(not(windows))]
+                    return Err(
+                        "resolved local link bindings are unsupported on this platform".into(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(bound)
     }
 
     fn bump_global_policy_revision(&self, cfg: &mut SafetyConfig) {
@@ -885,10 +1030,12 @@ impl AuthorizationEngine {
     ) -> Result<ToolExecutionContext, String> {
         self.verify_execution_proof(request, proof).await?;
         let cfg = self.config.read().await;
+        let execution_workspace = cfg.execution_workspace_for(request.session_id.as_deref());
+        let bound_request = self.bind_local_file_resources(request, &execution_workspace)?;
+        let request = &bound_request;
         if cfg.policy_revision != proof.binding.policy_revision {
             return Err("execution policy changed before capability capture".into());
         }
-        let execution_workspace = cfg.execution_workspace_for(request.session_id.as_deref());
         if execution_workspace.generation() != proof.binding.workspace_generation {
             return Err("execution workspace changed before capability capture".into());
         }
@@ -1040,40 +1187,76 @@ impl AuthorizationEngine {
         } else {
             None
         };
-        let file_read_policy = request
-            .resources
-            .iter()
-            .any(|resource| {
-                matches!(
-                    resource,
-                    super::DeclaredResource::LocalPath {
-                        access: super::LocalPathAccess::Read,
-                        ..
-                    }
-                )
-            })
-            .then(|| {
-                let mut policy = file_read_policy_for_config(&cfg, &request.tool_name);
-                if proof_resource_boundary_extension(proof) {
-                    policy.allowed_roots.clear();
-                    policy.allowed_roots.push(
-                        request
-                            .resources
-                            .iter()
-                            .filter_map(|resource| match resource {
-                                super::DeclaredResource::LocalPath { path, .. } => {
-                                    Some(resolve_relative_sandbox_path(
-                                        path.clone(),
-                                        &execution_workspace,
-                                    ))
-                                }
-                                _ => None,
-                            })
-                            .collect(),
+        let has_local_read_resource = request.resources.iter().any(|resource| {
+            matches!(
+                resource,
+                super::DeclaredResource::LocalPath {
+                    access: super::LocalPathAccess::Read,
+                    ..
+                } | super::DeclaredResource::ResolvedLocalPath {
+                    access: super::LocalPathAccess::Read,
+                    ..
+                }
+            )
+        });
+        let file_read_policy = if has_local_read_resource {
+            let mut policy = file_read_policy_for_config(&cfg, &request.tool_name);
+            for resource in &request.resources {
+                let super::DeclaredResource::ResolvedLocalPath {
+                    requested_path,
+                    path,
+                    identity,
+                    link_chain,
+                    access: super::LocalPathAccess::Read,
+                    resolution_epoch,
+                    ..
+                } = resource
+                else {
+                    continue;
+                };
+                if *resolution_epoch != self.resolution_epoch {
+                    return Err(
+                        "local link authorization expired; request confirmation again".into(),
                     );
                 }
+                let target = haven_platform::filesystem::ResolvedLocalTarget::open(requested_path)
+                    .map_err(|_| "local link target changed before execution".to_owned())?;
+                if target.path() != path
+                    || target.identity() != *identity
+                    || target.link_chain() != link_chain
+                {
+                    return Err("local link target changed before execution".into());
+                }
+                policy.allow_local_links = true;
                 policy
-            });
+                    .authorized_targets
+                    .push(super::filesystem::AuthorizedLocalReadTarget {
+                        requested_path: requested_path.clone(),
+                        target,
+                    });
+            }
+            if proof_resource_boundary_extension(proof) {
+                policy.allowed_roots.clear();
+                policy.allowed_roots.push(
+                    request
+                        .resources
+                        .iter()
+                        .filter_map(|resource| match resource {
+                            super::DeclaredResource::LocalPath { path, .. } => Some(
+                                resolve_relative_sandbox_path(path.clone(), &execution_workspace),
+                            ),
+                            super::DeclaredResource::ResolvedLocalPath { path, .. } => {
+                                Some(path.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                );
+            }
+            Some(policy)
+        } else {
+            None
+        };
         let network_destination_extension = request
             .resources
             .iter()
@@ -1136,6 +1319,16 @@ impl AuthorizationEngine {
         let cfg = self.config.read().await;
         let risk = effective_risk_from(&cfg, tool_name, policy.risk_level);
         let workspace = cfg.execution_workspace_for(session_id);
+        let bound_request = match self.bind_local_file_resources(request, &workspace) {
+            Ok(request) => request,
+            Err(reason) => {
+                return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
+                    reason,
+                    reason_code: AuthorizationReasonCode::SandboxBoundary,
+                });
+            }
+        };
+        let request = &bound_request;
         let network_resolution =
             resolve_network_policy(&cfg, tool_name, &request.resources, policy);
         let mut network_policy_decision = network_resolution.decision;
@@ -1171,10 +1364,18 @@ impl AuthorizationEngine {
 
         let execution_mode = cfg.execution_mode_for(session_id);
         let granted = request_has_allow(&cfg, request, &workspace);
+        let linked_local_target = request
+            .resources
+            .iter()
+            .any(|resource| matches!(resource, super::DeclaredResource::ResolvedLocalPath { .. }));
         // Explicit authority is resolved before default resource boundaries.
         // Structural errors and disabled operations were checked above.
-        let hard_confirmation =
-            risk >= RiskLevel::Critical || policy.confirmation == ConfirmationRequirement::Required;
+        // A broad operation grant must never silently follow a link alias to a
+        // different object. Show the backend-resolved target on every linked
+        // call and keep the approval one-shot.
+        let hard_confirmation = linked_local_target
+            || risk >= RiskLevel::Critical
+            || policy.confirmation == ConfirmationRequirement::Required;
         if granted && !hard_confirmation {
             let mut check = AuthorizationCheck::auto_approved(
                 request,
@@ -1201,7 +1402,8 @@ impl AuthorizationEngine {
         // request additional rights for this exact operation.
         let resource_boundary_extension = resource_boundary_extension
             || (execution_mode == ExecutionMode::Analyze && !policy.is_read_only());
-        let needs_prompt = resource_boundary_extension
+        let needs_prompt = linked_local_target
+            || resource_boundary_extension
             || hard_confirmation
             || policy.requires_disclosure_confirmation()
             || (!policy.is_read_only()
@@ -1277,6 +1479,8 @@ impl AuthorizationEngine {
         let key = request.capability();
         let cfg = self.config.read().await;
         let workspace = cfg.execution_workspace_for(session_id);
+        let bound_request = self.bind_local_file_resources(request, &workspace)?;
+        let request = &bound_request;
         if receipt.capability != *key {
             return Err("confirmation receipt does not match the capability scope".into());
         }
@@ -1343,6 +1547,9 @@ impl AuthorizationEngine {
     ) -> Result<AuthorizationExecutionProof, String> {
         self.verify_receipt(request, receipt).await?;
         let cfg = self.config.read().await;
+        let workspace = cfg.execution_workspace_for(request.session_id.as_deref());
+        let bound_request = self.bind_local_file_resources(request, &workspace)?;
+        let request = &bound_request;
         Ok(AuthorizationExecutionProof {
             binding: AuthorizationExecutionBinding {
                 resource_boundary_extension: receipt.resource_boundary_extension,
@@ -1400,6 +1607,10 @@ impl AuthorizationEngine {
         request: &AuthorizationRequest,
         proof: &AuthorizationExecutionProof,
     ) -> Result<(), String> {
+        let cfg = self.config.read().await;
+        let workspace = cfg.execution_workspace_for(request.session_id.as_deref());
+        let bound_request = self.bind_local_file_resources(request, &workspace)?;
+        let request = &bound_request;
         let binding = &proof.binding;
         if binding.session_id != request.session_id
             || binding.tool_name != request.tool_name
@@ -1413,8 +1624,6 @@ impl AuthorizationEngine {
         if confirmation_now() >= binding.expires_at {
             return Err("execution proof has expired".into());
         }
-        let cfg = self.config.read().await;
-        let workspace = cfg.execution_workspace_for(request.session_id.as_deref());
         if binding.workspace_generation != workspace.generation() {
             return Err("execution proof was issued for an older execution workspace".into());
         }
@@ -1565,6 +1774,8 @@ impl AuthorizationEngine {
         }
         let cfg = self.config.read().await;
         let workspace = cfg.execution_workspace_for(request.session_id.as_deref());
+        let bound_request = self.bind_local_file_resources(request, &workspace)?;
+        let request = &bound_request;
         let mut scopes = Vec::with_capacity(request.resources.len());
         for resource in &request.resources {
             let scope = match resource {
@@ -1609,6 +1820,38 @@ impl AuthorizationEngine {
                                 );
                             }
                             (root, true)
+                        }
+                    };
+                    PermissionResourceScope::LocalPath {
+                        path,
+                        recursive,
+                        access: *access,
+                    }
+                }
+                super::DeclaredResource::ResolvedLocalPath {
+                    path,
+                    access,
+                    reusable,
+                    ..
+                } => {
+                    if !reusable {
+                        return Err("link targets can only be approved for this operation".into());
+                    }
+                    let path = persisted_local_resource_path(path.clone())?;
+                    let (path, recursive) = match target {
+                        PermissionResourceTarget::Exact => (path, false),
+                        PermissionResourceTarget::Directory => {
+                            let is_directory = std::fs::metadata(&path)
+                                .map(|metadata| metadata.is_dir())
+                                .unwrap_or(false);
+                            let root = if is_directory {
+                                path
+                            } else {
+                                path.parent()
+                                    .map(Path::to_path_buf)
+                                    .ok_or_else(|| "path has no containing directory".to_owned())?
+                            };
+                            (persisted_local_resource_path(root)?, true)
                         }
                     };
                     PermissionResourceScope::LocalPath {
@@ -2137,11 +2380,15 @@ fn file_read_policy_for_config(cfg: &SafetyConfig, tool_name: &str) -> FileReadP
             allowed_roots,
             denied_paths,
             deny_all: false,
+            allow_local_links: false,
+            authorized_targets: Vec::new(),
         },
         Err(_) => FileReadPolicy {
             allowed_roots,
             denied_paths: Vec::new(),
             deny_all: true,
+            allow_local_links: false,
+            authorized_targets: Vec::new(),
         },
     }
 }
@@ -2320,6 +2567,32 @@ fn permission_resource_scope_matches(
             let (Some(root), Some(path)) = (
                 resolve_path_without_reparse(&root),
                 resolve_path_without_reparse(&path),
+            ) else {
+                return false;
+            };
+            if *recursive {
+                path_is_within(&path, &root)
+            } else {
+                paths_equal(&path, &root)
+            }
+        }
+        (
+            PermissionResourceScope::LocalPath {
+                path: root,
+                recursive,
+                access: granted_access,
+            },
+            super::DeclaredResource::ResolvedLocalPath {
+                path,
+                access: requested_access,
+                reusable: true,
+                ..
+            },
+        ) if granted_access == requested_access => {
+            let root = resolve_relative_sandbox_path(root.clone(), workspace);
+            let (Some(root), Some(path)) = (
+                resolve_path_without_reparse(&root),
+                resolve_path_without_reparse(path),
             ) else {
                 return false;
             };
@@ -2516,8 +2789,21 @@ fn check_policy_boundaries(
         );
     }
     for resource in resources {
-        if let super::DeclaredResource::LocalPath { path, .. } = resource {
-            let path = resolve_relative_sandbox_path(path.clone(), execution_workspace);
+        let candidates = match resource {
+            super::DeclaredResource::LocalPath { path, .. } => vec![path.clone()],
+            super::DeclaredResource::ResolvedLocalPath {
+                requested_path,
+                path,
+                link_chain,
+                ..
+            } => std::iter::once(requested_path.clone())
+                .chain(link_chain.iter().map(|link| link.path.clone()))
+                .chain(std::iter::once(path.clone()))
+                .collect(),
+            _ => Vec::new(),
+        };
+        for candidate in candidates {
+            let path = resolve_relative_sandbox_path(candidate, execution_workspace);
             if filesystem_policy_path_matches(&denied_paths, &path) {
                 return Err(PolicyBoundaryFailure {
                     reason: "resource is explicitly denied".into(),
@@ -2587,6 +2873,7 @@ fn path_sandbox_block(
         .iter()
         .filter_map(|resource| match resource {
             super::DeclaredResource::LocalPath { path, access } => Some((path, access)),
+            super::DeclaredResource::ResolvedLocalPath { path, access, .. } => Some((path, access)),
             super::DeclaredResource::NetworkDestination { .. }
             | super::DeclaredResource::Clipboard { .. }
             | super::DeclaredResource::Desktop { .. }
@@ -5124,6 +5411,257 @@ mod tests {
                 .is_err(),
             "a confirmation receipt cannot be redirected to a replacement target"
         );
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn local_link_receipt_binds_the_confirmed_target_and_process_lifetime() {
+        fn create_junction(link: &Path, target: &Path) {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "junction creation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let alias_root = tempfile::tempdir().unwrap();
+        let first_target = tempfile::tempdir().unwrap();
+        let second_target = tempfile::tempdir().unwrap();
+        let link = alias_root.path().join("approved-link");
+        let requested_path = link.join("note.txt");
+        std::fs::write(first_target.path().join("note.txt"), "first").unwrap();
+        std::fs::write(second_target.path().join("note.txt"), "second").unwrap();
+        create_junction(&link, first_target.path());
+
+        let input = json!({
+            "operation": "read",
+            "path": requested_path.to_string_lossy(),
+        });
+        let mut policy = fixture_policy("files.read", &input, RiskLevel::Low);
+        policy.effect = OperationEffect::ReadOnly;
+        let request = fixture_request(None, "files.read", &input, &policy);
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        engine
+            .grant(
+                None,
+                request.capability().clone(),
+                PermissionEffect::Allow,
+                PermissionScope::Always,
+                vec![PermissionResourceScope::LocalPath {
+                    path: requested_path.clone(),
+                    recursive: false,
+                    access: LocalPathAccess::Read,
+                }],
+            )
+            .await;
+
+        let missing_input = json!({
+            "operation": "inspect",
+            "path": link.join("not-created.txt").to_string_lossy(),
+        });
+        let mut missing_policy = fixture_policy("files.inspect", &missing_input, RiskLevel::Low);
+        missing_policy.effect = OperationEffect::ReadOnly;
+        let missing_request =
+            fixture_request(None, "files.inspect", &missing_input, &missing_policy);
+        assert!(matches!(
+            engine
+                .authorize_for_execution(&missing_request)
+                .await
+                .decision,
+            AuthorizationDecision::Blocked { .. }
+        ));
+
+        let check = engine.authorize_for_execution(&request).await;
+        let AuthorizationDecision::RequiresConfirmation { receipt, .. } = check.decision else {
+            panic!("the linked read should produce a bound one-shot confirmation")
+        };
+        let [
+            DeclaredResource::ResolvedLocalPath {
+                requested_path: displayed_path,
+                path: resolved_path,
+                reusable,
+                ..
+            },
+        ] = receipt.resources.as_slice()
+        else {
+            panic!("the receipt must contain the backend-resolved target")
+        };
+        assert_eq!(displayed_path, &requested_path);
+        let expected_target = std::fs::canonicalize(first_target.path().join("note.txt")).unwrap();
+        let ordinary_path = |path: &Path| {
+            let value = path.to_string_lossy();
+            value
+                .strip_prefix(r"\\?\")
+                .unwrap_or(value.as_ref())
+                .to_owned()
+        };
+        assert!(
+            ordinary_path(resolved_path).eq_ignore_ascii_case(&ordinary_path(&expected_target))
+        );
+        assert!(!reusable, "link target authorization cannot be persisted");
+
+        let restarted_engine = AuthorizationEngine::new();
+        restarted_engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        assert!(
+            restarted_engine
+                .verify_receipt(&request, &receipt)
+                .await
+                .is_err(),
+            "a receipt from a prior process lifetime must not be reusable"
+        );
+
+        std::fs::remove_dir(&link).unwrap();
+        create_junction(&link, second_target.path());
+        assert!(
+            engine.verify_receipt(&request, &receipt).await.is_err(),
+            "retargeting while confirmation is pending must invalidate its receipt"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn multi_resource_file_mutations_reject_a_linked_source_or_destination_before_effects() {
+        fn create_junction(link: &Path, target: &Path) {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "junction creation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let link = workspace.path().join("linked-directory");
+        create_junction(&link, target.path());
+        let source = workspace.path().join("source.txt");
+        let movable = target.path().join("movable.txt");
+        let copied_through_link = link.join("copy.txt");
+        let moved_out = workspace.path().join("moved.txt");
+        std::fs::write(&source, b"copy source").unwrap();
+        std::fs::write(&movable, b"move source").unwrap();
+
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+
+        let copy_input = json!({
+            "operation": "copy",
+            "source": source.to_string_lossy(),
+            "destination": copied_through_link.to_string_lossy(),
+        });
+        let mut copy_policy = fixture_policy("files.copy", &copy_input, RiskLevel::Medium);
+        copy_policy.effect = OperationEffect::WorkspaceWrite;
+        assert!(matches!(
+            engine
+                .authorize_for_execution(&fixture_request(
+                    None,
+                    "files.copy",
+                    &copy_input,
+                    &copy_policy,
+                ))
+                .await
+                .decision,
+            AuthorizationDecision::Blocked { .. }
+        ));
+        assert!(!copied_through_link.exists());
+
+        let move_input = json!({
+            "operation": "move",
+            "source": link.join("movable.txt").to_string_lossy(),
+            "destination": moved_out.to_string_lossy(),
+        });
+        let mut move_policy = fixture_policy("files.move", &move_input, RiskLevel::Medium);
+        move_policy.effect = OperationEffect::WorkspaceWrite;
+        assert!(matches!(
+            engine
+                .authorize_for_execution(&fixture_request(
+                    None,
+                    "files.move",
+                    &move_input,
+                    &move_policy,
+                ))
+                .await
+                .decision,
+            AuthorizationDecision::Blocked { .. }
+        ));
+        assert!(movable.exists());
+        assert!(!moved_out.exists());
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
+    async fn linked_directory_receipt_binds_list_and_search_extents() {
+        fn create_junction(link: &Path, target: &Path) {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "junction creation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let link = root.path().join("documents");
+        create_junction(&link, target.path());
+
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+        for (operation, expected_extent) in [
+            (
+                "list",
+                super::super::ResolvedLocalPathExtent::DirectoryEntries,
+            ),
+            (
+                "search",
+                super::super::ResolvedLocalPathExtent::DirectorySubtree,
+            ),
+        ] {
+            let input = json!({
+                "operation": operation,
+                "path": link.to_string_lossy(),
+            });
+            let tool_name = format!("files.{operation}");
+            let mut policy = fixture_policy(&tool_name, &input, RiskLevel::High);
+            policy.confirmation = ConfirmationRequirement::Required;
+            policy.effect = OperationEffect::ReadOnly;
+            let request = fixture_request(None, &tool_name, &input, &policy);
+            let AuthorizationDecision::RequiresConfirmation { receipt, .. } =
+                engine.authorize_for_execution(&request).await.decision
+            else {
+                panic!("linked directory operation should require a confirmation")
+            };
+            let [DeclaredResource::ResolvedLocalPath { extent, .. }] = receipt.resources.as_slice()
+            else {
+                panic!("receipt must include the resolved directory resource")
+            };
+            assert_eq!(*extent, expected_extent);
+        }
     }
 
     #[tokio::test]

@@ -20,6 +20,20 @@ export function declaredResourceDescription(resource: DeclaredResource): string 
 	if (resource.kind === 'local_path') {
 		return `${resource.access === 'read' ? '读取' : '写入'} · ${resource.path}`;
 	}
+	if (resource.kind === 'resolved_local_path') {
+		const access = resource.access === 'read' ? '读取' : '写入';
+		const requested = resource.requested_path;
+		const target = resource.path;
+		const extent =
+			resource.extent === 'directory_entries'
+				? '目录直接项'
+				: resource.extent === 'directory_subtree'
+					? '目录及其子树'
+					: '精确对象';
+		const linkNotice =
+			resource.link_chain.length > 0 ? '（经本地链接解析；仅本次授权）' : '';
+		return `${access} · ${extent} · 请求路径：${requested} · 实际目标：${target}${linkNotice}`;
+	}
 	if (resource.kind === 'network_destination') {
 		return `访问 · ${origin(resource.scheme, resource.host, resource.port)}`;
 	}

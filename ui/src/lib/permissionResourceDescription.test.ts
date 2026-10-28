@@ -5,6 +5,45 @@ import {
 } from './permissionResourceDescription.ts';
 
 describe('permission resource descriptions', () => {
+	it('shows both the requested path and resolved target for a local link', () => {
+		const identity = { volume: 1, index: 2, created_at: 3 };
+		expect(
+			declaredResourceDescription({
+				kind: 'resolved_local_path',
+				requested_path: 'C:/workspace/shortcut.txt',
+				path: 'D:/approved/note.txt',
+				access: 'read',
+				extent: 'exact',
+				identity,
+				link_chain: [{ path: 'C:/workspace/shortcut.txt', identity }],
+				reusable: false,
+				resolution_epoch: '0123456789abcdef0123456789abcdef',
+			}),
+		).toBe(
+			'读取 · 精确对象 · 请求路径：C:/workspace/shortcut.txt · 实际目标：D:/approved/note.txt（经本地链接解析；仅本次授权）',
+		);
+	});
+
+	it('shows the authorized extent of linked directory operations', () => {
+		const identity = { volume: 1, index: 2, created_at: 3 };
+		const resource = {
+			kind: 'resolved_local_path' as const,
+			requested_path: 'C:/workspace/search-root',
+			path: 'D:/approved/documents',
+			access: 'read' as const,
+			identity,
+			link_chain: [{ path: 'C:/workspace/search-root', identity }],
+			reusable: false,
+			resolution_epoch: '0123456789abcdef0123456789abcdef',
+		};
+		expect(declaredResourceDescription({ ...resource, extent: 'directory_entries' })).toContain(
+			'目录直接项',
+		);
+		expect(declaredResourceDescription({ ...resource, extent: 'directory_subtree' })).toContain(
+			'目录及其子树',
+		);
+	});
+
 	it('distinguishes clipboard read and write resources', () => {
 		expect(
 			declaredResourceDescription({ kind: 'clipboard', access: 'read' }),

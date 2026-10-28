@@ -75,9 +75,19 @@
 
 	let normalizedRisk = $derived(String(riskLevel || 'medium').toLowerCase());
 	let hasLocalPathResource = $derived(
-		resources.some((resource) => resource.kind === 'local_path'),
+		resources.some(
+			(resource) => resource.kind === 'local_path' || resource.kind === 'resolved_local_path',
+		),
 	);
-	let hasPersistentResources = $derived(resources.length > 0);
+	let hasPersistentResources = $derived(
+		resources.length > 0 &&
+			resources.every(
+				(resource) => resource.kind !== 'resolved_local_path' || resource.reusable,
+			),
+	);
+	let hasOneShotLinkResource = $derived(
+		resources.some((resource) => resource.kind === 'resolved_local_path' && !resource.reusable),
+	);
 	let hasDirectoryBoundaryExtension = $derived(
 		resourceBoundaryExtension && hasLocalPathResource && toolName === 'shell',
 	);
@@ -367,6 +377,8 @@
 				<span class="action-hint">
 					{hasDirectoryBoundaryExtension
 						? '目录授权覆盖列出的目录及其子项；可选择本次、会话或永久授权'
+						: hasOneShotLinkResource
+							? '链接目标的身份只在本次执行中验证，因此只能授权本次操作'
 						: allowSessionScope
 							? '本会话授权不会按时间自动到期；撤销、清除授权或删除会话后失效'
 							: '永久授权跨会话生效，关键操作仍可能继续要求确认'}

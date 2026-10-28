@@ -55,12 +55,20 @@ WorkspaceWrite 都进入确认流程；本地文件写入仍分别受只读拒�
 | 类别 | 输入/状态 | 期望 |
 |---|---|---|
 | 规范化 | `allowed/../outside`、`.`、重复分隔符 | 规范化后越界立即 `Blocked` |
-| 重解析点 | allowed root 下的 symlink/junction/reparse component 指向 root 外 | 任一现存 component 是 reparse point 即 fail-closed；不得只比较 lexical prefix |
-| 最终重解析点 | 目标本身是 symlink/reparse point | `Blocked`，包括目标尚不存在但父路径经过 reparse point 的情况 |
+| 本地只读链接 | Windows 本地 NTFS symlink/junction 指向 allowed root 内的现存文件或目录，操作为 Files read/inspect/list/outline/internal search/text summary | 允许的具体目标按目标路径策略检查；confirmation 展示请求路径、实际目标、读意图和精确对象/目录直接项/目录子树范围；链接授权仅限本次且执行消费解析目标句柄/目录 capability |
+| 相对/嵌套链接 | 相对 symlink 目标、嵌套 symlink/junction、循环 link chain | 可验证的本地 NTFS 相对/嵌套目标按实际目标策略处理；循环或超过解析深度拒绝 |
+| 显式根外目标 | 本地 NTFS 链接指向 allowed root 外，用户确认 Files 的只读资源边界扩展 | 单次确认后只允许 receipt 绑定的目标身份；目标或 link chain 改变时拒绝；授权不延伸到新目标或其它 alias |
+| 受保护目标 | 链接目标或经过的 link entry 位于 global/tool hard-deny 路径 | `Blocked`；任一资源命中硬拒绝都拒绝整个调用 |
+| 不支持的链接 | 未知 reparse tag、损坏/无法查询 tag、非 NTFS/无法分类卷、网络映射、设备路径、循环或超过解析/句柄预算 | `Blocked`；不得按普通路径回退 |
+| 缺失链接目标 | symlink/junction 目标或其后续路径分量不存在 | `Blocked` 并给出链接目标不可用原因；不得把它伪装成普通 `inspect` missing 或创建目标 |
+| 链接写操作 | Files write/create_dir/patch/copy/move/delete 任一源或目标经过链接/reparse point | 当前切片在授权前 `Blocked`；不删除/移动链接本身，也不跟随修改目标 |
+| 链接目录枚举 | Files list/search 的用户指定根是已批准链接目录，目录项内还有链接 | 根目录按绑定 capability 使用；枚举不跟随内部链接，用户需另发明确请求 |
+| 链接外部调用 | linked search root 启用 Everything，或 linked media handoff | Everything 路径降级为内部 capability search；媒体 handoff `Blocked`，不把 Files 能力扩展给外部进程或媒体服务 |
 | 源路径 | `files.copy/move` 的 `source` 在 root 内、`destination` 在 root 外 | `Blocked` |
 | 目标路径 | source 在 root 外、destination 在 root 内 | `Blocked` |
-| 多路径数组 | `paths` 中任一项越界、相对或 reparse | 整个调用 `Blocked`，不部分执行 |
+| 多资源写操作 | `files.copy/move` 的源与目标分别授权，其中任一越界、相对、reparse 或受保护 | 整个调用 `Blocked`；执行前先检查全部资源，不产生未授权的部分副作用 |
 | 相对路径 | `file.txt`、相对 `cwd` | `Blocked`；含义不得随进程 CWD 改变 |
+| 映射盘与网络跳转 | 映射网络驱动器、本地链接指向 UNC/share、DFS 或无法分类的共享路径 | 在打开目标前 `Blocked`；不通过盘符或字符串前缀判定为本地资源 |
 | UNC/device | `\\server\share`, `//server/share`, `\\?\`, `\\.\` | `Blocked`，除非另有明确、受管的本机策略；当前策略统一拒绝 |
 | 授权继承 | parent allow → child operation | 允许，且只覆盖该工具父树 |
 | 授权继承 | child allow + parent deny | `Blocked`，deny 扫描整条 ancestry |

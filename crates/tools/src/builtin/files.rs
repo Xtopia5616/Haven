@@ -13,7 +13,7 @@ use super::file_outline;
 use super::file_search::{FileSearchEngine, FileSearchMode, SearchOptions, SearchRequest};
 use super::media::{MediaParams, MediaTool};
 use crate::security::{AuthorizationEngine, FileReadPolicy};
-use crate::{ManagedAssetRegistry, ToolResult};
+use crate::{ManagedAssetRegistry, ToolExecutionContext, ToolResult};
 
 use file_media_handoff::{media_operation_for, register_rich_path_asset};
 use file_paths::{
@@ -267,11 +267,15 @@ impl FilesTool {
         operation: FilesOperation,
         path: &str,
         managed_asset: Option<&crate::ManagedAsset>,
+        context: &ToolExecutionContext,
     ) -> anyhow::Result<tokio::fs::File> {
         let file = if let Some(asset) = managed_asset {
             self.managed_assets.open_for_read(asset)?
         } else {
-            let policy = self.file_read_policy(operation).await;
+            let policy = match context.file_read_policy() {
+                Some(policy) => policy.clone(),
+                None => self.file_read_policy(operation).await,
+            };
             policy.open_read(Path::new(path))?
         };
         Ok(tokio::fs::File::from_std(file))
@@ -281,8 +285,12 @@ impl FilesTool {
         &self,
         operation: FilesOperation,
         path: &str,
+        context: &ToolExecutionContext,
     ) -> anyhow::Result<tokio::fs::File> {
-        let policy = self.file_read_policy(operation).await;
+        let policy = match context.file_read_policy() {
+            Some(policy) => policy.clone(),
+            None => self.file_read_policy(operation).await,
+        };
         let file = policy.open_metadata(Path::new(path))?;
         Ok(tokio::fs::File::from_std(file))
     }
@@ -408,7 +416,10 @@ impl FilesTool {
             && matches!(op, FilesOperation::Read | FilesOperation::Summary)
             && let Some(requested_path) = requested_path.as_deref()
         {
-            let access_policy = self.file_read_policy(op).await;
+            let access_policy = match context.file_read_policy() {
+                Some(policy) => policy.clone(),
+                None => self.file_read_policy(op).await,
+            };
             managed_asset = tokio::select! {
                 biased;
                 _ = cancel.cancelled() => anyhow::bail!("cancelled"),
@@ -471,7 +482,7 @@ impl FilesTool {
         let operation_result: anyhow::Result<ToolResult> = match op {
             FilesOperation::Read => {
                 let file = self
-                    .open_file_for_read(op, &path, managed_asset.as_ref())
+                    .open_file_for_read(op, &path, managed_asset.as_ref(), context)
                     .await?;
                 let has_line_args = params.start_line.is_some() || params.end_line.is_some();
                 let has_byte_args = params.offset.is_some() || params.limit.is_some();
@@ -513,13 +524,15 @@ impl FilesTool {
                     .await
                 }
             }
-            FilesOperation::Inspect => match self.open_path_for_metadata(op, &path).await {
-                Ok(file) => inspect_open_file(&path, file, self.max_byte_read_bytes).await,
-                Err(error) if is_not_found(&error) => Ok(missing_file(&path)),
-                Err(error) => Err(error),
-            },
+            FilesOperation::Inspect => {
+                match self.open_path_for_metadata(op, &path, context).await {
+                    Ok(file) => inspect_open_file(&path, file, self.max_byte_read_bytes).await,
+                    Err(error) if is_not_found(&error) => Ok(missing_file(&path)),
+                    Err(error) => Err(error),
+                }
+            }
             FilesOperation::Outline => {
-                let file = self.open_file_for_read(op, &path, None).await?;
+                let file = self.open_file_for_read(op, &path, None, context).await?;
                 let start_line = params.start_line.unwrap_or(1).max(1);
                 let max_symbols = params.max_symbols.unwrap_or(100).clamp(1, 500) as usize;
                 file_outline::outline(
@@ -576,11 +589,15 @@ impl FilesTool {
             }
             FilesOperation::Delete => file_mutations::delete(&path, mutation_context).await,
             FilesOperation::List => {
-                file_mutations::list(&path, self.max_list_entries, cancel.clone()).await
+                let policy = match context.file_read_policy() {
+                    Some(policy) => policy.clone(),
+                    None => self.file_read_policy(op).await,
+                };
+                file_mutations::list(&path, self.max_list_entries, cancel.clone(), &policy).await
             }
             FilesOperation::Summary => {
                 let file = self
-                    .open_file_for_read(op, &path, managed_asset.as_ref())
+                    .open_file_for_read(op, &path, managed_asset.as_ref(), context)
                     .await?;
                 let input_budget = params
                     .max_chars
@@ -621,7 +638,9 @@ impl FilesTool {
                     self.search.max_results_cap,
                     self.search.max_file_size,
                 );
+                let linked_search_root = policy.is_link_bound_path(Path::new(&request.root));
                 if request.mode == FileSearchMode::Filename
+                    && !linked_search_root
                     && self.everything_search.is_enabled()?
                 {
                     self.everything_search

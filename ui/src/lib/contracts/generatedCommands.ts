@@ -511,8 +511,12 @@ export const SESSION_CREATOR_VALUES = ['user', 'agent', 'scheduler', 'system'] a
 export type SessionCreator = (typeof SESSION_CREATOR_VALUES)[number];
 export interface LlmUsageRecord { usage_id: string; session_id: string; step_number: number | null; request_kind: RequestKind; call_kind: LlmCallKind; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: CacheAccounting; cache_diagnostics?: CacheDiagnostics; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
+export interface FileIdentity { volume: number; index: number; created_at: number }
+export interface ResolvedLink { path: string; identity: FileIdentity }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; executable: boolean; has_script: boolean; unavailable_reason: string | null; manifest_error: string | null }
-export type DeclaredResource = { kind: 'process_network'; target_fingerprint: string } | { kind: 'local_path'; path: string; access: LocalPathAccess } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccess; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
+export type DeclaredResource = { kind: 'process_network'; target_fingerprint: string } | { kind: 'local_path'; path: string; access: LocalPathAccess } | { kind: 'resolved_local_path'; requested_path: string; path: string; access: LocalPathAccess; extent: ResolvedLocalPathExtent; identity: FileIdentity; link_chain: ResolvedLink[]; reusable: boolean; resolution_epoch: string } | { kind: 'network_destination'; scheme: string; host: string; port: number | null } | { kind: 'clipboard'; access: ClipboardAccess } | { kind: 'desktop'; access: DesktopAccess } | { kind: 'window'; window_id: string; process_id: number; access: WindowAccess; element_fingerprint?: string | null } | { kind: 'registry'; hive: string; path: string; access: RegistryAccess; value_name?: string | null } | { kind: 'mcp_remote_invocation'; target_fingerprint: string; request_fingerprint: string } | { kind: 'managed_asset'; asset_id: string };
+export const RESOLVED_LOCAL_PATH_EXTENT_VALUES = ['exact', 'directory_entries', 'directory_subtree'] as const;
+export type ResolvedLocalPathExtent = (typeof RESOLVED_LOCAL_PATH_EXTENT_VALUES)[number];
 export const MCP_CLIENT_STATUS_UNIT_VALUES = ['Disconnected', 'Connecting', 'Connected'] as const;
 export const ADD_FACT_RESPONSE_SHAPE = {
 	kind: 'object',
@@ -2416,6 +2420,91 @@ export const GET_LATEST_SESSION_FOR_RESUME_RESPONSE_SHAPE = { kind: 'nullable', 
 									'access': {
 										optional: false,
 										shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'resolved_local_path' },
+									},
+									'requested_path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+									},
+									'extent': {
+										optional: false,
+										shape: { kind: 'enum', values: RESOLVED_LOCAL_PATH_EXTENT_VALUES },
+									},
+									'identity': {
+										optional: false,
+										shape: {
+											kind: 'object',
+											fields: {
+												'volume': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'index': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'created_at': {
+													optional: false,
+													shape: { kind: 'number' },
+												}
+											}
+										},
+									},
+									'link_chain': {
+										optional: false,
+										shape: { kind: 'array', items: {
+											kind: 'object',
+											fields: {
+												'path': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'identity': {
+													optional: false,
+													shape: {
+														kind: 'object',
+														fields: {
+															'volume': {
+																optional: false,
+																shape: { kind: 'number' },
+															},
+															'index': {
+																optional: false,
+																shape: { kind: 'number' },
+															},
+															'created_at': {
+																optional: false,
+																shape: { kind: 'number' },
+															}
+														}
+													},
+												}
+											}
+										} },
+									},
+									'reusable': {
+										optional: false,
+										shape: { kind: 'boolean' },
+									},
+									'resolution_epoch': {
+										optional: false,
+										shape: { kind: 'string' },
 									}
 								}
 							},
@@ -4377,6 +4466,91 @@ export const GET_SESSION_FOR_RESUME_RESPONSE_SHAPE = {
 									'access': {
 										optional: false,
 										shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'resolved_local_path' },
+									},
+									'requested_path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+									},
+									'extent': {
+										optional: false,
+										shape: { kind: 'enum', values: RESOLVED_LOCAL_PATH_EXTENT_VALUES },
+									},
+									'identity': {
+										optional: false,
+										shape: {
+											kind: 'object',
+											fields: {
+												'volume': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'index': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'created_at': {
+													optional: false,
+													shape: { kind: 'number' },
+												}
+											}
+										},
+									},
+									'link_chain': {
+										optional: false,
+										shape: { kind: 'array', items: {
+											kind: 'object',
+											fields: {
+												'path': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'identity': {
+													optional: false,
+													shape: {
+														kind: 'object',
+														fields: {
+															'volume': {
+																optional: false,
+																shape: { kind: 'number' },
+															},
+															'index': {
+																optional: false,
+																shape: { kind: 'number' },
+															},
+															'created_at': {
+																optional: false,
+																shape: { kind: 'number' },
+															}
+														}
+													},
+												}
+											}
+										} },
+									},
+									'reusable': {
+										optional: false,
+										shape: { kind: 'boolean' },
+									},
+									'resolution_epoch': {
+										optional: false,
+										shape: { kind: 'string' },
 									}
 								}
 							},
@@ -6414,6 +6588,91 @@ export const INTERACTION_REQUESTED_EVENT_PAYLOAD_SHAPE = {
 						'access': {
 							optional: false,
 							shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+						}
+					}
+				},
+				{
+					kind: 'object',
+					fields: {
+						'kind': {
+							optional: false,
+							shape: { kind: 'literal', value: 'resolved_local_path' },
+						},
+						'requested_path': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'path': {
+							optional: false,
+							shape: { kind: 'string' },
+						},
+						'access': {
+							optional: false,
+							shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+						},
+						'extent': {
+							optional: false,
+							shape: { kind: 'enum', values: RESOLVED_LOCAL_PATH_EXTENT_VALUES },
+						},
+						'identity': {
+							optional: false,
+							shape: {
+								kind: 'object',
+								fields: {
+									'volume': {
+										optional: false,
+										shape: { kind: 'number' },
+									},
+									'index': {
+										optional: false,
+										shape: { kind: 'number' },
+									},
+									'created_at': {
+										optional: false,
+										shape: { kind: 'number' },
+									}
+								}
+							},
+						},
+						'link_chain': {
+							optional: false,
+							shape: { kind: 'array', items: {
+								kind: 'object',
+								fields: {
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'identity': {
+										optional: false,
+										shape: {
+											kind: 'object',
+											fields: {
+												'volume': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'index': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'created_at': {
+													optional: false,
+													shape: { kind: 'number' },
+												}
+											}
+										},
+									}
+								}
+							} },
+						},
+						'reusable': {
+							optional: false,
+							shape: { kind: 'boolean' },
+						},
+						'resolution_epoch': {
+							optional: false,
+							shape: { kind: 'string' },
 						}
 					}
 				},
@@ -10565,6 +10824,91 @@ export const SESSION_RESUME_RESPONSE_SHAPE = {
 									'access': {
 										optional: false,
 										shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+									}
+								}
+							},
+							{
+								kind: 'object',
+								fields: {
+									'kind': {
+										optional: false,
+										shape: { kind: 'literal', value: 'resolved_local_path' },
+									},
+									'requested_path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'path': {
+										optional: false,
+										shape: { kind: 'string' },
+									},
+									'access': {
+										optional: false,
+										shape: { kind: 'enum', values: LOCAL_PATH_ACCESS_VALUES },
+									},
+									'extent': {
+										optional: false,
+										shape: { kind: 'enum', values: RESOLVED_LOCAL_PATH_EXTENT_VALUES },
+									},
+									'identity': {
+										optional: false,
+										shape: {
+											kind: 'object',
+											fields: {
+												'volume': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'index': {
+													optional: false,
+													shape: { kind: 'number' },
+												},
+												'created_at': {
+													optional: false,
+													shape: { kind: 'number' },
+												}
+											}
+										},
+									},
+									'link_chain': {
+										optional: false,
+										shape: { kind: 'array', items: {
+											kind: 'object',
+											fields: {
+												'path': {
+													optional: false,
+													shape: { kind: 'string' },
+												},
+												'identity': {
+													optional: false,
+													shape: {
+														kind: 'object',
+														fields: {
+															'volume': {
+																optional: false,
+																shape: { kind: 'number' },
+															},
+															'index': {
+																optional: false,
+																shape: { kind: 'number' },
+															},
+															'created_at': {
+																optional: false,
+																shape: { kind: 'number' },
+															}
+														}
+													},
+												}
+											}
+										} },
+									},
+									'reusable': {
+										optional: false,
+										shape: { kind: 'boolean' },
+									},
+									'resolution_epoch': {
+										optional: false,
+										shape: { kind: 'string' },
 									}
 								}
 							},
