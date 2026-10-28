@@ -56,10 +56,10 @@
 
 - Windows NTFS 上存在目标的 symlink/junction 可用于上述只读 Files 操作；确认资源同时携带请求路径、目标路径、访问方向、link chain、对象身份和进程随机 epoch。确认等待期间不持有 OS handle；确认后、执行 proof 捕获时重新解析；epoch、目标身份或 link chain 不匹配就拒绝。含链接资源不能存成 Session/Always grant。
 - 网络共享、映射盘、设备路径、未知 tag、无法分类的 drive mapping，以及任何 mutating Files 链接操作均拒绝。链接后的缺失目标也拒绝；普通非链接缺失目标保留既有 `inspect`/写入行为。
-- 当前 Windows 测试覆盖相对文件 symlink、循环拒绝、嵌套 junction、缺失 suffix 拒绝、junction 重定向检测、确认 receipt 绑定与进程 epoch 失效、文件读取和目录直接项/子树范围绑定、目录 capability 不跟随内部 junction，以及复制/移动任一端通过链接时整体拒绝且无副作用。未知/损坏 tag、解析期间和执行期间并发替换、显式超时/取消、拒绝/应用关闭/策略变更、共享跳转和不同 Windows 文件系统/权限环境仍待验收。
+- 当前 Windows 测试覆盖相对文件 symlink、循环拒绝、嵌套 junction、缺失 suffix 拒绝、junction 重定向检测、确认 receipt 绑定与进程 epoch 失效、已有路径 grant 不能自动放行链接、文件读取和目录直接项/子树范围绑定、目录 capability 不跟随内部 junction，以及复制/移动任一端通过链接时整体拒绝且无副作用。解析 worker 每引擎最多 4 个并发，等槽位最多 1 秒，deadline 为 3 秒；取消/超时发出协作标记并在路径组件边界释放资源，单个同步 Windows 文件系统调用不能被中途打断。未知/损坏 tag、解析期间和执行期间并发替换、拒绝/应用关闭/策略变更、真实 Files 消费阶段的 deadline/取消、共享跳转和不同 Windows 文件系统/权限环境仍待验收。
 - 当前工作切片不等于本 ADR 全部完成；阶段状态留在项目路线图，本 ADR 在所有验证条件通过之前保持未完成。
 - 解析器目前与现有路径 capability 同处 `crates/platform/src/filesystem.rs`，以共享句柄和身份原语。该文件已超过开发规范的 800 行复核阈值；在扩大支持范围前，应把本地目标解析拆入私有子模块并保持 facade 不变。
-- 解析在调用方线程同步执行，路径组件/句柄数量有界，但尚无解析 deadline 或可中断的同步 I/O；当前只在本机 NTFS 路径上调用，不能据此声称具备完整超时或取消保证。
+- 授权、receipt 和执行 proof 阶段的路径解析运行在有界 blocking worker；实际 `FileReadPolicy` 读取时还会重新解析链接，目前该读取调用仍同步运行，完整文件操作 deadline/取消须在下一步接入。任一同步 Windows 文件系统调用不具备硬中断保证；deadline 到期后调用会拒绝，worker 保留一个并发槽位直到当前 API 返回，再在下一个取消检查点释放句柄。
 
 ## 验证
 

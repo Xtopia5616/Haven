@@ -1245,8 +1245,25 @@ pub fn is_link_or_reparse_point(metadata: &Metadata) -> bool {
 /// drive mapping is classified locally before any filesystem path is queried,
 /// so UNC/device targets are not contacted as a side effect of this check.
 pub fn contains_local_reparse_component(path: &Path) -> io::Result<bool> {
+    contains_local_reparse_component_cancellable(path, || false)
+}
+
+/// Like [`contains_local_reparse_component`], with cancellation checkpoints
+/// between path components. A cancellation cannot interrupt an individual
+/// synchronous Windows filesystem call, but stops traversal at the next safe
+/// boundary.
+pub fn contains_local_reparse_component_cancellable(
+    path: &Path,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> io::Result<bool> {
     if !path.is_absolute() || is_unc_or_device_path(path) {
         return Err(permission_denied("path must be an absolute local path"));
+    }
+    if is_cancelled() {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "local path inspection was cancelled",
+        ));
     }
     #[cfg(windows)]
     ensure_local_target_drive(path)?;
@@ -1257,6 +1274,12 @@ pub fn contains_local_reparse_component(path: &Path) -> io::Result<bool> {
     let mut current = PathBuf::new();
     let mut volume_root = PathBuf::new();
     for component in path.components() {
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "local path inspection was cancelled",
+            ));
+        }
         match component {
             Component::Prefix(_) => {
                 current.push(component.as_os_str());
@@ -1411,12 +1434,31 @@ pub struct ResolvedLink {
 
 impl ResolvedLocalTarget {
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_cancellable(path, || false)
+    }
+
+    /// Resolve and pin a local target while checking cancellation between
+    /// path components. Synchronous OS calls themselves remain non-interruptible.
+    pub fn open_cancellable(
+        path: &Path,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<Self> {
         if !path.is_absolute() || is_unc_or_device_path(path) {
             return Err(permission_denied("target must be an absolute local path"));
         }
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "local target resolution was cancelled",
+            ));
+        }
         #[cfg(windows)]
         {
-            Self::open_windows(path, ResolvedLocalTargetPermit::acquire()?)
+            Self::open_windows(
+                path,
+                ResolvedLocalTargetPermit::acquire()?,
+                &mut is_cancelled,
+            )
         }
         #[cfg(not(windows))]
         {
@@ -1427,9 +1469,19 @@ impl ResolvedLocalTarget {
     }
 
     #[cfg(windows)]
-    fn open_windows(path: &Path, permit: Arc<ResolvedLocalTargetPermit>) -> io::Result<Self> {
+    fn open_windows(
+        path: &Path,
+        permit: Arc<ResolvedLocalTargetPermit>,
+        is_cancelled: &mut impl FnMut() -> bool,
+    ) -> io::Result<Self> {
         ensure_local_target_drive(path)?;
-        let (path_guards, link_chain) = lock_local_path_components(path, 0)?;
+        let (path_guards, link_chain) = lock_local_path_components(path, 0, is_cancelled)?;
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "local target resolution was cancelled",
+            ));
+        }
         let mut options = OpenOptions::new();
         options.read(true);
         {
@@ -1438,6 +1490,12 @@ impl ResolvedLocalTarget {
             options.custom_flags(0x0200_0000);
         }
         let selected = options.open(path)?;
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "local target resolution was cancelled",
+            ));
+        }
         let canonical = normalize_windows_extended_path(std::fs::canonicalize(path)?)
             .filter(|resolved| !is_unc_or_device_path(resolved))
             .ok_or_else(|| permission_denied("target is not a local path"))?;
@@ -1514,6 +1572,7 @@ impl ResolvedLocalTarget {
 fn lock_local_path_components(
     path: &Path,
     depth: usize,
+    is_cancelled: &mut impl FnMut() -> bool,
 ) -> io::Result<(Vec<File>, Vec<ResolvedLink>)> {
     const MAX_LINK_DEPTH: usize = 32;
     if depth > MAX_LINK_DEPTH || !path.is_absolute() || is_unc_or_device_path(path) {
@@ -1529,6 +1588,12 @@ fn lock_local_path_components(
     let mut link_chain = Vec::new();
     let mut volume_root = PathBuf::new();
     for (index, component) in components.iter().enumerate() {
+        if is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "local target resolution was cancelled",
+            ));
+        }
         match component {
             Component::Prefix(_) => {
                 current.push(component.as_os_str());
@@ -1587,7 +1652,8 @@ fn lock_local_path_components(
             for rest in &components[index + 1..] {
                 target.push(rest.as_os_str());
             }
-            let (target_guards, target_links) = lock_local_path_components(&target, depth + 1)?;
+            let (target_guards, target_links) =
+                lock_local_path_components(&target, depth + 1, is_cancelled)?;
             guards.extend(target_guards);
             link_chain.push(ResolvedLink {
                 path: current,
@@ -1969,7 +2035,27 @@ pub fn same_file_identity(left: &File, right: &File) -> io::Result<bool> {
 
 #[cfg(test)]
 mod filesystem_path_capability_tests {
-    use super::{FilesystemPathCapability, ResolvedLocalTarget, contains_local_reparse_component};
+    use super::{
+        FilesystemPathCapability, ResolvedLocalTarget, contains_local_reparse_component,
+        contains_local_reparse_component_cancellable,
+    };
+
+    #[test]
+    fn cancellable_local_path_helpers_stop_before_filesystem_work() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            ResolvedLocalTarget::open_cancellable(temp.path(), || true)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+        assert_eq!(
+            contains_local_reparse_component_cancellable(temp.path(), || true)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+    }
 
     #[test]
     fn resolved_local_target_rejects_relative_and_network_paths() {

@@ -37,9 +37,23 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+const LOCAL_RESOLUTION_MAX_CONCURRENT: usize = 4;
+const LOCAL_RESOLUTION_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+const LOCAL_RESOLUTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+const MAX_FILE_RESOURCES_PER_REQUEST: usize = 64;
+
+struct LocalResolutionCancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for LocalResolutionCancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
 
 /// Allow and deny grants keyed by capability, each with resource boundaries.
 type ScopedGrantMap = HashMap<CapabilityScope, Vec<PermissionResourceScope>>;
@@ -220,6 +234,8 @@ pub struct AuthorizationEngine {
     session_processes: Mutex<HashMap<String, Vec<Weak<CancellationToken>>>>,
     /// Process-local salt invalidating link-bound receipts after restart.
     resolution_epoch: String,
+    /// Bound slow local filesystem resolution without blocking async workers.
+    local_resolution_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl AuthorizationEngine {
@@ -268,13 +284,42 @@ impl AuthorizationEngine {
             tool_processes: Mutex::new(HashMap::new()),
             session_processes: Mutex::new(HashMap::new()),
             resolution_epoch,
+            local_resolution_slots: Arc::new(tokio::sync::Semaphore::new(
+                LOCAL_RESOLUTION_MAX_CONCURRENT,
+            )),
         }
     }
 
     /// Resolve Files read resources on the backend before policy evaluation.
     /// The resulting resource is carried by the receipt and execution proof;
     /// a later verification must reproduce its target identity and link chain.
-    fn bind_local_file_resources(
+    async fn run_local_resolution<T, F>(&self, operation: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<AtomicBool>) -> Result<T, String> + Send + 'static,
+    {
+        let permit = tokio::time::timeout(
+            LOCAL_RESOLUTION_SLOT_WAIT,
+            self.local_resolution_slots.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| "local path resolver is busy; retry the operation".to_owned())?
+        .map_err(|_| "local path resolver is unavailable".to_owned())?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let _cancel_on_drop = LocalResolutionCancelOnDrop(cancelled.clone());
+        let worker_cancelled = cancelled.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            operation(worker_cancelled)
+        });
+        match tokio::time::timeout(LOCAL_RESOLUTION_DEADLINE, worker).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("local path resolver failed".into()),
+            Err(_) => Err("local path resolution timed out".into()),
+        }
+    }
+
+    async fn bind_local_file_resources(
         &self,
         request: &AuthorizationRequest,
         workspace: &ExecutionWorkspace,
@@ -282,12 +327,38 @@ impl AuthorizationEngine {
         if !request.tool_name.starts_with("files.") {
             return Ok(request.clone());
         }
+        if request.resources.len() > MAX_FILE_RESOURCES_PER_REQUEST {
+            return Err("Files request exceeds the local resource limit".into());
+        }
+        let request = request.clone();
+        let workspace = workspace.clone();
+        let resolution_epoch = self.resolution_epoch.clone();
+        self.run_local_resolution(move |cancelled| {
+            Self::bind_local_file_resources_sync(
+                &request,
+                &workspace,
+                &resolution_epoch,
+                &cancelled,
+            )
+        })
+        .await
+    }
+
+    fn bind_local_file_resources_sync(
+        request: &AuthorizationRequest,
+        workspace: &ExecutionWorkspace,
+        current_resolution_epoch: &str,
+        cancelled: &AtomicBool,
+    ) -> Result<AuthorizationRequest, String> {
         let follows_links = matches!(
             request.input["operation"].as_str(),
             Some("read" | "inspect" | "list" | "outline" | "summary" | "search")
         );
         let mut bound = request.clone();
         for resource in &mut bound.resources {
+            if cancelled.load(Ordering::Acquire) {
+                return Err("local path validation was cancelled".into());
+            }
             match resource {
                 super::DeclaredResource::LocalPath { path, access } if follows_links => {
                     let requested_path = resolve_relative_sandbox_path(path.clone(), workspace);
@@ -296,8 +367,10 @@ impl AuthorizationEngine {
                     }
                     #[cfg(windows)]
                     {
-                        match haven_platform::filesystem::ResolvedLocalTarget::open(&requested_path)
-                        {
+                        match haven_platform::filesystem::ResolvedLocalTarget::open_cancellable(
+                            &requested_path,
+                            || cancelled.load(Ordering::Acquire),
+                        ) {
                             Ok(target) if target.followed_links() => {
                                 let extent = if target.is_directory() {
                                     match request.input["operation"].as_str() {
@@ -320,13 +393,17 @@ impl AuthorizationEngine {
                                     identity: target.identity(),
                                     link_chain: target.link_chain().to_vec(),
                                     reusable: false,
-                                    resolution_epoch: self.resolution_epoch.clone(),
+                                    resolution_epoch: current_resolution_epoch.to_owned(),
                                 };
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                                return Err("local path validation was cancelled".into());
                             }
                             Ok(_) => {}
                             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                                match haven_platform::filesystem::contains_local_reparse_component(
+                                match haven_platform::filesystem::contains_local_reparse_component_cancellable(
                                     &requested_path,
+                                    || cancelled.load(Ordering::Acquire),
                                 ) {
                                     Ok(true) => {
                                         return Err(
@@ -334,6 +411,13 @@ impl AuthorizationEngine {
                                         );
                                     }
                                     Ok(false) => {}
+                                    Err(error)
+                                        if error.kind() == std::io::ErrorKind::Interrupted =>
+                                    {
+                                        return Err(
+                                            "local path validation was cancelled".into(),
+                                        );
+                                    }
                                     Err(_) => {
                                         return Err(
                                             "local path could not be safely inspected".into()
@@ -359,8 +443,9 @@ impl AuthorizationEngine {
                     if !requested_path.is_absolute() || is_unc_or_device_path(&requested_path) {
                         continue;
                     }
-                    match haven_platform::filesystem::contains_local_reparse_component(
+                    match haven_platform::filesystem::contains_local_reparse_component_cancellable(
                         &requested_path,
+                        || cancelled.load(Ordering::Acquire),
                     ) {
                         Ok(true) => {
                             return Err(
@@ -369,6 +454,9 @@ impl AuthorizationEngine {
                             );
                         }
                         Ok(false) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                            return Err("local path validation was cancelled".into());
+                        }
                         Err(_) => {
                             return Err("local path could not be safely inspected".into());
                         }
@@ -382,7 +470,7 @@ impl AuthorizationEngine {
                     resolution_epoch,
                     ..
                 } => {
-                    if !follows_links || *resolution_epoch != self.resolution_epoch {
+                    if !follows_links || resolution_epoch != current_resolution_epoch {
                         return Err("resolved local path binding is no longer valid".into());
                     }
                     let requested_path =
@@ -390,10 +478,17 @@ impl AuthorizationEngine {
                     #[cfg(windows)]
                     {
                         let current =
-                            haven_platform::filesystem::ResolvedLocalTarget::open(&requested_path)
-                                .map_err(|_| {
+                            haven_platform::filesystem::ResolvedLocalTarget::open_cancellable(
+                                &requested_path,
+                                || cancelled.load(Ordering::Acquire),
+                            )
+                            .map_err(|error| {
+                                if error.kind() == std::io::ErrorKind::Interrupted {
+                                    "local path validation was cancelled".to_owned()
+                                } else {
                                     "local link target changed or is no longer available".to_owned()
-                                })?;
+                                }
+                            })?;
                         if current.path() != path
                             || current.identity() != *identity
                             || current.link_chain() != link_chain
@@ -1031,7 +1126,9 @@ impl AuthorizationEngine {
         self.verify_execution_proof(request, proof).await?;
         let cfg = self.config.read().await;
         let execution_workspace = cfg.execution_workspace_for(request.session_id.as_deref());
-        let bound_request = self.bind_local_file_resources(request, &execution_workspace)?;
+        let bound_request = self
+            .bind_local_file_resources(request, &execution_workspace)
+            .await?;
         let request = &bound_request;
         if cfg.policy_revision != proof.binding.policy_revision {
             return Err("execution policy changed before capability capture".into());
@@ -1219,8 +1316,16 @@ impl AuthorizationEngine {
                         "local link authorization expired; request confirmation again".into(),
                     );
                 }
-                let target = haven_platform::filesystem::ResolvedLocalTarget::open(requested_path)
-                    .map_err(|_| "local link target changed before execution".to_owned())?;
+                let requested_path_for_open = requested_path.clone();
+                let target = self
+                    .run_local_resolution(move |cancelled| {
+                        haven_platform::filesystem::ResolvedLocalTarget::open_cancellable(
+                            &requested_path_for_open,
+                            || cancelled.load(Ordering::Acquire),
+                        )
+                        .map_err(|_| "local link target changed before execution".to_owned())
+                    })
+                    .await?;
                 if target.path() != path
                     || target.identity() != *identity
                     || target.link_chain() != link_chain
@@ -1319,7 +1424,7 @@ impl AuthorizationEngine {
         let cfg = self.config.read().await;
         let risk = effective_risk_from(&cfg, tool_name, policy.risk_level);
         let workspace = cfg.execution_workspace_for(session_id);
-        let bound_request = match self.bind_local_file_resources(request, &workspace) {
+        let bound_request = match self.bind_local_file_resources(request, &workspace).await {
             Ok(request) => request,
             Err(reason) => {
                 return AuthorizationCheck::without_proof(AuthorizationDecision::Blocked {
@@ -1479,7 +1584,7 @@ impl AuthorizationEngine {
         let key = request.capability();
         let cfg = self.config.read().await;
         let workspace = cfg.execution_workspace_for(session_id);
-        let bound_request = self.bind_local_file_resources(request, &workspace)?;
+        let bound_request = self.bind_local_file_resources(request, &workspace).await?;
         let request = &bound_request;
         if receipt.capability != *key {
             return Err("confirmation receipt does not match the capability scope".into());
@@ -1548,7 +1653,7 @@ impl AuthorizationEngine {
         self.verify_receipt(request, receipt).await?;
         let cfg = self.config.read().await;
         let workspace = cfg.execution_workspace_for(request.session_id.as_deref());
-        let bound_request = self.bind_local_file_resources(request, &workspace)?;
+        let bound_request = self.bind_local_file_resources(request, &workspace).await?;
         let request = &bound_request;
         Ok(AuthorizationExecutionProof {
             binding: AuthorizationExecutionBinding {
@@ -1609,7 +1714,7 @@ impl AuthorizationEngine {
     ) -> Result<(), String> {
         let cfg = self.config.read().await;
         let workspace = cfg.execution_workspace_for(request.session_id.as_deref());
-        let bound_request = self.bind_local_file_resources(request, &workspace)?;
+        let bound_request = self.bind_local_file_resources(request, &workspace).await?;
         let request = &bound_request;
         let binding = &proof.binding;
         if binding.session_id != request.session_id
@@ -1774,7 +1879,7 @@ impl AuthorizationEngine {
         }
         let cfg = self.config.read().await;
         let workspace = cfg.execution_workspace_for(request.session_id.as_deref());
-        let bound_request = self.bind_local_file_resources(request, &workspace)?;
+        let bound_request = self.bind_local_file_resources(request, &workspace).await?;
         let request = &bound_request;
         let mut scopes = Vec::with_capacity(request.resources.len());
         for resource in &request.resources {
@@ -3266,6 +3371,87 @@ mod tests {
             CompiledFilePolicy::effective_write_mode(FileWriteMode::Unrestricted, &roots),
             FileWriteMode::Unrestricted
         );
+    }
+
+    #[tokio::test]
+    async fn local_resolution_workers_are_bounded_and_cancelled_work_releases_capacity() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let engine = Arc::new(AuthorizationEngine::new());
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let engine = Arc::clone(&engine);
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            workers.push(tokio::spawn(async move {
+                engine
+                    .run_local_resolution(move |_| {
+                        let running = active.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+                        maximum.fetch_max(running, AtomicOrdering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                        active.fetch_sub(1, AtomicOrdering::SeqCst);
+                        Ok(())
+                    })
+                    .await
+            }));
+        }
+        for worker in workers {
+            worker.await.unwrap().unwrap();
+        }
+        assert!(
+            maximum.load(AtomicOrdering::SeqCst) <= LOCAL_RESOLUTION_MAX_CONCURRENT,
+            "local resolver exceeded its per-engine concurrency cap"
+        );
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let cancellation_worker = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .run_local_resolution(move |cancelled| {
+                        let _ = started_tx.send(());
+                        while !cancelled.load(Ordering::Acquire) {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        let _ = finished_tx.send(());
+                        Ok(())
+                    })
+                    .await
+            })
+        };
+        started_rx.await.unwrap();
+        cancellation_worker.abort();
+        let _ = cancellation_worker.await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), finished_rx)
+            .await
+            .expect("cancelled resolver should exit promptly")
+            .expect("resolver should report its exit");
+        engine.run_local_resolution(|_| Ok(())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn files_authorization_rejects_more_resources_than_the_resolution_budget() {
+        let engine = AuthorizationEngine::new();
+        let input = json!({ "operation": "read" });
+        let mut policy = fixture_policy("files.read", &input, RiskLevel::Low);
+        policy.effect = OperationEffect::ReadOnly;
+        let resources = (0..=MAX_FILE_RESOURCES_PER_REQUEST)
+            .map(|index| DeclaredResource::LocalPath {
+                path: PathBuf::from(format!(r"C:\notes\{index}.txt")),
+                access: LocalPathAccess::Read,
+            })
+            .collect();
+        let request =
+            AuthorizationRequest::new(None, "files.read", input, policy).with_resources(resources);
+
+        assert!(matches!(
+            engine.authorize_for_execution(&request).await.decision,
+            AuthorizationDecision::Blocked { reason, .. }
+                if reason == "Files request exceeds the local resource limit"
+        ));
     }
 
     macro_rules! capability_scope {
