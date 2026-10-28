@@ -33,6 +33,9 @@ impl ExecutionPolicyPermit {
             .ok_or_else(|| "MCP server has no authorized working directory".to_owned())?;
         let working_directory = DirectoryCapability::open(configured_cwd)
             .map_err(|_| "MCP server working directory is unavailable or unsafe".to_owned())?;
+        if self.resource_boundary_extension && !self.authorizes_read_directory(&working_directory) {
+            return Err("MCP server working directory does not match the approved resource".into());
+        }
         if !super::roots_contain_directory(&workspace_roots, &working_directory)
             && !self.resource_boundary_extension
         {
@@ -187,11 +190,11 @@ impl ExecutionPolicyPermit {
             .workspace_write_directories(self.session_id.as_deref())?;
         let search_root = DirectoryCapability::open(&request.search_root)
             .map_err(|_| "Everything search root is unavailable or unsafe".to_owned())?;
+        if self.resource_boundary_extension && !self.authorizes_read_directory(&search_root) {
+            return Err("Everything search root does not match the approved resource".into());
+        }
         if !super::roots_contain_directory(&workspace_roots, &search_root)
-            && !self.authorized_resources.iter().any(|resource| {
-                matches!(resource,
-                crate::DeclaredResource::LocalPath { path, .. } if path == &request.search_root)
-            })
+            && !self.authorizes_read_directory(&search_root)
         {
             return Err("Everything search root has no declared read grant".into());
         }
@@ -565,9 +568,7 @@ impl ExecutionPolicyPermit {
         {
             return Err("LSP workspace is explicitly denied".into());
         }
-        if self.resource_boundary_extension && self.authorized_resources.iter().any(|resource| {
-            matches!(resource, crate::DeclaredResource::LocalPath { path, access: haven_common::types::LocalPathAccess::Read } if path == project.root())
-        }) {
+        if self.resource_boundary_extension && self.authorizes_read_directory(&project) {
             project_read.push(project);
         }
         if !project_read

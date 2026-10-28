@@ -338,6 +338,31 @@ impl ExecutionPolicyPermit {
         })
     }
 
+    fn authorizes_read_directory(
+        &self,
+        directory: &haven_platform::filesystem::DirectoryCapability,
+    ) -> bool {
+        let workspace = self
+            ._config
+            .execution_workspace_for(self.session_id.as_deref());
+        self.authorized_resources.iter().any(|resource| {
+            let crate::DeclaredResource::LocalPath {
+                path,
+                access: haven_common::types::LocalPathAccess::Read,
+            } = resource
+            else {
+                return false;
+            };
+            let path = if path.is_absolute() {
+                Some(path.clone())
+            } else {
+                workspace.resolve_relative(path)
+            };
+            path.and_then(|path| haven_platform::filesystem::DirectoryCapability::open(&path).ok())
+                .is_some_and(|authorized| authorized.root() == directory.root())
+        })
+    }
+
     pub(crate) fn sandbox_mode(&self) -> SandboxMode {
         if self.resource_boundary_extension
             && self._config.file_policy.sandbox_mode() == SandboxMode::ReadOnly
@@ -1986,6 +2011,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn everything_confirmed_search_root_reaches_process_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let external = root.path().join("external");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp()
+            .await
+            .unwrap();
+        let (_, engine) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        engine.config.write().await.file_policy.global_file_roots = vec![workspace.clone()];
+        let request = AuthorizationEngine::runtime_permission_request(
+            None,
+            "files",
+            serde_json::json!({"root": external}),
+            crate::NetworkAccess::None,
+            vec![crate::DeclaredResource::LocalPath {
+                path: external.clone(),
+                access: haven_common::types::LocalPathAccess::Read,
+            }],
+        )
+        .unwrap();
+        let check = engine.authorize_for_execution(&request).await;
+        let crate::security::AuthorizationDecision::RequiresConfirmation { receipt, .. } =
+            check.decision
+        else {
+            panic!("external search must request permission")
+        };
+        assert_eq!(receipt.resources, request.resources);
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .unwrap();
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        assert!(
+            context
+                .file_read_policy()
+                .unwrap()
+                .open_metadata(&external)
+                .is_ok()
+        );
+        let authorization = context.clone_execution_authorization().unwrap();
+        let permit = authorization.acquire().await.unwrap();
+        let process = EverythingProcessStartRequest {
+            search_root: external.clone(),
+            scratch_directory: scratch.path().to_path_buf(),
+            runtime_read_roots: Vec::new(),
+        };
+        let policy = permit.everything_process_policy(&process).unwrap();
+        assert!(policy.readonly_paths.contains(&external));
+        assert!(!policy.readwrite_paths.contains(&external));
+        let unrelated = root.path().join("unrelated");
+        std::fs::create_dir(&unrelated).unwrap();
+        assert!(
+            permit
+                .everything_process_policy(&EverythingProcessStartRequest {
+                    search_root: unrelated,
+                    ..process
+                })
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn workspace_everything_policy_is_readonly_offline_and_root_scoped() {
         let root = tempfile::tempdir().expect("temporary root is available");
         let workspace = root.path().join("workspace");
@@ -2024,6 +2119,69 @@ mod tests {
                 })
                 .is_err(),
             "the search provider cannot widen the configured workspace read scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_confirmed_cwd_is_bound_to_process_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let external = root.path().join("external");
+        let unrelated = root.path().join("unrelated");
+        for dir in [&workspace, &external, &unrelated] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let scratch = crate::shell_runtime::ProcessScratchDirectory::create_lsp()
+            .await
+            .unwrap();
+        let (_, engine) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        let request = AuthorizationEngine::runtime_permission_request(
+            None,
+            "mcp_stdio",
+            serde_json::json!({"cwd": external}),
+            crate::NetworkAccess::None,
+            vec![crate::DeclaredResource::LocalPath {
+                path: external.clone(),
+                access: haven_common::types::LocalPathAccess::Read,
+            }],
+        )
+        .unwrap();
+        let check = engine.authorize_for_execution(&request).await;
+        let crate::security::AuthorizationDecision::RequiresConfirmation { receipt, .. } =
+            check.decision
+        else {
+            panic!("external MCP cwd must request permission")
+        };
+        assert_eq!(receipt.resources, request.resources);
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .unwrap();
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        let authorization = context.clone_execution_authorization().unwrap();
+        let permit = authorization.acquire().await.unwrap();
+        let mut process = haven_mcp::McpStdioProcessStartRequest {
+            cancellation: CancellationToken::new(),
+            command_fingerprint: "test".into(),
+            working_directory: Some(external.clone()),
+            runtime_read_roots: Vec::new(),
+        };
+        let (policy, cwd) = permit
+            .mcp_stdio_process_policy(&process, scratch.path(), false)
+            .unwrap();
+        assert_eq!(cwd, external);
+        assert!(policy.readonly_paths.contains(&cwd));
+        process.working_directory = Some(unrelated);
+        assert!(
+            permit
+                .mcp_stdio_process_policy(&process, scratch.path(), false)
+                .is_err()
         );
     }
 

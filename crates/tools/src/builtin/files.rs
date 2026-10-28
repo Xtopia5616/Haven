@@ -602,7 +602,10 @@ impl FilesTool {
                 .await
             }
             FilesOperation::Search => {
-                let policy = self.file_read_policy(op).await;
+                let policy = match context.file_read_policy() {
+                    Some(policy) => policy.clone(),
+                    None => self.file_read_policy(op).await,
+                };
                 let request = SearchRequest::new(
                     search_root.clone().unwrap_or_default(),
                     params.pattern.clone().unwrap_or_default(),

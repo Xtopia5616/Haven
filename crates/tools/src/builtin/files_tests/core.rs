@@ -1,5 +1,33 @@
 use super::*;
 
+#[tokio::test]
+async fn content_search_uses_confirmed_read_scope() {
+    use crate::{AuthorizationDecision, AuthorizationRequest, DeclaredResource, LocalPathAccess};
+    use haven_common::config::ToolConfig;
+    use haven_common::types::{NetworkPolicy, SandboxMode};
+    let root = TempDir::new().unwrap();
+    let allowed = root.path().join("allowed");
+    let selected = root.path().join("selected");
+    std::fs::create_dir_all(&allowed).unwrap();
+    std::fs::create_dir_all(&selected).unwrap();
+    std::fs::write(selected.join("example.txt"), "needle").unwrap();
+    let engine = Arc::new(AuthorizationEngine::new());
+    engine.set_boundaries(SandboxMode::WorkspaceWrite, vec![allowed.clone()], NetworkPolicy::Deny).await;
+    let mut settings = ToolConfig::default();
+    settings.resource_policy.files.path_roots = vec![allowed.to_string_lossy().into_owned()];
+    engine.set_tool_settings(std::collections::HashMap::from([("files".into(), settings)])).await;
+    let tool = FilesTool::default().with_authorization_engine(Arc::clone(&engine));
+    let input = json!({"operation":"search", "root":selected, "pattern":"needle", "mode":"content"});
+    let request = AuthorizationRequest::new(None, "files", input.clone(), tool.try_operation_policy(&input).unwrap())
+        .with_resources(vec![DeclaredResource::LocalPath { path: selected.clone(), access: LocalPathAccess::Read }]);
+    let check = engine.authorize_for_execution(&request).await;
+    let AuthorizationDecision::RequiresConfirmation { receipt, .. } = check.decision else { panic!("search needs confirmation") };
+    let proof = engine.confirm_for_execution(&request, &receipt).await.unwrap();
+    let context = engine.execution_context_for_proof(&request, &proof).await.unwrap();
+    let result = tool.run_with_execution_context(serde_json::from_value(input).unwrap(), CancellationToken::new(), &context).await.unwrap();
+    assert_eq!(result.output["results"].as_array().unwrap().len(), 1);
+}
+
 #[test]
     fn test_sanitize_path_normal() {
         let result = sanitize_path("file.txt");

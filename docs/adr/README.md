@@ -1348,3 +1348,4 @@
 - [1442：Git 工作区外工作目录的授权绑定](1442-git-external-working-directory.md)
 - [1443：在 Git 授权中绑定工作树与元数据](1443-git-worktree-resource-consent.md)
 - [1444：LSP 项目读取范围随授权绑定](1444-lsp-project-read-consent.md)
+- [1445：搜索和 MCP 子进程使用已批准的读取范围](1445-search-and-mcp-read-consent.md)

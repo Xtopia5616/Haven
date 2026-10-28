@@ -2649,6 +2649,35 @@ fn path_sandbox_block(
             }
         }
     }
+    if tool_name == "mcp_stdio" && cfg.file_policy.sandbox_mode() == SandboxMode::WorkspaceWrite {
+        let roots = if cfg.file_policy.writable_roots.is_empty() {
+            execution_workspace
+                .root()
+                .map(|root| vec![root.to_path_buf()])
+                .unwrap_or_default()
+        } else {
+            cfg.file_policy.writable_roots.clone()
+        };
+        if roots.is_empty() {
+            return Some(PolicyBoundaryFailure {
+                reason: "MCP process has no workspace scope".into(),
+                reason_code: AuthorizationReasonCode::SandboxBoundary,
+                resource_extension_allowed: false,
+            });
+        }
+        if paths.iter().any(|(path, _)| {
+            !path_is_allowed(
+                &resolve_relative_sandbox_path((*path).clone(), execution_workspace),
+                &roots,
+            )
+        }) {
+            return Some(PolicyBoundaryFailure {
+                reason: "MCP working directory is outside the workspace process scope".into(),
+                reason_code: AuthorizationReasonCode::ResourceBoundaryExtension,
+                resource_extension_allowed: true,
+            });
+        }
+    }
     for (path, _) in &paths {
         if !cfg.file_policy.global_file_roots.is_empty() {
             let path = resolve_relative_sandbox_path((*path).clone(), execution_workspace);

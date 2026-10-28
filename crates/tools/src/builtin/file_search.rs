@@ -341,16 +341,15 @@ impl FileSearchEngine {
             end_line,
         } = request;
         let root_path = std::path::PathBuf::from(&root);
-        let root_metadata = tokio::select! {
-            metadata = tokio::fs::metadata(&root_path) => match metadata {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    anyhow::bail!("search root was not found")
-                }
-                Err(_) => anyhow::bail!("search root is inaccessible"),
-            },
-            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        let root_path = if root_path.is_absolute() {
+            root_path
+        } else {
+            std::env::current_dir()?.join(root_path)
         };
+        let root_handle = access_policy
+            .open_metadata(&root_path)
+            .map_err(|_| anyhow::anyhow!("search root is outside the active file access policy"))?;
+        let root_metadata = root_handle.metadata()?;
         if !root_metadata.is_file() && !root_metadata.is_dir() {
             anyhow::bail!("search root is not a file or directory");
         }
@@ -488,12 +487,18 @@ fn search_files(params: SearchParams<'_>) -> FileSearchResult {
             params.max_results,
             params.ignore_hidden,
             params.cancel,
+            params.access_policy,
         ),
     }
 }
 
 /// Shared walker configuration honoring ignore rules, depth and hidden filters.
-fn walk_builder(root: &Path, max_depth: usize, ignore_hidden: bool) -> ignore::WalkBuilder {
+fn walk_builder(
+    root: &Path,
+    max_depth: usize,
+    ignore_hidden: bool,
+    access_policy: FileReadPolicy,
+) -> ignore::WalkBuilder {
     let mut builder = ignore::WalkBuilder::new(root);
     builder
         .max_depth(if max_depth == 0 {
@@ -506,7 +511,8 @@ fn walk_builder(root: &Path, max_depth: usize, ignore_hidden: bool) -> ignore::W
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
-        .threads(MAX_SEARCH_THREADS);
+        .threads(MAX_SEARCH_THREADS)
+        .filter_entry(move |entry| access_policy.open_metadata(entry.path()).is_ok());
     builder
 }
 
@@ -531,6 +537,7 @@ fn search_filenames_parallel(
     max_results: usize,
     ignore_hidden: bool,
     cancel: CancellationToken,
+    access_policy: FileReadPolicy,
 ) -> FileSearchResult {
     let found_flag = Arc::new(AtomicBool::new(false));
     let scanned_entries = Arc::new(AtomicUsize::new(0));
@@ -543,7 +550,7 @@ fn search_filenames_parallel(
     let re = regex::Regex::new(&glob_to_regex(pattern)).ok();
     let glob = pattern.to_string();
 
-    let builder = walk_builder(root, max_depth, ignore_hidden);
+    let builder = walk_builder(root, max_depth, ignore_hidden, access_policy);
     builder.build_parallel().run(|| {
         let re = re.clone();
         let glob = glob.clone();
@@ -666,7 +673,7 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> FileSearchResult {
         snippet_chars,
     };
 
-    let builder = walk_builder(root, max_depth, ignore_hidden);
+    let builder = walk_builder(root, max_depth, ignore_hidden, access_policy.clone());
     builder.build_parallel().run(|| {
         let matcher = matcher.clone();
         let mut searcher = searcher.clone();
@@ -1113,6 +1120,51 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Read;
+
+    #[tokio::test]
+    async fn filename_search_prunes_denied_directories_and_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let private = tmp.path().join("private");
+        std::fs::create_dir(&private).unwrap();
+        std::fs::write(private.join("secret.txt"), "secret").unwrap();
+        std::fs::write(tmp.path().join("hidden.txt"), "secret").unwrap();
+        std::fs::write(tmp.path().join("visible.txt"), "public").unwrap();
+        let engine = crate::security::AuthorizationEngine::new();
+        let mut settings = haven_common::config::ToolConfig::default();
+        settings.resource_policy.files.denied_paths = vec![
+            private.to_string_lossy().into_owned(),
+            tmp.path().join("hidden.txt").to_string_lossy().into_owned(),
+        ];
+        engine
+            .set_tool_settings(std::collections::HashMap::from([(
+                "files".into(),
+                settings,
+            )]))
+            .await;
+        let policy = engine.file_read_policy("files.search").await;
+        let request = SearchRequest::from_value(
+            json!({"root": tmp.path(), "pattern": "*", "mode": "filename"}),
+            100,
+            100000,
+        )
+        .unwrap();
+        let result = FileSearchEngine::default()
+            .search_request_with_policy(request, CancellationToken::new(), policy)
+            .await
+            .unwrap();
+        let paths: Vec<_> = result.output["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.iter().any(|path| path.ends_with("visible.txt")));
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.contains("private") || path.ends_with("hidden.txt"))
+        );
+    }
 
     #[test]
     fn search_request_rejects_unknown_modes_at_the_dynamic_boundary() {
