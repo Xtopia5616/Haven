@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | 本地 Files 链接能力（[ADR 1449](adr/1449-bind-files-operations-to-resolved-local-targets.md)）：只读 Files 的 read/inspect/list/outline/internal search/text summary 可绑定现存 Windows NTFS symlink/junction 目标并提供单次确认；写入、复制/移动/删除、链接后缺失目标、富媒体/Everything 与网络共享保持拒绝。授权与 Files capability open 共用每引擎 4-worker/1 秒等待/3 秒 open deadline 和协作取消；list/search 从预打开 capability 遍历，异步读、字节/行读取与 inspect hash 响应取消。授权 UI、相对 symlink、循环拒绝、嵌套 junction、目录枚举、多资源整体拒绝和目标重定向回归已接入。整个搜索/摘要总时限、未知/损坏 tag、并发竞态、拒绝/关闭/策略变更完整生命周期、重试/重启和隔离网络环境仍待验收，未完成，不得视为该目标完成。 |
+| **Active** | 本地 Files 链接能力（[ADR 1449](adr/1449-bind-files-operations-to-resolved-local-targets.md)）：只读 Files 的 read/inspect/list/outline/internal search/text summary 可绑定现存 Windows NTFS symlink/junction 目标并提供单次确认；写入、复制/移动/删除、链接后缺失目标、富媒体/Everything 与网络共享保持拒绝。授权与 Files capability open 共用每引擎 4-worker/1 秒等待/3 秒 open deadline 和协作取消；list/search 从预打开 capability 遍历，异步读、字节/行读取、摘要输入扫描与 inspect hash 响应取消。授权 UI、相对 symlink、循环拒绝、嵌套 junction、目录枚举、多资源整体拒绝和目标重定向回归已接入。整个搜索/摘要总时限、未知/损坏 tag、并发竞态、拒绝/关闭/策略变更完整生命周期、重试/重启和隔离网络环境仍待验收，未完成，不得视为该目标完成。 |
 | **Completed** | R12 执行设置选择隔离（[ADR 1438](adr/1438-fence-execution-settings-by-user-selection.md)）：目录选择器绑定发起时选择，保存响应与原读取按选择和请求顺序隔离；8 项回归、UI 1547 项测试、Svelte 检查和生产构建通过；真实 WebView 仍归 §5.1。 |
 | **Completed** | R04 inbox 注销失败的清理责任（[ADR 1439](adr/1439-retain-failed-inbox-terminal-cleanup.md)）：registry 读取/注销/离线失败保留原 Actor 与重试策略，独立清理及信任撤销继续执行；5 项故障回归、Agent 710 项测试、workspace 全量测试和全目标严格 Clippy 通过。actorless End 保留 post-commit 错误与显式重试合同，不扩展容量或跨重启保证。 |
 | **Completed** | workspace 全目标测试 Clippy 基线（[ADR 1437](adr/1437-restore-workspace-all-targets-clippy-baseline.md)）：独立整理 Common/Messaging/Memory/LLM 测试代码的 10 项既有告警；workspace 全目标严格 Clippy、最终工作树全量 Rust 测试及格式/文档检查通过，生产行为与测试边界保持不变。 |
