@@ -127,7 +127,17 @@ impl GitTool {
         let workspace = DirectoryCapability::open(&workspace_root)
             .map_err(|_| anyhow::anyhow!("Git execution workspace is unavailable or unsafe"))?;
         let working_directory = resolve_working_directory(&params.cwd, &workspace)?;
-        let (_repository_root, git_metadata) = find_repository(&working_directory, &workspace)?;
+        check_working_directory(
+            &working_directory,
+            &workspace,
+            permit.authorizes_git_directory(&working_directory),
+        )?;
+        let boundary = if directory_contains_path(&workspace, working_directory.root())? {
+            &workspace
+        } else {
+            &working_directory
+        };
+        let (_repository_root, git_metadata) = find_repository(&working_directory, boundary)?;
         let scratch = crate::shell_runtime::ProcessScratchDirectory::create_git().await?;
         scratch.ensure_within_capacity().await?;
         let global_git_config = scratch.path().join("global.gitconfig");
@@ -509,11 +519,19 @@ fn resolve_working_directory(
     );
     let directory = DirectoryCapability::open(&requested)
         .map_err(|_| anyhow::anyhow!("Git working directory is unavailable or unsafe"))?;
-    anyhow::ensure!(
-        directory_contains_path(workspace, directory.root())?,
-        "Git working directory is outside the execution workspace"
-    );
     Ok(directory)
+}
+
+fn check_working_directory(
+    directory: &DirectoryCapability,
+    workspace: &DirectoryCapability,
+    authorized: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        directory_contains_path(workspace, directory.root())? || authorized,
+        "Git working directory is outside the authorized scope"
+    );
+    Ok(())
 }
 
 fn find_repository(
@@ -554,7 +572,7 @@ fn find_repository(
         }
         candidate = parent.to_path_buf();
     }
-    anyhow::bail!("Git repository is not inside the execution workspace")
+    anyhow::bail!("Git repository is not inside the authorized search boundary")
 }
 
 fn directory_contains_path(
@@ -662,7 +680,7 @@ impl Tool for GitTool {
             "properties": {
                 "subcommand": {"type":"string", "enum": GIT_SUBCOMMANDS},
                 "args": {"type":"array", "maxItems":MAX_GIT_ARGUMENTS, "items":{"type":"string", "maxLength":MAX_GIT_ARGUMENT_LENGTH}},
-                "cwd": {"type":"string", "minLength":1, "maxLength":4096, "description":"Optional directory inside the active execution workspace. Defaults to its root."}
+                "cwd": {"type":"string", "minLength":1, "maxLength":4096, "description":"Optional working directory. Defaults to the active execution workspace root."}
             },
             "required":["subcommand"]
         })
@@ -734,6 +752,20 @@ mod tests {
             local_full_access.policy.network_access,
             NetworkAccess::Opaque
         );
+    }
+
+    #[test]
+    fn git_allows_only_the_declared_external_working_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let external = root.path().join("external");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let workspace = haven_platform::filesystem::DirectoryCapability::open(&workspace).unwrap();
+        let cwd = Some(external.to_string_lossy().into_owned());
+        let directory = super::resolve_working_directory(&cwd, &workspace).unwrap();
+        assert!(super::check_working_directory(&directory, &workspace, false).is_err());
+        assert!(super::check_working_directory(&directory, &workspace, true).is_ok());
     }
 
     #[test]

@@ -1345,3 +1345,4 @@
 - [1439：Inbox 注销失败保留终态清理责任](1439-retain-failed-inbox-terminal-cleanup.md)
 - [1440：按完成的执行记录 Hook 诊断](1440-coherent-hook-diagnostics.md)
 - [1441：授权器编译文件策略快照](1441-compiled-file-policy.md)
+- [1442：Git 工作区外工作目录的授权绑定](1442-git-external-working-directory.md)

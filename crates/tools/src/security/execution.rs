@@ -301,6 +301,32 @@ pub(crate) struct WorkspaceProcessFilesystemPolicy {
 }
 
 impl ExecutionPolicyPermit {
+    /// Match the Git cwd against the write resource bound to this proof.
+    pub(crate) fn authorizes_git_directory(
+        &self,
+        directory: &haven_platform::filesystem::DirectoryCapability,
+    ) -> bool {
+        let workspace = self
+            ._config
+            .execution_workspace_for(self.session_id.as_deref());
+        self.authorized_resources.iter().any(|resource| {
+            let crate::DeclaredResource::LocalPath {
+                path,
+                access: haven_common::types::LocalPathAccess::Write,
+            } = resource
+            else {
+                return false;
+            };
+            let path = if path.is_absolute() {
+                Some(path.clone())
+            } else {
+                workspace.resolve_relative(path)
+            };
+            path.and_then(|path| haven_platform::filesystem::DirectoryCapability::open(&path).ok())
+                .is_some_and(|authorized| authorized.root() == directory.root())
+        })
+    }
+
     pub(crate) fn sandbox_mode(&self) -> SandboxMode {
         if self.resource_boundary_extension
             && self._config.file_policy.sandbox_mode() == SandboxMode::ReadOnly
@@ -1442,6 +1468,111 @@ mod tests {
             .await
             .expect("live execution policy is available");
         assert_eq!(permit.mxc_isolation_mode(), MxcIsolationMode::Compatibility);
+    }
+
+    #[tokio::test]
+    async fn git_external_resource_confirmation_reaches_process_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let external = root.path().join("external");
+        let scratch = root.path().join("scratch");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(external.join(".git")).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        let (_, engine) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        let request = AuthorizationEngine::runtime_permission_request(
+            None,
+            "git",
+            serde_json::json!({"cwd": external}),
+            crate::NetworkAccess::None,
+            vec![crate::DeclaredResource::LocalPath {
+                path: external.clone(),
+                access: haven_common::types::LocalPathAccess::Write,
+            }],
+        )
+        .unwrap();
+        let check = engine.authorize_for_execution(&request).await;
+        let crate::security::AuthorizationDecision::RequiresConfirmation { receipt, .. } =
+            check.decision
+        else {
+            panic!("external Git directory must request permission");
+        };
+        assert_eq!(receipt.resources, request.resources);
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .unwrap();
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        let authorization = context.clone_execution_authorization().unwrap();
+        let permit = authorization.acquire().await.unwrap();
+        let directory = haven_platform::filesystem::DirectoryCapability::open(&external).unwrap();
+        assert!(permit.authorizes_git_directory(&directory));
+        let policy = permit
+            .workspace_git_directories(&external, &[], &scratch, &external.join(".git"))
+            .unwrap();
+        assert!(
+            policy
+                .readwrite_roots
+                .iter()
+                .any(|root| root.root() == directory.root())
+        );
+    }
+
+    #[tokio::test]
+    async fn git_external_directory_must_match_proof_write_resource() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let external = root.path().join("external");
+        let other = root.path().join("other");
+        for path in [&workspace, &external, &other] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        let (mut authorization, _) =
+            ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+                &workspace,
+                NetworkPolicy::Deny,
+            );
+        authorization.resource_boundary_extension = true;
+        authorization.authorized_resources = vec![crate::DeclaredResource::LocalPath {
+            path: external.clone(),
+            access: haven_common::types::LocalPathAccess::Write,
+        }];
+        let permit = authorization.acquire().await.unwrap();
+        let selected = haven_platform::filesystem::DirectoryCapability::open(&external).unwrap();
+        let unrelated = haven_platform::filesystem::DirectoryCapability::open(&other).unwrap();
+        assert!(permit.authorizes_git_directory(&selected));
+        assert!(!permit.authorizes_git_directory(&unrelated));
+        std::fs::create_dir_all(external.join(".git")).unwrap();
+        let scratch = root.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let policy = permit
+            .workspace_git_directories(&external, &[], &scratch, &external.join(".git"))
+            .unwrap();
+        assert!(
+            policy
+                .readwrite_roots
+                .iter()
+                .any(|path| path.root() == selected.root())
+        );
+        assert!(
+            !policy
+                .readwrite_roots
+                .iter()
+                .any(|path| path.root() == unrelated.root())
+        );
+        drop(permit);
+        authorization.authorized_resources = vec![crate::DeclaredResource::LocalPath {
+            path: external,
+            access: haven_common::types::LocalPathAccess::Read,
+        }];
+        let permit = authorization.acquire().await.unwrap();
+        assert!(!permit.authorizes_git_directory(&selected));
     }
 
     #[tokio::test]
