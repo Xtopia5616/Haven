@@ -1618,7 +1618,7 @@ fn lock_local_path_components(
         let is_reparse = is_link_or_reparse_point(&guard.metadata()?);
         if is_reparse {
             let tag = windows_reparse_tag(&guard)?;
-            if !matches!(tag, 0xA000_000C | 0xA000_0003) {
+            if !is_supported_local_reparse_tag(tag) {
                 return Err(permission_denied("unsupported Windows reparse tag"));
             }
             if !is_ntfs_volume(&guard)? {
@@ -1670,6 +1670,11 @@ fn lock_local_path_components(
         }
     }
     Ok((guards, link_chain))
+}
+
+#[cfg(windows)]
+fn is_supported_local_reparse_tag(tag: u32) -> bool {
+    matches!(tag, 0xA000_000C | 0xA000_0003)
 }
 
 #[cfg(windows)]
@@ -2039,6 +2044,15 @@ mod filesystem_path_capability_tests {
         FilesystemPathCapability, ResolvedLocalTarget, contains_local_reparse_component,
         contains_local_reparse_component_cancellable,
     };
+
+    #[cfg(windows)]
+    #[test]
+    fn reparse_tag_allowlist_rejects_unknown_tags() {
+        assert!(super::is_supported_local_reparse_tag(0xA000_000C));
+        assert!(super::is_supported_local_reparse_tag(0xA000_0003));
+        assert!(!super::is_supported_local_reparse_tag(0xA000_001C));
+        assert!(!super::is_supported_local_reparse_tag(0x8000_0000));
+    }
 
     #[test]
     fn cancellable_local_path_helpers_stop_before_filesystem_work() {

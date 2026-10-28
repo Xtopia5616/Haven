@@ -216,64 +216,126 @@ impl FileReadPolicy {
         })
     }
 
+    #[cfg(windows)]
+    pub(crate) fn bound_target_path(&self, path: &Path) -> Option<&Path> {
+        self.authorized_targets.iter().find_map(|expected| {
+            (expected.target.followed_links()
+                && normalized_local_path(path) == normalized_local_path(&expected.requested_path))
+            .then_some(expected.target.path())
+        })
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn bound_target_path(&self, _path: &Path) -> Option<&Path> {
+        None
+    }
+
     pub(crate) fn open_read(&self, path: &Path) -> io::Result<File> {
+        self.open_read_cancellable(path, || false)
+    }
+
+    pub(crate) fn open_read_cancellable(
+        &self,
+        path: &Path,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<File> {
+        ensure_not_cancelled(&mut is_cancelled, "file read was cancelled")?;
         #[cfg(windows)]
         if self.allow_local_links {
-            let target = ResolvedLocalTarget::open(path)?;
+            let target = ResolvedLocalTarget::open_cancellable(path, &mut is_cancelled)?;
             if target.followed_links() {
+                ensure_not_cancelled(&mut is_cancelled, "file read was cancelled")?;
                 self.validate_bound_target(path, &target)?;
                 let opened = target.try_clone_target_handle()?;
-                self.validate_opened(target.path(), &opened, true)?;
-                self.validate_link_aliases(path, &target)?;
+                ensure_not_cancelled(&mut is_cancelled, "file read was cancelled")?;
+                self.validate_opened_cancellable(target.path(), &opened, true, &mut is_cancelled)?;
+                self.validate_link_aliases(path, &target, &mut is_cancelled)?;
                 return Ok(opened);
             }
         }
         let opened = open_read_only(path)?;
-        self.validate_opened(path, &opened, true)?;
+        ensure_not_cancelled(&mut is_cancelled, "file read was cancelled")?;
+        self.validate_opened_cancellable(path, &opened, true, &mut is_cancelled)?;
         Ok(opened)
     }
 
     pub(crate) fn open_metadata(&self, path: &Path) -> io::Result<File> {
+        self.open_metadata_cancellable(path, || false)
+    }
+
+    pub(crate) fn open_metadata_cancellable(
+        &self,
+        path: &Path,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<File> {
+        ensure_not_cancelled(&mut is_cancelled, "file metadata read was cancelled")?;
         #[cfg(windows)]
         if self.allow_local_links {
-            let target = ResolvedLocalTarget::open(path)?;
+            let target = ResolvedLocalTarget::open_cancellable(path, &mut is_cancelled)?;
             if target.followed_links() {
+                ensure_not_cancelled(&mut is_cancelled, "file metadata read was cancelled")?;
                 self.validate_bound_target(path, &target)?;
                 let opened = target.try_clone_target_handle()?;
-                self.validate_opened(target.path(), &opened, false)?;
-                self.validate_link_aliases(path, &target)?;
+                ensure_not_cancelled(&mut is_cancelled, "file metadata read was cancelled")?;
+                self.validate_opened_cancellable(target.path(), &opened, false, &mut is_cancelled)?;
+                self.validate_link_aliases(path, &target, &mut is_cancelled)?;
                 return Ok(opened);
             }
         }
         let opened = open_for_metadata(path)?;
-        self.validate_opened(path, &opened, false)?;
+        ensure_not_cancelled(&mut is_cancelled, "file metadata read was cancelled")?;
+        self.validate_opened_cancellable(path, &opened, false, &mut is_cancelled)?;
         Ok(opened)
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, test))]
     pub(crate) fn open_directory(&self, path: &Path) -> io::Result<DirectoryCapability> {
+        self.open_directory_cancellable(path, || false)
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn open_directory_cancellable(
+        &self,
+        path: &Path,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<DirectoryCapability> {
+        ensure_not_cancelled(&mut is_cancelled, "directory read was cancelled")?;
         if self.allow_local_links {
-            let target = ResolvedLocalTarget::open(path)?;
+            let target = ResolvedLocalTarget::open_cancellable(path, &mut is_cancelled)?;
             if target.followed_links() {
+                ensure_not_cancelled(&mut is_cancelled, "directory read was cancelled")?;
                 self.validate_bound_target(path, &target)?;
-                self.validate_link_aliases(path, &target)?;
+                self.validate_link_aliases(path, &target, &mut is_cancelled)?;
                 let directory = target.directory_capability()?;
                 let handle = directory.directory_handle()?;
-                self.validate_opened(target.path(), &handle, false)?;
+                ensure_not_cancelled(&mut is_cancelled, "directory read was cancelled")?;
+                self.validate_opened_cancellable(target.path(), &handle, false, &mut is_cancelled)?;
                 return Ok(directory);
             }
         }
         let directory = DirectoryCapability::open(path)?;
         let handle = directory.directory_handle()?;
-        self.validate_opened(path, &handle, false)?;
+        ensure_not_cancelled(&mut is_cancelled, "directory read was cancelled")?;
+        self.validate_opened_cancellable(path, &handle, false, &mut is_cancelled)?;
         Ok(directory)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(not(windows), test))]
     pub(crate) fn open_directory(&self, path: &Path) -> io::Result<DirectoryCapability> {
+        self.open_directory_cancellable(path, || false)
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn open_directory_cancellable(
+        &self,
+        path: &Path,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<DirectoryCapability> {
+        ensure_not_cancelled(&mut is_cancelled, "directory read was cancelled")?;
         let directory = DirectoryCapability::open(path)?;
         let handle = directory.directory_handle()?;
-        self.validate_opened(path, &handle, false)?;
+        ensure_not_cancelled(&mut is_cancelled, "directory read was cancelled")?;
+        self.validate_opened_cancellable(path, &handle, false, &mut is_cancelled)?;
         Ok(directory)
     }
 
@@ -306,8 +368,14 @@ impl FileReadPolicy {
         &self,
         requested_path: &Path,
         target: &ResolvedLocalTarget,
+        is_cancelled: &mut impl FnMut() -> bool,
     ) -> io::Result<()> {
-        let denied = || io::Error::new(io::ErrorKind::PermissionDenied, "path is not allowed");
+        let denied = || {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "local link passes through a protected path",
+            )
+        };
         if self.deny_all {
             return Err(denied());
         }
@@ -315,6 +383,7 @@ impl FileReadPolicy {
         aliases.push(requested_path);
         aliases.extend(target.link_chain().iter().map(|link| link.path.as_path()));
         for alias in aliases {
+            ensure_not_cancelled(is_cancelled, "file validation was cancelled")?;
             if self
                 .denied_paths
                 .iter()
@@ -332,45 +401,90 @@ impl FileReadPolicy {
         opened: &File,
         require_file: bool,
     ) -> io::Result<()> {
-        let denied = || io::Error::new(io::ErrorKind::PermissionDenied, "path is not allowed");
+        self.validate_opened_cancellable(path, opened, require_file, || false)
+    }
+
+    pub(crate) fn validate_opened_cancellable(
+        &self,
+        path: &Path,
+        opened: &File,
+        require_file: bool,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> io::Result<()> {
+        ensure_not_cancelled(&mut is_cancelled, "file validation was cancelled")?;
         if !path.is_absolute() || is_unc_or_device_path(path) {
-            return Err(denied());
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file path is not an absolute local path",
+            ));
         }
         let opened_metadata = opened.metadata()?;
+        ensure_not_cancelled(&mut is_cancelled, "file validation was cancelled")?;
         if (require_file && !opened_metadata.is_file())
             || (!opened_metadata.is_file() && !opened_metadata.is_dir())
             || is_link_or_reparse_point(&opened_metadata)
         {
-            return Err(denied());
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "opened object is not a regular file or directory",
+            ));
         }
-        let Some(resolved) = resolve_path_without_reparse(path) else {
-            return Err(denied());
-        };
+        let resolved = resolve_path_without_reparse_cancellable(path, &mut is_cancelled)?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "file path could not be safely resolved",
+                )
+            })?;
         let resolved_file = if opened_metadata.is_dir() {
             open_for_metadata(&resolved)?
         } else {
             open_read_only(&resolved)?
         };
+        ensure_not_cancelled(&mut is_cancelled, "file validation was cancelled")?;
         if !same_file_identity(opened, &resolved_file)? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "file changed during path validation",
             ));
         }
-        if self.deny_all
-            || self.denied_paths.iter().any(|denied| {
-                denied
-                    .contains_opened_path(&resolved, opened)
-                    .unwrap_or(true)
-            })
-        {
-            return Err(denied());
+        if self.deny_all {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file access is blocked by policy",
+            ));
         }
-        for roots in &self.allowed_roots {
-            if !resolved_path_is_allowed(&resolved, roots) {
-                return Err(denied());
+        for denied_path in &self.denied_paths {
+            ensure_not_cancelled(&mut is_cancelled, "file validation was cancelled")?;
+            if denied_path
+                .contains_opened_path(&resolved, opened)
+                .unwrap_or(true)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "file path is blocked by a protected path policy",
+                ));
             }
         }
+        for roots in &self.allowed_roots {
+            if !resolved_path_is_allowed_cancellable(&resolved, roots, &mut is_cancelled)? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "file path is outside the allowed roots",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn ensure_not_cancelled(
+    is_cancelled: &mut impl FnMut() -> bool,
+    message: &'static str,
+) -> io::Result<()> {
+    if is_cancelled() {
+        Err(io::Error::new(io::ErrorKind::Interrupted, message))
+    } else {
         Ok(())
     }
 }
@@ -455,6 +569,26 @@ fn resolved_path_is_allowed(canon: &Path, allowed: &[PathBuf]) -> bool {
     false
 }
 
+fn resolved_path_is_allowed_cancellable(
+    canon: &Path,
+    allowed: &[PathBuf],
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> io::Result<bool> {
+    for base in allowed {
+        ensure_not_cancelled(is_cancelled, "file validation was cancelled")?;
+        if !base.is_absolute() || is_unc_or_device_path(base) {
+            continue;
+        }
+        let Some(base_abs) = resolve_path_without_reparse_cancellable(base, is_cancelled)? else {
+            continue;
+        };
+        if path_is_within(canon, &base_abs) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Resolve the existing prefix of a path while rejecting every symlink or
 /// Windows reparse point encountered on that prefix. The non-existing suffix
 /// is appended only after the trusted prefix has been canonicalized. This is
@@ -499,6 +633,56 @@ pub(super) fn resolve_path_without_reparse(path: &Path) -> Option<PathBuf> {
     Some(resolved)
 }
 
+fn resolve_path_without_reparse_cancellable(
+    path: &Path,
+    is_cancelled: &mut impl FnMut() -> bool,
+) -> io::Result<Option<PathBuf>> {
+    ensure_not_cancelled(is_cancelled, "file path validation was cancelled")?;
+    let Some(abs) = normalize_path(path) else {
+        return Ok(None);
+    };
+    let components: Vec<_> = abs.components().collect();
+    let mut existing = PathBuf::new();
+    let mut suffix: Vec<OsString> = Vec::new();
+    let mut missing_started = false;
+
+    for (index, component) in components.iter().enumerate() {
+        ensure_not_cancelled(is_cancelled, "file path validation was cancelled")?;
+        if missing_started {
+            suffix.push(component.as_os_str().to_owned());
+            continue;
+        }
+
+        existing.push(component.as_os_str());
+        match std::fs::symlink_metadata(&existing) {
+            Ok(metadata) => {
+                if is_link_or_reparse_point(&metadata) {
+                    return Ok(None);
+                }
+                if index + 1 < components.len() && !metadata.file_type().is_dir() {
+                    return Ok(None);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                existing.pop();
+                missing_started = true;
+                suffix.push(component.as_os_str().to_owned());
+            }
+            Err(_) => return Ok(None),
+        }
+    }
+
+    ensure_not_cancelled(is_cancelled, "file path validation was cancelled")?;
+    let Ok(mut resolved) = std::fs::canonicalize(&existing) else {
+        return Ok(None);
+    };
+    ensure_not_cancelled(is_cancelled, "file path validation was cancelled")?;
+    for component in suffix {
+        resolved.push(component);
+    }
+    Ok(Some(resolved))
+}
+
 pub(super) fn is_unc_or_device_path(path: &Path) -> bool {
     let value = path.to_string_lossy();
     value.starts_with("\\\\") || value.starts_with("//")
@@ -539,6 +723,17 @@ fn normalize_path(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellable_file_open_stops_before_opening() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("read.txt");
+        std::fs::write(&file, "content").unwrap();
+        let policy = FileReadPolicy::for_test_roots(&[temp.path().to_path_buf()]);
+
+        let error = policy.open_read_cancellable(&file, || true).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    }
 
     #[test]
     #[cfg(unix)]

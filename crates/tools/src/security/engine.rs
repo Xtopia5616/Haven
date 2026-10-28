@@ -33,9 +33,12 @@ use haven_common::types::{
     PermissionResourceTarget, PermissionScope, RegistryAccess, RiskLevel, SandboxMode,
     is_canonical_id,
 };
+use haven_platform::filesystem::DirectoryCapability;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -317,6 +320,89 @@ impl AuthorizationEngine {
             Ok(Err(_)) => Err("local path resolver failed".into()),
             Err(_) => Err("local path resolution timed out".into()),
         }
+    }
+
+    async fn run_local_file_operation<T, F>(
+        &self,
+        cancel: CancellationToken,
+        operation: F,
+    ) -> io::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<AtomicBool>, CancellationToken) -> io::Result<T> + Send + 'static,
+    {
+        let acquire = tokio::time::timeout(
+            LOCAL_RESOLUTION_SLOT_WAIT,
+            self.local_resolution_slots.clone().acquire_owned(),
+        );
+        let permit = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "file operation was cancelled"));
+            }
+            result = acquire => result
+                .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "local file resolver is busy"))?
+                .map_err(|_| io::Error::other("local file resolver is unavailable"))?,
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let _cancel_on_drop = LocalResolutionCancelOnDrop(cancelled.clone());
+        let worker_cancelled = cancelled.clone();
+        let worker_cancel = cancel.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            operation(worker_cancelled, worker_cancel)
+        });
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(io::Error::new(io::ErrorKind::Interrupted, "file operation was cancelled")),
+            result = tokio::time::timeout(LOCAL_RESOLUTION_DEADLINE, worker) => match result {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => Err(io::Error::other("local file operation failed")),
+                Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "local file operation timed out")),
+            }
+        }
+    }
+
+    pub(crate) async fn open_file_read_with_policy(
+        &self,
+        policy: FileReadPolicy,
+        path: PathBuf,
+        cancel: CancellationToken,
+    ) -> io::Result<File> {
+        self.run_local_file_operation(cancel, move |worker_cancelled, cancel| {
+            policy.open_read_cancellable(&path, || {
+                worker_cancelled.load(Ordering::Acquire) || cancel.is_cancelled()
+            })
+        })
+        .await
+    }
+
+    pub(crate) async fn open_file_metadata_with_policy(
+        &self,
+        policy: FileReadPolicy,
+        path: PathBuf,
+        cancel: CancellationToken,
+    ) -> io::Result<File> {
+        self.run_local_file_operation(cancel, move |worker_cancelled, cancel| {
+            policy.open_metadata_cancellable(&path, || {
+                worker_cancelled.load(Ordering::Acquire) || cancel.is_cancelled()
+            })
+        })
+        .await
+    }
+
+    pub(crate) async fn open_directory_with_policy(
+        &self,
+        policy: FileReadPolicy,
+        path: PathBuf,
+        cancel: CancellationToken,
+    ) -> io::Result<DirectoryCapability> {
+        self.run_local_file_operation(cancel, move |worker_cancelled, cancel| {
+            policy.open_directory_cancellable(&path, || {
+                worker_cancelled.load(Ordering::Acquire) || cancel.is_cancelled()
+            })
+        })
+        .await
     }
 
     async fn bind_local_file_resources(
@@ -3452,6 +3538,23 @@ mod tests {
             AuthorizationDecision::Blocked { reason, .. }
                 if reason == "Files request exceeds the local resource limit"
         ));
+    }
+
+    #[tokio::test]
+    async fn bounded_file_open_honors_cancellation_before_acquiring_capacity() {
+        let engine = AuthorizationEngine::new();
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("read.txt");
+        std::fs::write(&file, "content").unwrap();
+        let policy = FileReadPolicy::for_test_roots(&[temp.path().to_path_buf()]);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let error = engine
+            .open_file_read_with_policy(policy, file, cancel)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
     }
 
     macro_rules! capability_scope {

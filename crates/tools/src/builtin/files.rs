@@ -4,7 +4,7 @@ use haven_common::config::{
 };
 use haven_common::media::MediaRepresentationKind;
 use haven_llm::LlmRouter;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -267,6 +267,7 @@ impl FilesTool {
         operation: FilesOperation,
         path: &str,
         managed_asset: Option<&crate::ManagedAsset>,
+        cancel: CancellationToken,
         context: &ToolExecutionContext,
     ) -> anyhow::Result<tokio::fs::File> {
         let file = if let Some(asset) = managed_asset {
@@ -276,7 +277,9 @@ impl FilesTool {
                 Some(policy) => policy.clone(),
                 None => self.file_read_policy(operation).await,
             };
-            policy.open_read(Path::new(path))?
+            self.authorization
+                .open_file_read_with_policy(policy, PathBuf::from(path), cancel)
+                .await?
         };
         Ok(tokio::fs::File::from_std(file))
     }
@@ -285,13 +288,17 @@ impl FilesTool {
         &self,
         operation: FilesOperation,
         path: &str,
+        cancel: CancellationToken,
         context: &ToolExecutionContext,
     ) -> anyhow::Result<tokio::fs::File> {
         let policy = match context.file_read_policy() {
             Some(policy) => policy.clone(),
             None => self.file_read_policy(operation).await,
         };
-        let file = policy.open_metadata(Path::new(path))?;
+        let file = self
+            .authorization
+            .open_file_metadata_with_policy(policy, PathBuf::from(path), cancel)
+            .await?;
         Ok(tokio::fs::File::from_std(file))
     }
 
@@ -482,7 +489,7 @@ impl FilesTool {
         let operation_result: anyhow::Result<ToolResult> = match op {
             FilesOperation::Read => {
                 let file = self
-                    .open_file_for_read(op, &path, managed_asset.as_ref(), context)
+                    .open_file_for_read(op, &path, managed_asset.as_ref(), cancel.clone(), context)
                     .await?;
                 let has_line_args = params.start_line.is_some() || params.end_line.is_some();
                 let has_byte_args = params.offset.is_some() || params.limit.is_some();
@@ -499,6 +506,7 @@ impl FilesTool {
                         end_line,
                         self.max_output_chars,
                         self.max_line_bytes,
+                        cancel.clone(),
                     )
                     .await
                 } else if has_byte_args {
@@ -511,6 +519,7 @@ impl FilesTool {
                         limit,
                         self.max_output_chars,
                         self.max_byte_read_bytes,
+                        cancel.clone(),
                     )
                     .await
                 } else {
@@ -525,14 +534,22 @@ impl FilesTool {
                 }
             }
             FilesOperation::Inspect => {
-                match self.open_path_for_metadata(op, &path, context).await {
-                    Ok(file) => inspect_open_file(&path, file, self.max_byte_read_bytes).await,
+                match self
+                    .open_path_for_metadata(op, &path, cancel.clone(), context)
+                    .await
+                {
+                    Ok(file) => {
+                        inspect_open_file(&path, file, self.max_byte_read_bytes, cancel.clone())
+                            .await
+                    }
                     Err(error) if is_not_found(&error) => Ok(missing_file(&path)),
                     Err(error) => Err(error),
                 }
             }
             FilesOperation::Outline => {
-                let file = self.open_file_for_read(op, &path, None, context).await?;
+                let file = self
+                    .open_file_for_read(op, &path, None, cancel.clone(), context)
+                    .await?;
                 let start_line = params.start_line.unwrap_or(1).max(1);
                 let max_symbols = params.max_symbols.unwrap_or(100).clamp(1, 500) as usize;
                 file_outline::outline(
@@ -593,11 +610,15 @@ impl FilesTool {
                     Some(policy) => policy.clone(),
                     None => self.file_read_policy(op).await,
                 };
-                file_mutations::list(&path, self.max_list_entries, cancel.clone(), &policy).await
+                let directory = self
+                    .authorization
+                    .open_directory_with_policy(policy, PathBuf::from(&path), cancel.clone())
+                    .await?;
+                file_mutations::list(self.max_list_entries, cancel.clone(), directory).await
             }
             FilesOperation::Summary => {
                 let file = self
-                    .open_file_for_read(op, &path, managed_asset.as_ref(), context)
+                    .open_file_for_read(op, &path, managed_asset.as_ref(), cancel.clone(), context)
                     .await?;
                 let input_budget = params
                     .max_chars
@@ -639,16 +660,47 @@ impl FilesTool {
                     self.search.max_file_size,
                 );
                 let linked_search_root = policy.is_link_bound_path(Path::new(&request.root));
-                if request.mode == FileSearchMode::Filename
+                let use_everything = request.mode == FileSearchMode::Filename
                     && !linked_search_root
-                    && self.everything_search.is_enabled()?
-                {
+                    && self.everything_search.is_enabled()?;
+                if use_everything {
                     self.everything_search
                         .search_request(request, cancel, policy, context)
                         .await
                 } else {
+                    let root_path = PathBuf::from(&request.root);
+                    let root_handle = self
+                        .authorization
+                        .open_file_metadata_with_policy(
+                            policy.clone(),
+                            root_path.clone(),
+                            cancel.clone(),
+                        )
+                        .await?;
+                    let metadata = root_handle.metadata()?;
+                    let root_capability = if metadata.is_file() {
+                        super::search_walk::RootCapability::File(root_handle)
+                    } else if metadata.is_dir() {
+                        drop(root_handle);
+                        super::search_walk::RootCapability::Directory(
+                            self.authorization
+                                .open_directory_with_policy(
+                                    policy.clone(),
+                                    root_path,
+                                    cancel.clone(),
+                                )
+                                .await?,
+                        )
+                    } else {
+                        anyhow::bail!("search root is not a regular file or directory");
+                    };
                     self.search
-                        .search_request_with_policy(request, cancel, policy)
+                        .search_request_with_policy_and_root(
+                            request,
+                            cancel,
+                            policy,
+                            Some(root_capability),
+                        )
                         .await
                 }
             }

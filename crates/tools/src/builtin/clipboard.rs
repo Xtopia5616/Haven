@@ -1335,7 +1335,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(error.to_string(), "path is not allowed");
+        assert_eq!(error.to_string(), "file path is outside the allowed roots");
     }
 
     #[tokio::test]

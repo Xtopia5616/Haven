@@ -55,7 +55,7 @@ WorkspaceWrite 都进入确认流程；本地文件写入仍分别受只读拒�
 | 类别 | 输入/状态 | 期望 |
 |---|---|---|
 | 规范化 | `allowed/../outside`、`.`、重复分隔符 | 规范化后越界立即 `Blocked` |
-| 本地只读链接 | Windows 本地 NTFS symlink/junction 指向 allowed root 内的现存文件或目录，操作为 Files read/inspect/list/outline/internal search/text summary | 允许的具体目标按目标路径策略检查；confirmation 展示请求路径、实际目标、读意图和精确对象/目录直接项/目录子树范围；链接授权仅限本次且执行消费解析目标句柄/目录 capability |
+| 本地只读链接 | Windows 本地 NTFS symlink/junction 指向 allowed root 内的现存文件或目录，操作为 Files read/inspect/list/outline/internal search/text summary | 允许的具体目标按目标路径策略检查；confirmation 展示请求路径、实际目标、读意图和精确对象/目录直接项/目录子树范围；链接授权仅限本次；文件读取消费解析句柄，list/search 从预打开的文件或目录 capability 遍历 |
 | 相对/嵌套链接 | 相对 symlink 目标、嵌套 symlink/junction、循环 link chain | 可验证的本地 NTFS 相对/嵌套目标按实际目标策略处理；循环或超过解析深度拒绝 |
 | 显式根外目标 | 本地 NTFS 链接指向 allowed root 外，用户确认 Files 的只读资源边界扩展 | 单次确认后只允许 receipt 绑定的目标身份；目标或 link chain 改变时拒绝；授权不延伸到新目标或其它 alias |
 | 受保护目标 | 链接目标或经过的 link entry 位于 global/tool hard-deny 路径 | `Blocked`；任一资源命中硬拒绝都拒绝整个调用 |
@@ -88,6 +88,7 @@ WorkspaceWrite 都进入确认流程；本地文件写入仍分别受只读拒�
 | LSP scratch | 大于 256 MiB、超过 100,000 项或无法安全检查 | 取消请求、终止 server、清理独立 scratch；不得扩大写根或继续运行 |
 | structured error class | `transient`、`unknown_outcome`、`validation`、`permission`、`side_effect_may_have_happened` | agent 按 class 决定 retry/verify/ask；不得把错误文本作为主要策略条件 |
 | cancellation | gate 后、实际文件/进程/网络提交前取消 | 不调用下游，或下游按 token 停止；不以取消作为授权 |
+| 链接解析容量与取消 | 同一引擎并发解析超过 4、等待槽位超过 1 秒、解析超过 3 秒或操作取消 | 超额调用快速拒绝；deadline/取消返回可见错误并在组件检查点释放句柄和容量；单个同步 Windows 文件系统调用不可硬中断，超时期间 worker 保留槽位直至调用返回 |
 | race/TOCTOU | 文件读授权后、打开前替换目标或路径 component；打开后再替换 pathname | 文件读入口先打开并持有 handle，再解析路径、验证允许根和 handle/file identity；无法证明相同对象时 fail-closed；读取、摘要、outline、inspect/hash、内容搜索及受管媒体读取都消费已验证的同一 handle。仅在执行入口重查 pathname 不足以满足此项 |
 | 输出泄漏 | denial、tool error、日志 tail、MCP env | 不返回 key/token、完整命令输出或原始 provider/MCP secret |
 

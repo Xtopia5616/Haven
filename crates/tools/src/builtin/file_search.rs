@@ -279,11 +279,23 @@ impl FileSearchEngine {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn search_request_with_policy(
+        &self,
+        request: SearchRequest,
+        cancel: CancellationToken,
+        access_policy: FileReadPolicy,
+    ) -> anyhow::Result<ToolResult> {
+        self.search_request_with_policy_and_root(request, cancel, access_policy, None)
+            .await
+    }
+
+    pub(crate) async fn search_request_with_policy_and_root(
         &self,
         mut request: SearchRequest,
         cancel: CancellationToken,
         access_policy: FileReadPolicy,
+        root_capability: Option<super::search_walk::RootCapability>,
     ) -> anyhow::Result<ToolResult> {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
@@ -323,12 +335,28 @@ impl FileSearchEngine {
         } else {
             std::env::current_dir()?.join(root_path)
         };
-        let root_handle = access_policy
-            .open_metadata(&root_path)
-            .map_err(|_| anyhow::anyhow!("search root is outside the active file access policy"))?;
-        let root_metadata = root_handle.metadata()?;
-        if !root_metadata.is_file() && !root_metadata.is_dir() {
-            anyhow::bail!("search root is not a file or directory");
+        match root_capability.as_ref() {
+            Some(super::search_walk::RootCapability::File(file)) => {
+                if !file.metadata()?.is_file() {
+                    anyhow::bail!("search root is not a regular file");
+                }
+            }
+            Some(super::search_walk::RootCapability::Directory(directory)) => {
+                if !directory.directory_handle()?.metadata()?.is_dir() {
+                    anyhow::bail!("search root is not a directory");
+                }
+            }
+            None => {
+                let root_handle = access_policy
+                    .open_metadata_cancellable(&root_path, || cancel.is_cancelled())
+                    .map_err(|_| {
+                        anyhow::anyhow!("search root is outside the active file access policy")
+                    })?;
+                let root_metadata = root_handle.metadata()?;
+                if !root_metadata.is_file() && !root_metadata.is_dir() {
+                    anyhow::bail!("search root is not a file or directory");
+                }
+            }
         }
 
         let search_permit = tokio::select! {
@@ -358,6 +386,7 @@ impl FileSearchEngine {
                 max_window_bytes,
                 cancel: cancel_inner,
                 access_policy,
+                root_capability,
             })
         })
         .await?;
@@ -423,6 +452,7 @@ struct SearchParams<'a> {
     max_window_bytes: u64,
     cancel: CancellationToken,
     access_policy: FileReadPolicy,
+    root_capability: Option<super::search_walk::RootCapability>,
 }
 
 /// Content-mode search parameters (subset of [`SearchParams`]).
@@ -439,11 +469,12 @@ struct ContentSearchParams<'a> {
     max_window_bytes: u64,
     cancel: CancellationToken,
     access_policy: FileReadPolicy,
+    root_capability: Option<super::search_walk::RootCapability>,
 }
 
 fn search_files(params: SearchParams<'_>) -> FileSearchResult {
     match params.mode {
-        FileSearchMode::Content => search_content(&ContentSearchParams {
+        FileSearchMode::Content => search_content(ContentSearchParams {
             root: params.root,
             pattern: params.pattern,
             max_depth: params.max_depth,
@@ -456,16 +487,9 @@ fn search_files(params: SearchParams<'_>) -> FileSearchResult {
             max_window_bytes: params.max_window_bytes,
             cancel: params.cancel,
             access_policy: params.access_policy,
+            root_capability: params.root_capability,
         }),
-        FileSearchMode::Filename => search_filenames(
-            params.root,
-            params.pattern,
-            params.max_depth,
-            params.max_results,
-            params.ignore_hidden,
-            params.cancel,
-            params.access_policy,
-        ),
+        FileSearchMode::Filename => search_filenames(params),
     }
 }
 
@@ -483,27 +507,33 @@ fn finalize(results: Arc<Mutex<Vec<Value>>>, max_results: usize) -> Vec<Value> {
 
 /// Filename matching with bounded traversal. The glob is converted to a
 /// regex; if that fails, matching falls back to a substring check.
-fn search_filenames(
-    root: &Path,
-    pattern: &str,
-    max_depth: usize,
-    max_results: usize,
-    ignore_hidden: bool,
-    cancel: CancellationToken,
-    access_policy: FileReadPolicy,
-) -> FileSearchResult {
+fn search_filenames(params: SearchParams<'_>) -> FileSearchResult {
+    let SearchParams {
+        root,
+        pattern,
+        max_depth,
+        max_results,
+        ignore_hidden,
+        cancel,
+        access_policy,
+        root_capability,
+        ..
+    } = params;
     let results = Arc::new(Mutex::new(Vec::new()));
     let result_bytes = AtomicUsize::new(0);
     let mut count = 0usize;
     let mut bytes_hit = false;
     let re = regex::Regex::new(&glob_to_regex(pattern)).ok();
-    let walk = super::search_walk::walk(
-        root,
-        max_depth,
-        ignore_hidden,
-        &access_policy,
-        &cancel,
-        MAX_SEARCH_ENTRIES,
+    let walk = super::search_walk::walk_with_root(
+        super::search_walk::WalkRequest {
+            root,
+            max_depth,
+            hidden: ignore_hidden,
+            policy: &access_policy,
+            cancel: &cancel,
+            maximum: MAX_SEARCH_ENTRIES,
+            root_capability,
+        },
         |entry| {
             let Some(name) = entry.path.file_name() else {
                 return true;
@@ -537,7 +567,7 @@ fn search_filenames(
     }
 }
 
-fn search_content(p: &ContentSearchParams<'_>) -> FileSearchResult {
+fn search_content(p: ContentSearchParams<'_>) -> FileSearchResult {
     let matcher = RegexMatcher::new(p.pattern).unwrap_or_else(|_| {
         RegexMatcher::new(&regex::escape(p.pattern)).expect("escaped regex always compiles")
     });
@@ -558,13 +588,16 @@ fn search_content(p: &ContentSearchParams<'_>) -> FileSearchResult {
         io_error_count: Arc::new(AtomicUsize::new(0)),
         snippet_chars: p.snippet_chars,
     };
-    let walk = super::search_walk::walk(
-        p.root,
-        p.max_depth,
-        p.ignore_hidden,
-        &p.access_policy,
-        &p.cancel,
-        MAX_SEARCH_ENTRIES,
+    let walk = super::search_walk::walk_with_root(
+        super::search_walk::WalkRequest {
+            root: p.root,
+            max_depth: p.max_depth,
+            hidden: p.ignore_hidden,
+            policy: &p.access_policy,
+            cancel: &p.cancel,
+            maximum: MAX_SEARCH_ENTRIES,
+            root_capability: p.root_capability,
+        },
         |entry| {
             if collector.stop_flag.load(Ordering::Relaxed) {
                 return false;
@@ -1653,7 +1686,7 @@ mod tests {
         }
 
         let started_at = std::time::Instant::now();
-        let results = search_content(&ContentSearchParams {
+        let results = search_content(ContentSearchParams {
             root,
             pattern: "needle",
             max_depth: 0,
@@ -1666,6 +1699,7 @@ mod tests {
             max_window_bytes: 16 * 1024 * 1024,
             cancel: CancellationToken::new(),
             access_policy: FileReadPolicy::default(),
+            root_capability: None,
         })
         .results;
         let elapsed = started_at.elapsed();

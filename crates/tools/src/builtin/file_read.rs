@@ -21,7 +21,11 @@ pub(super) async fn read_full(
         anyhow::bail!("cancelled");
     }
     let classification = classify_file_by_extension(path);
-    let meta = file.metadata().await?;
+    let meta = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        result = file.metadata() => result?,
+    };
     let size = meta.len();
     if matches!(
         classification.file_kind,
@@ -36,7 +40,11 @@ pub(super) async fn read_full(
         // whole file) so callers can see the head and reconstruct if needed.
         let to_read = ((max_chars as u64).saturating_mul(4)).min(size).max(1) as usize;
         let mut buf = vec![0u8; to_read];
-        let n = file.read(&mut buf).await?;
+        let n = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+            result = file.read(&mut buf) => result?,
+        };
         buf.truncate(n);
         let decoded = haven_common::encoding::decode_with_encoding(&buf);
         let output = haven_common::encoding::truncate_output(&decoded.text, max_chars);
@@ -61,7 +69,11 @@ pub(super) async fn read_full(
     // (worst-case UTF-8 width) is wasted IO.
     let to_read = (max_chars as u64).saturating_mul(4).min(size).max(1) as usize;
     let mut buf = vec![0u8; to_read];
-    let n = file.read(&mut buf).await?;
+    let n = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        result = file.read(&mut buf) => result?,
+    };
     buf.truncate(n);
     if looks_like_binary(&buf) {
         return Ok(binary_result(path, size));
@@ -181,8 +193,13 @@ pub(super) async fn read_bytes(
     limit: u64,
     max_chars: usize,
     max_byte_read_bytes: u64,
+    cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
-    let total = file.metadata().await?.len();
+    let total = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        result = file.metadata() => result?.len(),
+    };
     if offset >= total {
         return Ok(ToolResult::ok(serde_json::json!({
             "content": "",
@@ -208,9 +225,17 @@ pub(super) async fn read_bytes(
         )
         .min((max_chars as u64).saturating_mul(4).max(1))
         .min(total - offset) as usize;
-    file.seek(tokio::io::SeekFrom::Start(offset)).await?;
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        result = file.seek(tokio::io::SeekFrom::Start(offset)) => { result?; },
+    }
     let mut buf = vec![0u8; effective_limit];
-    let n = file.read(&mut buf).await?;
+    let n = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        result = file.read(&mut buf) => result?,
+    };
     buf.truncate(n);
     if looks_like_binary(&buf) {
         return Ok(binary_result(path, total));
@@ -244,8 +269,13 @@ pub(super) async fn read_lines(
     end_line: u64,
     max_chars: usize,
     max_line_bytes: usize,
+    cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
-    let total = file.metadata().await?.len();
+    let total = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        result = file.metadata() => result?.len(),
+    };
     let mut reader = BufReader::new(file);
     let mut line_buf = Vec::new();
     let mut current: u64 = 1;
@@ -255,9 +285,12 @@ pub(super) async fn read_lines(
     let mut encoding: Option<&'static str> = None;
 
     loop {
-        let Some((n, exceeded)) =
-            read_line_bounded(&mut reader, &mut line_buf, max_line_bytes).await?
-        else {
+        let line = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+            result = read_line_bounded(&mut reader, &mut line_buf, max_line_bytes) => result?,
+        };
+        let Some((n, exceeded)) = line else {
             break;
         };
         if exceeded {
@@ -287,9 +320,11 @@ pub(super) async fn read_lines(
         }
         current += 1;
         if current > end_line {
-            more = read_line_bounded(&mut reader, &mut line_buf, max_chars)
-                .await?
-                .is_some();
+            more = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+                result = read_line_bounded(&mut reader, &mut line_buf, max_chars) => result?.is_some(),
+            };
             break;
         }
     }

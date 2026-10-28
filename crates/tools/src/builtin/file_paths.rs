@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Component, Path};
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio_util::sync::CancellationToken;
 
 use super::file_classification::{FileClassificationKind, classify_file_by_extension};
 use super::{FilesOperation, MAX_INSPECT_HASH_BYTES};
@@ -182,8 +183,13 @@ pub(super) async fn inspect_open_file(
     path: &str,
     mut file: tokio::fs::File,
     max_hash_bytes: u64,
+    cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
-    let metadata = file.metadata().await?;
+    let metadata = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        result = file.metadata() => result?,
+    };
     let file_type = if metadata.is_file() {
         "file"
     } else if metadata.is_dir() {
@@ -202,7 +208,11 @@ pub(super) async fn inspect_open_file(
         && metadata.len() <= MAX_INSPECT_HASH_BYTES
     {
         let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.read_to_end(&mut bytes).await?;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+            result = file.read_to_end(&mut bytes) => { result?; },
+        }
         encoding = Some(haven_common::encoding::decode_with_encoding(&bytes).encoding);
         hash = Some(sha256_bytes(&bytes));
     }

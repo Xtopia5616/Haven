@@ -28,6 +28,204 @@ async fn content_search_uses_confirmed_read_scope() {
     assert_eq!(result.output["results"].as_array().unwrap().len(), 1);
 }
 
+#[tokio::test]
+#[cfg(windows)]
+async fn confirmed_link_read_consumes_the_bound_target_and_rejects_retargeting() {
+    use crate::{AuthorizationDecision, AuthorizationRequest, DeclaredResource, LocalPathAccess};
+    use haven_common::config::ToolConfig;
+    use haven_common::types::{NetworkPolicy, SandboxMode};
+
+    fn create_junction(link: &Path, target: &Path) {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "junction creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let temp = TempDir::new().unwrap();
+    let first_target = temp.path().join("first");
+    let second_target = temp.path().join("second");
+    let alias_root = temp.path().join("aliases");
+    std::fs::create_dir_all(&first_target).unwrap();
+    std::fs::create_dir_all(&second_target).unwrap();
+    std::fs::create_dir_all(&alias_root).unwrap();
+    std::fs::write(first_target.join("note.txt"), "approved object").unwrap();
+    std::fs::write(second_target.join("note.txt"), "replacement object").unwrap();
+    let link = alias_root.join("approved");
+    create_junction(&link, &first_target);
+    let requested_path = link.join("note.txt");
+
+    let engine = Arc::new(AuthorizationEngine::new());
+    engine
+        .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+        .await;
+    engine
+        .set_tool_settings(std::collections::HashMap::from([(
+            "files".into(),
+            ToolConfig::default(),
+        )]))
+        .await;
+    let tool = FilesTool::default().with_authorization_engine(Arc::clone(&engine));
+    let input = json!({
+        "operation": "read",
+        "path": requested_path.to_string_lossy(),
+    });
+    let request = AuthorizationRequest::new(
+        None,
+        "files.read",
+        input.clone(),
+        tool.try_operation_policy(&input).unwrap(),
+    )
+    .with_resources(vec![DeclaredResource::LocalPath {
+        path: requested_path.clone(),
+        access: LocalPathAccess::Read,
+    }]);
+    let check = engine.authorize_for_execution(&request).await;
+    let AuthorizationDecision::RequiresConfirmation { receipt, .. } = check.decision else {
+        panic!("linked file read should require one-time confirmation")
+    };
+    let resolved_target = match receipt.resources.as_slice() {
+        [DeclaredResource::ResolvedLocalPath { path, .. }] => path.clone(),
+        resources => panic!("expected one resolved local target, received {resources:?}"),
+    };
+    let proof = engine.confirm_for_execution(&request, &receipt).await.unwrap();
+    let context = engine
+        .execution_context_for_proof(&request, &proof)
+        .await
+        .unwrap();
+
+    let result = tool
+        .run_with_execution_context(
+            serde_json::from_value(input.clone()).unwrap(),
+            CancellationToken::new(),
+            &context,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "bound target {} could not be consumed: {error}",
+                resolved_target.display()
+            )
+        });
+    assert_eq!(result.output["content"], "approved object");
+
+    std::fs::remove_dir(&link).unwrap();
+    create_junction(&link, &second_target);
+    let result = tool
+        .run_with_execution_context(
+            serde_json::from_value(input).unwrap(),
+            CancellationToken::new(),
+            &context,
+        )
+        .await;
+    assert!(result.is_err(), "a retargeted link must not switch objects");
+}
+
+#[tokio::test]
+#[cfg(windows)]
+async fn confirmed_link_directory_list_and_search_consume_preopened_capabilities() {
+    use crate::{AuthorizationDecision, AuthorizationRequest, DeclaredResource, LocalPathAccess};
+    use haven_common::types::{NetworkPolicy, SandboxMode};
+
+    fn create_junction(link: &Path, target: &Path) {
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "junction creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    async fn run_confirmed(
+        tool: &FilesTool,
+        engine: &Arc<AuthorizationEngine>,
+        input: serde_json::Value,
+        path: &Path,
+    ) -> ToolResult {
+        let operation = input["operation"].as_str().unwrap();
+        let tool_name = format!("files.{operation}");
+        let request = AuthorizationRequest::new(
+            None,
+            tool_name,
+            input.clone(),
+            tool.try_operation_policy(&input).unwrap(),
+        )
+        .with_resources(vec![DeclaredResource::LocalPath {
+            path: path.to_path_buf(),
+            access: LocalPathAccess::Read,
+        }]);
+        let check = engine.authorize_for_execution(&request).await;
+        let AuthorizationDecision::RequiresConfirmation { receipt, .. } = check.decision else {
+            panic!("linked directory operation should require confirmation")
+        };
+        let proof = engine.confirm_for_execution(&request, &receipt).await.unwrap();
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        tool.run_with_execution_context(
+            serde_json::from_value(input).unwrap(),
+            CancellationToken::new(),
+            &context,
+        )
+        .await
+        .unwrap()
+    }
+
+    let temp = TempDir::new().unwrap();
+    let target = temp.path().join("target");
+    std::fs::create_dir_all(target.join("nested")).unwrap();
+    std::fs::write(target.join("note.txt"), "needle in target").unwrap();
+    std::fs::write(target.join("nested/other.txt"), "unmatched").unwrap();
+    let link = temp.path().join("linked");
+    create_junction(&link, &target);
+
+    let engine = Arc::new(AuthorizationEngine::new());
+    engine
+        .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+        .await;
+    let tool = FilesTool::default().with_authorization_engine(Arc::clone(&engine));
+
+    let listed = run_confirmed(
+        &tool,
+        &engine,
+        json!({"operation":"list", "path":link.to_string_lossy()}),
+        &link,
+    )
+    .await;
+    assert!(listed.output["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry == "note.txt"));
+
+    let searched = run_confirmed(
+        &tool,
+        &engine,
+        json!({
+            "operation":"search",
+            "root":link.to_string_lossy(),
+            "pattern":"needle",
+            "mode":"content",
+        }),
+        &link,
+    )
+    .await;
+    assert_eq!(searched.output["results"].as_array().unwrap().len(), 1);
+}
+
 #[test]
     fn test_sanitize_path_normal() {
         let result = sanitize_path("file.txt");

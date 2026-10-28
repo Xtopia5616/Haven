@@ -24,6 +24,21 @@ pub(super) struct WalkResult {
     pub limit_hit: bool,
 }
 
+pub(crate) enum RootCapability {
+    File(File),
+    Directory(DirectoryCapability),
+}
+
+pub(super) struct WalkRequest<'a> {
+    pub root: &'a Path,
+    pub max_depth: usize,
+    pub hidden: bool,
+    pub policy: &'a FileReadPolicy,
+    pub cancel: &'a CancellationToken,
+    pub maximum: usize,
+    pub root_capability: Option<RootCapability>,
+}
+
 /// Rules are loaded only from files opened relative to the current directory
 /// handle and authorized before their contents are consumed.
 pub(super) fn walk(
@@ -33,38 +48,85 @@ pub(super) fn walk(
     policy: &FileReadPolicy,
     cancel: &CancellationToken,
     maximum: usize,
+    visit: impl FnMut(Entry) -> bool,
+) -> WalkResult {
+    walk_with_root(
+        WalkRequest {
+            root,
+            max_depth,
+            hidden,
+            policy,
+            cancel,
+            maximum,
+            root_capability: None,
+        },
+        visit,
+    )
+}
+
+pub(super) fn walk_with_root(
+    request: WalkRequest<'_>,
     mut visit: impl FnMut(Entry) -> bool,
 ) -> WalkResult {
+    let WalkRequest {
+        root,
+        max_depth,
+        hidden,
+        policy,
+        cancel,
+        maximum,
+        root_capability,
+    } = request;
     let mut result = WalkResult {
         scanned: 0,
         errors: 0,
         limit_hit: false,
     };
-    let file = match policy.open_metadata(root) {
-        Ok(file) => file,
-        Err(_) => {
-            result.errors += 1;
-            return result;
-        }
-    };
-    if file.metadata().is_ok_and(|m| m.is_file()) {
-        match policy.open_read(root) {
-            Ok(file) => {
+    let dir = match root_capability {
+        Some(RootCapability::File(file)) => {
+            let validation_path = policy.bound_target_path(root).unwrap_or(root);
+            if file.metadata().is_ok_and(|metadata| metadata.is_file())
+                && policy.validate_opened(validation_path, &file, true).is_ok()
+            {
                 result.scanned += 1;
                 visit(Entry {
                     path: root.to_path_buf(),
                     file,
                 });
+            } else {
+                result.errors += 1;
             }
-            Err(_) => result.errors += 1,
-        }
-        return result;
-    }
-    let dir = match policy.open_directory(root) {
-        Ok(dir) => dir,
-        Err(_) => {
-            result.errors += 1;
             return result;
+        }
+        Some(RootCapability::Directory(directory)) => directory,
+        None => {
+            let file = match policy.open_metadata_cancellable(root, || cancel.is_cancelled()) {
+                Ok(file) => file,
+                Err(_) => {
+                    result.errors += 1;
+                    return result;
+                }
+            };
+            if file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+                match policy.open_read_cancellable(root, || cancel.is_cancelled()) {
+                    Ok(file) => {
+                        result.scanned += 1;
+                        visit(Entry {
+                            path: root.to_path_buf(),
+                            file,
+                        });
+                    }
+                    Err(_) => result.errors += 1,
+                }
+                return result;
+            }
+            match policy.open_directory_cancellable(root, || cancel.is_cancelled()) {
+                Ok(directory) => directory,
+                Err(_) => {
+                    result.errors += 1;
+                    return result;
+                }
+            }
         }
     };
     let traversal_root = dir.root().to_path_buf();
@@ -339,6 +401,32 @@ mod tests {
         );
         assert!(result.limit_hit);
         assert!(result.scanned <= 2);
+    }
+
+    #[test]
+    fn traversal_consumes_a_preopened_directory_capability() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("visible.txt"), "visible").unwrap();
+        let policy = FileReadPolicy::for_test_roots(&[temp.path().to_path_buf()]);
+        let directory = DirectoryCapability::open(temp.path()).unwrap();
+        let mut paths = Vec::new();
+        let result = walk_with_root(
+            WalkRequest {
+                root: temp.path(),
+                max_depth: 0,
+                hidden: true,
+                policy: &policy,
+                cancel: &CancellationToken::new(),
+                maximum: 100,
+                root_capability: Some(RootCapability::Directory(directory)),
+            },
+            |entry| {
+                paths.push(entry.path);
+                true
+            },
+        );
+        assert_eq!(result.errors, 0);
+        assert!(paths.iter().any(|path| path.ends_with("visible.txt")));
     }
 
     #[test]
