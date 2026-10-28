@@ -5820,6 +5820,67 @@ mod tests {
 
     #[tokio::test]
     #[cfg(windows)]
+    async fn linked_file_write_and_patch_remain_blocked_before_confirmation() {
+        fn create_junction(link: &Path, target: &Path) {
+            let output = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "junction creation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let workspace = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let link = workspace.path().join("linked-directory");
+        create_junction(&link, target.path());
+        let target_file = target.path().join("note.txt");
+        let linked_file = link.join("note.txt");
+        std::fs::write(&target_file, b"original").unwrap();
+
+        let engine = AuthorizationEngine::new();
+        engine
+            .set_boundaries(SandboxMode::FullAccess, Vec::new(), NetworkPolicy::Open)
+            .await;
+
+        for (operation, extra) in [
+            (
+                "write",
+                json!({"content": "replacement", "expected_hash": "missing"}),
+            ),
+            (
+                "patch",
+                json!({"edits": [{"old_string": "original", "new_string": "replacement"}]}),
+            ),
+        ] {
+            let mut input = json!({
+                "operation": operation,
+                "path": linked_file.to_string_lossy(),
+            });
+            for (key, value) in extra.as_object().unwrap() {
+                input[key] = value.clone();
+            }
+            let tool_name = format!("files.{operation}");
+            let mut policy = fixture_policy(&tool_name, &input, RiskLevel::Medium);
+            policy.effect = OperationEffect::WorkspaceWrite;
+            assert!(matches!(
+                engine
+                    .authorize_for_execution(&fixture_request(None, &tool_name, &input, &policy,))
+                    .await
+                    .decision,
+                AuthorizationDecision::Blocked { .. }
+            ));
+            assert_eq!(std::fs::read(&target_file).unwrap(), b"original");
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(windows)]
     async fn multi_resource_file_mutations_reject_a_linked_source_or_destination_before_effects() {
         fn create_junction(link: &Path, target: &Path) {
             let output = std::process::Command::new("cmd")

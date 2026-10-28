@@ -62,6 +62,7 @@ WorkspaceWrite 都进入确认流程；本地文件写入仍分别受只读拒�
 | 不支持的链接 | 未知 reparse tag、损坏/无法查询 tag、非 NTFS/无法分类卷、网络映射、设备路径、循环或超过解析/句柄预算 | `Blocked`；不得按普通路径回退 |
 | 缺失链接目标 | symlink/junction 目标或其后续路径分量不存在 | `Blocked` 并给出链接目标不可用原因；不得把它伪装成普通 `inspect` missing 或创建目标 |
 | 链接写操作 | Files write/create_dir/patch/copy/move/delete 任一源或目标经过链接/reparse point | 当前切片在授权前 `Blocked`；不删除/移动链接本身，也不跟随修改目标 |
+| 链接文件原子写入 | `write`/`patch` 指向链接后的现存文件，或确认后目标被替换 | 继续在授权前 `Blocked`，文件内容不变；不降级为可能部分落盘的原位写入，直到能用目标身份约束原子提交 |
 | 链接目录枚举 | Files list/search 的用户指定根是已批准链接目录，目录项内还有链接 | 根目录按绑定 capability 使用；枚举不跟随内部链接，用户需另发明确请求 |
 | 链接外部调用 | linked search root 启用 Everything，或 linked media handoff | Everything 路径降级为内部 capability search；媒体 handoff `Blocked`，不把 Files 能力扩展给外部进程或媒体服务 |
 | 源路径 | `files.copy/move` 的 `source` 在 root 内、`destination` 在 root 外 | `Blocked` |

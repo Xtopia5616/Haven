@@ -22,6 +22,7 @@
 ### 操作对象和策略
 
 5. 当前仅 Files `read`、`inspect`、`list`、`outline`、内部 `search` 和文本 `summary` 可跟随已存在的最终或中间本地链接，并消费已绑定的目标句柄/目录 capability。receipt 分别标记精确对象、目录直接项或目录子树范围；目录枚举不跟随目录内发现的链接。Everything 外部程序路径、managed-media/富媒体 handoff 和其它外部调用不接受链接。链接目标是媒体文件时明确拒绝。`write`、`create_dir`、`patch`、`copy`、`move`、`delete` 只要任一资源路径经过链接或 reparse point 就在授权前拒绝；当前不为删除/移动最终链接提供特殊语义。这比目标方案更窄，未实现的变更语义不能按本 ADR 标记支持。
+   链接文件的 `write`/`patch` 暂不开放以保留现有原子替换语义：执行 proof 持有目标句柄以防对象被替换，而 Windows 按目录句柄提交的原子替换需要改动目标目录项；放宽目标句柄的 delete sharing 后，又无法把最终重命名原子地条件化为“目录项仍指向已批准的 file identity”。改为直接写句柄会失去原子性，失败时可能留下部分内容，故当前按用户选择继续拒绝。只有找到并验证同时绑定目标身份与原子提交的能力后，才重新评估支持范围。
 6. Shell、Skill、MCP、LSP、剪贴板、工作区切换、managed-media 与清理器继续按各自契约拒绝或隔离 reparse point；Files 支持不扩展这些入口的保证。
 7. 所有路径边界逐个检查原始请求路径、每个被遍历的 link entry 和最终目标：硬拒绝优先于只读保护，后者优先于全局文件根、工作区根、工具级路径/写策略和普通授权。授权范围必须同时覆盖请求 alias 与实际目标；一次性资源扩展也不能绕过硬拒绝或只读保护。多资源请求全部通过才可执行。
 8. 已支持的链接读取在 proof 阶段重新绑定身份，并由 `FileReadPolicy` 消费同一解析目标句柄，目录读取使用从目标句柄派生的 capability。链接写入尚未实现并在授权前拒绝。无法保持批准的目标身份或无法在授权 capability 下消费目标时返回明确权限拒绝；不得回退到按原路径重新打开。
@@ -55,7 +56,7 @@
 ## 当前实现边界
 
 - Windows NTFS 上存在目标的 symlink/junction 可用于上述只读 Files 操作；确认资源同时携带请求路径、目标路径、访问方向、link chain、对象身份和进程随机 epoch。确认等待期间不持有 OS handle；确认后、执行 proof 捕获时重新解析；epoch、目标身份或 link chain 不匹配就拒绝。含链接资源不能存成 Session/Always grant。
-- 网络共享、映射盘、设备路径、未知 tag、无法分类的 drive mapping，以及任何 mutating Files 链接操作均拒绝。链接后的缺失目标也拒绝；普通非链接缺失目标保留既有 `inspect`/写入行为。
+- 网络共享、映射盘、设备路径、未知 tag、无法分类的 drive mapping，以及任何 mutating Files 链接操作均拒绝。链接后的缺失目标也拒绝；普通非链接缺失目标保留既有 `inspect`/写入行为。链接文件 `write`/`patch` 的拒绝同时保护既有原子替换合同；原位写入因中断时可留下部分内容而未获支持。
 - 当前 Windows 测试覆盖相对文件 symlink、循环拒绝、嵌套 junction、缺失 suffix 拒绝、junction 重定向检测、确认 receipt 绑定与进程 epoch 失效、已有路径 grant 不能自动放行链接、确认后的实际文件读取和重定向拒绝、目录直接项/子树范围绑定、已确认目录 capability 上的 list/search，以及目录 capability 不跟随内部 junction；复制/移动任一端通过链接时整体拒绝且无副作用。解析与 Files capability open worker 每引擎最多 4 个并发，等槽位最多 1 秒，deadline 为 3 秒；取消/超时发出协作标记并在路径组件边界释放资源，单个同步 Windows 文件系统调用不能被中途打断。Files read/inspect/list/outline/internal search/text summary 的直接 handle open 已纳入同一容量和 deadline；list/search 使用预先打开的目录或文件 capability，异步读、字节/行读取及 inspect hash 响应取消。未知/损坏 tag、解析期间和执行期间并发替换、拒绝/应用关闭/策略变更、多次超时后的资源压力、搜索/摘要主体的总时限、共享跳转和不同 Windows 文件系统/权限环境仍待验收。
 - 当前工作切片不等于本 ADR 全部完成；阶段状态留在项目路线图，本 ADR 在所有验证条件通过之前保持未完成。
 - 解析器目前与现有路径 capability 同处 `crates/platform/src/filesystem.rs`，以共享句柄和身份原语。该文件已超过开发规范的 800 行复核阈值；在扩大支持范围前，应把本地目标解析拆入私有子模块并保持 facade 不变。
