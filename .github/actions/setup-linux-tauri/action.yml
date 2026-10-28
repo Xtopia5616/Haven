@@ -1,0 +1,21 @@
+name: Install Linux Tauri build dependencies
+description: Install system libraries required to compile the Tauri application on Linux.
+runs:
+  using: composite
+  steps:
+    - name: Install GTK, WebKit, audio, and Tauri build dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --yes \
+          libwebkit2gtk-4.1-dev \
+          build-essential \
+          curl \
+          wget \
+          file \
+          libxdo-dev \
+          libssl-dev \
+          libayatana-appindicator3-dev \
+          librsvg2-dev \
+          libasound2-dev

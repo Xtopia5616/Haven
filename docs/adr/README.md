@@ -1344,3 +1344,4 @@
 - [1438：会话执行设置按发起时选择隔离](1438-fence-execution-settings-by-user-selection.md)
 - [1439：Inbox 注销失败保留终态清理责任](1439-retain-failed-inbox-terminal-cleanup.md)
 - [1440：按完成的执行记录 Hook 诊断](1440-coherent-hook-diagnostics.md)
+- [1441：授权器编译文件策略快照](1441-compiled-file-policy.md)

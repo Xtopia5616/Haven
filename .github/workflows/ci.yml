@@ -15,6 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Install Linux system dependencies
+        uses: ./.github/actions/setup-linux-tauri
+      - name: Install Node.js and pnpm; build Tauri frontend resources
+        uses: pnpm/setup@v3
+        with:
+          version: 12.12.1
+          working-directory: ui
+          node-version-file: ../.node-version
+          cache: true
+          cache-dependency-path: ui/pnpm-lock.yaml
+          require-lockfile: true
+      - name: Build Tauri frontend resources
+        run: pnpm --dir ui run build
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.99.0
@@ -47,6 +60,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - name: Install Linux system dependencies
+        uses: ./.github/actions/setup-linux-tauri
+      - name: Install Node.js and pnpm; build Tauri frontend resources
+        uses: pnpm/setup@v3
+        with:
+          version: 12.12.1
+          working-directory: ui
+          node-version-file: ../.node-version
+          cache: true
+          cache-dependency-path: ui/pnpm-lock.yaml
+          require-lockfile: true
+      - name: Build Tauri frontend resources
+        run: pnpm --dir ui run build
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.99.0
@@ -58,6 +84,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Install Linux system dependencies
+        uses: ./.github/actions/setup-linux-tauri
+      - name: Install Node.js and pnpm; build Tauri frontend resources
+        uses: pnpm/setup@v3
+        with:
+          version: 12.12.1
+          working-directory: ui
+          node-version-file: ../.node-version
+          cache: true
+          cache-dependency-path: ui/pnpm-lock.yaml
+          require-lockfile: true
+      - name: Build Tauri frontend resources
+        run: pnpm --dir ui run build
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: 1.99.0
@@ -94,6 +133,8 @@ jobs:
           cache-dependency-path: ui/pnpm-lock.yaml
           require-lockfile: true
       - name: Svelte check
+        run: pnpm exec svelte-kit sync
+      - name: Run Svelte check
         run: pnpm run check
       - name: Vitest run
         run: pnpm run test:run
