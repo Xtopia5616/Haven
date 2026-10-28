@@ -557,8 +557,19 @@ impl ExecutionPolicyPermit {
         for constraint in &path_constraints {
             project_read = super::intersect_directory_roots(&project_read, constraint);
         }
-        DirectoryCapability::open(workspace_root)
+        let project = DirectoryCapability::open(workspace_root)
             .map_err(|_| "LSP workspace is unavailable or unsafe".to_owned())?;
+        if denied
+            .iter()
+            .any(|deny| deny.contains_path(project.root()).unwrap_or(true))
+        {
+            return Err("LSP workspace is explicitly denied".into());
+        }
+        if self.resource_boundary_extension && self.authorized_resources.iter().any(|resource| {
+            matches!(resource, crate::DeclaredResource::LocalPath { path, access: haven_common::types::LocalPathAccess::Read } if path == project.root())
+        }) {
+            project_read.push(project);
+        }
         if !project_read
             .iter()
             .any(|root| super::directory_root_contains_path(root, workspace_root))

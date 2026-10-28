@@ -98,9 +98,13 @@ impl LspTool {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("path is required"))?;
             let path = resolve_lsp_path(path_input, &workspace_root)?;
-            let file_read_policy = self.authorization.file_read_policy("lsp").await;
+            let file_read_policy = context.file_read_policy().ok_or_else(|| {
+                crate::security::execution_policy_denied(
+                    "LSP project read requires authorization".into(),
+                )
+            })?;
             let document = read_lsp_document(
-                &file_read_policy,
+                file_read_policy,
                 &workspace_directory,
                 &workspace_root,
                 &path,

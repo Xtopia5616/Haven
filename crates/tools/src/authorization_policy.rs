@@ -88,7 +88,7 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
         input: &Value,
         resources: Vec<crate::DeclaredResource>,
     ) -> Result<Vec<crate::DeclaredResource>, String> {
-        if tool_name != "git" {
+        if tool_name != "git" && tool_name != "lsp" {
             return Ok(resources);
         }
         let workspace = self
@@ -100,8 +100,17 @@ impl<'a> ToolAuthorizationRequestResolver<'a> {
             .await;
         let root = workspace
             .root()
-            .ok_or_else(|| "Git execution workspace is unavailable".to_owned())?;
-        crate::builtin::git::authorization_resources_for_workspace(input, root)
+            .ok_or_else(|| format!("{tool_name} execution workspace is unavailable"))?;
+        if tool_name == "git" {
+            crate::builtin::git::authorization_resources_for_workspace(input, root)
+        } else {
+            let mut resources = resources;
+            resources.push(crate::DeclaredResource::LocalPath {
+                path: root.to_path_buf(),
+                access: haven_common::types::LocalPathAccess::Read,
+            });
+            Ok(resources)
+        }
     }
 
     async fn authorization_request(

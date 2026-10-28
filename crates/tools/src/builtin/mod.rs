@@ -15,7 +15,7 @@ mod http_content;
 pub mod input;
 pub(crate) mod load_mcp;
 pub(crate) mod load_skill;
-mod lsp;
+pub(crate) mod lsp;
 pub mod media;
 mod media_audio;
 pub mod memory;

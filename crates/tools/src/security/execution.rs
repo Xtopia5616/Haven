@@ -1878,6 +1878,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lsp_confirmed_project_scope_reaches_process_policy() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let scratch = root.path().join("scratch");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(workspace.join("source.rs"), "fn main() {}\n").unwrap();
+        let (_, engine) = ExecutionPolicyAuthorization::for_test_with_workspace_write_root(
+            &workspace,
+            NetworkPolicy::Deny,
+        );
+        engine.config.write().await.file_policy.global_file_roots = vec![scratch.clone()];
+        let request = AuthorizationEngine::runtime_permission_request(
+            None,
+            "lsp",
+            serde_json::json!({}),
+            crate::NetworkAccess::None,
+            vec![crate::DeclaredResource::LocalPath {
+                path: workspace.clone(),
+                access: haven_common::types::LocalPathAccess::Read,
+            }],
+        )
+        .unwrap();
+        let check = engine.authorize_for_execution(&request).await;
+        let crate::security::AuthorizationDecision::RequiresConfirmation { receipt, .. } =
+            check.decision
+        else {
+            panic!("LSP project must request permission");
+        };
+        assert_eq!(receipt.resources, request.resources);
+        let proof = engine
+            .confirm_for_execution(&request, &receipt)
+            .await
+            .unwrap();
+        let context = engine
+            .execution_context_for_proof(&request, &proof)
+            .await
+            .unwrap();
+        assert!(
+            context
+                .file_read_policy()
+                .unwrap()
+                .open_read(&workspace.join("source.rs"))
+                .is_ok()
+        );
+        let authorization = context.clone_execution_authorization().unwrap();
+        let permit = authorization.acquire().await.unwrap();
+        let policy = permit
+            .workspace_lsp_directories(&workspace, &[], &scratch)
+            .unwrap();
+        assert!(
+            policy
+                .readonly_roots
+                .iter()
+                .any(|root| root.root() == workspace)
+        );
+        drop(permit);
+        let mut unrelated = authorization.clone();
+        unrelated.authorized_resources.clear();
+        let permit = unrelated.acquire().await.unwrap();
+        assert!(
+            permit
+                .workspace_lsp_directories(&workspace, &[], &scratch)
+                .is_err()
+        );
+        drop(permit);
+        engine.config.write().await.file_policy.global_denied_paths = vec![workspace.clone()];
+        let permit = authorization.acquire().await.unwrap();
+        assert!(
+            permit
+                .workspace_lsp_directories(&workspace, &[], &scratch)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn lsp_process_roots_keep_project_readonly_and_scratch_writable() {
         let root = tempfile::tempdir().expect("temporary root is available");
         let workspace = root.path().join("workspace");

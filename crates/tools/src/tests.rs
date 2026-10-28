@@ -255,6 +255,32 @@ impl Tool for SessionAuthorizationTool {
 }
 
 #[tokio::test]
+async fn lsp_live_and_snapshot_requests_declare_project_read_scope() {
+    let root = TempDir::new().unwrap();
+    let mgr = ToolsFacade::new();
+    mgr.rebuild_catalog().await.unwrap();
+    mgr.switch_execution_workspace(root.path()).await.unwrap();
+    let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let tool = crate::builtin::lsp::LspTool::new(
+        Default::default(),
+        Arc::clone(&mgr.coordinator.core.authorization),
+    );
+    mgr.register_for_session(session_id, Arc::new(tool)).await;
+    let input = json!({"operation": "workspace_symbols", "server": "test", "query": "x"});
+    let catalog = mgr.tool_catalog_snapshot(session_id).await;
+    let live = mgr
+        .resolve_authorization_request(Some(session_id), "lsp", &input)
+        .await
+        .unwrap();
+    let snapshot = mgr
+        .resolve_authorization_request_from_snapshot(&catalog, Some(session_id), "lsp", &input)
+        .await
+        .unwrap();
+    assert_eq!(live.resources, snapshot.resources);
+    assert!(live.resources.iter().any(|resource| matches!(resource, DeclaredResource::LocalPath { path, access: LocalPathAccess::Read } if path == root.path())));
+}
+
+#[tokio::test]
 async fn git_live_and_snapshot_requests_include_linked_worktree_resources() {
     let root = TempDir::new().unwrap();
     let workspace = root.path().join("workspace");

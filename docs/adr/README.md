@@ -1347,3 +1347,4 @@
 - [1441：授权器编译文件策略快照](1441-compiled-file-policy.md)
 - [1442：Git 工作区外工作目录的授权绑定](1442-git-external-working-directory.md)
 - [1443：在 Git 授权中绑定工作树与元数据](1443-git-worktree-resource-consent.md)
+- [1444：LSP 项目读取范围随授权绑定](1444-lsp-project-read-consent.md)
